@@ -37,6 +37,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 )
 
@@ -54,17 +55,20 @@ import (
 // Wire format helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// buildWireEntry creates a v5 entry with a fake ECDSA signature appended.
-// Used for Mode A (authenticated) submissions where stamp isn't needed.
+// buildWireEntry creates a v7.75 entry signed with the shared test
+// keypair. Used for Mode A (authenticated) submissions where the
+// compute stamp isn't needed. Under v7.75 the multi-sig section is
+// appended INSIDE envelope.Serialize, so the wire bytes ARE the
+// canonical bytes — no separate MustAppendSignature step.
+//
+// The test server is configured with DIDResolver: nil (Phase 2 trust
+// mode) per testserver_test.go:166, so the signature is not crypto-
+// verified end-to-end; we just need it to be structurally well-formed
+// so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
+// gives us exactly that.
 func buildWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte) []byte {
 	t.Helper()
-	entry := makeEntry(t, header, payload)
-	canonical := envelope.Serialize(entry)
-	fakeSig := make([]byte, 64)
-	for i := range fakeSig {
-		fakeSig[i] = byte(i + 1)
-	}
-	return envelope.MustAppendSignature(canonical, envelope.SigAlgoECDSA, fakeSig)
+	return envelope.Serialize(makeEntry(t, header, payload))
 }
 
 // buildModeBWireEntry creates a v5 entry with a valid compute stamp for Mode B.
@@ -97,12 +101,34 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 		Nonce:      0, // updated each iteration
 	}
 
+	// v7.75 chicken-and-egg: the stamp target is
+	// envelope.EntryIdentity = sha256(Serialize(entry)), and Serialize
+	// embeds the signatures section. So changing the nonce changes
+	// SigningPayload changes the signature changes Serialize output.
+	// We sign on every iteration. ECDSA SignEntry over a 32-byte hash
+	// is ~50µs; at difficulty=8 the search expects ~256 iterations,
+	// well within the test budget.
+	priv := sharedTestPriv(t)
 	for nonce := uint64(0); nonce < 20_000_000; nonce++ {
 		header.AdmissionProof.Nonce = nonce
-		entry, err := envelope.NewEntry(header, payload)
+		entry, err := envelope.NewUnsignedEntry(header, payload)
 		if err != nil {
-			t.Fatalf("NewEntry: %v", err)
+			t.Fatalf("NewUnsignedEntry: %v", err)
 		}
+		signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+		sig, err := signatures.SignEntry(signingHash, priv)
+		if err != nil {
+			t.Fatalf("SignEntry: %v", err)
+		}
+		entry.Signatures = []envelope.Signature{{
+			SignerDID: header.SignerDID,
+			AlgoID:    envelope.SigAlgoECDSA,
+			Bytes:     sig,
+		}}
+		// Skip entry.Validate inside the hot loop — it re-runs the
+		// signing-section encode that Serialize is about to do. We'll
+		// be returning Serialize's output anyway, so any structural
+		// rejection will surface there with the same panic message.
 		canonical := envelope.Serialize(entry)
 		entryHash := sha256.Sum256(canonical)
 
@@ -121,11 +147,9 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 			uint64(testEpochAcceptanceWindow),
 		)
 		if err == nil {
-			fakeSig := make([]byte, 64)
-			for i := range fakeSig {
-				fakeSig[i] = byte(i + 1)
-			}
-			return envelope.MustAppendSignature(canonical, envelope.SigAlgoECDSA, fakeSig)
+			// canonical is already the wire bytes — no separate
+			// signature-append step under v7.75.
+			return canonical
 		}
 	}
 	t.Fatal("could not find valid nonce within 20M iterations")
@@ -711,14 +735,27 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 		Nonce:      0,
 	}
 
-	// Brute force a valid nonce against the stale epoch.
+	// Brute force a valid nonce against the stale epoch. Same v7.75
+	// chicken-and-egg as buildModeBWireEntry — sign per iteration so
+	// EntryIdentity reflects the stamp target the operator computes.
+	priv := sharedTestPriv(t)
 	var wire []byte
 	for nonce := uint64(0); nonce < 5_000_000; nonce++ {
 		header.AdmissionProof.Nonce = nonce
-		entry, err := envelope.NewEntry(header, []byte("stale-payload"))
+		entry, err := envelope.NewUnsignedEntry(header, []byte("stale-payload"))
 		if err != nil {
-			t.Fatalf("NewEntry: %v", err)
+			t.Fatalf("NewUnsignedEntry: %v", err)
 		}
+		signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+		sig, err := signatures.SignEntry(signingHash, priv)
+		if err != nil {
+			t.Fatalf("SignEntry: %v", err)
+		}
+		entry.Signatures = []envelope.Signature{{
+			SignerDID: header.SignerDID,
+			AlgoID:    envelope.SigAlgoECDSA,
+			Bytes:     sig,
+		}}
 		canonical := envelope.Serialize(entry)
 		entryHash := sha256.Sum256(canonical)
 
@@ -730,8 +767,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 			admission.HashSHA256, nil,
 			staleEpoch, 0, // window=0 → exact match required
 		) == nil {
-			fakeSig := make([]byte, 64)
-			wire = envelope.MustAppendSignature(canonical, envelope.SigAlgoECDSA, fakeSig)
+			wire = canonical
 			break
 		}
 	}

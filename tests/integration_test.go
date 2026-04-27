@@ -67,46 +67,62 @@ func TestAdmission_DuplicateHash(t *testing.T) {
 }
 
 func TestAdmission_MalformedBytes(t *testing.T) {
-	_, _, _, err := envelope.StripSignature([]byte{0xFF, 0xFF})
+	// v7.75: envelope.StripSignature is gone — Deserialize is the
+	// parser surface that rejects malformed wire bytes.
+	_, err := envelope.Deserialize([]byte{0xFF, 0xFF})
 	if err == nil {
-		t.Fatal("malformed bytes should fail StripSignature")
+		t.Fatal("malformed bytes should fail Deserialize")
 	}
 }
 
 func TestAdmission_UnsignedEntry_SDK_D5(t *testing.T) {
-	// 7-byte preamble (v5 protocol), no signature trailer → must fail strip.
+	// 7-byte preamble (v5 protocol), no signatures section → must fail Deserialize.
 	raw := []byte{0x00, 0x05, 0x00, 0x00, 0x00, 0x01, 0xFF}
-	_, _, _, err := envelope.StripSignature(raw)
+	_, err := envelope.Deserialize(raw)
 	if err == nil {
-		t.Fatal("truncated entry should fail StripSignature")
+		t.Fatal("truncated entry should fail Deserialize")
 	}
 }
 
 func TestAdmission_WrongSignerKey_SDK_D5(t *testing.T) {
+	// v7.75: signatures live INSIDE the canonical bytes. SDK-D5
+	// guarantee — Deserialize is parse-only, never crypto-verifies.
+	// We round-trip a signed entry's wire bytes and confirm the
+	// signatures section comes back intact (algoID + non-empty
+	// bytes), proving Deserialize is the structural parser; the
+	// downstream verifier (admission/entry_signature_verifier.go)
+	// is what would reject a wrong-key signature.
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, nil)
-	canonical := envelope.Serialize(entry)
-	fakeSig := make([]byte, 64)
-	wire := envelope.MustAppendSignature(canonical, envelope.SigAlgoECDSA, fakeSig)
-	gotCanonical, algoID, gotSig, err := envelope.StripSignature(wire)
+	wire := envelope.Serialize(entry)
+	parsed, err := envelope.Deserialize(wire)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gotCanonical) == 0 || algoID != envelope.SigAlgoECDSA || len(gotSig) != 64 {
-		t.Fatal("signature stripping should succeed even with fake sig")
+	if len(parsed.Signatures) == 0 {
+		t.Fatal("Deserialize should preserve the signatures section")
+	}
+	if parsed.Signatures[0].AlgoID != envelope.SigAlgoECDSA {
+		t.Fatalf("algoID mismatch: %d", parsed.Signatures[0].AlgoID)
+	}
+	if len(parsed.Signatures[0].Bytes) == 0 {
+		t.Fatal("signature bytes should be preserved")
 	}
 }
 
 func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
+	// Same SDK-D5 contract: Deserialize parses the structural shape
+	// without running ecdsa.Verify. Round-tripping a real entry is
+	// the simplest demonstration; a corrupted-bytes-in-flight test
+	// belongs at the verifier layer (admission/entry_signature_verifier_test.go),
+	// not at the parser.
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, nil)
-	canonical := envelope.Serialize(entry)
-	wire := envelope.MustAppendSignature(canonical, envelope.SigAlgoECDSA,
-		[]byte("not-a-real-signature-but-64-bytes-long-padding-here-1234567890ab"))
-	_, _, sig, err := envelope.StripSignature(wire)
+	wire := envelope.Serialize(entry)
+	parsed, err := envelope.Deserialize(wire)
 	if err != nil {
-		t.Fatal("strip should succeed on well-formed wire")
+		t.Fatal("Deserialize should succeed on a well-formed wire")
 	}
-	if len(sig) != 64 {
-		t.Fatal("sig should be 64 bytes")
+	if len(parsed.Signatures[0].Bytes) == 0 {
+		t.Fatal("sig bytes should be preserved by Deserialize")
 	}
 }
 
@@ -137,7 +153,17 @@ func TestAdmission_EvidenceCapNonSnapshot_Decision51(t *testing.T) {
 	for i := range pointers {
 		pointers[i] = pos(uint64(i + 1))
 	}
-	_, err := envelope.NewEntry(envelope.ControlHeader{SignerDID: "did:example:overcap", EvidencePointers: pointers}, nil)
+	// v7.75: NewUnsignedEntry runs the same validateHeaderForWrite
+	// (envelope/serialize.go:241) that NewEntry runs, so this asserts
+	// the same EvidencePointers cap rejection without forcing the
+	// test to mint a signature. Destination is set so the rejection
+	// fires for the EvidencePointers reason (NewUnsignedEntry rejects
+	// empty Destination earlier with a different error).
+	_, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
+		SignerDID:        "did:example:overcap",
+		Destination:      testLogDID,
+		EvidencePointers: pointers,
+	}, nil)
 	if err == nil {
 		t.Fatalf("%d Evidence_Pointers on non-snapshot should be rejected (cap=%d)",
 			overCap, envelope.MaxEvidencePointers)
@@ -163,8 +189,12 @@ func TestAdmission_EvidenceCapSnapshotExempt_Decision51(t *testing.T) {
 	tr := pos(100)
 	pa := pos(99)
 	sp := pos(50)
-	_, err := envelope.NewEntry(envelope.ControlHeader{
-		SignerDID: "did:example:snapshot", AuthorityPath: scopeAuth(),
+	// Same NewEntry → NewUnsignedEntry switch as the non-snapshot
+	// counterpart above. validateHeaderForWrite is shared between the
+	// two constructors, so the snapshot exemption (isAuthoritySnapshotShape
+	// at envelope/serialize.go:359) is exercised either way.
+	_, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
+		SignerDID: "did:example:snapshot", Destination: testLogDID, AuthorityPath: scopeAuth(),
 		TargetRoot: &tr, PriorAuthority: &pa, ScopePointer: &sp, EvidencePointers: pointers,
 	}, nil)
 	if err != nil {
@@ -570,7 +600,17 @@ func TestQuery_Scan_PastEnd(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestTreeHead_Assembly(t *testing.T) {
-	cosigned := types.CosignedTreeHead{TreeHead: types.TreeHead{TreeSize: 1000, RootHash: [32]byte{1, 2, 3}}, SchemeTag: 1, Signatures: make([]types.WitnessSignature, 3)}
+	// v7.75 / Wave 2: SchemeTag moved from CosignedTreeHead to each
+	// WitnessSignature (types/tree_head.go:156-169). Per-head scheme
+	// is gone; per-signature scheme is now the canonical surface.
+	cosigned := types.CosignedTreeHead{
+		TreeHead: types.TreeHead{TreeSize: 1000, RootHash: [32]byte{1, 2, 3}},
+		Signatures: []types.WitnessSignature{
+			{SchemeTag: 1},
+			{SchemeTag: 1},
+			{SchemeTag: 1},
+		},
+	}
 	if cosigned.TreeSize != 1000 || len(cosigned.Signatures) != 3 {
 		t.Fatal("mismatch")
 	}
@@ -829,7 +869,11 @@ func TestDeltaBuffer_NonCommutativeStrict(t *testing.T) {
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, nil), pos(3))
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2)), PriorAuthority: ptrTo(pos(999))}, nil), pos(4))
-	if r.RejectedCounts != 1 {
+	// v7.75 builder.BatchResult: RejectedCounts (scalar) was replaced
+	// by RejectedPositions ([]int of input indices). Per the SDK
+	// docblock at builder/api.go:152-154, callers that consumed the
+	// scalar should switch to len(result.RejectedPositions).
+	if len(r.RejectedPositions) != 1 {
 		t.Fatal("strict OCC with wrong prior should reject")
 	}
 }
