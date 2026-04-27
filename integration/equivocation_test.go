@@ -36,7 +36,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -445,8 +444,3 @@ func uint64SliceEquals(a, b []uint64) bool {
 	return true
 }
 
-// ensureSyncReferenced pins the sync import — the goroutine
-// orchestration above wants sync.WaitGroup-style coordination in
-// future test extensions, and the import drop would silently break
-// those additions on first commit.
-var ensureSyncReferenced = sync.Once{}.Do

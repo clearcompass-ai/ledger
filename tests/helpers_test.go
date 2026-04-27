@@ -17,6 +17,8 @@ package tests
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,6 +32,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
@@ -93,11 +96,69 @@ func scopeAuth() *envelope.AuthorityPath {
 // Entry construction helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// sharedTestPriv is the package-level test signing key used by makeEntry
+// to satisfy the v7.75 "Signatures must be non-empty before Serialize"
+// invariant. The key is generated lazily on first use; tests that need
+// real DID-resolvable keys (admission-pipeline tests) build their own
+// keypair via testKeypair and call makeSignedEntry directly.
+//
+// The signature this key produces is structurally well-formed (passes
+// envelope.Serialize and entry.Validate without panic) but does NOT
+// verify against the synthetic SignerDIDs (e.g., did:example:alice)
+// that integration_test.go uses, because those DIDs have no resolver.
+// That is intentional: the SDK builder / SMT / Postgres tests pinned
+// here don't exercise admission's signature-verification path.
+var (
+	sharedTestPrivOnce sync.Once
+	sharedTestPrivKey  *ecdsa.PrivateKey
+)
+
+func sharedTestPriv(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	sharedTestPrivOnce.Do(func() {
+		priv, err := signatures.GenerateKey()
+		if err != nil {
+			t.Fatalf("sharedTestPriv: GenerateKey: %v", err)
+		}
+		sharedTestPrivKey = priv
+	})
+	return sharedTestPrivKey
+}
+
+// makeEntry builds a v7.75-compliant signed *envelope.Entry suitable
+// for SDK builder / SMT / Postgres tests. Defaults:
+//
+//   - h.Destination defaults to testLogDID when empty
+//     (NewUnsignedEntry rejects empty Destination at write time).
+//   - Signature is produced by sharedTestPriv against the entry's
+//     SigningPayload, then assigned to entry.Signatures so Serialize
+//     and EntryIdentity become safe to call.
+//
+// h.SignerDID is preserved as-is — these tests use synthetic DIDs
+// (did:example:alice etc.) that the verifier-side resolver doesn't
+// recognize. Tests that need DID-resolvable signers use makeSignedEntry
+// from signing_helper_test.go with a real testKeypair.
 func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope.Entry {
 	t.Helper()
-	entry, err := envelope.NewEntry(h, payload)
+	if h.Destination == "" {
+		h.Destination = testLogDID
+	}
+	entry, err := envelope.NewUnsignedEntry(h, payload)
 	if err != nil {
-		t.Fatalf("NewEntry: %v", err)
+		t.Fatalf("NewUnsignedEntry: %v", err)
+	}
+	hash := sha256.Sum256(envelope.SigningPayload(entry))
+	sig, err := signatures.SignEntry(hash, sharedTestPriv(t))
+	if err != nil {
+		t.Fatalf("SignEntry: %v", err)
+	}
+	entry.Signatures = []envelope.Signature{{
+		SignerDID: h.SignerDID,
+		AlgoID:    envelope.SigAlgoECDSA,
+		Bytes:     sig,
+	}}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("entry.Validate: %v", err)
 	}
 	return entry
 }
@@ -218,7 +279,7 @@ type mockSchemaResolver struct {
 	commutative bool
 }
 
-func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher builder.EntryFetcher) (*builder.SchemaResolution, error) {
+func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher types.EntryFetcher) (*builder.SchemaResolution, error) {
 	return &builder.SchemaResolution{
 		IsCommutative:   r.commutative,
 		DeltaWindowSize: 10,
@@ -355,7 +416,12 @@ func (h *testHarness) root(t *testing.T) [32]byte {
 // Bulk entry generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-func generateEntries(n int) ([]*envelope.Entry, []types.LogPosition) {
+// generateEntries builds n bulk-test entries via makeEntry so each one
+// satisfies the v7.75 Serialize-safety invariant. Takes *testing.T so
+// the underlying SignEntry / Validate failures fail the test loudly
+// instead of dropping a nil entry into the slice.
+func generateEntries(t *testing.T, n int) ([]*envelope.Entry, []types.LogPosition) {
+	t.Helper()
 	entries := make([]*envelope.Entry, n)
 	positions := make([]types.LogPosition, n)
 	for i := 0; i < n; i++ {
@@ -364,7 +430,7 @@ func generateEntries(n int) ([]*envelope.Entry, []types.LogPosition) {
 			v := envelope.AuthoritySameSigner
 			ap = &v
 		}
-		entries[i], _ = envelope.NewEntry(envelope.ControlHeader{
+		entries[i] = makeEntry(t, envelope.ControlHeader{
 			SignerDID:     didForUser(i / 10),
 			AuthorityPath: ap,
 		}, []byte{byte(i)})

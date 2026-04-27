@@ -21,10 +21,14 @@ KEY ARCHITECTURAL DECISIONS:
     Every helper that builds an Entry defaults to this value. Tests that
     want to exercise cross-destination behavior pass an explicit
     Destination in the ControlHeader.
-  - makeV030Entry is the successor to makeEntry. It runs envelope.NewEntry
-    (not a struct literal), so it exercises the same gate that production
-    callers hit. Tests that deliberately forge malformed entries bypass
-    this helper and hand-construct via struct literal.
+  - makeV030Entry is the successor to makeEntry. It runs
+    envelope.NewUnsignedEntry (not a struct literal), so it exercises
+    the same write-time gate that production callers hit on the
+    unsigned-construction path (anchor/publisher.go,
+    lifecycle/shard_manager.go on v7.75). Tests that deliberately
+    forge malformed entries bypass this helper and hand-construct via
+    struct literal; tests that need signed entries call
+    envelope.NewEntry directly with a []Signature third argument.
   - No global state. Every helper takes *testing.T for failure reporting.
 */
 package tests
@@ -58,16 +62,23 @@ const testOperatorDID = testLogDID
 // Entry construction helpers
 // ─────────────────────────────────────────────────────────────────────
 
-// makeV030Entry constructs an Entry via envelope.NewEntry, defaulting
-// hdr.Destination to testLogDID when the caller leaves it empty. This
-// is the v0.3.0 successor to the legacy makeEntry helper.
+// makeV030Entry constructs an unsigned Entry via envelope.NewUnsignedEntry,
+// defaulting hdr.Destination to testLogDID when the caller leaves it empty.
+//
+// v7.75 note: envelope.NewEntry now requires a []Signature third
+// argument; envelope.NewUnsignedEntry is the no-signature constructor
+// that this helper has always wanted. Production code on the wave1
+// branch made the same switch in anchor/publisher.go and
+// lifecycle/shard_manager.go. Tests that need signed entries must
+// build the signatures explicitly and feed them to envelope.NewEntry
+// directly — out of scope for this defaulting helper.
 //
 // Use this in new tests. Existing tests using makeEntry are patched
 // in-place via helpers_test.PATCH.go (which adds the same default
 // injection directly to makeEntry's body).
 //
-// Fails the test on NewEntry error — helpers that silently return nil
-// create observability gaps in downstream failures.
+// Fails the test on constructor error — helpers that silently return
+// nil create observability gaps in downstream failures.
 func makeV030Entry(
 	t *testing.T,
 	hdr envelope.ControlHeader,
@@ -77,9 +88,9 @@ func makeV030Entry(
 	if hdr.Destination == "" {
 		hdr.Destination = testLogDID
 	}
-	entry, err := envelope.NewEntry(hdr, payload)
+	entry, err := envelope.NewUnsignedEntry(hdr, payload)
 	if err != nil {
-		t.Fatalf("NewEntry: %v", err)
+		t.Fatalf("NewUnsignedEntry: %v", err)
 	}
 	return entry
 }
@@ -98,9 +109,9 @@ func makeForeignEntry(
 	t.Helper()
 	const foreignLogDID = "did:web:other-log.example"
 	hdr.Destination = foreignLogDID
-	entry, err := envelope.NewEntry(hdr, payload)
+	entry, err := envelope.NewUnsignedEntry(hdr, payload)
 	if err != nil {
-		t.Fatalf("NewEntry (foreign destination): %v", err)
+		t.Fatalf("NewUnsignedEntry (foreign destination): %v", err)
 	}
 	return entry
 }
@@ -113,12 +124,15 @@ func makeForeignEntry(
 // primitives at compile time. If the SDK ever renames or removes one of
 // these, the test suite breaks at build time — making the API drift
 // obvious before any test run.
+//
+// v7.75 note: StripSignature / AppendSignature were removed from the
+// envelope package — the multi-sig section now lives INSIDE the
+// canonical bytes (appended by Serialize), so the wire-vs-canonical
+// split is gone. Their drop from this list is the surfaced API drift.
 var (
-	_ = envelope.EntryIdentity   // Tessera dedup key (preferred vocabulary)
-	_ = envelope.EntryLeafHash   // RFC 6962 leaf hash (consumer-side only)
-	_ = envelope.Serialize       // canonical bytes
-	_ = envelope.Deserialize     // canonical parser
-	_ = envelope.StripSignature  // wire → canonical+sig split
-	_ = envelope.AppendSignature // canonical+sig → wire
+	_ = envelope.EntryIdentity // Tessera dedup key (preferred vocabulary)
+	_ = envelope.EntryLeafHash // RFC 6962 leaf hash (consumer-side only)
+	_ = envelope.Serialize     // canonical bytes (signatures embedded)
+	_ = envelope.Deserialize   // canonical parser (signatures extracted)
 	_ = envelope.ValidateDestination
 )

@@ -195,7 +195,7 @@ func TestAdmission_RejectsMalformedCommitmentPayload(t *testing.T) {
 		DomainPayload: envelopeBytes,
 	}
 
-	err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	_, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
 	if err == nil {
 		t.Fatal("expected ErrCommitmentPayloadMalformed, got nil")
 	}
@@ -261,7 +261,7 @@ func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
 		DomainPayload: envelopeBytes,
 	}
 
-	err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	_, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
 	if err == nil {
 		t.Fatal("expected ErrCommitmentSchemaIDMismatch, got nil")
 	}
@@ -341,11 +341,11 @@ func TestC2Passthrough_UnknownSchemaID(t *testing.T) {
 	// confirms the dispatcher's switch statement cannot route
 	// these payloads — the default branch (passthrough) is the
 	// only path open to them.
-	preErr := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	_, preErr := sdkschema.ParsePREGrantCommitmentEntry(entry)
 	if !errors.Is(preErr, sdkschema.ErrCommitmentSchemaIDMismatch) {
 		t.Errorf("expected schema ID mismatch from PRE parser, got %v", preErr)
 	}
-	escrowErr := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
+	_, escrowErr := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
 	if !errors.Is(escrowErr, sdkschema.ErrCommitmentSchemaIDMismatch) {
 		t.Errorf("expected schema ID mismatch from escrow parser, got %v", escrowErr)
 	}
@@ -375,10 +375,10 @@ func TestC2Passthrough_NoDomainPayload(t *testing.T) {
 	// Neither SDK parser should fire on an entry with no payload;
 	// they reject with malformed-payload errors when they do see
 	// non-JSON or wrong-shape input.
-	if err := sdkschema.ParsePREGrantCommitmentEntry(entry); err == nil {
+	if _, err := sdkschema.ParsePREGrantCommitmentEntry(entry); err == nil {
 		t.Errorf("PRE parser unexpectedly accepted entry with no DomainPayload")
 	}
-	if err := sdkschema.ParseEscrowSplitCommitmentEntry(entry); err == nil {
+	if _, err := sdkschema.ParseEscrowSplitCommitmentEntry(entry); err == nil {
 		t.Errorf("escrow parser unexpectedly accepted entry with no DomainPayload")
 	}
 }
