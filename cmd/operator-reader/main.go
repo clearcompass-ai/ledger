@@ -100,13 +100,50 @@ func run(logger *slog.Logger) error {
 	tesseraAdapter := tessera.NewTesseraAdapter(roAppender, tileReader, logger)
 	logger.Info("tessera initialized (read-only)", "storage_dir", cfg.TesseraStorageDir)
 
-	// ── Entry byte store (read-only mode) ──────────────────────────────
-	// Hash-only tiles: TesseraEntryReader is gone. Tiles contain hashes only.
-	// The reader needs a shared persistent byte store in production.
-	// For now: InMemoryEntryStore (empty — entry byte hydration will fail
-	// for entries not populated by a writer process).
-	entryBytes := tessera.NewInMemoryEntryStore()
-	logger.Warn("operator-reader using empty InMemoryEntryStore — entry byte hydration will fail. Production requires shared persistent byte store.")
+	// ── Entry byte store (Phase 2) ────────────────────────────────────
+	// Reader points at the same backend + prefix the writer
+	// operator uses, so byte hydration on GET requests returns
+	// the same bytes the writer admitted. memory mode in the
+	// reader serves zero entries (the writer's in-memory store
+	// is in a different process); gcs mode shares the bucket.
+	var entryBytes interface {
+		WriteEntry(seq uint64, canonical []byte, sig []byte) error
+		ReadEntry(seq uint64) (tessera.RawEntry, error)
+		ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error)
+	}
+	switch cfg.ByteStoreBackend {
+	case "memory", "":
+		entryBytes = tessera.NewInMemoryEntryStore()
+		logger.Warn("operator-reader using empty InMemoryEntryStore — entry byte hydration will fail. Set ORTHOLOG_BYTE_STORE=gcs and configure the same bucket/prefix as the writer.")
+	case "gcs":
+		if cfg.ByteStoreGCSBucket == "" {
+			return fmt.Errorf("ORTHOLOG_BYTE_STORE=gcs requires ORTHOLOG_BYTE_STORE_GCS_BUCKET")
+		}
+		gcsStore, gerr := tessera.NewGCSEntryStore(ctx, tessera.GCSEntryStoreConfig{
+			Bucket:       cfg.ByteStoreGCSBucket,
+			Endpoint:     cfg.ByteStoreGCSEndpoint,
+			Anonymous:    cfg.ByteStoreGCSAnon,
+			ObjectPrefix: cfg.ByteStoreGCSPrefix,
+			CacheSize:    cfg.ByteStoreCacheSize,
+		})
+		if gerr != nil {
+			return fmt.Errorf("byte store GCS: %w", gerr)
+		}
+		defer func() {
+			if err := gcsStore.Close(); err != nil {
+				logger.Warn("gcs byte store close", "error", err)
+			}
+		}()
+		entryBytes = gcsStore
+		logger.Info("operator-reader byte store is GCSEntryStore",
+			"bucket", cfg.ByteStoreGCSBucket,
+			"prefix", cfg.ByteStoreGCSPrefix,
+			"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
+			"anonymous", cfg.ByteStoreGCSAnon,
+		)
+	default:
+		return fmt.Errorf("unknown ORTHOLOG_BYTE_STORE %q (want memory|gcs)", cfg.ByteStoreBackend)
+	}
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
 	leafStore := store.NewPostgresLeafStore(pool.DB)
@@ -222,6 +259,16 @@ type readerConfig struct {
 	MinDifficulty     int
 	MaxDifficulty     int
 	HashFunction      string
+
+	// Byte store (Phase 2). Reader and writer must agree on
+	// backend + bucket + prefix so reads return the same bytes
+	// the writer admitted.
+	ByteStoreBackend     string
+	ByteStoreGCSBucket   string
+	ByteStoreGCSEndpoint string
+	ByteStoreGCSAnon     bool
+	ByteStoreGCSPrefix   string
+	ByteStoreCacheSize   int
 }
 
 func loadConfig() readerConfig {
@@ -240,6 +287,13 @@ func loadConfig() readerConfig {
 		MinDifficulty:     8,
 		MaxDifficulty:     24,
 		HashFunction:      "sha256",
+
+		ByteStoreBackend:     envOr("ORTHOLOG_BYTE_STORE", "memory"),
+		ByteStoreGCSBucket:   os.Getenv("ORTHOLOG_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint: os.Getenv("ORTHOLOG_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:     os.Getenv("ORTHOLOG_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSPrefix:   envOr("ORTHOLOG_BYTE_STORE_GCS_PREFIX", "entries"),
+		ByteStoreCacheSize:   4096,
 	}
 }
 
