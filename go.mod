@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/clearcompass-ai/ortholog-sdk v0.0.0-20260425034242-d6b979284a64
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/transparency-dev/tessera v1.0.2
 	golang.org/x/mod v0.35.0
@@ -15,7 +16,6 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/consensys/gnark-crypto v0.20.1 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
