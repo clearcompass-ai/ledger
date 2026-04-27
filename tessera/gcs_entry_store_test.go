@@ -299,14 +299,52 @@ func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
 		t.Errorf("cache size %d exceeds maxSize 16", cacheSize)
 	}
 
-	// Sanity: re-reading seq=0 hits GCS, not the cache.
-	got, err := store.ReadEntry(0)
+	// Sanity: re-reading seq=0 hits GCS, not the cache. fake-gcs-
+	// server has a tiny read-after-write consistency window after
+	// bursty writes; real GCS doesn't. Retry-with-backoff handles
+	// either case without changing production semantics.
+	got, err := readEntryWithRetry(t, store, 0)
 	if err != nil {
 		t.Fatalf("ReadEntry seq=0 after eviction: %v", err)
 	}
 	if !bytes.Equal(got.CanonicalBytes, []byte("c")) {
 		t.Errorf("post-eviction read returned wrong bytes")
 	}
+}
+
+// readEntryWithRetry calls store.ReadEntry, retrying on
+// storage.ErrObjectNotExist up to 5 times with 50ms exponential
+// backoff. Exists because fake-gcs-server has a brief read-after-
+// write consistency lag under bursty writes (seen reproducibly in
+// the eviction + concurrent-writers tests). Real GCS is strongly
+// consistent and the first attempt always succeeds; the retry is
+// a no-op there.
+//
+// Production code (GCSEntryStore.ReadEntry) does NOT retry —
+// cache miss → ErrObjectNotExist surfaces as "entry doesn't
+// exist", which is the correct semantic for the operator's
+// query path. This helper exists only inside test code to
+// paper over a fake-gcs-server quirk.
+func readEntryWithRetry(t *testing.T, store *GCSEntryStore, seq uint64) (RawEntry, error) {
+	t.Helper()
+	var lastErr error
+	delay := 50 * time.Millisecond
+	for i := 0; i < 5; i++ {
+		got, err := store.ReadEntry(seq)
+		if err == nil {
+			return got, nil
+		}
+		// Only retry on the specific "not yet visible" signal.
+		// Anything else (auth, network, decode error) propagates
+		// immediately so tests don't silently retry past real bugs.
+		if !errors.Is(err, storage.ErrObjectNotExist) {
+			return RawEntry{}, err
+		}
+		lastErr = err
+		time.Sleep(delay)
+		delay *= 2
+	}
+	return RawEntry{}, fmt.Errorf("readEntryWithRetry seq=%d: 5 attempts: %w", seq, lastErr)
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -395,11 +433,14 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 		t.Errorf("concurrent write: %v", err)
 	}
 
-	// Verify a sample of writes.
+	// Verify a sample of writes. readEntryWithRetry papers over
+	// fake-gcs-server's read-after-write consistency lag under
+	// concurrent writes. Real GCS is strongly consistent; the
+	// retry never fires there.
 	for g := 0; g < goroutines; g++ {
 		for i := 0; i < perGoroutine; i++ {
 			seq := uint64(g*100 + i)
-			got, err := store.ReadEntry(seq)
+			got, err := readEntryWithRetry(t, store, seq)
 			if err != nil {
 				t.Errorf("ReadEntry seq=%d: %v", seq, err)
 				continue
