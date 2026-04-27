@@ -62,6 +62,30 @@ echo "== exporting test env =="
 export ORTHOLOG_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
 export ORTHOLOG_TEST_GCS_BUCKET='ortholog-test-bytes'
 
+echo "== ensuring test bucket exists in fake-gcs =="
+# fake-gcs-server's bucket-init container creates "ortholog-tiles"
+# (used by Tessera's tile writer). The byte-store tests use a
+# different bucket name (ortholog-test-bytes) so they don't clash
+# with the tile data — but bucket-init doesn't know about it.
+#
+# Create it here via the standard GCS storage v1 API. 200 / 201
+# (created) and 409 (already exists) both succeed; any other
+# status fails the script.
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"${ORTHOLOG_TEST_GCS_BUCKET}\"}" \
+    "http://127.0.0.1:4443/storage/v1/b" || true)
+case "${HTTP_CODE}" in
+    200|201|409)
+        echo "test bucket '${ORTHOLOG_TEST_GCS_BUCKET}' ready (status=${HTTP_CODE})"
+        ;;
+    *)
+        echo "FATAL: bucket creation failed (status=${HTTP_CODE})"
+        exit 1
+        ;;
+esac
+
 echo "== running GCS entry-store tests =="
 go test -v -count=1 -timeout=120s \
     -run 'TestGCSEntryStore' \
