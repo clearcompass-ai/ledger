@@ -355,7 +355,7 @@ func TestScale_BuilderThroughput(t *testing.T) {
 				fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
 			// v7.75: wire bytes ARE canonical bytes; no separate sig.
-			entryBytes.WriteEntry(seq, wire, nil)
+			entryBytes.WriteEntry(seq, wire)
 		}
 		tx.Commit(ctx)
 	}

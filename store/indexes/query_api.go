@@ -92,23 +92,23 @@ func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 		return []types.EntryWithMetadata{}, nil
 	}
 
-	// (2) Batch-hydrate bytes from EntryReader (tile-aware).
+	// (2) Batch-hydrate wire bytes from EntryReader.
 	seqs := make([]uint64, len(metas))
 	for i, m := range metas {
 		seqs[i] = m.Seq
 	}
-	rawEntries, err := q.reader.ReadEntryBatch(seqs)
+	wires, err := q.reader.ReadEntryBatch(seqs)
 	if err != nil {
 		return nil, fmt.Errorf("store/indexes: hydrate: %w", err)
 	}
 
 	// (3) Assemble []EntryWithMetadata. Three-field type per the v6
-	// SDK; signatures live inside CanonicalBytes and surface to
-	// callers via envelope.Deserialize.
+	// SDK; signatures live inside CanonicalBytes (wire bytes ARE the
+	// canonical bytes) and surface via envelope.Deserialize.
 	results := make([]types.EntryWithMetadata, len(metas))
 	for i, m := range metas {
 		results[i] = types.EntryWithMetadata{
-			CanonicalBytes: rawEntries[i].CanonicalBytes,
+			CanonicalBytes: wires[i],
 			LogTime:        m.Time,
 			Position:       types.LogPosition{LogDID: q.logDID, Sequence: m.Seq},
 		}

@@ -21,12 +21,11 @@ OBJECT LAYOUT:
 
     gs://<bucket>/entries/<sequence>/data
 
-  The object body is the same EncodeEntryData(canonical, sig)
-  blob InMemoryEntryStore writes — preserves wire-format
-  compatibility across the read path (PostgresEntryFetcher,
-  scanAndHydrate, etc.). Sequence numbers are zero-padded to
-  16 hex digits so lexical ordering matches numeric ordering;
-  useful for ad-hoc gsutil ls inspection.
+  The object body is the wire bytes verbatim — opaque to the
+  store; whatever was written is what reads return. Sequence
+  numbers are zero-padded to 16 hex digits so lexical ordering
+  matches numeric ordering; useful for ad-hoc gsutil ls
+  inspection.
 
 CACHING:
 
@@ -34,9 +33,7 @@ CACHING:
   user's stated SLO target) with diverse access patterns,
   per-request GCS hits would dominate latency. The store
   fronts GCS with an LRU cache keyed by sequence number.
-  Cache size is caller-configurable; the cache stores raw
-  RawEntry values (canonical + sig), so a hit avoids the
-  decode round-trip too.
+  Cache size is caller-configurable.
 
   Writes are write-through: WriteEntry pushes the blob to GCS
   AND populates the cache. Read-after-write hits the cache.
@@ -88,9 +85,9 @@ type GCSEntryStoreConfig struct {
 	// (production).
 	Anonymous bool
 
-	// CacheSize is the LRU cache size (number of RawEntry
-	// values held in memory). Defaults to 4096 when zero.
-	// Each cached entry is ~1KB on average; 4096 ≈ 4MB RAM.
+	// CacheSize is the LRU cache size (number of wire-byte blobs
+	// held in memory). Defaults to 4096 when zero. Each cached entry
+	// is ~1KB on average; 4096 ≈ 4MB RAM.
 	CacheSize int
 
 	// ObjectPrefix is prepended to every object name.
@@ -118,7 +115,7 @@ type GCSEntryStore struct {
 	readTimeout  time.Duration
 
 	mu      sync.Mutex
-	cache   map[uint64]RawEntry
+	cache   map[uint64][]byte
 	access  map[uint64]int64 // monotonic counter for LRU
 	counter int64
 	maxSize int
@@ -200,7 +197,7 @@ func NewGCSEntryStore(ctx context.Context, cfg GCSEntryStoreConfig) (*GCSEntrySt
 		objectPrefix: cfg.ObjectPrefix,
 		writeTimeout: cfg.WriteTimeout,
 		readTimeout:  cfg.ReadTimeout,
-		cache:        make(map[uint64]RawEntry, cfg.CacheSize),
+		cache:        make(map[uint64][]byte, cfg.CacheSize),
 		access:       make(map[uint64]int64, cfg.CacheSize),
 		maxSize:      cfg.CacheSize,
 	}, nil
@@ -211,15 +208,12 @@ func (s *GCSEntryStore) objectName(seq uint64) string {
 	return fmt.Sprintf("%s/%016x/data", s.objectPrefix, seq)
 }
 
-// WriteEntry stores the (canonical, sig) blob at entries/<seq>/data
-// and populates the in-memory cache. Errors propagate from the GCS
-// upload.
-func (s *GCSEntryStore) WriteEntry(seq uint64, canonical []byte, sig []byte) error {
-	if len(canonical) == 0 {
-		return fmt.Errorf("tessera/gcs: WriteEntry seq=%d: empty canonical bytes", seq)
+// WriteEntry uploads wire bytes to entries/<seq>/data and populates the
+// in-memory cache. Errors propagate from the GCS upload.
+func (s *GCSEntryStore) WriteEntry(seq uint64, wireBytes []byte) error {
+	if len(wireBytes) == 0 {
+		return fmt.Errorf("tessera/gcs: WriteEntry seq=%d: empty wire bytes", seq)
 	}
-
-	blob := EncodeEntryData(canonical, sig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.writeTimeout)
 	defer cancel()
@@ -227,7 +221,7 @@ func (s *GCSEntryStore) WriteEntry(seq uint64, canonical []byte, sig []byte) err
 	obj := s.bucket.Object(s.objectName(seq))
 	w := obj.NewWriter(ctx)
 	w.ContentType = "application/octet-stream"
-	if _, err := io.Copy(w, bytes.NewReader(blob)); err != nil {
+	if _, err := io.Copy(w, bytes.NewReader(wireBytes)); err != nil {
 		_ = w.Close()
 		return fmt.Errorf("tessera/gcs: write seq=%d: %w", seq, err)
 	}
@@ -235,35 +229,36 @@ func (s *GCSEntryStore) WriteEntry(seq uint64, canonical []byte, sig []byte) err
 		return fmt.Errorf("tessera/gcs: close seq=%d: %w", seq, err)
 	}
 
-	// Cache write — copy slices so callers can mutate the
-	// inputs after we return without corrupting the cache.
+	// Cache write — copy the slice so callers can mutate the input
+	// after we return without corrupting the cache.
+	cp := make([]byte, len(wireBytes))
+	copy(cp, wireBytes)
 	s.mu.Lock()
 	if len(s.cache) >= s.maxSize {
 		s.evictLRULocked()
 	}
 	s.counter++
-	s.cache[seq] = RawEntry{
-		CanonicalBytes: append([]byte(nil), canonical...),
-		SigBytes:       append([]byte(nil), sig...),
-	}
+	s.cache[seq] = cp
 	s.access[seq] = s.counter
 	s.mu.Unlock()
 
 	return nil
 }
 
-// ReadEntry fetches entries/<seq>/data, decodes the blob into
-// (canonical, sig), and returns it as a RawEntry. Errors:
+// ReadEntry fetches the wire bytes at entries/<seq>/data. Errors:
 //   - storage.ErrObjectNotExist when the object is missing
 //   - wrapped GCS errors for transport failures
-func (s *GCSEntryStore) ReadEntry(seq uint64) (RawEntry, error) {
-	// Cache hit.
+func (s *GCSEntryStore) ReadEntry(seq uint64) ([]byte, error) {
+	// Cache hit. Copy on the way out so callers cannot mutate the
+	// cached value.
 	s.mu.Lock()
 	if entry, ok := s.cache[seq]; ok {
 		s.counter++
 		s.access[seq] = s.counter
+		cp := make([]byte, len(entry))
+		copy(cp, entry)
 		s.mu.Unlock()
-		return entry, nil
+		return cp, nil
 	}
 	s.mu.Unlock()
 
@@ -274,52 +269,44 @@ func (s *GCSEntryStore) ReadEntry(seq uint64) (RawEntry, error) {
 	r, err := obj.NewReader(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
-			return RawEntry{}, fmt.Errorf("tessera/gcs: seq=%d not found: %w", seq, err)
+			return nil, fmt.Errorf("tessera/gcs: seq=%d not found: %w", seq, err)
 		}
-		return RawEntry{}, fmt.Errorf("tessera/gcs: read seq=%d: %w", seq, err)
+		return nil, fmt.Errorf("tessera/gcs: read seq=%d: %w", seq, err)
 	}
 	defer r.Close()
 
 	blob, err := io.ReadAll(r)
 	if err != nil {
-		return RawEntry{}, fmt.Errorf("tessera/gcs: read body seq=%d: %w", seq, err)
+		return nil, fmt.Errorf("tessera/gcs: read body seq=%d: %w", seq, err)
 	}
 
-	canonical, sig, err := DecodeEntryData(blob)
-	if err != nil {
-		return RawEntry{}, fmt.Errorf("tessera/gcs: decode seq=%d: %w", seq, err)
-	}
-
-	entry := RawEntry{
-		CanonicalBytes: canonical,
-		SigBytes:       sig,
-	}
-
+	// Cache the freshly-fetched blob; copy on the way out for the same
+	// reason as the cache-hit path.
 	s.mu.Lock()
 	if len(s.cache) >= s.maxSize {
 		s.evictLRULocked()
 	}
 	s.counter++
-	s.cache[seq] = entry
+	cached := make([]byte, len(blob))
+	copy(cached, blob)
+	s.cache[seq] = cached
 	s.access[seq] = s.counter
 	s.mu.Unlock()
 
-	return entry, nil
+	return blob, nil
 }
 
-// ReadEntryBatch returns each requested sequence's RawEntry in
-// the same order as the input slice. Mirrors
-// InMemoryEntryStore.ReadEntryBatch semantics: any missing
-// sequence is a fatal error for the whole batch (so callers
+// ReadEntryBatch returns each requested sequence's wire bytes in the
+// same order as the input slice. Mirrors InMemoryEntryStore semantics:
+// any missing sequence is a fatal error for the whole batch (so callers
 // don't get a silent short slice).
 //
-// Reads run sequentially. A future optimization could fan-out
-// concurrent goroutines bounded by a semaphore; the current
-// shape is correctness-first, optimize-later. At sustained 100
-// QPS with cache hit rates above 80% the sequential path is
-// fine.
-func (s *GCSEntryStore) ReadEntryBatch(seqs []uint64) ([]RawEntry, error) {
-	out := make([]RawEntry, len(seqs))
+// Reads run sequentially. A future optimization could fan-out concurrent
+// goroutines bounded by a semaphore; the current shape is correctness-
+// first, optimize-later. At sustained 100 QPS with cache hit rates above
+// 80% the sequential path is fine.
+func (s *GCSEntryStore) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
+	out := make([][]byte, len(seqs))
 	for i, seq := range seqs {
 		entry, err := s.ReadEntry(seq)
 		if err != nil {

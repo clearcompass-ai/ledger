@@ -515,11 +515,11 @@ func admitPreparedEntry(
 	}
 
 	if deps.Storage.EntryWriter != nil {
-		// Wire bytes ARE the canonical bytes under v7.75; the
-		// signatures section lives inside pe.canonical (which is
-		// rawWire). The legacy (canonical, sig) split is no longer
-		// meaningful — pass full wire bytes as canonical, nil for sig.
-		if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, pe.canonical, nil); writeErr != nil {
+		// Wire bytes ARE the canonical bytes under v7.75 — the
+		// signatures section is appended INSIDE the canonical form
+		// by envelope.Serialize, so pe.canonical is the full opaque
+		// blob the byte store stores.
+		if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, pe.canonical); writeErr != nil {
 			return 0, fmt.Errorf("write entry bytes: %w", writeErr)
 		}
 	}

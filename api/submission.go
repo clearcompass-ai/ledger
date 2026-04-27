@@ -469,11 +469,11 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			}
 
 			if deps.Storage.EntryWriter != nil {
-				// Wire bytes ARE the canonical bytes under v7.75; the
-				// signatures section lives inside `raw`. The legacy
-				// (canonical, sig) split is no longer meaningful — pass
-				// the full wire bytes as canonical and a nil sig.
-				if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, raw, nil); writeErr != nil {
+				// Wire bytes ARE the canonical bytes under v7.75 — the
+				// signatures section is appended INSIDE the canonical
+				// form by envelope.Serialize, so a single blob carries
+				// everything a consumer needs.
+				if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, raw); writeErr != nil {
 					return fmt.Errorf("write entry bytes: %w", writeErr)
 				}
 			}

@@ -101,16 +101,13 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	result := submitEntry(t, op.BaseURL, "tok-rule", wire)
 	seq := uint64(result["sequence_number"].(float64))
 
-	// Verify: bytes are in InMemoryEntryStore.
-	raw, err := op.EntryBytes.ReadEntry(seq)
+	// Verify: wire bytes are in InMemoryEntryStore.
+	wire, err := op.EntryBytes.ReadEntry(seq)
 	if err != nil {
 		t.Fatalf("EntryReader has no bytes for seq %d: %v", seq, err)
 	}
-	if len(raw.CanonicalBytes) == 0 {
-		t.Fatal("EntryReader returned empty canonical bytes")
-	}
-	if len(raw.SigBytes) == 0 {
-		t.Fatal("EntryReader returned empty sig bytes")
+	if len(wire) == 0 {
+		t.Fatal("EntryReader returned empty wire bytes")
 	}
 
 	// Verify: Postgres entry_index has the index row but NO bytes.
@@ -126,15 +123,17 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 		t.Fatalf("signer_did mismatch: %s", signerDID)
 	}
 
-	// Verify: canonical_hash in Postgres matches hash of bytes in EntryReader.
-	computedHash := sha256.Sum256(raw.CanonicalBytes)
+	// Verify: canonical_hash in Postgres matches sha256(wire). Under
+	// v7.75 envelope.EntryIdentity is sha256(Serialize(entry)) and
+	// the wire bytes ARE Serialize(entry).
+	computedHash := sha256.Sum256(wire)
 	if !bytes.Equal(hash, computedHash[:]) {
 		t.Fatalf("hash mismatch: Postgres=%s EntryReader=%s",
 			hex.EncodeToString(hash), hex.EncodeToString(computedHash[:]))
 	}
 
-	t.Logf("rule verified: seq=%d, bytes in EntryReader (%d bytes), hash in Postgres (%s)",
-		seq, len(raw.CanonicalBytes), hex.EncodeToString(hash[:8]))
+	t.Logf("rule verified: seq=%d, wire bytes in EntryReader (%d bytes), hash in Postgres (%s)",
+		seq, len(wire), hex.EncodeToString(hash[:8]))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -171,9 +170,8 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	)
 	tx.Commit(ctx)
 
-	// Store bytes in EntryReader (the ONLY source). v7.75: full wire
-	// bytes go in as canonical; nil for the legacy sig split.
-	entryBytes.WriteEntry(seq, wire, nil)
+	// Store wire bytes in EntryReader (the ONLY source).
+	entryBytes.WriteEntry(seq, wire)
 
 	// Fetch via PostgresEntryFetcher.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -186,11 +184,9 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 		t.Fatal("Fetch returned nil")
 	}
 
-	// Verify bytes came from EntryReader. Under v7.75 the wire bytes
-	// carry the signatures section; SignatureBytes/SignatureAlgoID
-	// sidecar fields are gone from EntryWithMetadata. Callers that
-	// need the algoID call envelope.Deserialize and read
-	// entry.Signatures[0].AlgoID.
+	// Verify wire bytes came from EntryReader. Wire bytes ARE the
+	// canonical bytes under v7.75; callers that need the algoID call
+	// envelope.Deserialize and read entry.Signatures[0].AlgoID.
 	if !bytes.Equal(ewm.CanonicalBytes, wire) {
 		t.Fatal("CanonicalBytes do not match EntryReader content")
 	}
@@ -230,8 +226,8 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 			i, hash[:], time.Now().UTC(), "did:example:query-rule-signer",
 		)
 		tx.Commit(ctx)
-		// v7.75: full wire bytes as canonical; nil for legacy sig split.
-		entryBytes.WriteEntry(i, wire, nil)
+		// v7.75: wire bytes ARE canonical bytes (signatures embedded).
+		entryBytes.WriteEntry(i, wire)
 	}
 
 	// Query via OperatorQueryAPI.
@@ -244,14 +240,12 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
 
-	// Verify each result has bytes from EntryReader. SignatureBytes
-	// is no longer a field on EntryWithMetadata under v7.75 —
-	// signatures live inside CanonicalBytes.
+	// Verify each result has wire bytes from EntryReader.
 	for i, r := range results {
 		seq := uint64(i + 1)
-		expectedRaw, _ := entryBytes.ReadEntry(seq)
+		expectedWire, _ := entryBytes.ReadEntry(seq)
 
-		if !bytes.Equal(r.CanonicalBytes, expectedRaw.CanonicalBytes) {
+		if !bytes.Equal(r.CanonicalBytes, expectedWire) {
 			t.Fatalf("seq %d: CanonicalBytes mismatch", seq)
 		}
 	}
@@ -288,9 +282,8 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	)
 	tx.Commit(ctx)
 
-	// Store THE bytes in EntryReader — this is the source of truth.
-	// v7.75: full wire bytes as canonical; nil for legacy sig split.
-	entryBytes.WriteEntry(seq, wire, nil)
+	// Store wire bytes in EntryReader — this is the source of truth.
+	entryBytes.WriteEntry(seq, wire)
 
 	// Fetch — should return EntryReader's bytes.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -338,12 +331,12 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 	// Verify all 3 entries have bytes in EntryReader.
 	for _, r := range results {
 		seq := uint64(r["sequence_number"].(float64))
-		raw, err := op.EntryBytes.ReadEntry(seq)
+		wire, err := op.EntryBytes.ReadEntry(seq)
 		if err != nil {
 			t.Fatalf("seq %d: EntryReader has no bytes: %v", seq, err)
 		}
-		if len(raw.CanonicalBytes) == 0 {
-			t.Fatalf("seq %d: empty canonical bytes in EntryReader", seq)
+		if len(wire) == 0 {
+			t.Fatalf("seq %d: empty wire bytes in EntryReader", seq)
 		}
 
 		// Verify canonical_bytes field in query response was hydrated from EntryReader.

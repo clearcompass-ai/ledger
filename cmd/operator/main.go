@@ -279,12 +279,11 @@ func main() {
 	//     credentials when no endpoint override; fake-gcs-server
 	//     when OPERATOR_BYTE_STORE_GCS_ENDPOINT is set.
 	//
-	// EntryReader interface is satisfied by both — fetcher / query
-	// API don't see the backend choice.
+	// EntryReader/EntryWriter interfaces are satisfied by both — fetcher
+	// and query API don't see the backend choice.
 	var byteStore interface {
-		WriteEntry(seq uint64, canonical []byte, sig []byte) error
-		ReadEntry(seq uint64) (tessera.RawEntry, error)
-		ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error)
+		tessera.EntryReader
+		tessera.EntryWriter
 	}
 	switch cfg.ByteStoreBackend {
 	case "memory", "":

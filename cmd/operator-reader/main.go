@@ -107,9 +107,8 @@ func run(logger *slog.Logger) error {
 	// reader serves zero entries (the writer's in-memory store
 	// is in a different process); gcs mode shares the bucket.
 	var entryBytes interface {
-		WriteEntry(seq uint64, canonical []byte, sig []byte) error
-		ReadEntry(seq uint64) (tessera.RawEntry, error)
-		ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error)
+		tessera.EntryReader
+		tessera.EntryWriter
 	}
 	switch cfg.ByteStoreBackend {
 	case "memory", "":

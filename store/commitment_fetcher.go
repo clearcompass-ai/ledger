@@ -172,7 +172,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	// envelope.Deserialize on it when they need the parsed Entry.
 	out := make([]*types.EntryWithMetadata, 0, len(rowMetas))
 	for _, rm := range rowMetas {
-		raw, readErr := f.reader.ReadEntry(rm.seq)
+		wire, readErr := f.reader.ReadEntry(rm.seq)
 		if readErr != nil {
 			return nil, fmt.Errorf(
 				"store/commitment_fetcher: tessera read seq=%d: %w",
@@ -184,7 +184,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 				LogDID:   f.logDID,
 				Sequence: rm.seq,
 			},
-			CanonicalBytes: raw.CanonicalBytes,
+			CanonicalBytes: wire,
 			LogTime:        rm.logTime,
 		})
 	}

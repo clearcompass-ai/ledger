@@ -203,10 +203,14 @@ func TestGCSEntryStore_ObjectName_ZeroPadded16Hex(t *testing.T) {
 func TestGCSEntryStore_WriteThenRead_RoundTrip(t *testing.T) {
 	store := requireGCS(t)
 
-	canonical := []byte("the canonical bytes for the entry")
-	sig := sha256.Sum256([]byte("signature input"))
+	// Wire bytes ARE the canonical bytes under v7.75 — the byte store
+	// is opaque, so any blob round-trips identically. Use a synthetic
+	// blob with high-entropy content (sha256 of a stable seed) to
+	// distinguish identity from accidental zero-byte matches.
+	seed := sha256.Sum256([]byte("seed"))
+	wire := append([]byte("the wire bytes for the entry|"), seed[:]...)
 
-	if err := store.WriteEntry(42, canonical, sig[:]); err != nil {
+	if err := store.WriteEntry(42, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
@@ -214,11 +218,8 @@ func TestGCSEntryStore_WriteThenRead_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, canonical) {
-		t.Errorf("CanonicalBytes mismatch")
-	}
-	if !bytes.Equal(got.SigBytes, sig[:]) {
-		t.Errorf("SigBytes mismatch")
+	if !bytes.Equal(got, wire) {
+		t.Errorf("round-trip mismatch:\n  got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -245,9 +246,8 @@ func TestGCSEntryStore_ReadEntry_MissingKeyWrapsErrObjectNotExist(t *testing.T) 
 func TestGCSEntryStore_ReadAfterWrite_HitsCache(t *testing.T) {
 	store := requireGCS(t)
 
-	canonical := []byte("cached entry")
-	sig := []byte("sig")
-	if err := store.WriteEntry(7, canonical, sig); err != nil {
+	wire := []byte("cached entry wire blob")
+	if err := store.WriteEntry(7, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
@@ -262,13 +262,13 @@ func TestGCSEntryStore_ReadAfterWrite_HitsCache(t *testing.T) {
 		t.Fatal("WriteEntry should have populated the cache")
 	}
 
-	// Read returns the cached entry.
+	// Read returns the cached blob.
 	got, err := store.ReadEntry(7)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, canonical) {
-		t.Errorf("CanonicalBytes mismatch")
+	if !bytes.Equal(got, wire) {
+		t.Errorf("cached read mismatch:\n  got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -282,7 +282,7 @@ func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
 	// first should be evicted from cache.
 
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte("c"), []byte("s")); err != nil {
+		if err := store.WriteEntry(i, []byte("blob")); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
@@ -307,8 +307,8 @@ func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadEntry seq=0 after eviction: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, []byte("c")) {
-		t.Errorf("post-eviction read returned wrong bytes")
+	if !bytes.Equal(got, []byte("blob")) {
+		t.Errorf("post-eviction read returned wrong bytes: %x", got)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
 // exist", which is the correct semantic for the operator's
 // query path. This helper exists only inside test code to
 // paper over a fake-gcs-server quirk.
-func readEntryWithRetry(t *testing.T, store *GCSEntryStore, seq uint64) (RawEntry, error) {
+func readEntryWithRetry(t *testing.T, store *GCSEntryStore, seq uint64) ([]byte, error) {
 	t.Helper()
 	var lastErr error
 	delay := 50 * time.Millisecond
@@ -338,25 +338,27 @@ func readEntryWithRetry(t *testing.T, store *GCSEntryStore, seq uint64) (RawEntr
 		// Anything else (auth, network, decode error) propagates
 		// immediately so tests don't silently retry past real bugs.
 		if !errors.Is(err, storage.ErrObjectNotExist) {
-			return RawEntry{}, err
+			return nil, err
 		}
 		lastErr = err
 		time.Sleep(delay)
 		delay *= 2
 	}
-	return RawEntry{}, fmt.Errorf("readEntryWithRetry seq=%d: 5 attempts: %w", seq, lastErr)
+	return nil, fmt.Errorf("readEntryWithRetry seq=%d: 5 attempts: %w", seq, lastErr)
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Empty canonical rejection
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_WriteEntry_RejectsEmptyCanonical(t *testing.T) {
+func TestGCSEntryStore_WriteEntry_RejectsEmptyWire(t *testing.T) {
 	store := requireGCS(t)
 
-	err := store.WriteEntry(1, nil, []byte("sig"))
-	if err == nil {
-		t.Error("expected error on empty canonical bytes")
+	if err := store.WriteEntry(1, nil); err == nil {
+		t.Error("expected error on nil wire bytes")
+	}
+	if err := store.WriteEntry(1, []byte{}); err == nil {
+		t.Error("expected error on empty wire bytes")
 	}
 }
 
@@ -367,9 +369,9 @@ func TestGCSEntryStore_WriteEntry_RejectsEmptyCanonical(t *testing.T) {
 func TestGCSEntryStore_ReadEntryBatch_PreservesInputOrder(t *testing.T) {
 	store := requireGCS(t)
 
-	// Seed five entries.
+	// Seed five entries with distinguishable wire bytes.
 	for i := uint64(1); i <= 5; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte{byte(i + 100)}); err != nil {
+		if err := store.WriteEntry(i, []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
@@ -384,15 +386,15 @@ func TestGCSEntryStore_ReadEntryBatch_PreservesInputOrder(t *testing.T) {
 		t.Fatalf("length: got %d, want %d", len(got), len(want))
 	}
 	for i, seq := range want {
-		if !bytes.Equal(got[i].CanonicalBytes, []byte{byte(seq)}) {
-			t.Errorf("position %d: got canonical %v, want [%d]", i, got[i].CanonicalBytes, seq)
+		if !bytes.Equal(got[i], []byte{byte(seq)}) {
+			t.Errorf("position %d: got %v, want [%d]", i, got[i], seq)
 		}
 	}
 }
 
 func TestGCSEntryStore_ReadEntryBatch_MissingSeqIsFatalForBatch(t *testing.T) {
 	store := requireGCS(t)
-	if err := store.WriteEntry(1, []byte("c"), []byte("s")); err != nil {
+	if err := store.WriteEntry(1, []byte("blob")); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
@@ -419,7 +421,7 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
 				seq := uint64(g*100 + i)
-				if err := store.WriteEntry(seq, []byte{byte(g), byte(i)}, []byte("s")); err != nil {
+				if err := store.WriteEntry(seq, []byte{byte(g), byte(i)}); err != nil {
 					errs <- err
 					return
 				}
@@ -446,8 +448,8 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 				continue
 			}
 			want := []byte{byte(g), byte(i)}
-			if !bytes.Equal(got.CanonicalBytes, want) {
-				t.Errorf("seq=%d: got %v, want %v", seq, got.CanonicalBytes, want)
+			if !bytes.Equal(got, want) {
+				t.Errorf("seq=%d: got %v, want %v", seq, got, want)
 			}
 		}
 	}
@@ -503,7 +505,7 @@ func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 	storeA := mkStore(prefixA)
 	storeB := mkStore(prefixB)
 
-	if err := storeA.WriteEntry(42, []byte("from A"), []byte("sigA")); err != nil {
+	if err := storeA.WriteEntry(42, []byte("from A")); err != nil {
 		t.Fatalf("storeA write: %v", err)
 	}
 

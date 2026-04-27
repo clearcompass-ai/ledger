@@ -108,7 +108,7 @@ func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
 
 	// Reproduce the eviction-style burst: 17 writes, cache cap=16.
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+		if err := store.WriteEntry(i, []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
@@ -366,7 +366,7 @@ func TestFakeGCS_Diagnostic_E4_BurstWriteSettleTime(t *testing.T) {
 	defer cancel()
 
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+		if err := store.WriteEntry(i, []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}

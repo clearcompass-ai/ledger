@@ -160,18 +160,18 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 		return nil, fmt.Errorf("store/entries: fetch index seq=%d: %w", pos.Sequence, err)
 	}
 
-	// (2) Bytes from EntryReader (Tessera tiles).
-	raw, err := f.reader.ReadEntry(pos.Sequence)
+	// (2) Wire bytes from EntryReader.
+	wire, err := f.reader.ReadEntry(pos.Sequence)
 	if err != nil {
 		return nil, fmt.Errorf("store/entries: read bytes seq=%d: %w", pos.Sequence, err)
 	}
 
 	// (3) Assemble — three-field EntryWithMetadata per the v6 SDK
-	// type. Callers that need the primary signature's algoID or
-	// raw bytes call envelope.Deserialize on CanonicalBytes and
-	// read entry.Signatures[0]; see the type's godoc.
+	// type. Wire bytes ARE the canonical bytes under v7.75 (signatures
+	// section embedded). Callers that need the primary signature's
+	// algoID call envelope.Deserialize and read entry.Signatures[0].
 	return &types.EntryWithMetadata{
-		CanonicalBytes: raw.CanonicalBytes,
+		CanonicalBytes: wire,
 		LogTime:        logTime,
 		Position:       pos,
 	}, nil

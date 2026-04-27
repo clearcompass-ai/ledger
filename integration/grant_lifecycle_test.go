@@ -223,45 +223,36 @@ func seedCommitmentEntry(
 //
 // tessera.EntryReader's full interface (tessera/entry_reader.go):
 //
-//	ReadEntry(seq uint64) (RawEntry, error)
-//	ReadEntryBatch(seqs []uint64) ([]RawEntry, error)
+//	ReadEntry(seq uint64) ([]byte, error)
+//	ReadEntryBatch(seqs []uint64) ([][]byte, error)
 //
-// Both methods are implemented below. The handler under test calls
-// ReadEntry sequentially today; ReadEntryBatch is here so the stub
-// also satisfies the interface for any future fetcher path that
-// switches to batch reads (see the parallel fakeEntryReader fix on
-// store/commitment_fetcher_test.go, commit dd581e0).
+// Wire bytes ARE the canonical bytes under v7.75 (signatures section
+// embedded inside the canonical form), so the stub stores a single
+// blob per sequence.
 type stubEntryReader struct {
-	canonicalBySeq map[uint64][]byte
-	sigBySeq       map[uint64][]byte
+	wireBySeq map[uint64][]byte
 }
 
-func (s *stubEntryReader) ReadEntry(seq uint64) (tessera.RawEntry, error) {
-	canonical, ok := s.canonicalBySeq[seq]
+func (s *stubEntryReader) ReadEntry(seq uint64) ([]byte, error) {
+	wire, ok := s.wireBySeq[seq]
 	if !ok {
-		return tessera.RawEntry{}, fmt.Errorf("stubEntryReader: no entry seq=%d", seq)
+		return nil, fmt.Errorf("stubEntryReader: no entry seq=%d", seq)
 	}
-	return tessera.RawEntry{
-		CanonicalBytes: canonical,
-		SigBytes:       s.sigBySeq[seq],
-	}, nil
+	return wire, nil
 }
 
-// ReadEntryBatch returns each requested sequence's entry in the same
-// order as the input slice. Mirrors the real InMemoryEntryStore.
+// ReadEntryBatch returns each requested sequence's wire bytes in the
+// same order as the input slice. Mirrors the real InMemoryEntryStore.
 // ReadEntryBatch semantics: any missing sequence is a fatal error
 // for the whole batch (so callers do not get a silent short slice).
-func (s *stubEntryReader) ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error) {
-	out := make([]tessera.RawEntry, len(seqs))
+func (s *stubEntryReader) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
+	out := make([][]byte, len(seqs))
 	for i, seq := range seqs {
-		canonical, ok := s.canonicalBySeq[seq]
+		wire, ok := s.wireBySeq[seq]
 		if !ok {
 			return nil, fmt.Errorf("stubEntryReader: no entry seq=%d (batch)", seq)
 		}
-		out[i] = tessera.RawEntry{
-			CanonicalBytes: canonical,
-			SigBytes:       s.sigBySeq[seq],
-		}
+		out[i] = wire
 	}
 	return out, nil
 }
@@ -317,8 +308,7 @@ func TestGrantLifecycle_HappyPath(t *testing.T) {
 
 	// ── Step 2: wire the C7 lookup handler ───────────────────────
 	reader := &stubEntryReader{
-		canonicalBySeq: map[uint64][]byte{seq: jsonPayload},
-		sigBySeq:       map[uint64][]byte{seq: []byte("test-sig")},
+		wireBySeq: map[uint64][]byte{seq: jsonPayload},
 	}
 	fetcher := store.NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 	handler := opapi.NewCommitmentLookupHandler(&opapi.CryptographicCommitmentDeps{

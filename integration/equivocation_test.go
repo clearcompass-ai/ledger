@@ -168,13 +168,9 @@ func TestEquivocation_EndToEnd(t *testing.T) {
 
 	// ── Guarantee 4: lookup endpoint returns array of length 2 ───
 	reader := &stubEntryReader{
-		canonicalBySeq: map[uint64][]byte{
+		wireBySeq: map[uint64][]byte{
 			seqA: payloadA,
 			seqB: payloadB,
-		},
-		sigBySeq: map[uint64][]byte{
-			seqA: []byte("sig-A"),
-			seqB: []byte("sig-B"),
 		},
 	}
 	fetcher := store.NewPostgresCommitmentFetcher(pool, reader, testLogDID)
