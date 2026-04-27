@@ -30,7 +30,7 @@ func (q *PostgresQueryAPI) ScanFromPosition(startPos uint64, count int) ([]types
 		count = MaxScanCount
 	}
 	rows, err := q.db.Query(ctx, `
-		SELECT sequence_number, log_time
+		SELECT sequence_number, log_time, canonical_hash
 		FROM entry_index WHERE sequence_number >= $1 ORDER BY sequence_number ASC LIMIT $2`,
 		startPos, count,
 	)

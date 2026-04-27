@@ -3,58 +3,155 @@ FILE PATH: bytestore/bytestore.go
 
 Package bytestore is the operator's wire-byte storage abstraction.
 
-Tessera-alignment invariant: entries are opaque []byte blobs keyed
-by sequence number — identical to the upstream Tessera library's
-storage shape (driver.Add takes []byte, driver.ReadEntries returns
-[]byte). The byte store has no knowledge of envelope structure;
-whatever bytes are written are what reads return.
+HEXAGONAL DESIGN:
 
-Under v7.75 the wire bytes ARE the canonical bytes (the multi-sig
-section is appended INSIDE the canonical form by envelope.Serialize),
-so a single blob carries everything a consumer needs; envelope
-.Deserialize recovers the structure on the read path.
+  The operator depends only on the interfaces defined here. Adapters
+  (gcs.go, s3.go, memory.go) live in this package but are
+  interchangeable through the factory (factory.go). Production
+  swaps backends via OPERATOR_BYTE_STORE_BACKEND={gcs|s3} without
+  touching admission, builder, or read code.
 
-KEY ARCHITECTURAL DECISIONS:
-  - Single-blob storage: no internal length-prefix codec.
-  - Reader / Writer / Store split lets callers narrow the surface
-    they depend on (admission only needs Writer; the read path
-    only needs Reader; tests typically need Store).
-  - Implementations live in their own files: gcs.go (production),
-    memory.go (tests + local dev). The Memory impl is exported so
-    tests across packages can construct one without an internal
-    package; production code is forbidden from importing it (lint
-    rule: bytestore.Memory is allowed only in *_test.go).
+  Why both GCS and S3:
+    - GCS native: workload identity / ADC on GCE/GKE; integrates
+      with Google's IAM signed-URL primitive natively.
+    - S3 (AWS SDK v2): same wire as RustFS / MinIO / Cloudflare R2 /
+      AWS S3. Local-dev gets a paved path via a RustFS container;
+      future cloud migrations don't require a code change.
+
+TESSERA-ALIGNMENT INVARIANT:
+  Entries are opaque []byte blobs keyed by (sequence, hash) — the
+  same shape upstream Tessera consumes. The byte store has no
+  knowledge of envelope structure; whatever bytes are written are
+  what reads return.
+
+  Under v7.75 the wire bytes ARE the canonical bytes (the multi-sig
+  section is appended INSIDE the canonical form by envelope.Serialize),
+  so a single blob carries everything a consumer needs;
+  envelope.Deserialize recovers the structure on the read path.
+
+OBJECT KEY SHAPE:
+  All adapters use the same path layout via layoutKey:
+
+    <prefix>/<seq:016x>/<hash_hex>
+
+  Hash in the path is what makes the 302 redirect path safe: the
+  consumer can verify statically that the URL points at the bytes
+  the operator promised, before fetching. Adapters MUST use
+  layoutKey for the canonical name so a bucket written by one
+  adapter is readable by any other (useful for migrations).
+
+INTERFACE SURFACE:
+  - Reader: ReadEntry, ReadEntryBatch — opaque byte fetch
+  - Writer: WriteEntry — opaque byte write
+  - Presigner: PresignGet — issue a time-bounded GET URL
+  - Store = Reader + Writer (test/dev impls satisfy this)
+  - Backend = Store + Presigner (production impls satisfy this)
 
 DEPENDENCIES:
-  - api/submission.go: writes wire bytes via Writer.WriteEntry.
-  - store/entries.go: reads wire bytes via Reader.ReadEntry.
-  - store/indexes/query_api.go: batches reads via Reader.ReadEntryBatch.
-  - cmd/operator/main.go: composition root wires GCS in production.
+  - api/submission.go: writes via Writer.WriteEntry.
+  - api/entries.go: 302 redirect via Presigner.PresignGet for
+    shipped entries; inline serve via Reader for un-shipped.
+  - store/entries.go + store/indexes/query_api.go: read via Reader.
+  - shipper/: writes via Writer; reads via WAL (this package only
+    sees the upload side).
 */
 package bytestore
 
-// Reader returns wire bytes for an entry by sequence number.
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"time"
+)
+
+// EntryRef pairs a sequence number with the entry's identity hash
+// (envelope.EntryIdentity = SHA-256 of canonical bytes). Both are
+// required to construct the storage key and (for presigned URLs)
+// to let consumers verify the URL points at the promised bytes.
+type EntryRef struct {
+	Seq  uint64
+	Hash [32]byte
+}
+
+// Reader returns wire bytes for an entry by (seq, hash). Returns an
+// error wrapping a not-found sentinel when the entry is absent at
+// the constructed path.
+//
+// The reader is opaque w.r.t. envelope structure: it returns whatever
+// bytes were written. Callers that need to inspect the entry
+// (signatures, header fields, payload) call envelope.Deserialize on
+// the result.
 type Reader interface {
-	// ReadEntry returns the wire bytes for seq. Returns an error
-	// wrapping a not-found sentinel when the entry is absent.
-	ReadEntry(seq uint64) ([]byte, error)
+	ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, error)
 
-	// ReadEntryBatch returns wire bytes for each seq in the same
-	// order as the input slice. Any missing sequence is a fatal
-	// error for the whole batch (callers don't get a silent short
-	// slice).
-	ReadEntryBatch(seqs []uint64) ([][]byte, error)
+	// ReadEntryBatch returns wire bytes for each ref in the same
+	// order as the input slice. Any missing entry is a fatal error
+	// for the whole batch.
+	ReadEntryBatch(ctx context.Context, refs []EntryRef) ([][]byte, error)
 }
 
-// Writer stores wire bytes for an entry. Called at admission time.
+// Writer stores wire bytes for an entry. Called by admission (one
+// blob per entry) and by the shipper (when migrating from WAL).
 type Writer interface {
-	WriteEntry(seq uint64, wireBytes []byte) error
+	WriteEntry(ctx context.Context, seq uint64, hash [32]byte, wireBytes []byte) error
 }
 
-// Store is the union: an implementation that can both read and write.
-// Most production wiring uses Store; tests do too. Library callers
-// that only need one side narrow to Reader or Writer.
+// Presigner issues a time-bounded URL that grants HTTP GET access
+// to a single entry's bytes. Used by api/entries.go for the 302
+// redirect path: the operator avoids proxying 1MB payloads inline
+// for shipped entries.
+//
+// The returned URL embeds the bucket-side path, which contains the
+// hash — consumers MAY verify the URL shape matches the metadata
+// before fetching, and MUST verify the fetched bytes hash to the
+// promised value.
+//
+// ttl bounds the URL's validity window. Implementations clamp to
+// the underlying provider's max (GCS V4 caps at 7 days; AWS S3
+// SigV4 caps at 7 days).
+type Presigner interface {
+	PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error)
+}
+
+// Store is the union of Reader + Writer. Test/dev implementations
+// satisfy this (Memory). Production implementations also satisfy
+// Backend (Store + Presigner).
 type Store interface {
 	Reader
 	Writer
 }
+
+// Backend is what production wiring depends on: full Store + URL
+// signing for the read path's 302 redirect.
+type Backend interface {
+	Store
+	Presigner
+}
+
+// layoutKey returns the canonical object name for an entry. ALL
+// adapters MUST use this function so a bucket written by one
+// adapter is readable by any other.
+//
+// The shape is:
+//
+//	<prefix>/<seq:016x>/<hash_hex>
+//
+// Zero-padded hex sequence sorts lexically the same way it sorts
+// numerically — useful for ad-hoc gsutil/aws ls inspection. The
+// hash suffix is what makes the 302 redirect safe (consumers can
+// statically verify the URL points at the promised hash).
+func layoutKey(prefix string, seq uint64, hash [32]byte) string {
+	return fmt.Sprintf("%s/%016x/%s", prefix, seq, hex.EncodeToString(hash[:]))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Errors
+// ─────────────────────────────────────────────────────────────────────
+
+// ErrNotFound is wrapped by adapters when a requested entry isn't in
+// the bucket. Callers test with errors.Is(err, ErrNotFound).
+//
+// GCS adapters wrap storage.ErrObjectNotExist; S3 adapters wrap the
+// AWS SDK's NotFound error. Both forms also unwrap to ErrNotFound so
+// caller code can stay backend-agnostic.
+var ErrNotFound = fmt.Errorf("bytestore: entry not found")

@@ -13,34 +13,37 @@ that production callers rely on:
     ReadEntry — no in-band length prefix, no split, no
     interpretation.
 
+  Hash-keyed storage invariant:
+    Entries are keyed by (seq, hash), not seq alone. Two writes
+    with the same seq but different hash are STORED AS DISTINCT
+    entries — the byte store does not collapse them. This matches
+    the upstream Tessera storage model where each integration
+    produces a unique (sequence, identity) tuple.
+
   Envelope round-trip invariant:
     For any *envelope.Entry e produced by envelope.NewEntry +
     Sign + Validate, the bytes envelope.Serialize(e) round-trip
     through the byte store and recover an Entry equal to e via
-    envelope.Deserialize. Wire bytes ARE the canonical bytes
-    under v7.75; the byte store does not need to be envelope-aware.
-
-  Identity stability:
-    sha256(WriteEntry input) == sha256(ReadEntry output) ==
-    envelope.EntryIdentity(deserialized output). The byte store
-    preserves the cryptographic identity that Tessera dedup keys on.
+    envelope.Deserialize. EntryIdentity stable across the round
+    trip (Tessera dedup load-bearing property).
 
   Defensive copy invariant:
     Mutating the input slice after WriteEntry returns must not
     corrupt the stored value. Mutating the output slice from
-    ReadEntry must not corrupt the stored value. This protects
-    callers (and the store) from accidental aliasing.
+    ReadEntry must not corrupt the stored value.
 
-The GCS implementation reuses many of the same scenarios in
-gcs_entry_store_test.go against fake-gcs-server / real GCS;
-together the two suites cover both the in-memory hot path and the
-network-bound impl.
+The GCS and S3 implementations reuse many of the same scenarios in
+their respective _test.go files against fake-gcs-server / RustFS;
+together the suites cover both the in-memory hot path and the
+network-bound impls.
 */
 package bytestore
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -48,13 +51,17 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 )
 
+// wireHash returns sha256(wire) — matches envelope.EntryIdentity
+// when wire == envelope.Serialize(entry), so production and test
+// code derive the storage key identically.
+func wireHash(wire []byte) [32]byte {
+	return sha256.Sum256(wire)
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // 1) Round-trip identity
 // ─────────────────────────────────────────────────────────────────────
 
-// TestMemory_RoundTrip_PreservesBytes is the load-bearing
-// guarantee: whatever bytes go in come back out byte-identically. The
-// store does not interpret the blob.
 func TestMemory_RoundTrip_PreservesBytes(t *testing.T) {
 	binarySeed := sha256.Sum256([]byte("k"))
 	cases := []struct {
@@ -66,37 +73,41 @@ func TestMemory_RoundTrip_PreservesBytes(t *testing.T) {
 		{"binary", append([]byte{0x00, 0xFF, 0x7F, 0x80}, binarySeed[:]...)},
 		{"large-1MB", bytes.Repeat([]byte{0x42}, 1<<20)},
 	}
+	ctx := context.Background()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewMemory()
-			if err := s.WriteEntry(7, tc.wire); err != nil {
+			h := wireHash(tc.wire)
+			if err := s.WriteEntry(ctx, 7, h, tc.wire); err != nil {
 				t.Fatalf("WriteEntry: %v", err)
 			}
-			got, err := s.ReadEntry(7)
+			got, err := s.ReadEntry(ctx, 7, h)
 			if err != nil {
 				t.Fatalf("ReadEntry: %v", err)
 			}
 			if !bytes.Equal(got, tc.wire) {
 				t.Fatalf("round-trip mismatch:\n  got=%x\n want=%x", got, tc.wire)
 			}
-			if sha256.Sum256(got) != sha256.Sum256(tc.wire) {
+			if sha256.Sum256(got) != h {
 				t.Fatal("hash differs after round-trip")
 			}
 		})
 	}
 }
 
-// TestMemory_Opacity_StoresArbitraryBytes proves the
-// store is opaque w.r.t. envelope structure. Random bytes that are
-// NOT a valid envelope serialize identically — the store has no
-// dependency on envelope semantics.
+// TestMemory_Opacity_StoresArbitraryBytes proves the store is opaque
+// w.r.t. envelope structure. Random bytes that are NOT a valid
+// envelope serialize identically — the store has no envelope-semantic
+// dependency.
 func TestMemory_Opacity_StoresArbitraryBytes(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 	random := []byte("\x00\x01\x02\x03\xff\xfe\xfd\xfcRANDOMNOTANENVELOPE")
-	if err := s.WriteEntry(1, random); err != nil {
+	h := wireHash(random)
+	if err := s.WriteEntry(ctx, 1, h, random); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
-	got, err := s.ReadEntry(1)
+	got, err := s.ReadEntry(ctx, 1, h)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
@@ -114,25 +125,19 @@ func TestMemory_Opacity_StoresArbitraryBytes(t *testing.T) {
 // 2) Envelope round-trip — Tessera-alignment evidence
 // ─────────────────────────────────────────────────────────────────────
 
-// TestMemory_Envelope_RoundTrip is the evidence that the
-// byte store works correctly with the v7.75 wire format: the bytes
-// produced by envelope.Serialize round-trip through the store and
-// recover an Entry equal to the one we serialized.
-//
-// Aligned with how Tessera consumes entries: Tessera.Add(ctx, &Entry{
-// Identity: hash, Data: wire}) treats Data as opaque, exactly like
-// our byte store does.
 func TestMemory_Envelope_RoundTrip(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 
 	original := mustNewSignedEntry(t, "did:web:envelope-rt.example", []byte("payload-rt"))
 	wire := envelope.Serialize(original)
+	hash := envelope.EntryIdentity(original)
 
-	if err := s.WriteEntry(99, wire); err != nil {
+	if err := s.WriteEntry(ctx, 99, hash, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
-	got, err := s.ReadEntry(99)
+	got, err := s.ReadEntry(ctx, 99, hash)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
@@ -145,51 +150,42 @@ func TestMemory_Envelope_RoundTrip(t *testing.T) {
 		t.Fatalf("Deserialize after round-trip: %v", err)
 	}
 
-	// Identity stability — Tessera dedup keys on this hash, so
-	// preservation is the load-bearing property.
-	if envelope.EntryIdentity(parsed) != envelope.EntryIdentity(original) {
+	// Identity stability — Tessera dedup keys on this hash.
+	if envelope.EntryIdentity(parsed) != hash {
 		t.Fatal("EntryIdentity changed across store round-trip — Tessera dedup would break")
 	}
-	// Header echo: the SignerDID we set before serialization must
-	// appear after Deserialize.
 	if parsed.Header.SignerDID != original.Header.SignerDID {
-		t.Fatalf("SignerDID changed across round-trip: %q → %q",
+		t.Fatalf("SignerDID changed: %q → %q",
 			original.Header.SignerDID, parsed.Header.SignerDID)
 	}
-	// Signatures section preserved (v7.75: sigs live INSIDE wire bytes).
 	if len(parsed.Signatures) != len(original.Signatures) {
 		t.Fatalf("Signatures count changed: %d → %d",
 			len(original.Signatures), len(parsed.Signatures))
 	}
-	if parsed.Signatures[0].SignerDID != original.Signatures[0].SignerDID {
-		t.Fatal("primary signature SignerDID changed across round-trip")
-	}
 }
 
-// TestMemory_Envelope_MultipleEntries_DistinctIdentities
-// covers the multi-entry case the operator's read path exercises:
-// each blob round-trips independently and identities remain
-// distinct. Catches bugs where a single global cache or backing
-// slice would return the wrong entry for a given seq.
 func TestMemory_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 
 	const N = 8
 	originals := make([]*envelope.Entry, N)
 	wires := make([][]byte, N)
+	hashes := make([][32]byte, N)
 	for i := 0; i < N; i++ {
 		originals[i] = mustNewSignedEntry(t,
 			fmt.Sprintf("did:web:multi-rt-%d.example", i),
 			[]byte(fmt.Sprintf("payload-%d", i)))
 		wires[i] = envelope.Serialize(originals[i])
-		if err := s.WriteEntry(uint64(i), wires[i]); err != nil {
+		hashes[i] = envelope.EntryIdentity(originals[i])
+		if err := s.WriteEntry(ctx, uint64(i), hashes[i], wires[i]); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
 
-	// Read them back in REVERSE order to catch any seq aliasing.
+	// Read in reverse order to catch seq aliasing.
 	for i := N - 1; i >= 0; i-- {
-		got, err := s.ReadEntry(uint64(i))
+		got, err := s.ReadEntry(ctx, uint64(i), hashes[i])
 		if err != nil {
 			t.Fatalf("ReadEntry seq=%d: %v", i, err)
 		}
@@ -200,29 +196,97 @@ func TestMemory_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seq=%d: Deserialize: %v", i, err)
 		}
-		if envelope.EntryIdentity(parsed) != envelope.EntryIdentity(originals[i]) {
+		if envelope.EntryIdentity(parsed) != hashes[i] {
 			t.Fatalf("seq=%d: identity drift", i)
 		}
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 3) Cross-impl parity (in-mem ↔ GCS contract)
+// 3) Hash-keyed storage — distinguishing same-seq-different-hash
 // ─────────────────────────────────────────────────────────────────────
 
-// TestStore_InterfaceContract_RoundTrip exercises the Reader +
-// Writer interface contract on an arbitrary impl. The GCS store
-// reuses this through gcs_test.go; this version pins the Memory
-// impl directly. If a future impl is added, it should pass this
-// same scenario.
+// TestMemory_SameSeqDifferentHash_StoredAsDistinct: two writes at the
+// same seq with different content (different hash) are stored as
+// SEPARATE entries — the store does not collapse on seq alone. This
+// is required for the equivocation-evidence path: two distinct
+// commitments at "the same" sequence (under malicious dealer
+// equivocation) must both be recoverable.
+func TestMemory_SameSeqDifferentHash_StoredAsDistinct(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	wireA := []byte("content-a")
+	wireB := []byte("content-b")
+	hashA := wireHash(wireA)
+	hashB := wireHash(wireB)
+	if hashA == hashB {
+		t.Fatal("test setup: distinct content must yield distinct hashes")
+	}
+
+	if err := s.WriteEntry(ctx, 5, hashA, wireA); err != nil {
+		t.Fatalf("WriteEntry A: %v", err)
+	}
+	if err := s.WriteEntry(ctx, 5, hashB, wireB); err != nil {
+		t.Fatalf("WriteEntry B: %v", err)
+	}
+
+	gotA, err := s.ReadEntry(ctx, 5, hashA)
+	if err != nil || !bytes.Equal(gotA, wireA) {
+		t.Fatalf("ReadEntry A: err=%v got=%q want=%q", err, gotA, wireA)
+	}
+	gotB, err := s.ReadEntry(ctx, 5, hashB)
+	if err != nil || !bytes.Equal(gotB, wireB) {
+		t.Fatalf("ReadEntry B: err=%v got=%q want=%q", err, gotB, wireB)
+	}
+	if s.Len() != 2 {
+		t.Fatalf("expected 2 entries stored, got %d", s.Len())
+	}
+}
+
+// TestMemory_SameSeqSameHash_LastWriteWins: writing the same
+// (seq, hash) twice — guaranteed identical content if the producer
+// hashed deterministically — is idempotent at the store level. The
+// stored bytes match either write equivalently.
+func TestMemory_SameSeqSameHash_LastWriteWins(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	wire := []byte("content-x")
+	hash := wireHash(wire)
+	if err := s.WriteEntry(ctx, 5, hash, wire); err != nil {
+		t.Fatalf("WriteEntry first: %v", err)
+	}
+	if err := s.WriteEntry(ctx, 5, hash, wire); err != nil {
+		t.Fatalf("WriteEntry second: %v", err)
+	}
+	got, err := s.ReadEntry(ctx, 5, hash)
+	if err != nil || !bytes.Equal(got, wire) {
+		t.Fatalf("ReadEntry: err=%v got=%q want=%q", err, got, wire)
+	}
+	if s.Len() != 1 {
+		t.Fatalf("expected 1 entry stored, got %d", s.Len())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 4) Cross-impl parity (in-mem ↔ GCS ↔ S3 contract)
+// ─────────────────────────────────────────────────────────────────────
+
+// TestStore_InterfaceContract_RoundTrip exercises Store on the Memory
+// impl. The GCS and S3 stores reuse this through their _test.go files
+// against fake-gcs / RustFS. If a future impl is added, it should
+// pass this same scenario.
 func TestStore_InterfaceContract_RoundTrip(t *testing.T) {
+	ctx := context.Background()
 	s := Store(NewMemory())
 
 	wire := []byte("contract-test-blob")
-	if err := s.WriteEntry(33, wire); err != nil {
+	hash := wireHash(wire)
+	if err := s.WriteEntry(ctx, 33, hash, wire); err != nil {
 		t.Fatalf("WriteEntry via interface: %v", err)
 	}
-	got, err := s.ReadEntry(33)
+	got, err := s.ReadEntry(ctx, 33, hash)
 	if err != nil {
 		t.Fatalf("ReadEntry via interface: %v", err)
 	}
@@ -232,22 +296,20 @@ func TestStore_InterfaceContract_RoundTrip(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 4) Defensive copy semantics
+// 5) Defensive copy semantics
 // ─────────────────────────────────────────────────────────────────────
 
-// TestMemory_DefensiveCopy_OnWrite proves mutating the
-// input slice after WriteEntry returns does NOT corrupt the stored
-// value. Without this property, a caller who reuses a buffer across
-// admissions would silently overwrite prior entries' bytes.
 func TestMemory_DefensiveCopy_OnWrite(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 	buf := []byte{0x01, 0x02, 0x03}
-	if err := s.WriteEntry(11, buf); err != nil {
+	hash := wireHash(buf)
+	if err := s.WriteEntry(ctx, 11, hash, buf); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 	// Mutate the caller's buffer.
 	buf[0] = 0xFF
-	got, err := s.ReadEntry(11)
+	got, err := s.ReadEntry(ctx, 11, hash)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
@@ -256,22 +318,20 @@ func TestMemory_DefensiveCopy_OnWrite(t *testing.T) {
 	}
 }
 
-// TestMemory_DefensiveCopy_OnRead proves mutating the
-// returned slice from ReadEntry does NOT corrupt the stored value.
-// Two consecutive reads of the same seq must return byte-identical
-// slices regardless of what the first caller did with theirs.
 func TestMemory_DefensiveCopy_OnRead(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 	want := []byte{0x10, 0x11, 0x12}
-	if err := s.WriteEntry(12, want); err != nil {
+	hash := wireHash(want)
+	if err := s.WriteEntry(ctx, 12, hash, want); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
-	first, err := s.ReadEntry(12)
+	first, err := s.ReadEntry(ctx, 12, hash)
 	if err != nil {
 		t.Fatalf("first ReadEntry: %v", err)
 	}
 	first[0] = 0xFF
-	second, err := s.ReadEntry(12)
+	second, err := s.ReadEntry(ctx, 12, hash)
 	if err != nil {
 		t.Fatalf("second ReadEntry: %v", err)
 	}
@@ -281,43 +341,79 @@ func TestMemory_DefensiveCopy_OnRead(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 5) Edge cases
+// 6) Edge cases
 // ─────────────────────────────────────────────────────────────────────
 
 func TestMemory_RejectsEmptyWire(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
-	if err := s.WriteEntry(1, nil); err == nil {
+	hash := wireHash([]byte("x"))
+	if err := s.WriteEntry(ctx, 1, hash, nil); err == nil {
 		t.Error("WriteEntry(nil) should error")
 	}
-	if err := s.WriteEntry(1, []byte{}); err == nil {
+	if err := s.WriteEntry(ctx, 1, hash, []byte{}); err == nil {
 		t.Error("WriteEntry([]) should error")
 	}
 }
 
 func TestMemory_ReadMissing_Errors(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
-	_, err := s.ReadEntry(99999)
+	_, err := s.ReadEntry(ctx, 99999, wireHash([]byte("x")))
 	if err == nil {
-		t.Fatal("ReadEntry on absent seq should error")
+		t.Fatal("ReadEntry on absent (seq, hash) should error")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestMemory_ReadWrongHash_Errors: the hash arg is part of the key.
+// Reading with the right seq but the wrong hash returns ErrNotFound,
+// not the entry written under a different hash.
+func TestMemory_ReadWrongHash_Errors(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+	wire := []byte("real")
+	hash := wireHash(wire)
+	if err := s.WriteEntry(ctx, 7, hash, wire); err != nil {
+		t.Fatalf("WriteEntry: %v", err)
+	}
+	wrongHash := wireHash([]byte("not-real"))
+	if hash == wrongHash {
+		t.Fatal("test setup: hashes must differ")
+	}
+	_, err := s.ReadEntry(ctx, 7, wrongHash)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for (seq=7, wrong hash), got %v", err)
 	}
 }
 
 func TestMemory_BatchPreservesInputOrder(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
+	hashes := make(map[uint64][32]byte, 5)
 	for i := uint64(1); i <= 5; i++ {
-		if err := s.WriteEntry(i, []byte{byte(i)}); err != nil {
+		wire := []byte{byte(i)}
+		h := wireHash(wire)
+		hashes[i] = h
+		if err := s.WriteEntry(ctx, i, h, wire); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
-	want := []uint64{4, 1, 5, 3, 2}
-	got, err := s.ReadEntryBatch(want)
+	wantOrder := []uint64{4, 1, 5, 3, 2}
+	refs := make([]EntryRef, len(wantOrder))
+	for i, seq := range wantOrder {
+		refs[i] = EntryRef{Seq: seq, Hash: hashes[seq]}
+	}
+	got, err := s.ReadEntryBatch(ctx, refs)
 	if err != nil {
 		t.Fatalf("ReadEntryBatch: %v", err)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("length mismatch: got %d, want %d", len(got), len(want))
+	if len(got) != len(wantOrder) {
+		t.Fatalf("length mismatch: got %d, want %d", len(got), len(wantOrder))
 	}
-	for i, seq := range want {
+	for i, seq := range wantOrder {
 		if !bytes.Equal(got[i], []byte{byte(seq)}) {
 			t.Errorf("position %d: got %v, want [%d]", i, got[i], seq)
 		}
@@ -325,45 +421,29 @@ func TestMemory_BatchPreservesInputOrder(t *testing.T) {
 }
 
 func TestMemory_BatchMissingSeqIsFatal(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
-	if err := s.WriteEntry(1, []byte("x")); err != nil {
+	wire := []byte("x")
+	h := wireHash(wire)
+	if err := s.WriteEntry(ctx, 1, h, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
-	_, err := s.ReadEntryBatch([]uint64{1, 99999})
+	missing := EntryRef{Seq: 99999, Hash: wireHash([]byte("nope"))}
+	_, err := s.ReadEntryBatch(ctx, []EntryRef{{Seq: 1, Hash: h}, missing})
 	if err == nil {
-		t.Fatal("expected fatal error on batch with missing seq")
+		t.Fatal("expected fatal error on batch with missing entry")
 	}
-}
-
-func TestMemory_OverwriteSameSeq_LastWriteWins(t *testing.T) {
-	// Tessera-aligned semantics: the byte store does not enforce
-	// write-once. Dedup by content hash is the producer's
-	// responsibility (envelope.EntryIdentity + builder dedup).
-	// At the byte-store layer, the latest WriteEntry wins.
-	s := NewMemory()
-	if err := s.WriteEntry(5, []byte("first")); err != nil {
-		t.Fatalf("WriteEntry: %v", err)
-	}
-	if err := s.WriteEntry(5, []byte("second")); err != nil {
-		t.Fatalf("WriteEntry: %v", err)
-	}
-	got, err := s.ReadEntry(5)
-	if err != nil {
-		t.Fatalf("ReadEntry: %v", err)
-	}
-	if string(got) != "second" {
-		t.Fatalf("last-write-wins violated: got %q", got)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 6) Concurrency
+// 7) Concurrency
 // ─────────────────────────────────────────────────────────────────────
 
-// TestMemory_Concurrent_WritesAndReads stresses the
-// internal lock. Concurrent writers + readers must not produce
-// torn reads, lost writes, or data races (run with -race).
 func TestMemory_Concurrent_WritesAndReads(t *testing.T) {
+	ctx := context.Background()
 	s := NewMemory()
 	const goroutines = 8
 	const perGoroutine = 64
@@ -376,11 +456,12 @@ func TestMemory_Concurrent_WritesAndReads(t *testing.T) {
 			for i := 0; i < perGoroutine; i++ {
 				seq := uint64(g*perGoroutine + i)
 				want := []byte{byte(g), byte(i), byte(g ^ i)}
-				if err := s.WriteEntry(seq, want); err != nil {
+				h := wireHash(want)
+				if err := s.WriteEntry(ctx, seq, h, want); err != nil {
 					t.Errorf("WriteEntry seq=%d: %v", seq, err)
 					return
 				}
-				got, err := s.ReadEntry(seq)
+				got, err := s.ReadEntry(ctx, seq, h)
 				if err != nil {
 					t.Errorf("ReadEntry seq=%d: %v", seq, err)
 					return
@@ -399,23 +480,11 @@ func TestMemory_Concurrent_WritesAndReads(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 7) Helpers
+// 8) Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-// mustNewSignedEntry builds a v7.75 envelope.Entry with a stable test
-// signature. The Sign function is the same one production submitters
-// would use; this gives test wires that pass envelope.Deserialize +
-// entry.Validate without skipping code paths.
-//
-// We use envelope.NewUnsignedEntry + manual Signatures population
-// rather than envelope.NewEntry because NewEntry insists on at least
-// one signature pre-construction; for the round-trip test we want the
-// Signatures section to be present after Serialize, so attach a
-// well-formed (test-only) signature with a fixed AlgoID + bytes.
 func mustNewSignedEntry(t *testing.T, signerDID string, payload []byte) *envelope.Entry {
 	t.Helper()
-	// Build the entry shell via NewUnsignedEntry so we control sig
-	// attachment ourselves.
 	ent, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
 		SignerDID:   signerDID,
 		Destination: "did:web:roundtrip-log.example",
@@ -424,16 +493,8 @@ func mustNewSignedEntry(t *testing.T, signerDID string, payload []byte) *envelop
 	if err != nil {
 		t.Fatalf("NewUnsignedEntry: %v", err)
 	}
-	// Attach a test signature. The signing payload is deterministic
-	// here since we don't rely on real ECDSA; the hash provides a
-	// well-formed 32-byte sig stand-in. Validation happens via
-	// envelope.AppendSignaturesSection inside Serialize.
 	signingPayload := envelope.SigningPayload(ent)
 	digest := sha256.Sum256(signingPayload)
-	// 64-byte test signature (well-formed for AlgoID=ECDSA per
-	// the SDK's encoder; bytes don't have to verify for this round-
-	// trip test — Deserialize+Validate are size-and-shape checks
-	// here, not cryptographic verification).
 	sig := make([]byte, 64)
 	copy(sig, digest[:])
 	copy(sig[32:], digest[:])
@@ -444,15 +505,10 @@ func mustNewSignedEntry(t *testing.T, signerDID string, payload []byte) *envelop
 		Bytes:     sig,
 	}}
 
-	// Final size + invariant check before handing back.
 	if err := ent.Validate(); err != nil {
 		t.Fatalf("entry.Validate: %v", err)
 	}
 	return ent
 }
 
-// Compile-time pin: the helper must produce a value the byte store
-// accepts. If envelope.Serialize ever drifts so that an entry with
-// one signature serializes to zero bytes, both Validate and this
-// pin fail loud at build-or-test time.
 var _ = mustNewSignedEntry

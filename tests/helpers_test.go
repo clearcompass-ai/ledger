@@ -552,7 +552,7 @@ func insertTestEntry(t *testing.T, pool *pgxpool.Pool, seq uint64, entry *envelo
 	// Wire bytes in testEntryBytes (the ONLY source of entry bytes).
 	// Wire bytes ARE the canonical bytes under v7.75 (signatures
 	// section embedded inside the canonical form by envelope.Serialize).
-	if err := testEntryBytes.WriteEntry(seq, canonical); err != nil {
+	if err := testEntryBytes.WriteEntry(ctx, seq, hash, canonical); err != nil {
 		t.Fatalf("write entry bytes seq=%d: %v", seq, err)
 	}
 }

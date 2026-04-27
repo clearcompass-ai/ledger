@@ -473,7 +473,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				// signatures section is appended INSIDE the canonical
 				// form by envelope.Serialize, so a single blob carries
 				// everything a consumer needs.
-				if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, raw); writeErr != nil {
+				if writeErr := deps.Storage.EntryWriter.WriteEntry(ctx, seq, canonicalHash, raw); writeErr != nil {
 					return fmt.Errorf("write entry bytes: %w", writeErr)
 				}
 			}

@@ -40,20 +40,15 @@ import (
 
 // fakeEntryReader satisfies bytestore.Reader by returning canned
 // wire bytes keyed by sequence number. Reads of unknown sequences
-// return an error so the test surfaces the fetcher's error path on
-// Tessera-side misses.
-//
-// bytestore.Reader's full interface (per tessera/entry_reader.go):
-//
-//	ReadEntry(seq uint64) ([]byte, error)
-//	ReadEntryBatch(seqs []uint64) ([][]byte, error)
-//
-// Both methods are implemented below.
+// return an error so the test surfaces the fetcher's error path
+// on byte-store misses. The hash arg is ignored — these tests
+// don't exercise the hash-suffix layout, only the seq-keyed lookup
+// the fetcher contract relies on.
 type fakeEntryReader struct {
 	entries map[uint64][]byte
 }
 
-func (f *fakeEntryReader) ReadEntry(seq uint64) ([]byte, error) {
+func (f *fakeEntryReader) ReadEntry(_ context.Context, seq uint64, _ [32]byte) ([]byte, error) {
 	wire, ok := f.entries[seq]
 	if !ok {
 		return nil, fmt.Errorf("fakeEntryReader: no entry seq=%d", seq)
@@ -61,17 +56,12 @@ func (f *fakeEntryReader) ReadEntry(seq uint64) ([]byte, error) {
 	return wire, nil
 }
 
-// ReadEntryBatch returns each requested sequence's wire bytes in
-// the same order as the input slice. Mirrors the real
-// InMemoryEntryStore.ReadEntryBatch semantics: any missing sequence
-// is a fatal error for the whole batch (so callers don't get a
-// silent short slice).
-func (f *fakeEntryReader) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
-	out := make([][]byte, len(seqs))
-	for i, seq := range seqs {
-		wire, ok := f.entries[seq]
+func (f *fakeEntryReader) ReadEntryBatch(_ context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
+	out := make([][]byte, len(refs))
+	for i, r := range refs {
+		wire, ok := f.entries[r.Seq]
 		if !ok {
-			return nil, fmt.Errorf("fakeEntryReader: no entry seq=%d (batch)", seq)
+			return nil, fmt.Errorf("fakeEntryReader: no entry seq=%d (batch)", r.Seq)
 		}
 		out[i] = wire
 	}

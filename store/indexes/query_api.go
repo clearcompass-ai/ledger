@@ -52,18 +52,20 @@ func NewPostgresQueryAPI(db *pgxpool.Pool, reader bytestore.Reader, logDID strin
 }
 
 // indexMeta holds the metadata columns scanned from entry_index.
-// Aligned with the v6 EntryWithMetadata field set: only sequence
-// number and log time are needed to populate the response.
+// canonical_hash is required to construct the bytestore object key
+// for the read-side hydrate; log_time and seq populate the response.
 type indexMeta struct {
 	Seq  uint64
 	Time time.Time
+	Hash [32]byte
 }
 
 // scanAndHydrate queries entry_index for metadata, then batch-hydrates
 // bytes from EntryReader. Shared path for all 5 query methods.
 //
 // SQL projection contract: per-method queries that call this helper
-// MUST select exactly (sequence_number, log_time) in that order.
+// MUST select exactly (sequence_number, log_time, canonical_hash)
+// in that order.
 func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -76,13 +78,21 @@ func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 	var metas []indexMeta
 	for rows.Next() {
 		var (
-			seq uint64
-			lt  time.Time
+			seq     uint64
+			lt      time.Time
+			hashCol []byte
 		)
-		if err := rows.Scan(&seq, &lt); err != nil {
+		if err := rows.Scan(&seq, &lt, &hashCol); err != nil {
 			return nil, fmt.Errorf("store/indexes: scan: %w", err)
 		}
-		metas = append(metas, indexMeta{Seq: seq, Time: lt})
+		if len(hashCol) != 32 {
+			return nil, fmt.Errorf("store/indexes: corrupt canonical_hash seq=%d (len=%d, want 32)", seq, len(hashCol))
+		}
+		var meta indexMeta
+		meta.Seq = seq
+		meta.Time = lt
+		copy(meta.Hash[:], hashCol)
+		metas = append(metas, meta)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store/indexes: rows: %w", err)
@@ -93,11 +103,11 @@ func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 	}
 
 	// (2) Batch-hydrate wire bytes from EntryReader.
-	seqs := make([]uint64, len(metas))
+	refs := make([]bytestore.EntryRef, len(metas))
 	for i, m := range metas {
-		seqs[i] = m.Seq
+		refs[i] = bytestore.EntryRef{Seq: m.Seq, Hash: m.Hash}
 	}
-	wires, err := q.reader.ReadEntryBatch(seqs)
+	wires, err := q.reader.ReadEntryBatch(ctx, refs)
 	if err != nil {
 		return nil, fmt.Errorf("store/indexes: hydrate: %w", err)
 	}

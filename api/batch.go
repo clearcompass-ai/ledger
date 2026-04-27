@@ -519,7 +519,7 @@ func admitPreparedEntry(
 		// signatures section is appended INSIDE the canonical form
 		// by envelope.Serialize, so pe.canonical is the full opaque
 		// blob the byte store stores.
-		if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, pe.canonical); writeErr != nil {
+		if writeErr := deps.Storage.EntryWriter.WriteEntry(ctx, seq, pe.canonicalHash, pe.canonical); writeErr != nil {
 			return 0, fmt.Errorf("write entry bytes: %w", writeErr)
 		}
 	}

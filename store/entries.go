@@ -143,15 +143,18 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 
 	ctx := context.TODO()
 
-	// (1) Metadata from entry_index. log_time is the only field
-	// EntryWithMetadata exposes from the index; signatures are
-	// served as part of CanonicalBytes from Tessera.
-	var logTime time.Time
+	// (1) Metadata from entry_index. canonical_hash is required to
+	// construct the bytestore object key; log_time populates the
+	// EntryWithMetadata response.
+	var (
+		logTime  time.Time
+		hashCol  []byte
+	)
 	err := f.db.QueryRow(ctx, `
-		SELECT log_time
+		SELECT log_time, canonical_hash
 		FROM entry_index WHERE sequence_number = $1`,
 		pos.Sequence,
-	).Scan(&logTime)
+	).Scan(&logTime, &hashCol)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -159,9 +162,14 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 	if err != nil {
 		return nil, fmt.Errorf("store/entries: fetch index seq=%d: %w", pos.Sequence, err)
 	}
+	if len(hashCol) != 32 {
+		return nil, fmt.Errorf("store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", pos.Sequence, len(hashCol))
+	}
+	var hash [32]byte
+	copy(hash[:], hashCol)
 
 	// (2) Wire bytes from EntryReader.
-	wire, err := f.reader.ReadEntry(pos.Sequence)
+	wire, err := f.reader.ReadEntry(ctx, pos.Sequence, hash)
 	if err != nil {
 		return nil, fmt.Errorf("store/entries: read bytes seq=%d: %w", pos.Sequence, err)
 	}

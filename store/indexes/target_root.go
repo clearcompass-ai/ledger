@@ -19,7 +19,7 @@ func (q *PostgresQueryAPI) QueryByTargetRoot(pos types.LogPosition) ([]types.Ent
 	ctx := context.TODO()
 	posBytes := store.SerializeLogPosition(pos)
 	rows, err := q.db.Query(ctx, `
-		SELECT sequence_number, log_time
+		SELECT sequence_number, log_time, canonical_hash
 		FROM entry_index WHERE target_root = $1 ORDER BY sequence_number ASC`,
 		posBytes,
 	)

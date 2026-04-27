@@ -101,19 +101,12 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	result := submitEntry(t, op.BaseURL, "tok-rule", wire)
 	seq := uint64(result["sequence_number"].(float64))
 
-	// Verify: wire bytes are in InMemoryEntryStore.
-	wire, err := op.EntryBytes.ReadEntry(seq)
-	if err != nil {
-		t.Fatalf("EntryReader has no bytes for seq %d: %v", seq, err)
-	}
-	if len(wire) == 0 {
-		t.Fatal("EntryReader returned empty wire bytes")
-	}
-
-	// Verify: Postgres entry_index has the index row but NO bytes.
+	// Verify: Postgres entry_index has the index row, then use its
+	// canonical_hash to fetch the wire bytes from the byte store.
+	// The (seq, hash) tuple is the byte store's key.
 	var hash []byte
 	var signerDID string
-	err = op.Pool.QueryRow(context.Background(), `
+	err := op.Pool.QueryRow(context.Background(), `
 		SELECT canonical_hash, signer_did FROM entry_index WHERE sequence_number = $1`, seq,
 	).Scan(&hash, &signerDID)
 	if err != nil {
@@ -122,11 +115,22 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	if signerDID != "did:example:rule-signer" {
 		t.Fatalf("signer_did mismatch: %s", signerDID)
 	}
+	var hashArr [32]byte
+	copy(hashArr[:], hash)
 
-	// Verify: canonical_hash in Postgres matches sha256(wire). Under
-	// v7.75 envelope.EntryIdentity is sha256(Serialize(entry)) and
-	// the wire bytes ARE Serialize(entry).
-	computedHash := sha256.Sum256(wire)
+	// Verify: wire bytes are in the byte store at the (seq, hash) key.
+	storedWire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hashArr)
+	if err != nil {
+		t.Fatalf("EntryReader has no bytes for seq %d: %v", seq, err)
+	}
+	if len(storedWire) == 0 {
+		t.Fatal("EntryReader returned empty wire bytes")
+	}
+
+	// Verify: canonical_hash in Postgres matches sha256(storedWire).
+	// Under v7.75 envelope.EntryIdentity is sha256(Serialize(entry))
+	// and the wire bytes ARE Serialize(entry).
+	computedHash := sha256.Sum256(storedWire)
 	if !bytes.Equal(hash, computedHash[:]) {
 		t.Fatalf("hash mismatch: Postgres=%s EntryReader=%s",
 			hex.EncodeToString(hash), hex.EncodeToString(computedHash[:]))
@@ -171,7 +175,7 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	tx.Commit(ctx)
 
 	// Store wire bytes in EntryReader (the ONLY source).
-	entryBytes.WriteEntry(seq, wire)
+	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch via PostgresEntryFetcher.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -211,11 +215,13 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 	cleanTables(t, pool)
 
 	// Insert 3 entries — index in Postgres, bytes in EntryReader.
+	hashesBySeq := make(map[uint64][32]byte, 3)
 	for i := uint64(1); i <= 3; i++ {
 		entry := makeEntry(t, envelope.ControlHeader{
 			SignerDID: "did:example:query-rule-signer",
 		}, []byte(fmt.Sprintf("query-payload-%d", i)))
 		hash := envelope.EntryIdentity(entry)
+		hashesBySeq[i] = hash
 		wire := envelope.Serialize(entry)
 
 		tx, _ := pool.Begin(ctx)
@@ -227,7 +233,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		)
 		tx.Commit(ctx)
 		// v7.75: wire bytes ARE canonical bytes (signatures embedded).
-		entryBytes.WriteEntry(i, wire)
+		entryBytes.WriteEntry(ctx, i, hash, wire)
 	}
 
 	// Query via OperatorQueryAPI.
@@ -243,7 +249,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 	// Verify each result has wire bytes from EntryReader.
 	for i, r := range results {
 		seq := uint64(i + 1)
-		expectedWire, _ := entryBytes.ReadEntry(seq)
+		expectedWire, _ := entryBytes.ReadEntry(ctx, seq, hashesBySeq[seq])
 
 		if !bytes.Equal(r.CanonicalBytes, expectedWire) {
 			t.Fatalf("seq %d: CanonicalBytes mismatch", seq)
@@ -283,7 +289,7 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	tx.Commit(ctx)
 
 	// Store wire bytes in EntryReader — this is the source of truth.
-	entryBytes.WriteEntry(seq, wire)
+	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch — should return EntryReader's bytes.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -331,7 +337,16 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 	// Verify all 3 entries have bytes in EntryReader.
 	for _, r := range results {
 		seq := uint64(r["sequence_number"].(float64))
-		wire, err := op.EntryBytes.ReadEntry(seq)
+		// canonical_hash comes back as a hex string; decode to look up
+		// the byte-store entry by (seq, hash).
+		hashHex := r["canonical_hash"].(string)
+		hashBytes, decodeErr := hex.DecodeString(hashHex)
+		if decodeErr != nil || len(hashBytes) != 32 {
+			t.Fatalf("seq %d: bad canonical_hash %q: %v", seq, hashHex, decodeErr)
+		}
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+		wire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hash)
 		if err != nil {
 			t.Fatalf("seq %d: EntryReader has no bytes: %v", seq, err)
 		}

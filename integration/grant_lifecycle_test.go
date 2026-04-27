@@ -219,21 +219,16 @@ func seedCommitmentEntry(
 // "operator returns canonical bytes" — Tessera tile generation is
 // orthogonal and tested in tessera_integration_test.go.
 // stubEntryReader satisfies bytestore.Reader for the integration
-// tests' lookup-endpoint round-trip fixtures.
-//
-// bytestore.Reader's full interface (tessera/entry_reader.go):
-//
-//	ReadEntry(seq uint64) ([]byte, error)
-//	ReadEntryBatch(seqs []uint64) ([][]byte, error)
-//
-// Wire bytes ARE the canonical bytes under v7.75 (signatures section
-// embedded inside the canonical form), so the stub stores a single
-// blob per sequence.
+// tests' lookup-endpoint round-trip fixtures. Wire bytes ARE the
+// canonical bytes under v7.75 (signatures section embedded inside
+// the canonical form), so the stub stores a single blob per sequence.
+// The hash arg is ignored — these tests don't exercise the
+// hash-suffix layout.
 type stubEntryReader struct {
 	wireBySeq map[uint64][]byte
 }
 
-func (s *stubEntryReader) ReadEntry(seq uint64) ([]byte, error) {
+func (s *stubEntryReader) ReadEntry(_ context.Context, seq uint64, _ [32]byte) ([]byte, error) {
 	wire, ok := s.wireBySeq[seq]
 	if !ok {
 		return nil, fmt.Errorf("stubEntryReader: no entry seq=%d", seq)
@@ -241,16 +236,12 @@ func (s *stubEntryReader) ReadEntry(seq uint64) ([]byte, error) {
 	return wire, nil
 }
 
-// ReadEntryBatch returns each requested sequence's wire bytes in the
-// same order as the input slice. Mirrors the real InMemoryEntryStore.
-// ReadEntryBatch semantics: any missing sequence is a fatal error
-// for the whole batch (so callers do not get a silent short slice).
-func (s *stubEntryReader) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
-	out := make([][]byte, len(seqs))
-	for i, seq := range seqs {
-		wire, ok := s.wireBySeq[seq]
+func (s *stubEntryReader) ReadEntryBatch(_ context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
+	out := make([][]byte, len(refs))
+	for i, r := range refs {
+		wire, ok := s.wireBySeq[r.Seq]
 		if !ok {
-			return nil, fmt.Errorf("stubEntryReader: no entry seq=%d (batch)", seq)
+			return nil, fmt.Errorf("stubEntryReader: no entry seq=%d (batch)", r.Seq)
 		}
 		out[i] = wire
 	}

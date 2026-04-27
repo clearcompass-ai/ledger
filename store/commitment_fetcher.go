@@ -120,10 +120,11 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 
 	// Join: commitment_split_id provides the candidate sequence
 	// numbers under (schema_id, split_id); entry_index supplies the
-	// matching log_time. Stable ASC sort by sequence so equivocation
-	// evidence has deterministic order.
+	// matching log_time and canonical_hash (the latter is required
+	// to construct the bytestore object key). Stable ASC sort by
+	// sequence so equivocation evidence has deterministic order.
 	rows, err := f.db.Query(ctx, `
-		SELECT csi.sequence_number, ei.log_time
+		SELECT csi.sequence_number, ei.log_time, ei.canonical_hash
 		FROM commitment_split_id AS csi
 		JOIN entry_index           AS ei  USING (sequence_number)
 		WHERE csi.schema_id = $1 AND csi.split_id = $2
@@ -141,15 +142,24 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	type rowMeta struct {
 		seq     uint64
 		logTime time.Time
+		hash    [32]byte
 	}
 	var rowMetas []rowMeta
 	for rows.Next() {
 		var rm rowMeta
-		if scanErr := rows.Scan(&rm.seq, &rm.logTime); scanErr != nil {
+		var hashCol []byte
+		if scanErr := rows.Scan(&rm.seq, &rm.logTime, &hashCol); scanErr != nil {
 			return nil, fmt.Errorf(
 				"store/commitment_fetcher: scan: %w", scanErr,
 			)
 		}
+		if len(hashCol) != 32 {
+			return nil, fmt.Errorf(
+				"store/commitment_fetcher: corrupt canonical_hash seq=%d (len=%d, want 32)",
+				rm.seq, len(hashCol),
+			)
+		}
+		copy(rm.hash[:], hashCol)
 		rowMetas = append(rowMetas, rm)
 	}
 	if iterErr := rows.Err(); iterErr != nil {
@@ -172,7 +182,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	// envelope.Deserialize on it when they need the parsed Entry.
 	out := make([]*types.EntryWithMetadata, 0, len(rowMetas))
 	for _, rm := range rowMetas {
-		wire, readErr := f.reader.ReadEntry(rm.seq)
+		wire, readErr := f.reader.ReadEntry(ctx, rm.seq, rm.hash)
 		if readErr != nil {
 			return nil, fmt.Errorf(
 				"store/commitment_fetcher: tessera read seq=%d: %w",

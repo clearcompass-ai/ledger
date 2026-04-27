@@ -3,74 +3,92 @@ FILE PATH: bytestore/memory.go
 
 Memory — in-process bytestore.Store implementation. Thread-safe.
 
-Used by tests and local dev. **Production wiring MUST NOT import this
-type**: cmd/operator/main.go fails closed when no production-grade
-backend (GCS/S3) is configured. Memory exists in a regular .go file
-(not _test.go) only because tests across many packages need to
-construct one and Go does not let _test.go symbols cross package
-boundaries.
+Used by tests and local dev. **Production wiring MUST NOT import
+this type**: cmd/operator/main.go fails closed when no production-
+grade backend (gcs/s3) is configured. The factory rejects
+Backend="memory" outside of test contexts.
 
-Defensive copy on both write and read: callers can mutate their input
-buffer after WriteEntry returns and their result slice from ReadEntry
-without corrupting the stored value.
+Memory does NOT satisfy Presigner — there's nothing to sign URLs
+against. Tests that need to exercise the presign path use the GCS
+or S3 adapter against fake-gcs-server / RustFS / MinIO.
+
+Storage layout:
+  Keyed by (seq, hash). Two writes with the same seq but different
+  hash are stored as distinct entries (last-hash-wins per seq is
+  not the model — caller is expected to compute hash deterministically
+  from canonical bytes via envelope.EntryIdentity).
+
+Defensive copy on both write and read: callers can mutate their
+input buffer after WriteEntry returns and their result slice from
+ReadEntry without corrupting the stored value.
 */
 package bytestore
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
 
-// Memory stores wire bytes in memory. Thread-safe. Implements Store.
+// Memory stores wire bytes in memory. Thread-safe. Implements Store
+// (NOT Backend — no Presigner support).
 type Memory struct {
 	mu      sync.RWMutex
-	entries map[uint64][]byte
+	entries map[string][]byte // key = layoutKey("memory", seq, hash)
 }
 
 // NewMemory creates an empty in-memory bytestore.
 func NewMemory() *Memory {
-	return &Memory{entries: make(map[uint64][]byte)}
+	return &Memory{entries: make(map[string][]byte)}
 }
 
-// WriteEntry stores wire bytes in memory. The input slice is copied
-// so the caller may mutate it after return without corrupting the
-// store.
-func (s *Memory) WriteEntry(seq uint64, wireBytes []byte) error {
+// WriteEntry stores wire bytes in memory. Input is copied so callers
+// may mutate their buffer after return.
+func (s *Memory) WriteEntry(ctx context.Context, seq uint64, hash [32]byte, wireBytes []byte) error {
 	if len(wireBytes) == 0 {
 		return fmt.Errorf("bytestore/memory: WriteEntry seq=%d: empty wire bytes", seq)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	cp := make([]byte, len(wireBytes))
 	copy(cp, wireBytes)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[seq] = cp
+	s.entries[layoutKey("memory", seq, hash)] = cp
 	return nil
 }
 
-// ReadEntry retrieves wire bytes from memory. Returns a copy so
+// ReadEntry retrieves wire bytes for (seq, hash). Returns a copy so
 // callers cannot mutate the stored value.
-func (s *Memory) ReadEntry(seq uint64) ([]byte, error) {
+func (s *Memory) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.entries[seq]
+	e, ok := s.entries[layoutKey("memory", seq, hash)]
 	if !ok {
-		return nil, fmt.Errorf("bytestore/memory: seq %d not found", seq)
+		return nil, fmt.Errorf("bytestore/memory: seq=%d hash=%x: %w", seq, hash[:8], ErrNotFound)
 	}
 	cp := make([]byte, len(e))
 	copy(cp, e)
 	return cp, nil
 }
 
-// ReadEntryBatch retrieves multiple entries in the input order.
-// Any missing sequence fails the whole batch.
-func (s *Memory) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
+// ReadEntryBatch retrieves multiple entries in input order. Any
+// missing entry fails the whole batch.
+func (s *Memory) ReadEntryBatch(ctx context.Context, refs []EntryRef) ([][]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	results := make([][]byte, len(seqs))
-	for i, seq := range seqs {
-		e, ok := s.entries[seq]
+	results := make([][]byte, len(refs))
+	for i, r := range refs {
+		e, ok := s.entries[layoutKey("memory", r.Seq, r.Hash)]
 		if !ok {
-			return nil, fmt.Errorf("bytestore/memory: seq %d not found in batch", seq)
+			return nil, fmt.Errorf("bytestore/memory: seq=%d hash=%x: %w", r.Seq, r.Hash[:8], ErrNotFound)
 		}
 		cp := make([]byte, len(e))
 		copy(cp, e)
@@ -86,5 +104,6 @@ func (s *Memory) Len() int {
 	return len(s.entries)
 }
 
-// Compile-time pin: Memory satisfies Store.
+// Compile-time pin: Memory satisfies Store but NOT Backend
+// (Memory has no Presigner — see file docblock).
 var _ Store = (*Memory)(nil)
