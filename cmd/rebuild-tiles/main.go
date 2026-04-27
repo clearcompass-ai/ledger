@@ -82,6 +82,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/transparency-dev/tessera/storage/posix"
+
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
@@ -97,7 +99,8 @@ func main() {
 	var (
 		databaseURL       = flag.String("database-url", os.Getenv("OPERATOR_DATABASE_URL"), "Postgres connection string")
 		logDID            = flag.String("log-did", os.Getenv("OPERATOR_LOG_DID"), "log DID (must match production)")
-		tesseraURL        = flag.String("tessera-url", os.Getenv("OPERATOR_TESSERA_URL"), "Tessera personality base URL (MUST be empty / fresh)")
+		tesseraStorageDir = flag.String("tessera-storage-dir", os.Getenv("OPERATOR_TESSERA_STORAGE_DIR"), "POSIX directory for the rebuilt Tessera (MUST be empty / fresh)")
+		tesseraOrigin     = flag.String("tessera-origin", os.Getenv("OPERATOR_TESSERA_ORIGIN"), "tlog-tiles origin string for the rebuilt log (defaults to log-did)")
 		batchSize         = flag.Int("batch-size", 1000, "builder batch size")
 		pollInterval      = flag.Duration("poll-interval", 10*time.Millisecond, "queue poll interval")
 		idleShutdownAfter = flag.Duration("idle-shutdown-after", 30*time.Second, "exit cleanly after this much idle time")
@@ -106,11 +109,11 @@ func main() {
 	)
 	flag.Parse()
 
-	if *databaseURL == "" || *logDID == "" || *tesseraURL == "" {
+	if *databaseURL == "" || *logDID == "" || *tesseraStorageDir == "" {
 		logger.Error("required flags missing",
 			"database_url_set", *databaseURL != "",
 			"log_did_set", *logDID != "",
-			"tessera_url_set", *tesseraURL != "",
+			"tessera_storage_dir_set", *tesseraStorageDir != "",
 		)
 		os.Exit(1)
 	}
@@ -121,7 +124,7 @@ func main() {
 
 	logger.Info("tile rebuild starting",
 		"log_did", *logDID,
-		"tessera_url", *tesseraURL,
+		"tessera_storage_dir", *tesseraStorageDir,
 		"batch_size", *batchSize,
 	)
 
@@ -148,14 +151,46 @@ func main() {
 	byteStore := tessera.NewInMemoryEntryStore()
 	logger.Warn("byte store is InMemoryEntryStore — rebuild will find no entries to replay unless you wire the production byte store here")
 
-	// ── Tessera client + adapter ──────────────────────────────────────
-	// Rebuild only uses AppendLeaf and Head; a nil TileReader is fine
-	// because the adapter's proof methods are not called.
-	tesseraClient := tessera.NewClient(tessera.ClientConfig{
-		BaseURL: *tesseraURL,
-		Timeout: 30 * time.Second,
+	// ── Embedded Tessera (fresh storage) ──────────────────────────
+	// Rebuild boots a fresh in-process Tessera over the supplied
+	// (empty) POSIX directory, replays sequenced entries through
+	// the builder, and shuts down cleanly. AppendLeaf and Head
+	// are the only adapter methods exercised; a nil TileReader is
+	// fine because proof methods are not called during rebuild.
+	if err := os.MkdirAll(*tesseraStorageDir, 0o755); err != nil {
+		logger.Error("tessera storage dir", "error", err, "dir", *tesseraStorageDir)
+		os.Exit(1)
+	}
+	tesseraDriver, err := posix.New(ctx, posix.Config{Path: *tesseraStorageDir})
+	if err != nil {
+		logger.Error("tessera posix driver", "error", err)
+		os.Exit(1)
+	}
+	origin := *tesseraOrigin
+	if origin == "" {
+		origin = *logDID
+	}
+	signer, _, err := tessera.GenerateEphemeralSigner(origin)
+	if err != nil {
+		logger.Error("tessera signer", "error", err)
+		os.Exit(1)
+	}
+	embeddedAppender, err := tessera.NewEmbeddedAppender(ctx, tesseraDriver, tessera.AppenderOptions{
+		Origin: origin,
+		Signer: signer,
 	}, logger)
-	merkle := tessera.NewTesseraAdapter(tesseraClient, nil, logger)
+	if err != nil {
+		logger.Error("tessera embedded appender", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := embeddedAppender.Close(shutdownCtx); err != nil {
+			logger.Warn("tessera shutdown", "error", err)
+		}
+	}()
+	merkle := tessera.NewTesseraAdapter(embeddedAppender, nil, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
 	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, *logDID)
@@ -226,7 +261,7 @@ func main() {
 	}
 	fmt.Printf("\n=== TILE REBUILD COMPLETE ===\n")
 	fmt.Printf("  log_did:     %s\n", *logDID)
-	fmt.Printf("  tessera_url: %s\n", *tesseraURL)
+	fmt.Printf("  tessera_storage_dir: %s\n", *tesseraStorageDir)
 	fmt.Printf("  tree_size:   %d\n", head.TreeSize)
 	fmt.Printf("  root_hash:   %x\n", head.RootHash[:])
 	batches, entries, errs := bl.Stats()

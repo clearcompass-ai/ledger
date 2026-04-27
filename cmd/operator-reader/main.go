@@ -83,15 +83,22 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 	logger.Info("postgres read pool initialized", "replica", cfg.ReplicaDSN != "")
 
-	// ── Tessera (tile reader for proofs, client for tree head) ─────────
-	tileBackend := tessera.NewHTTPTileBackend(cfg.TesseraBaseURL)
+	// ── Tessera (read-only) ─────────────────────────────────────
+	// Phase 1B: the reader binary no longer talks HTTP to a
+	// separate personality. Instead it reads tiles + checkpoint
+	// directly off the POSIX directory the writer operator's
+	// embedded Tessera writes to (shared volume in k8s, same
+	// host in single-node deployments). ReadOnlyAppender's
+	// AppendLeaf returns ErrReadOnly — a loud rejection if any
+	// future code path mistakenly tries to write from the reader.
+	tileBackend, err := tessera.NewPOSIXTileBackend(cfg.TesseraStorageDir)
+	if err != nil {
+		return fmt.Errorf("tessera posix tile backend: %w", err)
+	}
 	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
-	tesseraClient := tessera.NewClient(tessera.ClientConfig{
-		BaseURL: cfg.TesseraBaseURL,
-		Timeout: 30 * time.Second,
-	}, logger)
-	tesseraAdapter := tessera.NewTesseraAdapter(tesseraClient, tileReader, logger)
-	logger.Info("tessera initialized", "url", cfg.TesseraBaseURL)
+	roAppender := tessera.NewReadOnlyAppender(tileBackend)
+	tesseraAdapter := tessera.NewTesseraAdapter(roAppender, tileReader, logger)
+	logger.Info("tessera initialized (read-only)", "storage_dir", cfg.TesseraStorageDir)
 
 	// ── Entry byte store (read-only mode) ──────────────────────────────
 	// Hash-only tiles: TesseraEntryReader is gone. Tiles contain hashes only.
@@ -207,7 +214,7 @@ type readerConfig struct {
 	MaxConns          int
 	MinConns          int
 	ServerAddr        string
-	TesseraBaseURL    string
+	TesseraStorageDir string // shared POSIX dir with the writer operator
 	TileCacheSize     int
 	WarmTopLevels     int
 	SMTCacheSize      int
@@ -225,7 +232,7 @@ func loadConfig() readerConfig {
 		MaxConns:          20,
 		MinConns:          5,
 		ServerAddr:        envOr("ORTHOLOG_SERVER_ADDR", ":8081"),
-		TesseraBaseURL:    envOr("ORTHOLOG_TESSERA_URL", "http://localhost:8081"),
+		TesseraStorageDir: envOr("ORTHOLOG_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
 		TileCacheSize:     10000,
 		WarmTopLevels:     32,
 		SMTCacheSize:      100000,
