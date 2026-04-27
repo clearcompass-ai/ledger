@@ -46,49 +46,120 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 )
 
-// requireGCS opens a GCSEntryStore against the fake-gcs-server
-// (or any S3-compatible test endpoint) configured via env. Skips
-// when the env vars aren't set so `go test -short ./...` passes
-// in environments without docker-compose up.
+// requireGCS opens a GCSEntryStore configured for either fake-gcs-server
+// (integration harness) or real GCS (sanity check against production
+// credentials), depending on which env vars are set:
+//
+//	ORTHOLOG_TEST_GCS_ENDPOINT  set  → fake-gcs mode
+//	                                   anonymous=true, endpoint override
+//	ORTHOLOG_TEST_GCS_BUCKET    set  → real GCS mode
+//	                                   anonymous=false (ADC), no endpoint override
+//	neither set                      → t.Skip
+//
+// Real GCS mode requires GOOGLE_APPLICATION_CREDENTIALS pointing at a
+// service-account key file with storage.objects.create + .get + .delete
+// on the named bucket. Each test gets a unique prefix
+// (test/<TestName>/<unix-nano>) so concurrent runs don't collide AND
+// t.Cleanup deletes every object under that prefix at test end — real
+// GCS otherwise accumulates test junk forever.
+//
+// fake-gcs mode skips the cleanup pass since `down -v` wipes the
+// container's data dir between runs anyway.
 func requireGCS(t *testing.T) *GCSEntryStore {
 	t.Helper()
 
 	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT unset; skipping GCS integration test")
-	}
 	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
-	if bucket == "" {
+
+	// Skip when nothing is wired up.
+	if endpoint == "" && bucket == "" {
+		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set; skipping GCS test")
+	}
+
+	// Mode detection.
+	fakeMode := endpoint != ""
+	if !fakeMode && bucket == "" {
+		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset for real-GCS mode; skipping")
+	}
+	if fakeMode && bucket == "" {
 		bucket = "ortholog-test-bytes"
 	}
 
-	// Per-test isolation via prefix — each test gets its own
-	// object subtree so concurrent test runs don't collide.
+	// Per-test isolation via prefix.
 	prefix := fmt.Sprintf("test/%s/%d", t.Name(), time.Now().UnixNano())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Real GCS first-connection can take a few seconds; bump the
+	// timeout from the fake-gcs-friendly 5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	store, err := NewGCSEntryStore(ctx, GCSEntryStoreConfig{
+	cfg := GCSEntryStoreConfig{
 		Bucket:       bucket,
-		Endpoint:     endpoint,
-		Anonymous:    true,
 		ObjectPrefix: prefix,
 		CacheSize:    16,
-	})
+	}
+	if fakeMode {
+		cfg.Endpoint = endpoint
+		cfg.Anonymous = true
+		t.Logf("GCS test mode: fake-gcs-server (endpoint=%s, bucket=%s)", endpoint, bucket)
+	} else {
+		// Real GCS: ADC via GOOGLE_APPLICATION_CREDENTIALS or
+		// workload identity. Anonymous stays false.
+		t.Logf("GCS test mode: real GCS (bucket=%s, prefix=%s)", bucket, prefix)
+	}
+
+	store, err := NewGCSEntryStore(ctx, cfg)
 	if err != nil {
 		t.Fatalf("NewGCSEntryStore: %v", err)
 	}
 
 	t.Cleanup(func() {
+		// Delete every object under the test's prefix so real-GCS
+		// runs don't accumulate junk. fake-gcs-server is wiped by
+		// `down -v` between runs anyway, but the same code path is
+		// safe to run there too — the iterator simply finds zero
+		// objects to delete on a fresh container.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		deletePrefix(t, cleanupCtx, store, prefix)
+
 		if err := store.Close(); err != nil {
 			t.Logf("Close (cleanup): %v", err)
 		}
 	})
 
 	return store
+}
+
+// deletePrefix lists every object under prefix in the supplied
+// store's bucket and deletes them. Best-effort: a delete failure is
+// logged but doesn't fail the test — we don't want a stale ACL or
+// transient 5xx to mask a real test pass.
+func deletePrefix(t *testing.T, ctx context.Context, store *GCSEntryStore, prefix string) {
+	t.Helper()
+	it := store.bucket.Objects(ctx, &storage.Query{Prefix: prefix})
+	deleted := 0
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Logf("cleanup list under %q: %v", prefix, err)
+			return
+		}
+		if delErr := store.bucket.Object(attrs.Name).Delete(ctx); delErr != nil {
+			t.Logf("cleanup delete %q: %v", attrs.Name, delErr)
+			continue
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		t.Logf("cleanup: deleted %d objects under %q", deleted, prefix)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -347,30 +418,41 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 
 func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT unset")
-	}
 	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
-	if bucket == "" {
+	// Same dual-mode logic as requireGCS — fake-gcs (endpoint set)
+	// or real GCS (bucket only).
+	if endpoint == "" && bucket == "" {
+		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set")
+	}
+	fakeMode := endpoint != ""
+	if fakeMode && bucket == "" {
 		bucket = "ortholog-test-bytes"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	mkStore := func(prefix string) *GCSEntryStore {
 		t.Helper()
-		s, err := NewGCSEntryStore(ctx, GCSEntryStoreConfig{
+		cfg := GCSEntryStoreConfig{
 			Bucket:       bucket,
-			Endpoint:     endpoint,
-			Anonymous:    true,
 			ObjectPrefix: prefix,
 			CacheSize:    8,
-		})
+		}
+		if fakeMode {
+			cfg.Endpoint = endpoint
+			cfg.Anonymous = true
+		}
+		s, err := NewGCSEntryStore(ctx, cfg)
 		if err != nil {
 			t.Fatalf("NewGCSEntryStore(%s): %v", prefix, err)
 		}
-		t.Cleanup(func() { _ = s.Close() })
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			deletePrefix(t, cleanupCtx, s, prefix)
+			_ = s.Close()
+		})
 		return s
 	}
 
