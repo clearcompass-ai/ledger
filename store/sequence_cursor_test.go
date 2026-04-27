@@ -31,7 +31,13 @@ import (
 // known state. Tables themselves stay in place; only data goes.
 func resetCursorTestState(t *testing.T, ctx context.Context, c *SequenceCursor) {
 	t.Helper()
-	if _, err := c.db.Exec(ctx, "TRUNCATE entry_index"); err != nil {
+	// CASCADE is required because commitment_split_id references
+	// entry_index(sequence_number) via FK. Bare TRUNCATE refuses
+	// to drop rows from a referenced table; CASCADE also wipes
+	// commitment_split_id (which these tests don't seed, so the
+	// cascade is a no-op data-wise but satisfies Postgres's FK
+	// safety check).
+	if _, err := c.db.Exec(ctx, "TRUNCATE entry_index CASCADE"); err != nil {
 		t.Fatalf("truncate entry_index: %v", err)
 	}
 	if _, err := c.db.Exec(ctx,
