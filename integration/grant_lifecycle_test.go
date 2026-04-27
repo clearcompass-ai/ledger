@@ -218,6 +218,19 @@ func seedCommitmentEntry(
 // because the lookup endpoint contract terminates at
 // "operator returns canonical bytes" — Tessera tile generation is
 // orthogonal and tested in tessera_integration_test.go.
+// stubEntryReader satisfies tessera.EntryReader for the integration
+// tests' lookup-endpoint round-trip fixtures.
+//
+// tessera.EntryReader's full interface (tessera/entry_reader.go):
+//
+//	ReadEntry(seq uint64) (RawEntry, error)
+//	ReadEntryBatch(seqs []uint64) ([]RawEntry, error)
+//
+// Both methods are implemented below. The handler under test calls
+// ReadEntry sequentially today; ReadEntryBatch is here so the stub
+// also satisfies the interface for any future fetcher path that
+// switches to batch reads (see the parallel fakeEntryReader fix on
+// store/commitment_fetcher_test.go, commit dd581e0).
 type stubEntryReader struct {
 	canonicalBySeq map[uint64][]byte
 	sigBySeq       map[uint64][]byte
@@ -233,6 +246,29 @@ func (s *stubEntryReader) ReadEntry(seq uint64) (tessera.RawEntry, error) {
 		SigBytes:       s.sigBySeq[seq],
 	}, nil
 }
+
+// ReadEntryBatch returns each requested sequence's entry in the same
+// order as the input slice. Mirrors the real InMemoryEntryStore.
+// ReadEntryBatch semantics: any missing sequence is a fatal error
+// for the whole batch (so callers do not get a silent short slice).
+func (s *stubEntryReader) ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error) {
+	out := make([]tessera.RawEntry, len(seqs))
+	for i, seq := range seqs {
+		canonical, ok := s.canonicalBySeq[seq]
+		if !ok {
+			return nil, fmt.Errorf("stubEntryReader: no entry seq=%d (batch)", seq)
+		}
+		out[i] = tessera.RawEntry{
+			CanonicalBytes: canonical,
+			SigBytes:       s.sigBySeq[seq],
+		}
+	}
+	return out, nil
+}
+
+// Compile-time check: a future tessera.EntryReader signature drift
+// surfaces here as a build error rather than at the call site.
+var _ tessera.EntryReader = (*stubEntryReader)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
 // CI3 — Happy path
