@@ -148,13 +148,17 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 
 	entryBytes := optessera.NewInMemoryEntryStore()
 
-	// Create an entry.
-	entry, _ := envelope.NewEntry(envelope.ControlHeader{
+	// Create a v7.75-signed entry. makeEntry produces an entry whose
+	// Signatures section is well-formed, so envelope.Serialize is safe.
+	entry := makeEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:fetcher-rule",
 	}, []byte("fetcher-rule-payload"))
 	hash := envelope.EntryIdentity(entry)
-	canonical := envelope.Serialize(entry)
-	fakeSig := []byte("test-signature-bytes-48")
+	// Wire bytes ARE the canonical bytes under v7.75 — the multi-sig
+	// section is appended INSIDE Serialize. WriteEntry's legacy
+	// (canonical, sig) split takes nil for sig now (parallel to the
+	// api/submission.go and api/batch.go fixes on main).
+	wire := envelope.Serialize(entry)
 
 	// Insert index row in Postgres (no bytes).
 	seq := uint64(99901)
@@ -164,12 +168,13 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 		INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 			sig_algorithm_id, signer_did)
 		VALUES ($1, $2, $3, $4, $5)`,
-		seq, hash[:], time.Now().UTC(), uint16(1), "did:example:fetcher-rule",
+		seq, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:fetcher-rule",
 	)
 	tx.Commit(ctx)
 
-	// Store bytes in EntryReader (the ONLY source).
-	entryBytes.WriteEntry(seq, canonical, fakeSig)
+	// Store bytes in EntryReader (the ONLY source). v7.75: full wire
+	// bytes go in as canonical; nil for the legacy sig split.
+	entryBytes.WriteEntry(seq, wire, nil)
 
 	// Fetch via PostgresEntryFetcher.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -182,23 +187,21 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 		t.Fatal("Fetch returned nil")
 	}
 
-	// Verify bytes came from EntryReader.
-	if !bytes.Equal(ewm.CanonicalBytes, canonical) {
+	// Verify bytes came from EntryReader. Under v7.75 the wire bytes
+	// carry the signatures section; SignatureBytes/SignatureAlgoID
+	// sidecar fields are gone from EntryWithMetadata. Callers that
+	// need the algoID call envelope.Deserialize and read
+	// entry.Signatures[0].AlgoID.
+	if !bytes.Equal(ewm.CanonicalBytes, wire) {
 		t.Fatal("CanonicalBytes do not match EntryReader content")
-	}
-	if !bytes.Equal(ewm.SignatureBytes, fakeSig) {
-		t.Fatal("SignatureBytes do not match EntryReader content")
 	}
 
 	// Verify metadata came from Postgres.
 	if ewm.Position.Sequence != seq {
 		t.Fatalf("sequence mismatch: %d", ewm.Position.Sequence)
 	}
-	if ewm.SignatureAlgoID != 1 {
-		t.Fatalf("algo mismatch: %d", ewm.SignatureAlgoID)
-	}
 
-	t.Logf("rule verified: Fetch() hydrated %d bytes from EntryReader + metadata from Postgres", len(canonical))
+	t.Logf("rule verified: Fetch() hydrated %d bytes from EntryReader + metadata from Postgres", len(wire))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -214,21 +217,22 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 
 	// Insert 3 entries — index in Postgres, bytes in EntryReader.
 	for i := uint64(1); i <= 3; i++ {
-		entry, _ := envelope.NewEntry(envelope.ControlHeader{
+		entry := makeEntry(t, envelope.ControlHeader{
 			SignerDID: "did:example:query-rule-signer",
 		}, []byte(fmt.Sprintf("query-payload-%d", i)))
 		hash := envelope.EntryIdentity(entry)
-		canonical := envelope.Serialize(entry)
+		wire := envelope.Serialize(entry)
 
 		tx, _ := pool.Begin(ctx)
 		tx.Exec(ctx, `
 			INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 				sig_algorithm_id, signer_did)
 			VALUES ($1, $2, $3, $4, $5)`,
-			i, hash[:], time.Now().UTC(), uint16(1), "did:example:query-rule-signer",
+			i, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:query-rule-signer",
 		)
 		tx.Commit(ctx)
-		entryBytes.WriteEntry(i, canonical, []byte(fmt.Sprintf("sig-%d", i)))
+		// v7.75: full wire bytes as canonical; nil for legacy sig split.
+		entryBytes.WriteEntry(i, wire, nil)
 	}
 
 	// Query via OperatorQueryAPI.
@@ -241,16 +245,15 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
 
-	// Verify each result has bytes from EntryReader.
+	// Verify each result has bytes from EntryReader. SignatureBytes
+	// is no longer a field on EntryWithMetadata under v7.75 —
+	// signatures live inside CanonicalBytes.
 	for i, r := range results {
 		seq := uint64(i + 1)
 		expectedRaw, _ := entryBytes.ReadEntry(seq)
 
 		if !bytes.Equal(r.CanonicalBytes, expectedRaw.CanonicalBytes) {
 			t.Fatalf("seq %d: CanonicalBytes mismatch", seq)
-		}
-		if !bytes.Equal(r.SignatureBytes, expectedRaw.SigBytes) {
-			t.Fatalf("seq %d: SignatureBytes mismatch", seq)
 		}
 	}
 
@@ -269,11 +272,11 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	cleanTables(t, pool)
 
 	// Create entry.
-	entry, _ := envelope.NewEntry(envelope.ControlHeader{
+	entry := makeEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:authority-test",
 	}, []byte("original-payload"))
 	hash := envelope.EntryIdentity(entry)
-	canonical := envelope.Serialize(entry)
+	wire := envelope.Serialize(entry)
 
 	// Insert index in Postgres.
 	seq := uint64(77001)
@@ -282,12 +285,13 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 		INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 			sig_algorithm_id, signer_did)
 		VALUES ($1, $2, $3, $4, $5)`,
-		seq, hash[:], time.Now().UTC(), uint16(1), "did:example:authority-test",
+		seq, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:authority-test",
 	)
 	tx.Commit(ctx)
 
 	// Store THE bytes in EntryReader — this is the source of truth.
-	entryBytes.WriteEntry(seq, canonical, []byte("real-sig"))
+	// v7.75: full wire bytes as canonical; nil for legacy sig split.
+	entryBytes.WriteEntry(seq, wire, nil)
 
 	// Fetch — should return EntryReader's bytes.
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
@@ -297,11 +301,8 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if !bytes.Equal(ewm.CanonicalBytes, canonical) {
+	if !bytes.Equal(ewm.CanonicalBytes, wire) {
 		t.Fatal("Fetch did not return EntryReader's canonical bytes")
-	}
-	if !bytes.Equal(ewm.SignatureBytes, []byte("real-sig")) {
-		t.Fatal("Fetch did not return EntryReader's sig bytes")
 	}
 
 	// Postgres has NO bytes to return — the rule is structural.

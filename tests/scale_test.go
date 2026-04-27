@@ -163,7 +163,7 @@ func TestScale_BulkInsert(t *testing.T) {
 			payload := make([]byte, 8)
 			binary.BigEndian.PutUint64(payload, seq)
 
-			entry, _ := envelope.NewEntry(envelope.ControlHeader{
+			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:signer%d", signerIdx),
 			}, payload)
 			hash := envelope.EntryIdentity(entry)
@@ -202,7 +202,7 @@ func TestScale_BulkInsert(t *testing.T) {
 			signerIdx := seq / 100
 			payload := make([]byte, 8)
 			binary.BigEndian.PutUint64(payload, seq)
-			entry, _ := envelope.NewEntry(envelope.ControlHeader{
+			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:signer%d", signerIdx),
 			}, payload)
 			hash := envelope.EntryIdentity(entry)
@@ -345,21 +345,22 @@ func TestScale_BuilderThroughput(t *testing.T) {
 			payload := make([]byte, 8)
 			binary.BigEndian.PutUint64(payload, seq)
 
-			entry, _ := envelope.NewEntry(envelope.ControlHeader{
+			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			}, payload)
 			hash := envelope.EntryIdentity(entry)
-			canonical := envelope.Serialize(entry)
+			wire := envelope.Serialize(entry)
 
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 					sig_algorithm_id, signer_did)
 				VALUES ($1, $2, $3, $4, $5)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:scale-signer%d", seq/100),
+				uint16(envelope.SigAlgoECDSA), fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
 			tx.Exec(ctx, `INSERT INTO builder_queue (sequence_number) VALUES ($1)`, seq)
-			entryBytes.WriteEntry(seq, canonical, []byte("sig"))
+			// v7.75: wire bytes ARE canonical bytes; no separate sig.
+			entryBytes.WriteEntry(seq, wire, nil)
 		}
 		tx.Commit(ctx)
 		seeded += batchSize
@@ -379,20 +380,21 @@ func TestScale_BuilderThroughput(t *testing.T) {
 			seq := uint64(seeded + i + 1)
 			payload := make([]byte, 8)
 			binary.BigEndian.PutUint64(payload, seq)
-			entry, _ := envelope.NewEntry(envelope.ControlHeader{
+			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			}, payload)
 			hash := envelope.EntryIdentity(entry)
-			canonical := envelope.Serialize(entry)
+			wire := envelope.Serialize(entry)
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 					sig_algorithm_id, signer_did)
 				VALUES ($1, $2, $3, $4, $5)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:scale-signer%d", seq/100),
+				uint16(envelope.SigAlgoECDSA), fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
 			tx.Exec(ctx, `INSERT INTO builder_queue (sequence_number) VALUES ($1)`, seq)
-			entryBytes.WriteEntry(seq, canonical, []byte("sig"))
+			// v7.75: wire bytes ARE canonical bytes; no separate sig.
+			entryBytes.WriteEntry(seq, wire, nil)
 		}
 		tx.Commit(ctx)
 		seeded += remainder
@@ -521,7 +523,7 @@ func TestScale_SDKProcessBatch(t *testing.T) {
 			v := envelope.AuthoritySameSigner
 			ap = &v
 		}
-		entries[i], _ = envelope.NewEntry(envelope.ControlHeader{
+		entries[i] = makeEntry(t, envelope.ControlHeader{
 			SignerDID:     fmt.Sprintf("did:example:sdk-signer%d", i/100),
 			AuthorityPath: ap,
 		}, payload)
