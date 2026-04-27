@@ -32,6 +32,23 @@ fi
 
 cd "${REPO_ROOT}"
 
+echo "== tearing down any prior stack (force-clear anonymous volumes) =="
+# Postgres's official image declares VOLUME ["/var/lib/postgresql/data"]
+# in its Dockerfile. Without an explicit `volumes:` in our
+# compose, Docker creates an anonymous volume to back it. That
+# volume survives `docker compose up -d --force-recreate` because
+# anonymous volumes are not pruned on container recreation.
+#
+# Postgres initializes the database (creating POSTGRES_DB,
+# POSTGRES_USER, etc.) only on first boot when the data dir is
+# empty. So if a prior run left behind a populated data volume,
+# the new container reuses it and skips init — the result is
+# tests that fail with "database \"ortholog_test\" does not exist".
+#
+# `down -v` removes anonymous volumes, guaranteeing a clean slate
+# every run. Cheap (postgres init takes ~2s) and idempotent.
+docker compose -f "${COMPOSE_FILE}" down -v 2>/dev/null || true
+
 echo "== bringing up integration docker-compose =="
 docker compose -f "${COMPOSE_FILE}" up -d
 
