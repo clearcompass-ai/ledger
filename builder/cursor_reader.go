@@ -1,43 +1,29 @@
 /*
 FILE PATH: builder/cursor_reader.go
 
-CursorReader — the CT-native alternative to *Queue. Replaces the
-builder_queue table with entry_index tailing keyed off
-builder_cursor.last_processed_sequence. Both types satisfy the
-BatchReader interface defined here so the builder loop is mode-
-agnostic.
-
-WHY THIS FILE:
-  Phase 1a/8 commit 4/8 of the cursor migration. Adds the reader
-  shape and the two Queue forwarder methods needed for interface
-  satisfaction. Builder loop wiring lands in commit 6/8.
+CursorReader — the CT-native log-tailing batch reader. Reads pending
+sequences from entry_index keyed off builder_cursor.last_processed_sequence.
 
 DESIGN NOTES:
   - BatchReader exposes three methods only — BeginBatch /
-    CommitBatch / RecoverOnStartup. This is the minimal surface
-    the builder needs; difficulty-controller and ops tooling
-    keep talking to *Queue's wider surface (PendingCount,
-    PurgeProcessed) under queue mode, and to dedicated cursor
-    introspection methods under cursor mode.
+    CommitBatch / RecoverOnStartup. Minimal surface the builder needs.
   - CursorReader holds an in-memory copy of the cursor that's
     seeded from store.SequenceCursor.Read at first use. This
     avoids a per-tick Read round-trip; CommitBatch keeps the
     in-memory copy and the database in sync.
-  - BeginBatch ignores the tx parameter for the cursor mode —
-    SELECT against entry_index is fine outside any transaction
-    because the cursor's source of truth is builder_cursor, not
-    a SELECT FOR UPDATE lock. The interface keeps the parameter
-    for API parity with *Queue.DequeueBatch.
+  - BeginBatch ignores the tx parameter — SELECT against
+    entry_index is fine outside any transaction because the
+    cursor's source of truth is builder_cursor, not a
+    SELECT FOR UPDATE lock.
   - CommitBatch advances the cursor to max(seqs) inside the
     caller's transaction. The builder's atomic commit groups this
     with the SMT mutations and delta-buffer save; if the tx rolls
     back the cursor stays where it was and the same sequences
     re-read on next tick. SMT writes are upserts → reprocessing
     is idempotent.
-  - RecoverOnStartup is a no-op for the cursor reader. Crash-
-    recovery is implicit: the cursor was either advanced in a
-    committed tx (the work is done) or it wasn't (we re-read).
-    No "stale processing" rows to clean up.
+  - RecoverOnStartup is a no-op. Crash-recovery is implicit:
+    the cursor was either advanced in a committed tx (the work
+    is done) or it wasn't (we re-read).
 */
 package builder
 
@@ -54,12 +40,9 @@ import (
 // BatchReader is the abstraction the builder loop uses to fetch
 // pending sequences and acknowledge them after processing.
 //
-// Two implementations are wired in cmd/operator/main.go behind a
-// flag:
-//   - *Queue        — legacy builder_queue path.
-//   - *CursorReader — CT-native log-tailing path.
+// Implemented by *CursorReader — the CT-native log-tailing path.
 //
-// Both must:
+// Must:
 //   - Return sequences in monotonically-increasing order.
 //   - Be idempotent under tx rollback: if CommitBatch's tx
 //     aborts, the next BeginBatch call returns the same
@@ -69,11 +52,10 @@ type BatchReader interface {
 	// processing. Returns an empty slice (NOT an error) when there
 	// is no work — callers poll on a sleep timer.
 	//
-	// tx is the same transaction CommitBatch will run inside. Queue
-	// implementations that need SELECT FOR UPDATE SKIP LOCKED
-	// semantics use it; cursor implementations ignore it (the
-	// builder's singleton-goroutine guarantee, enforced by the
-	// operator's advisory lock, makes per-row locking unnecessary).
+	// tx is the transaction CommitBatch will run inside. The cursor
+	// reader ignores it (the builder's singleton-goroutine guarantee,
+	// enforced by the operator's advisory lock, makes per-row
+	// locking unnecessary).
 	BeginBatch(ctx context.Context, tx pgx.Tx, batchSize int) ([]uint64, error)
 
 	// CommitBatch acknowledges that seqs have been fully processed.
@@ -81,44 +63,11 @@ type BatchReader interface {
 	// with the SMT mutations and delta-buffer save.
 	CommitBatch(ctx context.Context, tx pgx.Tx, seqs []uint64) error
 
-	// RecoverOnStartup is called once when the builder starts. Used
-	// by *Queue to reset rows that were marked "processing" by a
-	// crashed prior builder back to "pending". A no-op for
-	// *CursorReader. Returns the count of recovered items for
-	// observability.
+	// RecoverOnStartup is called once when the builder starts.
+	// Returns 0 for the cursor reader — crash recovery is implicit
+	// (cursor either committed or didn't).
 	RecoverOnStartup(ctx context.Context) (int64, error)
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Queue ⇒ BatchReader forwarders
-// ─────────────────────────────────────────────────────────────────
-//
-// Queue's public methods (DequeueBatch, MarkProcessed,
-// RecoverStale) keep their existing names so external callers
-// (DifficultyController, ops tooling) don't break. The forwarders
-// below adopt the BatchReader naming so the builder loop can hold
-// either implementation behind the interface without a wrapper at
-// the call site.
-
-// BeginBatch forwards to DequeueBatch.
-func (q *Queue) BeginBatch(ctx context.Context, tx pgx.Tx, batchSize int) ([]uint64, error) {
-	return q.DequeueBatch(ctx, tx, batchSize)
-}
-
-// CommitBatch forwards to MarkProcessed.
-func (q *Queue) CommitBatch(ctx context.Context, tx pgx.Tx, seqs []uint64) error {
-	return q.MarkProcessed(ctx, tx, seqs)
-}
-
-// RecoverOnStartup forwards to RecoverStale.
-func (q *Queue) RecoverOnStartup(ctx context.Context) (int64, error) {
-	return q.RecoverStale(ctx)
-}
-
-// Compile-time pin: *Queue satisfies BatchReader. If the
-// interface ever drifts, this fails at build time before the
-// builder loop call site does.
-var _ BatchReader = (*Queue)(nil)
 
 // ─────────────────────────────────────────────────────────────────
 // CursorReader — the CT-native implementation

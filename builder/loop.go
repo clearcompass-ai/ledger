@@ -151,11 +151,9 @@ type BuilderLoop struct {
 	tree        *smt.Tree
 	leafStore   *store.PostgresLeafStore
 	nodeCache   *store.PostgresNodeCache
-	// reader is the abstraction over the legacy *Queue and the
-	// CT-native *CursorReader. Both satisfy BatchReader so the
-	// builder loop is mode-agnostic — selection happens at the
-	// cmd/operator/main.go wiring layer behind the
-	// OPERATOR_BUILDER_READER={queue|cursor} flag.
+	// reader is the CT-native log-tailing follower that reads new
+	// sequences from entry_index and advances builder_cursor in the
+	// builder's atomic commit. See builder/cursor_reader.go.
 	reader      BatchReader
 	fetcher     types.EntryFetcher
 	schema      sdkbuilder.SchemaResolver

@@ -4,23 +4,17 @@ FILE PATH: store/sequence_cursor.go
 SequenceCursor — Postgres-backed implementation of the CT-native
 "the log is the queue" pattern.
 
-WHY THIS EXISTS:
-  The legacy builder pulls work from a separate builder_queue table
-  that admission writes one row to per entry. At 10B+ entries the
-  per-entry UPDATE/DELETE pattern thrashes Postgres autovacuum and
-  starves the SMT and admission paths of IOPS. The cursor pattern
-  replaces that:
-
-    - Admission writes only the entry_index INSERT (the log itself).
-    - The builder reads new sequences via
-        SELECT sequence_number FROM entry_index
-        WHERE  sequence_number > $cursor
-        ORDER  BY sequence_number ASC
-        LIMIT  $batch
-      using the entry_index PRIMARY KEY index.
-    - Cursor advance is one row UPDATE per batch in the builder's
-      atomic commit, bounding dead tuples on builder_cursor by
-      batches/sec instead of entries/sec.
+DESIGN:
+  Admission writes only entry_index. The builder reads new
+  sequences via
+    SELECT sequence_number FROM entry_index
+    WHERE  sequence_number > $cursor
+    ORDER  BY sequence_number ASC
+    LIMIT  $batch
+  using the entry_index PRIMARY KEY index. Cursor advance is one
+  row UPDATE per batch in the builder's atomic commit, bounding
+  dead tuples on builder_cursor by batches/sec instead of
+  entries/sec — the load-bearing property at 10B+ scale.
 
 CONTRACT:
   - Read returns []uint64 of next batch sequences in ASC order.
@@ -159,6 +153,35 @@ func (c *SequenceCursor) AdvanceTx(ctx context.Context, tx pgx.Tx, newCursor uin
 		return fmt.Errorf("store/cursor: advance affected %d rows, want 1 (builder_cursor row missing?)", tag.RowsAffected())
 	}
 	return nil
+}
+
+// Lag returns the number of admitted entries the builder has not yet
+// processed, computed as MAX(entry_index.sequence_number) minus
+// builder_cursor.last_processed_sequence. Empty entry_index returns 0.
+//
+// The DifficultyController consumes Lag as the load-pressure
+// signal driving Mode B PoW difficulty. Single round-trip; uses
+// the entry_index PRIMARY KEY for the MAX lookup and the singleton
+// builder_cursor row for the cursor.
+func (c *SequenceCursor) Lag(ctx context.Context) (int64, error) {
+	var lag int64
+	err := c.db.QueryRow(ctx, `
+		SELECT COALESCE(
+		         (SELECT MAX(sequence_number) FROM entry_index), 0
+		       ) - last_processed_sequence
+		FROM builder_cursor
+		WHERE id = 1`,
+	).Scan(&lag)
+	if err != nil {
+		return 0, fmt.Errorf("store/cursor: lag: %w", err)
+	}
+	if lag < 0 {
+		// Defensive — cursor ahead of MAX entry_index implies a
+		// regressing entry_index, which the schema does not permit.
+		// Report 0 rather than a negative depth.
+		return 0, nil
+	}
+	return lag, nil
 }
 
 // AdvanceForRebuild resets the cursor to a caller-supplied value

@@ -64,7 +64,7 @@ import (
 type testOperator struct {
 	BaseURL     string
 	Pool        *pgxpool.Pool
-	Queue       *opbuilder.Queue
+	Cursor      *store.SequenceCursor
 	CreditStore *store.CreditStore
 	EntryStore  *store.EntryStore
 	EntryBytes  *optessera.InMemoryEntryStore
@@ -101,7 +101,8 @@ func startTestOperator(t *testing.T) *testOperator {
 	// ── Stores ─────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)
 	creditStore := store.NewCreditStore(pool)
-	queue := opbuilder.NewQueue(pool)
+	sequenceCursor := store.NewSequenceCursor(pool)
+	reader := opbuilder.NewCursorReader(sequenceCursor)
 	treeHeadStore := store.NewTreeHeadStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, 10000)
@@ -136,14 +137,14 @@ func startTestOperator(t *testing.T) *testOperator {
 
 	builderLoop := opbuilder.NewBuilderLoop(
 		loopCfg, pool, tree, leafStore, nodeCache,
-		queue, fetcher, nil, deltaBuffer, bufferStore, commitPub,
+		reader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
 		merkle, witnessCosigner, logger,
 	)
 	go builderLoop.Run(ctx)
 
 	// ── Difficulty controller ──────────────────────────────────────────
 	diffController := middleware.NewDifficultyController(
-		queue, middleware.DefaultDifficultyConfig(), logger,
+		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
 	// ── HTTP handlers ──────────────────────────────────────────────────
@@ -165,7 +166,6 @@ func startTestOperator(t *testing.T) *testOperator {
 			CreditStore: creditStore,
 			DIDResolver: nil,
 		},
-		Queue:        queue,
 		LogDID:       testLogDID,
 		MaxEntrySize: 1 << 20,
 		Logger:       logger,
@@ -225,7 +225,7 @@ func startTestOperator(t *testing.T) *testOperator {
 	go server.Serve(ln)
 
 	op := &testOperator{
-		BaseURL: baseURL, Pool: pool, Queue: queue,
+		BaseURL: baseURL, Pool: pool, Cursor: sequenceCursor,
 		CreditStore: creditStore, EntryStore: entryStore,
 		EntryBytes: entryBytes, cancel: cancel,
 	}

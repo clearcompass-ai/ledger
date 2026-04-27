@@ -846,12 +846,6 @@ func TestSequence_GaplessAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestSequence_QueueOrder(t *testing.T) {
-	if opbuilder.StatusPending != 0 || opbuilder.StatusProcessing != 1 || opbuilder.StatusDone != 2 {
-		t.Fatal("wrong constants")
-	}
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // Category 8: Delta Buffer & OCC (5 tests)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -993,93 +987,9 @@ func TestCommitment_Frequency(t *testing.T) {
 // Category 11: Crash Recovery & Durability (5 tests)
 // ═════════════════════════════════════════════════════════════════════════════
 
-func TestCrash_MidBatch(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	q := opbuilder.NewQueue(pool)
-	for i := uint64(1); i <= 10; i++ {
-		insertTestEntry(t, pool, i, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:crash"}, []byte{byte(i)}), testLogDID)
-		tx, _ := pool.Begin(ctx)
-		q.Enqueue(ctx, tx, i)
-		tx.Commit(ctx)
-	}
-	tx, _ := pool.Begin(ctx)
-	q.DequeueBatch(ctx, tx, 5)
-	tx.Commit(ctx) // 5 stuck in processing
-	recovered, _ := q.RecoverStale(ctx)
-	if recovered != 5 {
-		t.Fatalf("expected 5, got %d", recovered)
-	}
-	tx2, _ := pool.Begin(ctx)
-	seqs, _ := q.DequeueBatch(ctx, tx2, 10)
-	tx2.Commit(ctx)
-	if len(seqs) != 10 {
-		t.Fatalf("all 10 should be dequeueable, got %d", len(seqs))
-	}
-}
-
-func TestCrash_QueueReclaim(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	q := opbuilder.NewQueue(pool)
-	for i := uint64(1); i <= 3; i++ {
-		insertTestEntry(t, pool, i, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:reclaim"}, []byte{byte(i)}), testLogDID)
-		tx, _ := pool.Begin(ctx)
-		q.Enqueue(ctx, tx, i)
-		tx.Commit(ctx)
-	}
-	tx, _ := pool.Begin(ctx)
-	q.DequeueBatch(ctx, tx, 10)
-	tx.Commit(ctx)
-	count, _ := q.RecoverStale(ctx)
-	if count != 3 {
-		t.Fatalf("should recover 3, got %d", count)
-	}
-}
-
 func TestCrash_AdvisoryLockExclusivity(t *testing.T) {
 	if store.BuilderLockID != 0x4F5254484F4C4F47 {
 		t.Fatal("unexpected lock ID")
-	}
-}
-
-func TestCrash_GracefulShutdown(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	q := opbuilder.NewQueue(pool)
-	for i := uint64(1); i <= 5; i++ {
-		insertTestEntry(t, pool, i, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:sd"}, []byte{byte(i)}), testLogDID)
-		tx, _ := pool.Begin(ctx)
-		q.Enqueue(ctx, tx, i)
-		tx.Commit(ctx)
-	}
-	tx, _ := pool.Begin(ctx)
-	seqs, _ := q.DequeueBatch(ctx, tx, 5)
-	q.MarkProcessed(ctx, tx, seqs)
-	tx.Commit(ctx)
-	pending, _ := q.PendingCount(ctx)
-	if pending != 0 {
-		t.Fatalf("pending should be 0 after drain, got %d", pending)
-	}
-}
-
-func TestCrash_RetryOnCommitFailure(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	q := opbuilder.NewQueue(pool)
-	insertTestEntry(t, pool, 1, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:retry"}, nil), testLogDID)
-	tx, _ := pool.Begin(ctx)
-	q.Enqueue(ctx, tx, 1)
-	tx.Commit(ctx)
-	tx2, _ := pool.Begin(ctx)
-	q.DequeueBatch(ctx, tx2, 1)
-	tx2.Commit(ctx) // processing, not done
-	q.RecoverStale(ctx)
-	tx3, _ := pool.Begin(ctx)
-	seqs, _ := q.DequeueBatch(ctx, tx3, 1)
-	tx3.Commit(ctx)
-	if len(seqs) != 1 {
-		t.Fatal("should be dequeueable after recovery")
 	}
 }
 

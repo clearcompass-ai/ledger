@@ -82,7 +82,6 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
 )
@@ -133,7 +132,6 @@ type SubmissionDeps struct {
 	Storage      StorageDeps
 	Admission    AdmissionConfig
 	Identity     IdentityDeps
-	Queue        *builder.Queue
 	LogDID       string
 	MaxEntrySize int64
 	Logger       *slog.Logger
@@ -481,15 +479,11 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				}
 			}
 
-			// Enqueue is a no-op under cursor mode (deps.Queue == nil).
-			// In cursor mode the entry_index INSERT above IS the
-			// enqueue — the log itself is the queue. Phase 1a flag
-			// in cmd/operator/main.go selects which mode wires the
-			// queue field.
-			if deps.Queue == nil {
-				return nil
-			}
-			return deps.Queue.Enqueue(ctx, tx, seq)
+			// Cursor mode: the entry_index INSERT IS the enqueue —
+			// the log itself is the queue. The builder cursor reader
+			// tails entry_index and advances builder_cursor in its
+			// own atomic commit. No separate queue write needed.
+			return nil
 		})
 
 		if err != nil {

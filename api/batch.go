@@ -527,13 +527,8 @@ func admitPreparedEntry(
 		}
 	}
 
-	// Cursor mode: deps.Queue is nil, the entry_index INSERT
-	// already serves as the enqueue. Same nil-guard as
-	// api/submission.go's atomic-block enqueue.
-	if deps.Queue != nil {
-		if enqueueErr := deps.Queue.Enqueue(ctx, tx, seq); enqueueErr != nil {
-			return 0, enqueueErr
-		}
-	}
+	// Cursor mode: the entry_index INSERT IS the enqueue — the
+	// builder cursor reader tails entry_index and advances
+	// builder_cursor in its own atomic commit.
 	return seq, nil
 }

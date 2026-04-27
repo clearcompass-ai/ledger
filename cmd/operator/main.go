@@ -171,20 +171,6 @@ type Config struct {
 	DeltaWindow           int
 	WitnessEndpoints      []string
 	WitnessQuorumK        int
-
-	// BuilderReaderMode selects the builder's pending-work source.
-	//   - "queue" (default) — legacy builder_queue table. Admission
-	//     INSERTs a row per entry; the builder dequeues and marks
-	//     processed.
-	//   - "cursor" — CT-native log-tailing follower. Admission writes
-	//     entry_index only; the builder reads
-	//     entry_index WHERE sequence_number > builder_cursor and
-	//     advances the cursor in its atomic commit.
-	// Default stays "queue" so existing deployments behave exactly
-	// as before. The cursor path eliminates the per-entry MVCC
-	// pressure on builder_queue at 10B+ scale; flip the default in
-	// a follow-up release once the cursor path has run stably.
-	BuilderReaderMode string
 }
 
 func loadConfig() (*Config, error) {
@@ -212,7 +198,6 @@ func loadConfig() (*Config, error) {
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
 		WitnessQuorumK:        1,
-		BuilderReaderMode:     envOr("OPERATOR_BUILDER_READER", "queue"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -401,36 +386,11 @@ func main() {
 	// ── Builder dependencies ──────────────────────────────────────────
 	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, cfg.LogDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, logger)
-	// Builder pending-work source: queue (legacy) or cursor
-	// (CT-native log-tailing). queue is the *builder.Queue passed
-	// to api.SubmissionDeps for the admission-side Enqueue write
-	// (nil under cursor mode → admission skips the queue write).
-	// reader is the builder.BatchReader the builder loop holds —
-	// either the queue or the cursor reader, never both.
-	var (
-		queue  *builder.Queue
-		reader builder.BatchReader
-	)
-	switch cfg.BuilderReaderMode {
-	case "queue", "":
-		queue = builder.NewQueue(pool)
-		reader = queue
-		logger.Info("builder reader",
-			"mode", "queue",
-			"note", "legacy builder_queue path; cursor mode eliminates per-entry MVCC pressure")
-	case "cursor":
-		reader = builder.NewCursorReader(store.NewSequenceCursor(pool))
-		// queue stays nil — admission's Enqueue is gated on
-		// deps.Queue != nil (see api/submission.go and
-		// api/batch.go nil-guards from commit 7/8).
-		logger.Info("builder reader",
-			"mode", "cursor",
-			"note", "log-tailing follower; admission skips builder_queue write")
-	default:
-		logger.Error("unknown OPERATOR_BUILDER_READER",
-			"value", cfg.BuilderReaderMode, "want", "queue|cursor")
-		os.Exit(1)
-	}
+	// Builder pending-work source: CT-native log-tailing follower.
+	// Admission writes only entry_index; the cursor reader tails it
+	// and advances builder_cursor in its atomic commit.
+	sequenceCursor := store.NewSequenceCursor(pool)
+	reader := builder.NewCursorReader(sequenceCursor)
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	// Load buffer from persistence (cold start = strict OCC per SDK-D9).
@@ -453,13 +413,14 @@ func main() {
 		logger,
 	).WithCommitmentStore(commitStore)
 
-	// ── Difficulty controller (queue-depth-driven) ────────────────────
+	// ── Difficulty controller (cursor-lag-driven) ─────────────────────
 	//
 	// DefaultDifficultyConfig() is the ready-made production preset:
 	//   Initial=16, Min=8, Max=24, Low=100, High=10000, Interval=30s, SHA-256.
-	// NewDifficultyController takes (queue, cfg, logger) — queue first.
+	// SequenceCursor.Lag returns MAX(entry_index.seq) - cursor and
+	// drives PoW difficulty via the cursor-mode lag signal.
 	diffController := middleware.NewDifficultyController(
-		queue, middleware.DefaultDifficultyConfig(), logger,
+		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
 	// ── Witness cosigner (optional) ───────────────────────────────────
@@ -521,7 +482,6 @@ func main() {
 			CreditStore: creditStore,
 			DIDResolver: nil, // Phase 4: wire did.DefaultVerifierRegistry.
 		},
-		Queue:              queue,
 		LogDID:             cfg.LogDID,
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,

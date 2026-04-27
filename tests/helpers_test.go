@@ -501,7 +501,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	tables := []string{
-		"builder_queue", "tree_head_sigs", "entry_index", "smt_leaves", "smt_nodes",
+		"tree_head_sigs", "entry_index", "smt_leaves", "smt_nodes",
 		"credits", "tree_heads", "delta_window_buffers",
 		"witness_sets", "equivocation_proofs", "sessions",
 	}

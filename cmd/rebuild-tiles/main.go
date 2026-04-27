@@ -44,9 +44,9 @@ USAGE:
 	# 3. Start a FRESH Tessera personality on a new port with empty
 	#    storage (or wipe the existing personality's storage and restart).
 
-	# 4. Reset queue + tree state so every admitted entry replays.
+	# 4. Reset cursor + tree state so every admitted entry replays.
 	psql ortholog <<SQL
-	    UPDATE builder_queue SET status = 0, processed_at = NULL;
+	    UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1;
 	    DELETE FROM derivation_commitments WHERE true;
 	    DELETE FROM smt_leaves WHERE true;
 	    DELETE FROM smt_nodes WHERE true;
@@ -200,7 +200,7 @@ func main() {
 		logger.Warn("delta buffer load — starting cold", "error", loadErr)
 		buffer = sdkbuilder.NewDeltaWindowBuffer(*deltaWindow)
 	}
-	queue := builder.NewQueue(pool)
+	reader := builder.NewCursorReader(store.NewSequenceCursor(pool))
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	bl := builder.NewBuilderLoop(
@@ -211,7 +211,7 @@ func main() {
 			DeltaWindow:  *deltaWindow,
 		},
 		pool, tree, leafStore, nodeCache,
-		queue, fetcher,
+		reader, fetcher,
 		nil, // schema resolver
 		buffer, bufferStore,
 		nil,    // commitPub — no commentary on partial mid-rebuild state.
