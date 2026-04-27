@@ -527,8 +527,13 @@ func admitPreparedEntry(
 		}
 	}
 
-	if enqueueErr := deps.Queue.Enqueue(ctx, tx, seq); enqueueErr != nil {
-		return 0, enqueueErr
+	// Cursor mode: deps.Queue is nil, the entry_index INSERT
+	// already serves as the enqueue. Same nil-guard as
+	// api/submission.go's atomic-block enqueue.
+	if deps.Queue != nil {
+		if enqueueErr := deps.Queue.Enqueue(ctx, tx, seq); enqueueErr != nil {
+			return 0, enqueueErr
+		}
 	}
 	return seq, nil
 }

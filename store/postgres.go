@@ -200,6 +200,47 @@ var schemaDDL = []string{
 		processed_at    TIMESTAMPTZ
 	)`,
 
+	// ── Builder cursor (CT-native tailing follower) ──────────────────
+	//
+	// One-row table holding the highest sequence number the builder
+	// has fully processed. The "cursor" reader reads
+	//
+	//     SELECT sequence_number FROM entry_index
+	//     WHERE  sequence_number > $cursor
+	//     ORDER  BY sequence_number ASC
+	//     LIMIT  $batch
+	//
+	// in place of pulling from builder_queue. Admission stops writing
+	// queue rows in cursor mode; the entry_index INSERT is the only
+	// "enqueue" — the log itself is the queue.
+	//
+	// At 10B+ scale this eliminates the builder_queue UPDATE/DELETE
+	// thrash that produces dead tuples faster than autovacuum can
+	// reclaim. Cursor mutation is a single-row UPDATE per batch
+	// inside the builder's atomic commit transaction, so MVCC
+	// pressure on this table is bounded by batches/sec, not
+	// entries/sec.
+	//
+	// id = 1 invariant: the table holds exactly one row, primary
+	// key fixed at 1. INSERT...ON CONFLICT(id) DO UPDATE keeps it
+	// idempotent on bootstrap.
+	//
+	// Coexists with builder_queue during the cursor-cutover window;
+	// builder_queue is dropped in a follow-up migration once the
+	// cursor path has run stably for one release cycle.
+	`CREATE TABLE IF NOT EXISTS builder_cursor (
+		id                      SMALLINT    PRIMARY KEY DEFAULT 1
+		                                    CONSTRAINT builder_cursor_singleton CHECK (id = 1),
+		last_processed_sequence BIGINT      NOT NULL DEFAULT 0,
+		updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`,
+	// Seed the singleton row so SELECT FOR UPDATE always finds
+	// something to lock. ON CONFLICT keeps reruns of RunMigrations
+	// safe — the row may already exist from a prior boot.
+	`INSERT INTO builder_cursor (id, last_processed_sequence)
+	 VALUES (1, 0)
+	 ON CONFLICT (id) DO NOTHING`,
+
 	// ── Witness sets ─────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS witness_sets (
 		version     SERIAL   PRIMARY KEY,

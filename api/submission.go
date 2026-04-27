@@ -481,6 +481,14 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				}
 			}
 
+			// Enqueue is a no-op under cursor mode (deps.Queue == nil).
+			// In cursor mode the entry_index INSERT above IS the
+			// enqueue — the log itself is the queue. Phase 1a flag
+			// in cmd/operator/main.go selects which mode wires the
+			// queue field.
+			if deps.Queue == nil {
+				return nil
+			}
 			return deps.Queue.Enqueue(ctx, tx, seq)
 		})
 
