@@ -18,6 +18,14 @@ fi
 
 cd "${REPO_ROOT}"
 
+echo "== tearing down any prior stack (force-clear anonymous volumes) =="
+# Same rationale as run-cursor-tests.sh: anonymous volumes
+# survive container recreation, so we explicitly `down -v` to
+# guarantee a clean slate. fake-gcs-server's bucket data is
+# also wiped, which is what we want — bucket-init re-creates
+# it on the next bring-up.
+docker compose -f "${COMPOSE_FILE}" down -v 2>/dev/null || true
+
 echo "== bringing up integration docker-compose =="
 docker compose -f "${COMPOSE_FILE}" up -d
 
