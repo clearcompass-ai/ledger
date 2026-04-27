@@ -236,7 +236,7 @@ func TestAdmission_ModeB_BelowDifficulty(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestDeterminism_RootMatch_1000Entries(t *testing.T) {
-	entries, positions := generateEntries(1000)
+	entries, positions := generateEntries(t, 1000)
 	r1 := runSDKBuilder(t, entries, positions)
 	r2 := runSDKBuilder(t, entries, positions)
 	if r1.NewRoot != r2.NewRoot {
@@ -290,7 +290,7 @@ func TestDeterminism_PathCompression(t *testing.T) {
 }
 
 func TestDeterminism_LaneSelection(t *testing.T) {
-	entries, positions := generateEntries(100)
+	entries, positions := generateEntries(t, 100)
 	r1 := runSDKBuilder(t, entries, positions)
 	r2 := runSDKBuilder(t, entries, positions)
 	if r1.NewRoot != r2.NewRoot {
@@ -299,7 +299,7 @@ func TestDeterminism_LaneSelection(t *testing.T) {
 }
 
 func TestDeterminism_CommutativeSchemas(t *testing.T) {
-	entries, positions := generateEntries(50)
+	entries, positions := generateEntries(t, 50)
 	r1 := runSDKBuilder(t, entries, positions)
 	r2 := runSDKBuilder(t, entries, positions)
 	if r1.NewRoot != r2.NewRoot {
@@ -1171,7 +1171,7 @@ func TestJudicial_AppellateRelay(t *testing.T) {
 }
 
 func TestJudicial_BulkImport(t *testing.T) {
-	entries, positions := generateEntries(1000)
+	entries, positions := generateEntries(t, 1000)
 	r := runSDKBuilder(t, entries, positions)
 	if r.NewLeafCounts == 0 {
 		t.Fatal("should create leaves")

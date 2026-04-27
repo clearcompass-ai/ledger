@@ -55,6 +55,7 @@ package tests
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -87,12 +88,21 @@ func testKeyDID(t *testing.T) (*ecdsa.PrivateKey, string) {
 }
 
 // signedWireBytes produces a complete wire-format entry from a header,
-// payload, and private key. Bypasses the buildWireEntry helper to
-// minimize coupling with helpers_test.go.
+// payload, and private key. The non-forge path (skipValidate=false)
+// delegates to the shared signedWire helper. The forge path
+// (skipValidate=true) hand-constructs the Entry via struct literal —
+// the whole point of that branch is to bypass NewUnsignedEntry's
+// header gate so tests can exercise the server's entry.Validate() step
+// against forged-malformed entries.
 //
-// When skipValidate=true, constructs the Entry via struct literal
-// (bypasses NewEntry's gate) so tests can exercise the server's
-// entry.Validate() step with forged-malformed entries.
+// v7.75 NOTE: The wire format embeds the multi-sig section INSIDE the
+// canonical bytes. envelope.Serialize is total only on entries whose
+// Signatures section is well-formed; an empty Signatures slice panics
+// per envelope/serialize.go:443. Both branches below sign the entry
+// before calling Serialize so the resulting wire bytes survive
+// transit. The skipValidate branch deliberately skips entry.Validate
+// (that's the gate the test is asserting against, server-side) but
+// the signature itself is structurally valid.
 func signedWireBytes(
 	t *testing.T,
 	priv *ecdsa.PrivateKey,
@@ -102,33 +112,34 @@ func signedWireBytes(
 ) []byte {
 	t.Helper()
 
-	var entry *envelope.Entry
-	if skipValidate {
-		// Hand-construct, bypassing NewEntry. Simulates a forged wire stream.
-		hdr.ProtocolVersion = envelope.CurrentProtocolVersion()
-		entry = &envelope.Entry{
-			Header:        hdr,
-			DomainPayload: payload,
-		}
-	} else {
-		e, err := envelope.NewEntry(hdr, payload)
-		if err != nil {
-			t.Fatalf("NewEntry: %v", err)
-		}
-		entry = e
+	if !skipValidate {
+		// Happy path: full v7.75 signing flow including entry.Validate.
+		// hdr.SignerDID is the DID the test already paired with priv.
+		return signedWire(t, hdr, payload, priv, hdr.SignerDID)
 	}
 
-	canonical := envelope.Serialize(entry)
-	hash := envelope.EntryIdentity(entry)
+	// Forge path: struct literal bypasses NewUnsignedEntry's gate, but
+	// the signatures section still has to be well-formed or Serialize
+	// panics (and we want the bytes to leave the test, not crash it).
+	hdr.ProtocolVersion = envelope.CurrentProtocolVersion()
+	entry := &envelope.Entry{
+		Header:        hdr,
+		DomainPayload: payload,
+	}
+	hash := sha256.Sum256(envelope.SigningPayload(entry))
 	sig, err := signatures.SignEntry(hash, priv)
 	if err != nil {
 		t.Fatalf("SignEntry: %v", err)
 	}
-	wire, err := envelope.AppendSignature(canonical, envelope.SigAlgoECDSA, sig)
-	if err != nil {
-		t.Fatalf("AppendSignature: %v", err)
-	}
-	return wire
+	entry.Signatures = []envelope.Signature{{
+		SignerDID: hdr.SignerDID,
+		AlgoID:    envelope.SigAlgoECDSA,
+		Bytes:     sig,
+	}}
+	// Deliberately skip entry.Validate — the test asserts that the
+	// SERVER's Validate step rejects this forged entry. Serialize is
+	// safe because Signatures is non-empty.
+	return envelope.Serialize(entry)
 }
 
 // postEntry submits wire bytes to the test server's admission endpoint
@@ -313,25 +324,11 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 	priv, signerDID := testKeyDID(t)
 
 	// Fresh EventTime, testLogDID destination — should sail through.
-	entry, err := envelope.NewEntry(envelope.ControlHeader{
-		SignerDID:   signerDID,
+	entry := makeSignedEntry(t, envelope.ControlHeader{
 		Destination: testLogDID,
 		EventTime:   time.Now().UTC().Unix(),
-	}, []byte("positive-path-admission"))
-	if err != nil {
-		t.Fatalf("NewEntry: %v", err)
-	}
-
-	expectedIdentity := envelope.EntryIdentity(entry)
-	canonical := envelope.Serialize(entry)
-	sig, err := signatures.SignEntry(expectedIdentity, priv)
-	if err != nil {
-		t.Fatalf("SignEntry: %v", err)
-	}
-	wire, err := envelope.AppendSignature(canonical, envelope.SigAlgoECDSA, sig)
-	if err != nil {
-		t.Fatalf("AppendSignature: %v", err)
-	}
+	}, []byte("positive-path-admission"), priv, signerDID)
+	wire := envelope.Serialize(entry)
 
 	resp := postEntry(t, srv.URL, wire)
 	body := readBody(t, resp)
@@ -377,25 +374,12 @@ func TestMerkleLeaf_IsEntryIdentity(t *testing.T) {
 
 	priv, signerDID := testKeyDID(t)
 
-	entry, err := envelope.NewEntry(envelope.ControlHeader{
-		SignerDID:   signerDID,
+	entry := makeSignedEntry(t, envelope.ControlHeader{
 		Destination: testLogDID,
 		EventTime:   time.Now().UTC().Unix(),
-	}, []byte("merkle-leaf-identity-test"))
-	if err != nil {
-		t.Fatalf("NewEntry: %v", err)
-	}
+	}, []byte("merkle-leaf-identity-test"), priv, signerDID)
 	expectedIdentity := envelope.EntryIdentity(entry)
-
-	canonical := envelope.Serialize(entry)
-	sig, err := signatures.SignEntry(expectedIdentity, priv)
-	if err != nil {
-		t.Fatalf("SignEntry: %v", err)
-	}
-	wire, err := envelope.AppendSignature(canonical, envelope.SigAlgoECDSA, sig)
-	if err != nil {
-		t.Fatalf("AppendSignature: %v", err)
-	}
+	wire := envelope.Serialize(entry)
 
 	// Submit and wait for admission.
 	resp := postEntry(t, srv.URL, wire)
