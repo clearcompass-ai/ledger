@@ -73,13 +73,18 @@ type QueryDeps struct {
 // ─────────────────────────────────────────────────────────────────────
 
 // EntryResponse is the JSON shape returned by query handlers.
+//
+// sig_algorithm_id is intentionally absent: surfacing it here forces a
+// per-row Deserialize (or, post-shipper, a per-row bytestore Get) on
+// list endpoints, which turns metadata queries into payload-fetching
+// storms. Auditors who need the algorithm dereference the entry via
+// GET /v1/entries/{seq} and inspect the envelope locally.
 type EntryResponse struct {
 	SequenceNumber uint64 `json:"sequence_number"`
 	CanonicalHash  string `json:"canonical_hash"`
 	LogTime        string `json:"log_time"`
 	SignerDID      string `json:"signer_did,omitempty"`
 	ProtocolVer    uint16 `json:"protocol_version"`
-	SigAlgorithmID uint16 `json:"sig_algorithm_id"`
 	PayloadSize    int    `json:"payload_size"`
 	CanonicalSize  int    `json:"canonical_size"`
 }
@@ -89,15 +94,11 @@ type EntryResponse struct {
 // ─────────────────────────────────────────────────────────────────────
 
 // toEntryResponses converts []types.EntryWithMetadata into API responses.
-// This is the single site where canonical hashes are computed for the
-// read path — aligning here aligns every query endpoint at once.
+// Single site where canonical hashes are computed for the read path.
 //
-// SignerDID and SigAlgorithmID are not fields on EntryWithMetadata
-// under v7.75 — both live inside CanonicalBytes (in the v6 multi-sig
-// section) and surface via envelope.Deserialize. We deserialize once
-// per entry to extract them alongside protocol version and payload
-// size. On a malformed-bytes degraded path SigAlgorithmID is left
-// at its zero value (the entry is structurally broken anyway).
+// SignerDID lives inside CanonicalBytes (v6 multi-sig section) and
+// surfaces via envelope.Deserialize; we deserialize once per entry
+// to extract it alongside protocol version and payload size.
 func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 	out := make([]EntryResponse, 0, len(metas))
 	for _, ewm := range metas {
@@ -109,7 +110,7 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 
 		entry, err := envelope.Deserialize(ewm.CanonicalBytes)
 		if err != nil {
-			// Malformed bytes in the byte store — log and degrade gracefully.
+			// Malformed bytes in the byte store — degrade gracefully.
 			h := crypto.HashBytes(ewm.CanonicalBytes)
 			resp.CanonicalHash = hex.EncodeToString(h[:])
 		} else {
@@ -118,9 +119,6 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 			resp.ProtocolVer = entry.Header.ProtocolVersion
 			resp.PayloadSize = len(entry.DomainPayload)
 			resp.SignerDID = entry.Header.SignerDID
-			// Deserialize rejects zero-sig sections, so Signatures[0]
-			// is safe inside this success branch.
-			resp.SigAlgorithmID = entry.Signatures[0].AlgoID
 		}
 
 		out = append(out, resp)

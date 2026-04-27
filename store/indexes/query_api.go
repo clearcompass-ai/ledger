@@ -15,11 +15,8 @@ entry bytes. Always.
 EntryWithMetadata field set: under v6 the SDK type carries only
 CanonicalBytes, LogTime, Position. Signatures live inside
 CanonicalBytes (in the v6 multi-sig section) and are extracted via
-envelope.Deserialize when callers need them. The earlier
-SignatureAlgoID/SignatureBytes sidecar fields were removed; this
-query API reads only what the type carries. The entry_index column
-sig_algorithm_id remains in the table for diagnostics, but is not
-surfaced through the API response.
+envelope.Deserialize when callers need them. No sidecar sig
+fields exist on the type or in the entry_index schema.
 */
 package indexes
 
@@ -63,14 +60,10 @@ type indexMeta struct {
 }
 
 // scanAndHydrate queries entry_index for metadata, then batch-hydrates
-// bytes from EntryReader. This is the shared path for all 5 query methods.
+// bytes from EntryReader. Shared path for all 5 query methods.
 //
-// Note on the SQL projection: per-method queries that call this
-// helper MUST select exactly (sequence_number, log_time) in that
-// order — the third column position previously held sig_algorithm_id,
-// which has been dropped because EntryWithMetadata no longer carries
-// it. Per-method query files in this package were updated alongside
-// this helper.
+// SQL projection contract: per-method queries that call this helper
+// MUST select exactly (sequence_number, log_time) in that order.
 func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 	Next() bool
 	Scan(dest ...any) error

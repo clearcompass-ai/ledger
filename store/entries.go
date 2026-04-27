@@ -7,7 +7,7 @@ of sdk builder.EntryFetcher.
 DESIGN RULE: Postgres is an index. Tessera is the source of truth for
 entry bytes. Always.
 
-  - entry_index stores ~50 bytes/row: sequence, hash, log_time, sig_algo,
+  - entry_index stores ~40 bytes/row: sequence, hash, log_time,
     signer_did, target_root, cosignature_of, schema_ref.
   - canonical_bytes and sig_bytes are NEVER in Postgres.
   - EntryReader (tessera.EntryReader) is the ONLY source of entry bytes.
@@ -16,12 +16,8 @@ entry bytes. Always.
 
 EntryWithMetadata field set: under v6 the SDK type carries only
 CanonicalBytes, LogTime, Position. Signatures live inside
-CanonicalBytes (extracted via envelope.Deserialize when needed).
-The earlier SignatureAlgoID/SignatureBytes sidecar fields were
-removed; this fetcher reads only what the type carries. The
-sig_algorithm_id column remains in entry_index for diagnostics
-and for any future SDK-internal need, but is not surfaced through
-EntryWithMetadata.
+CanonicalBytes (extracted via envelope.Deserialize when needed);
+no sidecar fields exist.
 
 INVARIANTS:
   - SDK-D5: all returned entries have verified signatures.
@@ -64,7 +60,6 @@ type EntryRow struct {
 	SequenceNumber uint64
 	CanonicalHash  [32]byte
 	LogTime        time.Time
-	SigAlgorithmID uint16
 	SignerDID      string
 	TargetRoot     []byte // nil if null
 	CosignatureOf  []byte // nil if null
@@ -78,11 +73,10 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	_, err := tx.Exec(ctx, `
 		INSERT INTO entry_index (
 			sequence_number, canonical_hash, log_time,
-			sig_algorithm_id, signer_did, target_root,
-			cosignature_of, schema_ref
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			signer_did, target_root, cosignature_of, schema_ref
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		row.SequenceNumber, row.CanonicalHash[:],
-		row.LogTime, row.SigAlgorithmID, row.SignerDID,
+		row.LogTime, row.SignerDID,
 		row.TargetRoot, row.CosignatureOf, row.SchemaRef,
 	)
 	if err != nil {

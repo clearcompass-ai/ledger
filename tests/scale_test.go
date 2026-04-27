@@ -170,10 +170,10 @@ func TestScale_BulkInsert(t *testing.T) {
 
 			_, err := tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:signer%d", signerIdx),
+				fmt.Sprintf("did:example:signer%d", signerIdx),
 			)
 			if err != nil {
 				tx.Rollback(ctx)
@@ -208,10 +208,10 @@ func TestScale_BulkInsert(t *testing.T) {
 			hash := envelope.EntryIdentity(entry)
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:signer%d", signerIdx),
+				fmt.Sprintf("did:example:signer%d", signerIdx),
 			)
 		}
 		tx.Commit(ctx)
@@ -259,15 +259,14 @@ func TestScale_QueryIndex(t *testing.T) {
 	t.Logf("QUERY signer_did COUNT: %d results in %s", signerCount, elapsed)
 
 	start = time.Now()
-	rows, _ := pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ := pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE signer_did = $1 ORDER BY sequence_number ASC`,
 		"did:example:signer0")
 	var rowCount int
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
@@ -276,15 +275,14 @@ func TestScale_QueryIndex(t *testing.T) {
 
 	// Scan from middle — PK range.
 	start = time.Now()
-	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE sequence_number >= $1 ORDER BY sequence_number ASC LIMIT 1000`,
 		count/2)
 	rowCount = 0
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
@@ -293,26 +291,25 @@ func TestScale_QueryIndex(t *testing.T) {
 
 	// Max scan (10K).
 	start = time.Now()
-	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE sequence_number >= 1 ORDER BY sequence_number ASC LIMIT 10000`,
 	)
 	rowCount = 0
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
 	elapsed = time.Since(start)
 	t.Logf("QUERY scan(1, 10000): %d rows in %s", rowCount, elapsed)
 
-	// entry_index row size (should be ~50 bytes, NOT ~600 bytes).
+	// entry_index row size (should be ~40 bytes, NOT ~600 bytes).
 	var avgRowSize string
 	pool.QueryRow(ctx, `SELECT pg_size_pretty(pg_total_relation_size('entry_index') / GREATEST(COUNT(*),1))
 		FROM entry_index`).Scan(&avgRowSize)
-	t.Logf("ENTRY_INDEX avg row size: %s (target: ~50 bytes, no canonical_bytes/sig_bytes)", avgRowSize)
+	t.Logf("ENTRY_INDEX avg row size: %s (target: ~40 bytes, no canonical_bytes/sig_bytes)", avgRowSize)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -352,10 +349,10 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(envelope.SigAlgoECDSA), fmt.Sprintf("did:example:scale-signer%d", seq/100),
+				fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
 			// v7.75: wire bytes ARE canonical bytes; no separate sig.
 			entryBytes.WriteEntry(seq, wire, nil)

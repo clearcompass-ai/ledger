@@ -127,8 +127,8 @@ func seedEntry(
 	hash[0] = byte(seq) // distinct canonical_hash per row
 	_, err := pool.Exec(ctx, `
 		INSERT INTO entry_index
-			(sequence_number, canonical_hash, log_time, sig_algorithm_id, signer_did)
-		VALUES ($1, $2, NOW(), 1, 'did:web:test-signer.example')
+			(sequence_number, canonical_hash, log_time, signer_did)
+		VALUES ($1, $2, NOW(), 'did:web:test-signer.example')
 		ON CONFLICT (sequence_number) DO NOTHING`,
 		seq, hash,
 	)

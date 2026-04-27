@@ -442,7 +442,6 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				SequenceNumber: seq,
 				CanonicalHash:  canonicalHash,
 				LogTime:        logTime,
-				SigAlgorithmID: algoID,
 				SignerDID:      entry.Header.SignerDID,
 				TargetRoot:     targetRootBytes,
 				CosignatureOf:  cosigOfBytes,

@@ -132,7 +132,6 @@ type preparedEntry struct {
 	// no separate sig blob to carry alongside. Callers needing the
 	// primary signature read entry.Signatures[0].
 	canonical         []byte
-	algoID            uint16
 	canonicalHash     [32]byte
 	logTime           time.Time
 	extractedSplitID  *[32]byte
@@ -432,7 +431,6 @@ func preflightEntry(
 	return &preparedEntry{
 		entry:             entry,
 		canonical:         canonical,
-		algoID:            algoID,
 		canonicalHash:     canonicalHash,
 		logTime:           logTime,
 		extractedSplitID:  extractedSplitID,
@@ -498,7 +496,6 @@ func admitPreparedEntry(
 		SequenceNumber: seq,
 		CanonicalHash:  pe.canonicalHash,
 		LogTime:        pe.logTime,
-		SigAlgorithmID: pe.algoID,
 		SignerDID:      pe.entry.Header.SignerDID,
 		TargetRoot:     targetRootBytes,
 		CosignatureOf:  cosigOfBytes,

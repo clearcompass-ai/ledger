@@ -193,8 +193,8 @@ func seedCommitmentEntry(
 	hash[1] = byte(seq >> 8)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entry_index
-			(sequence_number, canonical_hash, log_time, sig_algorithm_id, signer_did)
-		VALUES ($1, $2, NOW(), 1, 'did:web:test-dealer.example')`,
+			(sequence_number, canonical_hash, log_time, signer_did)
+		VALUES ($1, $2, NOW(), 'did:web:test-dealer.example')`,
 		seq, hash,
 	); err != nil {
 		t.Fatalf("seed entry_index seq=%d: %v", seq, err)

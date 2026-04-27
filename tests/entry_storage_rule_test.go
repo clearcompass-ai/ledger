@@ -69,8 +69,7 @@ func TestRule_EntryIndex_HasNoByteColumns(t *testing.T) {
 	// Verify expected columns ARE present.
 	expected := map[string]bool{
 		"sequence_number": false, "canonical_hash": false,
-		"log_time": false, "sig_algorithm_id": false,
-		"signer_did": false,
+		"log_time": false, "signer_did": false,
 	}
 	for _, col := range columns {
 		if _, ok := expected[col]; ok {
@@ -166,9 +165,9 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	tx, _ := pool.Begin(ctx)
 	tx.Exec(ctx, `
 		INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-			sig_algorithm_id, signer_did)
-		VALUES ($1, $2, $3, $4, $5)`,
-		seq, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:fetcher-rule",
+			signer_did)
+		VALUES ($1, $2, $3, $4)`,
+		seq, hash[:], time.Now().UTC(), "did:example:fetcher-rule",
 	)
 	tx.Commit(ctx)
 
@@ -226,9 +225,9 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		tx, _ := pool.Begin(ctx)
 		tx.Exec(ctx, `
 			INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-				sig_algorithm_id, signer_did)
-			VALUES ($1, $2, $3, $4, $5)`,
-			i, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:query-rule-signer",
+				signer_did)
+			VALUES ($1, $2, $3, $4)`,
+			i, hash[:], time.Now().UTC(), "did:example:query-rule-signer",
 		)
 		tx.Commit(ctx)
 		// v7.75: full wire bytes as canonical; nil for legacy sig split.
@@ -283,9 +282,9 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	tx, _ := pool.Begin(ctx)
 	tx.Exec(ctx, `
 		INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-			sig_algorithm_id, signer_did)
-		VALUES ($1, $2, $3, $4, $5)`,
-		seq, hash[:], time.Now().UTC(), uint16(envelope.SigAlgoECDSA), "did:example:authority-test",
+			signer_did)
+		VALUES ($1, $2, $3, $4)`,
+		seq, hash[:], time.Now().UTC(), "did:example:authority-test",
 	)
 	tx.Commit(ctx)
 

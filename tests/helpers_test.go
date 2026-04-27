@@ -539,10 +539,10 @@ func insertTestEntry(t *testing.T, pool *pgxpool.Pool, seq uint64, entry *envelo
 	// Index in Postgres (no bytes).
 	_, err := pool.Exec(ctx, `
 		INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-			sig_algorithm_id, signer_did, target_root, cosignature_of, schema_ref)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			signer_did, target_root, cosignature_of, schema_ref)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		seq, hash[:], logTime,
-		uint16(1), entry.Header.SignerDID,
+		entry.Header.SignerDID,
 		targetRoot, cosigOf, schemaRef,
 	)
 	if err != nil {

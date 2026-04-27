@@ -132,7 +132,6 @@ var schemaDDL = []string{
 		sequence_number  BIGINT       PRIMARY KEY,
 		canonical_hash   BYTEA        NOT NULL UNIQUE,
 		log_time         TIMESTAMPTZ  NOT NULL,
-		sig_algorithm_id SMALLINT     NOT NULL,
 		signer_did       TEXT         NOT NULL CHECK (signer_did <> ''),
 		target_root      BYTEA,
 		cosignature_of   BYTEA,

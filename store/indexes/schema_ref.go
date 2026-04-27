@@ -19,7 +19,7 @@ func (q *PostgresQueryAPI) QueryBySchemaRef(pos types.LogPosition) ([]types.Entr
 	ctx := context.TODO()
 	posBytes := store.SerializeLogPosition(pos)
 	rows, err := q.db.Query(ctx, `
-		SELECT sequence_number, log_time, sig_algorithm_id
+		SELECT sequence_number, log_time
 		FROM entry_index WHERE schema_ref = $1 ORDER BY sequence_number ASC`,
 		posBytes,
 	)
