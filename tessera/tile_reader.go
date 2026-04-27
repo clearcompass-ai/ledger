@@ -37,8 +37,6 @@ package tessera
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -232,48 +230,9 @@ func encodeTileIndex(index uint64) string {
 	return strings.Join(parts, "/")
 }
 
-// -------------------------------------------------------------------------------------------------
-// 4) HTTP Tile Backend
-// -------------------------------------------------------------------------------------------------
-
-// HTTPTileBackend reads tiles from the Tessera personality's HTTP read API.
-type HTTPTileBackend struct {
-	baseURL string
-	client  *http.Client
-}
-
-// NewHTTPTileBackend creates an HTTP tile backend.
-func NewHTTPTileBackend(baseURL string) *HTTPTileBackend {
-	return &HTTPTileBackend{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{},
-	}
-}
-
-// ReadTileByPath fetches a tile by its c2sp.org-encoded path.
-func (b *HTTPTileBackend) ReadTileByPath(ctx context.Context, path string) ([]byte, error) {
-	url := b.baseURL + "/" + path
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("tessera/tile: build request for %s: %w", path, err)
-	}
-
-	resp, err := b.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("tessera/tile: request %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tessera/tile: HTTP %d for %s", resp.StatusCode, url)
-	}
-
-	// Tiles are small (8KB for full hash tiles, ~8KB for entry tiles with 32-byte hashes).
-	// Cap at 1MB as safety limit.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("tessera/tile: read %s: %w", path, err)
-	}
-	return data, nil
-}
+// HTTPTileBackend was removed in Phase 1B alongside the
+// standalone tessera-personality binary. The operator now reads
+// tiles directly from a POSIX directory via POSIXTileBackend
+// (defined in posix_tile_backend.go), shared with the embedded
+// upstream Tessera writer. See tessera/embedded_appender.go for
+// the in-process construction path.

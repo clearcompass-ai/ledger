@@ -19,10 +19,13 @@ SDK v0.3.0 WIRING CHANGES (addressed in this rewrite):
     for did.DefaultVerifierRegistry(cfg.LogDID, resolver).
 
 OPERATOR INTERNAL SIGNATURES (the ones the last attempt got wrong):
-  - tessera.NewClient(ClientConfig{BaseURL, Timeout}, logger) → *Client.
-    Struct config, single return, no Close method.
-  - tessera.NewTesseraAdapter(client, tileReader, logger) → MerkleAppender.
-    Builder/anchor talk to the adapter, not the raw client.
+  - tessera.NewEmbeddedAppender(ctx, driver, opts, logger) →
+    *EmbeddedAppender. Wraps in-process upstream Tessera; no
+    HTTP. Phase 1B replaced the standalone tessera-personality
+    binary with this in-process construction.
+  - tessera.NewTesseraAdapter(backend, tileReader, logger) →
+    MerkleAppender. backend is *EmbeddedAppender or
+    *ReadOnlyAppender; both satisfy AppenderBackend.
   - tessera.NewInMemoryEntryStore() → *InMemoryEntryStore. The only
     byte-store implementation shipped today. A persistent backend is the
     operator's responsibility to swap in.

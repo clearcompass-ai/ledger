@@ -75,10 +75,13 @@ package tessera
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -315,3 +318,117 @@ func GenerateEphemeralSigner(name string) (note.Signer, string, error) {
 // AppendLeaf([]byte) (uint64, error) and Head() (types.TreeHead, error).
 // Both are implemented above with matching signatures.
 var _ AppenderBackend = (*EmbeddedAppender)(nil)
+
+// ─────────────────────────────────────────────────────────────────
+// ReadOnlyAppender — read-only AppenderBackend for cmd/operator-reader
+// ─────────────────────────────────────────────────────────────────
+
+// ErrReadOnly is returned by ReadOnlyAppender.AppendLeaf. The
+// read-only operator never appends; if any code path reaches
+// AppendLeaf, that's a programming error and surfaces as a
+// loud rejection rather than silently dropping the entry.
+var ErrReadOnly = errors.New("tessera: read-only appender — writes not permitted")
+
+// ReadOnlyAppender satisfies AppenderBackend by reading the
+// checkpoint from a POSIX directory shared with the writer
+// operator. Used by cmd/operator-reader so the reader process
+// can serve TreeHead and proof requests against the same
+// storage the writer holds open via tessera.NewAppender.
+//
+// Lifecycle: trivial. No upstream Tessera primitives held —
+// just a POSIXTileBackend for filesystem reads.
+type ReadOnlyAppender struct {
+	backend *POSIXTileBackend
+}
+
+// NewReadOnlyAppender constructs a read-only appender over the
+// supplied POSIX tile backend. The backend's rootDir must point
+// at the same directory the writer operator's embedded Tessera
+// is configured for (k8s shared volume, same host, etc.).
+func NewReadOnlyAppender(backend *POSIXTileBackend) *ReadOnlyAppender {
+	return &ReadOnlyAppender{backend: backend}
+}
+
+// AppendLeaf always returns ErrReadOnly. The reader never writes.
+func (r *ReadOnlyAppender) AppendLeaf(_ []byte) (uint64, error) {
+	return 0, ErrReadOnly
+}
+
+// Head reads <rootDir>/checkpoint and parses it. Returns the
+// same os.ErrNotExist-wrapped error as EmbeddedAppender.Head
+// before any checkpoint is published.
+func (r *ReadOnlyAppender) Head() (types.TreeHead, error) {
+	body, err := r.backend.ReadCheckpoint(context.Background())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return types.TreeHead{}, fmt.Errorf("tessera/readonly: no checkpoint yet: %w", err)
+		}
+		return types.TreeHead{}, fmt.Errorf("tessera/readonly: read checkpoint: %w", err)
+	}
+	return parseSignedNoteCheckpoint(body)
+}
+
+// Compile-time pin.
+var _ AppenderBackend = (*ReadOnlyAppender)(nil)
+
+// ─────────────────────────────────────────────────────────────────
+// Signed-note checkpoint parser (shared by EmbeddedAppender and
+// ReadOnlyAppender)
+// ─────────────────────────────────────────────────────────────────
+
+// parseSignedNoteCheckpoint parses a c2sp.org/tlog-tiles
+// checkpoint produced by upstream Tessera. The format is:
+//
+//	line 0: origin string (e.g., the operator's LogDID)
+//	line 1: tree size as decimal
+//	line 2: base64-encoded root hash (32 bytes decoded)
+//	line 3: empty (separator before signature block)
+//	line 4+: "— <signer> <base64 sig>" (Ed25519 signatures —
+//	         tlog-tiles ecosystem consumers verify these; the
+//	         operator does not)
+//
+// Lifted from the deleted tessera/client.go in Phase 1B
+// (commit 7/7) so the parser stays available after the HTTP
+// client is removed. Both EmbeddedAppender.Head and
+// ReadOnlyAppender.Head call this.
+func parseSignedNoteCheckpoint(data []byte) (types.TreeHead, error) {
+	text := string(data)
+	lines := strings.Split(text, "\n")
+
+	if len(lines) < 3 {
+		return types.TreeHead{}, fmt.Errorf(
+			"tessera/embedded: checkpoint has %d lines, need at least 3 (origin, size, hash)", len(lines))
+	}
+
+	origin := strings.TrimSpace(lines[0])
+	if origin == "" {
+		return types.TreeHead{}, fmt.Errorf("tessera/embedded: checkpoint line 0 (origin) is empty")
+	}
+
+	treeSizeStr := strings.TrimSpace(lines[1])
+	treeSize, err := strconv.ParseUint(treeSizeStr, 10, 64)
+	if err != nil {
+		return types.TreeHead{}, fmt.Errorf(
+			"tessera/embedded: checkpoint line 1 (tree_size) not a valid uint64: %q: %w", treeSizeStr, err)
+	}
+
+	rootHashB64 := strings.TrimSpace(lines[2])
+	rootBytes, err := base64.StdEncoding.DecodeString(rootHashB64)
+	if err != nil {
+		// Fallback: try raw standard (no padding).
+		rootBytes, err = base64.RawStdEncoding.DecodeString(rootHashB64)
+		if err != nil {
+			return types.TreeHead{}, fmt.Errorf(
+				"tessera/embedded: checkpoint line 2 (root_hash) not valid base64: %q: %w", rootHashB64, err)
+		}
+	}
+	if len(rootBytes) != 32 {
+		return types.TreeHead{}, fmt.Errorf(
+			"tessera/embedded: checkpoint root hash is %d bytes, expected 32", len(rootBytes))
+	}
+
+	var head types.TreeHead
+	head.TreeSize = treeSize
+	copy(head.RootHash[:], rootBytes)
+	return head, nil
+}
