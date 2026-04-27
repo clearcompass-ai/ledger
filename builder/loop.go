@@ -151,7 +151,12 @@ type BuilderLoop struct {
 	tree        *smt.Tree
 	leafStore   *store.PostgresLeafStore
 	nodeCache   *store.PostgresNodeCache
-	queue       *Queue
+	// reader is the abstraction over the legacy *Queue and the
+	// CT-native *CursorReader. Both satisfy BatchReader so the
+	// builder loop is mode-agnostic — selection happens at the
+	// cmd/operator/main.go wiring layer behind the
+	// OPERATOR_BUILDER_READER={queue|cursor} flag.
+	reader      BatchReader
 	fetcher     types.EntryFetcher
 	schema      sdkbuilder.SchemaResolver
 	buffer      *sdkbuilder.DeltaWindowBuffer
@@ -175,7 +180,7 @@ func NewBuilderLoop(
 	tree *smt.Tree,
 	leafStore *store.PostgresLeafStore,
 	nodeCache *store.PostgresNodeCache,
-	queue *Queue,
+	reader BatchReader,
 	fetcher types.EntryFetcher,
 	schema sdkbuilder.SchemaResolver,
 	buffer *sdkbuilder.DeltaWindowBuffer,
@@ -191,7 +196,7 @@ func NewBuilderLoop(
 		tree:        tree,
 		leafStore:   leafStore,
 		nodeCache:   nodeCache,
-		queue:       queue,
+		reader:      reader,
 		fetcher:     fetcher,
 		schema:      schema,
 		buffer:      buffer,
@@ -231,13 +236,13 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
-	recovered, err := bl.queue.RecoverStale(ctx)
+	recovered, err := bl.reader.RecoverOnStartup(ctx)
 	if err != nil {
 		if isContextError(err) {
 			bl.logger.Info("builder loop stopped during recovery")
 			return nil
 		}
-		return fmt.Errorf("builder/loop: recover stale: %w", err)
+		return fmt.Errorf("builder/loop: recover on startup: %w", err)
 	}
 	if recovered > 0 {
 		bl.logger.Warn("recovered stale queue entries", "count", recovered)
@@ -319,7 +324,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	var seqs []uint64
 	err = store.WithReadCommittedTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		var dqErr error
-		seqs, dqErr = bl.queue.DequeueBatch(ctx, tx, bl.cfg.BatchSize)
+		seqs, dqErr = bl.reader.BeginBatch(ctx, tx, bl.cfg.BatchSize)
 		return dqErr
 	})
 	if err != nil {
@@ -391,8 +396,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			}
 		}
 
-		if qErr := bl.queue.MarkProcessed(ctx, tx, seqs); qErr != nil {
-			return fmt.Errorf("mark processed: %w", qErr)
+		if qErr := bl.reader.CommitBatch(ctx, tx, seqs); qErr != nil {
+			return fmt.Errorf("commit batch: %w", qErr)
 		}
 
 		return nil
