@@ -41,8 +41,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
+
+	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
@@ -213,13 +216,26 @@ func TestAdmission_RejectsMalformedCommitmentPayload(t *testing.T) {
 // TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload is the
 // negative control: the same envelope shape with valid inner
 // bytes parses cleanly.
+//
+// v7.75 NOTE: artifact.DeserializePREGrantCommitment now performs
+// the on-curve check at structural ingress (artifact/pre_grant_commitment.go:228),
+// not deferred to VerifyPREGrantCommitment as in earlier versions.
+// The previous fixture (zero-byte points) was off-curve (point
+// prefix 0x00 invalid) and now fails Parse with
+// ErrCommitmentPointOffCurve. Fixture rebuilt using k·G compressed
+// points produced via secp256k1.ScalarBaseMult, then serialized via
+// the SDK's SerializePREGrantCommitment.
 func TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload(t *testing.T) {
-	// Minimal valid wire: 32-byte SplitID + M=2 + N=2 + 2 zero
-	// commitment points. The on-curve check would fire later in
-	// VerifyPREGrantCommitment but is not part of Parse.
-	wire := make([]byte, 32+2+2*33)
-	wire[32] = 2 // M
-	wire[33] = 2 // N
+	commitment := artifact.PREGrantCommitment{
+		SplitID:       [32]byte{0xAB, 0xCD},
+		M:             2,
+		N:             2,
+		CommitmentSet: [][33]byte{onCurvePoint(t, 1), onCurvePoint(t, 2)},
+	}
+	wire, err := artifact.SerializePREGrantCommitment(commitment)
+	if err != nil {
+		t.Fatalf("SerializePREGrantCommitment: %v", err)
+	}
 
 	envelopeBytes, _ := json.Marshal(map[string]any{
 		"schema_id":            artifact.PREGrantCommitmentSchemaID,
@@ -229,16 +245,16 @@ func TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload(t *testing.T) {
 		DomainPayload: envelopeBytes,
 	}
 
-	commitment, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	got, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
 	if err != nil {
 		t.Fatalf("ParsePREGrantCommitmentEntry: %v", err)
 	}
-	if commitment == nil {
+	if got == nil {
 		t.Fatal("expected non-nil commitment")
 	}
-	if commitment.M != 2 || commitment.N != 2 {
+	if got.M != 2 || got.N != 2 {
 		t.Errorf("threshold: got M=%d N=%d, want M=2 N=2",
-			commitment.M, commitment.N)
+			got.M, got.N)
 	}
 }
 
@@ -403,4 +419,24 @@ func hexEncode(b []byte) string {
 		out[i*2+1] = hex[v&0x0f]
 	}
 	return strings.ToLower(string(out))
+}
+
+// onCurvePoint returns compressed(k·G) on secp256k1 — a structurally
+// valid commitment point. Used to satisfy the on-curve check that
+// v7.75 artifact.DeserializePREGrantCommitment performs at structural
+// ingress (artifact/pre_grant_commitment.go:228). Mirrors the SDK's
+// own test helper at crypto/artifact/pre_grant_commitment_wire_test.go:22.
+func onCurvePoint(t *testing.T, k int64) [33]byte {
+	t.Helper()
+	c := secp256k1.S256()
+	x, y := c.ScalarBaseMult(big.NewInt(k).Bytes())
+	var out [33]byte
+	if y.Bit(0) == 0 {
+		out[0] = 0x02
+	} else {
+		out[0] = 0x03
+	}
+	xb := x.Bytes()
+	copy(out[1+32-len(xb):], xb)
+	return out
 }
