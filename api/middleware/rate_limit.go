@@ -99,6 +99,14 @@ func (dc *DifficultyController) Run(ctx context.Context, interval time.Duration)
 }
 
 func (dc *DifficultyController) adjust(ctx context.Context) {
+	// Cursor mode (Phase 1a) and read-only operator both pass
+	// queue=nil — there is no queue to poll, so the auto-adjust
+	// loop runs at static initial difficulty. The Phase 4 design
+	// rewires this to poll Badger WAL depth; until then, static
+	// is the safe fallback.
+	if dc.queue == nil {
+		return
+	}
 	depth, err := dc.queue.PendingCount(ctx)
 	if err != nil {
 		dc.logger.Error("difficulty: queue depth query", "error", err)
