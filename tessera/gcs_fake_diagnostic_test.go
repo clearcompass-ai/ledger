@@ -1,0 +1,427 @@
+/*
+FILE PATH: tessera/gcs_fake_diagnostic_test.go
+
+Targeted diagnostic tests for the fake-gcs-server failure pattern
+that surfaced in TestGCSEntryStore_Cache_EvictsOldestAtCapacity
+and TestGCSEntryStore_ConcurrentWriters: writes return success,
+LIST returns the object's path, but GET on that exact path 404s
+even after a 1.5-second retry budget.
+
+Each test runs ONLY against fake-gcs-server (skipped if
+ORTHOLOG_TEST_GCS_ENDPOINT is unset). Real GCS doesn't exhibit
+this pattern, so running there is wasted I/O.
+
+Each experiment validates one hypothesis with a controlled change
+and explicit logging:
+
+  E1 PathExactMatch       — Does LIST return the same string GET
+                             constructs? (validates path-shape bug
+                             vs. handler bug.)
+  E2 FlatPath             — Same write/read flow, but objects live
+                             at <prefix>/<seq:016x> instead of
+                             <prefix>/<seq:016x>/data. (Validates
+                             nested-directory-creation bug.)
+  E3 AttrsRightAfterClose — Write ONE object, then call .Attrs()
+                             AND .NewReader() back-to-back. (If
+                             Attrs sees it but NewReader doesn't,
+                             fake-gcs's read paths disagree among
+                             themselves.)
+  E4 BurstWriteSettle     — Same eviction-style burst, but sleep
+                             5s before reading seq=0. (If 5s fixes
+                             it but 1.5s doesn't, the bug IS just
+                             a long settle window.)
+
+Read the t.Logf output to interpret. Each test logs every read
+attempt with the exact path string for paste-into-an-issue clarity.
+*/
+package tessera
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"testing"
+	"time"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+)
+
+// requireFakeGCS skips unless ORTHOLOG_TEST_GCS_ENDPOINT is set.
+// Diagnostic tests are fake-gcs-specific by design.
+func requireFakeGCS(t *testing.T) (string, string) {
+	t.Helper()
+	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT unset; diagnostic is fake-gcs-only")
+	}
+	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	if bucket == "" {
+		bucket = "ortholog-test-bytes"
+	}
+	return endpoint, bucket
+}
+
+// rawClient builds a bare GCS client against fake-gcs. Used by
+// experiments that bypass GCSEntryStore so the diagnostic isn't
+// confounded by our own caching/path logic.
+func rawClient(t *testing.T, endpoint string) *storage.Client {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := storage.NewClient(ctx,
+		option.WithEndpoint(endpoint),
+		option.WithoutAuthentication())
+	if err != nil {
+		t.Fatalf("storage.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E1 — Does LIST return the same string GET constructs?
+// ─────────────────────────────────────────────────────────────────
+//
+// HYPOTHESIS:
+//   fake-gcs's GET handler canonicalizes the URL path differently
+//   from its LIST handler (e.g., slash collapsing, URL decoding,
+//   case folding), so the path GCSEntryStore.ReadEntry constructs
+//   matches what was written but doesn't match what GET expects.
+//
+// PREDICTION:
+//   If hypothesis holds: store.objectName(seq) != attrs.Name from
+//   listing, OR the byte string matches but GET on attrs.Name also
+//   404s.
+//   If refuted: paths match exactly AND GET on either string works.
+
+func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
+	endpoint, _ := requireFakeGCS(t)
+	_ = endpoint
+	store := requireGCS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Reproduce the eviction-style burst: 17 writes, cache cap=16.
+	for i := uint64(0); i < 17; i++ {
+		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+			t.Fatalf("WriteEntry seq=%d: %v", i, err)
+		}
+	}
+
+	// Settle briefly — generous, just to be fair to fake-gcs.
+	time.Sleep(500 * time.Millisecond)
+
+	// Step 1: enumerate via LIST.
+	t.Logf("─── LIST under prefix %q ───", store.objectPrefix)
+	listed := make(map[string]bool)
+	it := store.bucket.Objects(ctx, &storage.Query{Prefix: store.objectPrefix})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatalf("LIST iter: %v", err)
+		}
+		t.Logf("LIST: %q  size=%d  generation=%d", attrs.Name, attrs.Size, attrs.Generation)
+		listed[attrs.Name] = true
+	}
+	t.Logf("LIST returned %d entries", len(listed))
+
+	// Step 2: what does our code expect to GET for seq=0?
+	expectedSeq0 := store.objectName(0)
+	t.Logf("─── store.objectName(0) = %q ───", expectedSeq0)
+
+	// Step 3: byte-equality check.
+	if listed[expectedSeq0] {
+		t.Logf("✓ LIST contains the exact path our GET will use")
+	} else {
+		t.Errorf("✗ LIST does NOT contain %q", expectedSeq0)
+		t.Logf("Closest LIST entries:")
+		for name := range listed {
+			t.Logf("  %q", name)
+		}
+	}
+
+	// Step 4: GET on the constructed path (the failing path in the
+	// production test).
+	r1, err1 := store.bucket.Object(expectedSeq0).NewReader(ctx)
+	if err1 != nil {
+		t.Logf("GET store.objectName(0)=%q: ERR %v", expectedSeq0, err1)
+	} else {
+		_, _ = io.ReadAll(r1)
+		_ = r1.Close()
+		t.Logf("GET store.objectName(0)=%q: OK", expectedSeq0)
+	}
+
+	// Step 5: GET on every name returned by LIST. If any of these
+	// 404s, the LIST→GET contract is broken in fake-gcs.
+	t.Logf("─── GET each LIST entry ───")
+	getMisses := 0
+	for name := range listed {
+		r, err := store.bucket.Object(name).NewReader(ctx)
+		if err != nil {
+			t.Logf("GET %q: ERR %v", name, err)
+			getMisses++
+			continue
+		}
+		_, _ = io.ReadAll(r)
+		_ = r.Close()
+		t.Logf("GET %q: OK", name)
+	}
+	if getMisses > 0 {
+		t.Errorf("✗ %d/%d objects returned by LIST 404d on GET", getMisses, len(listed))
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E2 — Flat path layout (no per-seq subdirectory)
+// ─────────────────────────────────────────────────────────────────
+//
+// HYPOTHESIS:
+//   fake-gcs has a race or bug specifically around creating
+//   nested-directory objects (multiple parents under a shared
+//   prefix). Our path scheme is "<prefix>/<seq:016x>/data" — three
+//   levels under prefix. Flat scheme would be "<prefix>/<seq:016x>"
+//   — one level under prefix.
+//
+// PREDICTION:
+//   If hypothesis holds: 17 sequential writes to flat paths all
+//   GET-readable.
+//   If refuted: same write-readback failure on flat paths too.
+//   Result either way is a hard data point — fix path shape OR
+//   stop blaming directories.
+
+func TestFakeGCS_Diagnostic_E2_FlatPath_NoSubdirPerSeq(t *testing.T) {
+	endpoint, bucketName := requireFakeGCS(t)
+	client := rawClient(t, endpoint)
+	bucket := client.Bucket(bucketName)
+
+	prefix := fmt.Sprintf("diag-e2-flat/%d", time.Now().UnixNano())
+	flatName := func(seq uint64) string {
+		// One slash, no /data suffix.
+		return fmt.Sprintf("%s/%016x", prefix, seq)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Cleanup at end.
+	t.Cleanup(func() {
+		cleanCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+		defer c()
+		it := bucket.Objects(cleanCtx, &storage.Query{Prefix: prefix})
+		for {
+			a, err := it.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				return
+			}
+			_ = bucket.Object(a.Name).Delete(cleanCtx)
+		}
+	})
+
+	// 17 sequential writes to flat paths.
+	for i := uint64(0); i < 17; i++ {
+		w := bucket.Object(flatName(i)).NewWriter(ctx)
+		if _, err := w.Write([]byte{byte(i)}); err != nil {
+			_ = w.Close()
+			t.Fatalf("write seq=%d: %v", i, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("close seq=%d: %v", i, err)
+		}
+	}
+
+	// Brief settle.
+	time.Sleep(500 * time.Millisecond)
+
+	// Read each.
+	misses := 0
+	for i := uint64(0); i < 17; i++ {
+		name := flatName(i)
+		r, err := bucket.Object(name).NewReader(ctx)
+		if err != nil {
+			if errors.Is(err, storage.ErrObjectNotExist) {
+				t.Logf("✗ seq=%d %q: NOT FOUND", i, name)
+				misses++
+				continue
+			}
+			t.Logf("✗ seq=%d %q: ERR %v", i, name, err)
+			misses++
+			continue
+		}
+		_, _ = io.ReadAll(r)
+		_ = r.Close()
+	}
+
+	if misses > 0 {
+		t.Errorf("FLAT layout: %d/17 reads missed → bug is NOT specific to nested subdirs", misses)
+	} else {
+		t.Logf("✓ FLAT layout: all 17 reads succeeded → bug IS specific to nested-directory paths")
+		t.Logf("  Action: change GCSEntryStore.objectName to flat layout in production.")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E3 — Attrs vs NewReader after Close
+// ─────────────────────────────────────────────────────────────────
+//
+// HYPOTHESIS:
+//   fake-gcs's two read endpoints — Attrs (GET .../o/<name>) and
+//   media download (GET .../o/<name>?alt=media) — disagree about
+//   object visibility right after Close(). One sees it; the other
+//   doesn't.
+//
+// PREDICTION:
+//   If Attrs succeeds but NewReader fails on the same object, we
+//   know fake-gcs has a per-endpoint visibility lag.
+//   If both succeed, the bug is elsewhere (likely concurrent-write
+//   indexing under burst load, validated by E2 outcome).
+
+func TestFakeGCS_Diagnostic_E3_AttrsRightAfterClose(t *testing.T) {
+	endpoint, bucketName := requireFakeGCS(t)
+	client := rawClient(t, endpoint)
+	bucket := client.Bucket(bucketName)
+
+	prefix := fmt.Sprintf("diag-e3/%d", time.Now().UnixNano())
+	name := fmt.Sprintf("%s/single/data", prefix)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	t.Cleanup(func() {
+		cleanCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
+		defer c()
+		_ = bucket.Object(name).Delete(cleanCtx)
+	})
+
+	// Write.
+	w := bucket.Object(name).NewWriter(ctx)
+	want := []byte("attrs-vs-reader")
+	if _, err := w.Write(want); err != nil {
+		_ = w.Close()
+		t.Fatalf("write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	t.Logf("WRITE %q: ok (%d bytes)", name, len(want))
+
+	// Right after Close: try Attrs.
+	attrs, attrsErr := bucket.Object(name).Attrs(ctx)
+	if attrsErr != nil {
+		t.Logf("✗ Attrs(%q): %v", name, attrsErr)
+	} else {
+		t.Logf("✓ Attrs(%q): size=%d generation=%d updated=%v",
+			name, attrs.Size, attrs.Generation, attrs.Updated)
+	}
+
+	// Right after Attrs: try NewReader.
+	r, rErr := bucket.Object(name).NewReader(ctx)
+	if rErr != nil {
+		t.Logf("✗ NewReader(%q): %v", name, rErr)
+	} else {
+		got, _ := io.ReadAll(r)
+		_ = r.Close()
+		if !bytes.Equal(got, want) {
+			t.Errorf("✗ NewReader: got %q, want %q", got, want)
+		} else {
+			t.Logf("✓ NewReader(%q): %q (matches)", name, got)
+		}
+	}
+
+	// Diagnostic: if Attrs succeeded but NewReader failed, that's
+	// the bug. Otherwise this test passes silently.
+	if attrsErr == nil && rErr != nil {
+		t.Errorf("Attrs sees the object, NewReader does not — fake-gcs read-endpoint inconsistency")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E4 — Burst write + 5s settle + read
+// ─────────────────────────────────────────────────────────────────
+//
+// HYPOTHESIS:
+//   fake-gcs's eventual consistency window under bursty writes is
+//   longer than the 1.5s our retry helper budgets, but FINITE. A
+//   long settle (5s) would resolve the failure.
+//
+// PREDICTION:
+//   If hypothesis holds: 17 writes + 5s sleep → read seq=0 succeeds.
+//   If refuted: read seq=0 still 404s after 5s. Then the bug is
+//   not "settle window" — it's a structural issue (E1 / E2 territory).
+
+func TestFakeGCS_Diagnostic_E4_BurstWriteSettleTime(t *testing.T) {
+	requireFakeGCS(t)
+	store := requireGCS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for i := uint64(0); i < 17; i++ {
+		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+			t.Fatalf("WriteEntry seq=%d: %v", i, err)
+		}
+	}
+
+	// Force seq=0 out of the in-process cache so the read goes to GCS.
+	store.mu.Lock()
+	delete(store.cache, 0)
+	delete(store.access, 0)
+	store.mu.Unlock()
+
+	// Settle period — 5 seconds, ~3.3x the previous retry budget.
+	t.Logf("sleeping 5s to give fake-gcs all the time it could possibly need...")
+	time.Sleep(5 * time.Second)
+
+	// Single GET, no retry.
+	expected := store.objectName(0)
+	r, err := store.bucket.Object(expected).NewReader(ctx)
+	if err != nil {
+		t.Errorf("✗ seq=0 still NOT visible after 5s settle: %v", err)
+		t.Logf("  This refutes the 'settle window' hypothesis. The bug is structural.")
+		t.Logf("  Run E1 and E2 to narrow further.")
+		return
+	}
+	got, _ := io.ReadAll(r)
+	_ = r.Close()
+	if len(got) == 0 {
+		t.Errorf("seq=0 read returned empty body")
+		return
+	}
+	t.Logf("✓ seq=0 visible after 5s settle (%d bytes)", len(got))
+	t.Logf("  Hypothesis: fake-gcs has a >1.5s but <5s read-after-write window under burst.")
+	t.Logf("  Action: bump readEntryWithRetry budget OR move to flat layout (E2).")
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E5 — Compare write paths byte-by-byte across the loop
+// ─────────────────────────────────────────────────────────────────
+//
+// SECONDARY HYPOTHESIS (specific to our code path):
+//   GCSEntryStore.objectName produces a STABLE string for a given
+//   seq, but maybe somehow the writer and reader observe different
+//   strings due to concurrency. This eliminates that possibility.
+
+func TestFakeGCS_Diagnostic_E5_ObjectNameStability(t *testing.T) {
+	store := &GCSEntryStore{objectPrefix: "stability-test"}
+	for i := uint64(0); i < 100; i++ {
+		first := store.objectName(i)
+		second := store.objectName(i)
+		if first != second {
+			t.Errorf("seq=%d: %q != %q (objectName is non-deterministic!)", i, first, second)
+		}
+	}
+	// Specifically check the seqs that failed in production.
+	cases := []uint64{0, 100, 101, 200}
+	for _, seq := range cases {
+		t.Logf("objectName(%d) = %q", seq, store.objectName(seq))
+	}
+}
