@@ -38,6 +38,7 @@ package integration
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -130,19 +131,22 @@ func TestAdmission_RejectsBadSignature(t *testing.T) {
 			Destination: "did:web:operator.example",
 		},
 	}
-	// Sign over arbitrary 32 bytes — the test exercises the
-	// verifier's wrong-key rejection, not the canonical-hash
-	// derivation. signatures.SignEntry takes [32]byte directly.
-	var hash [32]byte
-	hash[0] = 0x01
-	sigA, err := signatures.SignEntry(hash, keyA)
+	// v7.75 signing contract (envelope/serialize.go:218-225): sign
+	// over sha256(SigningPayload(entry)). The verifier hashes the
+	// same bytes, so producing a sigA over the actual signing hash
+	// (with key A) is the correct way to set up a wrong-key
+	// rejection — the signature is valid against keyA but the
+	// resolver hands keyB's pubkey to the verifier.
+	signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+	sigA, err := signatures.SignEntry(signingHash, keyA)
 	if err != nil {
 		t.Fatalf("SignEntry A: %v", err)
 	}
 
 	// Resolver returns key B's public key, not key A's. The
 	// signature was produced with A; verification with B's key
-	// MUST fail.
+	// MUST fail with ErrSignatureInvalid (cryptographic mismatch),
+	// not ErrSignerDIDResolution (resolver failure).
 	resolver := stubDIDResolver{
 		did: signerDID,
 		pub: &keyB.PublicKey,
