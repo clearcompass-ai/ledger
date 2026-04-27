@@ -59,7 +59,11 @@ func requireDB(t *testing.T) *pgxpool.Pool {
 // before each test so runs are independent of suite ordering.
 func resetState(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, "TRUNCATE entry_index"); err != nil {
+	// CASCADE: commitment_split_id has an FK on
+	// entry_index(sequence_number). Bare TRUNCATE refuses; CASCADE
+	// wipes both. These tests don't seed commitment_split_id, so
+	// the cascade is a no-op data-wise.
+	if _, err := pool.Exec(ctx, "TRUNCATE entry_index CASCADE"); err != nil {
 		t.Fatalf("truncate entry_index: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
