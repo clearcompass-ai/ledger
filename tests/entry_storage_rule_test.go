@@ -28,7 +28,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -144,7 +144,7 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	pool := skipIfNoPostgres(t)
 	ctx := context.Background()
 
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 
 	// Create a v7.75-signed entry. makeEntry produces an entry whose
 	// Signatures section is well-formed, so envelope.Serialize is safe.
@@ -207,7 +207,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 	pool := skipIfNoPostgres(t)
 	ctx := context.Background()
 
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 	cleanTables(t, pool)
 
 	// Insert 3 entries — index in Postgres, bytes in EntryReader.
@@ -261,7 +261,7 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	pool := skipIfNoPostgres(t)
 	ctx := context.Background()
 
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 	cleanTables(t, pool)
 
 	// Create entry.

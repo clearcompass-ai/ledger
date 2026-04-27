@@ -76,8 +76,8 @@ import (
 	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
 
 	opapi "github.com/clearcompass-ai/ortholog-operator/api"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
 )
 
 const testLogDID = "did:web:test-operator.example"
@@ -212,16 +212,16 @@ func seedCommitmentEntry(
 // Tessera reader stub for the lookup endpoint
 // ─────────────────────────────────────────────────────────────────────
 
-// stubEntryReader satisfies tessera.EntryReader by returning canned
+// stubEntryReader satisfies bytestore.Reader by returning canned
 // (canonical, signature) pairs keyed by sequence number. The
 // integration suite uses this rather than running real Tessera
 // because the lookup endpoint contract terminates at
 // "operator returns canonical bytes" — Tessera tile generation is
 // orthogonal and tested in tessera_integration_test.go.
-// stubEntryReader satisfies tessera.EntryReader for the integration
+// stubEntryReader satisfies bytestore.Reader for the integration
 // tests' lookup-endpoint round-trip fixtures.
 //
-// tessera.EntryReader's full interface (tessera/entry_reader.go):
+// bytestore.Reader's full interface (tessera/entry_reader.go):
 //
 //	ReadEntry(seq uint64) ([]byte, error)
 //	ReadEntryBatch(seqs []uint64) ([][]byte, error)
@@ -257,9 +257,9 @@ func (s *stubEntryReader) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
 	return out, nil
 }
 
-// Compile-time check: a future tessera.EntryReader signature drift
+// Compile-time check: a future bytestore.Reader signature drift
 // surfaces here as a build error rather than at the call site.
-var _ tessera.EntryReader = (*stubEntryReader)(nil)
+var _ bytestore.Reader = (*stubEntryReader)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
 // CI3 — Happy path

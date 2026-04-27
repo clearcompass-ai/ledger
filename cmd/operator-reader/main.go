@@ -43,6 +43,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
@@ -100,49 +101,42 @@ func run(logger *slog.Logger) error {
 	tesseraAdapter := tessera.NewTesseraAdapter(roAppender, tileReader, logger)
 	logger.Info("tessera initialized (read-only)", "storage_dir", cfg.TesseraStorageDir)
 
-	// ── Entry byte store (Phase 2) ────────────────────────────────────
-	// Reader points at the same backend + prefix the writer
-	// operator uses, so byte hydration on GET requests returns
-	// the same bytes the writer admitted. memory mode in the
-	// reader serves zero entries (the writer's in-memory store
-	// is in a different process); gcs mode shares the bucket.
-	var entryBytes interface {
-		tessera.EntryReader
-		tessera.EntryWriter
+	// ── Entry byte store ──────────────────────────────────────────────
+	// Reader points at the same backend + prefix the writer operator
+	// uses, so byte hydration on GET requests returns the same bytes
+	// the writer admitted. OPERATOR_BYTE_STORE_BACKEND is required;
+	// only "gcs" is supported today.
+	if cfg.ByteStoreBackend == "" {
+		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (only valid value: gcs)")
 	}
-	switch cfg.ByteStoreBackend {
-	case "memory", "":
-		entryBytes = tessera.NewInMemoryEntryStore()
-		logger.Warn("operator-reader using empty InMemoryEntryStore — entry byte hydration will fail. Set ORTHOLOG_BYTE_STORE=gcs and configure the same bucket/prefix as the writer.")
-	case "gcs":
-		if cfg.ByteStoreGCSBucket == "" {
-			return fmt.Errorf("ORTHOLOG_BYTE_STORE=gcs requires ORTHOLOG_BYTE_STORE_GCS_BUCKET")
-		}
-		gcsStore, gerr := tessera.NewGCSEntryStore(ctx, tessera.GCSEntryStoreConfig{
-			Bucket:       cfg.ByteStoreGCSBucket,
-			Endpoint:     cfg.ByteStoreGCSEndpoint,
-			Anonymous:    cfg.ByteStoreGCSAnon,
-			ObjectPrefix: cfg.ByteStoreGCSPrefix,
-			CacheSize:    cfg.ByteStoreCacheSize,
-		})
-		if gerr != nil {
-			return fmt.Errorf("byte store GCS: %w", gerr)
-		}
-		defer func() {
-			if err := gcsStore.Close(); err != nil {
-				logger.Warn("gcs byte store close", "error", err)
-			}
-		}()
-		entryBytes = gcsStore
-		logger.Info("operator-reader byte store is GCSEntryStore",
-			"bucket", cfg.ByteStoreGCSBucket,
-			"prefix", cfg.ByteStoreGCSPrefix,
-			"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
-			"anonymous", cfg.ByteStoreGCSAnon,
-		)
-	default:
-		return fmt.Errorf("unknown ORTHOLOG_BYTE_STORE %q (want memory|gcs)", cfg.ByteStoreBackend)
+	if cfg.ByteStoreBackend != "gcs" {
+		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (only valid value: gcs)", cfg.ByteStoreBackend)
 	}
+	if cfg.ByteStoreGCSBucket == "" {
+		return fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+	}
+	gcsStore, gerr := bytestore.NewGCS(ctx, bytestore.GCSConfig{
+		Bucket:       cfg.ByteStoreGCSBucket,
+		Endpoint:     cfg.ByteStoreGCSEndpoint,
+		Anonymous:    cfg.ByteStoreGCSAnon,
+		ObjectPrefix: cfg.ByteStoreGCSPrefix,
+		CacheSize:    cfg.ByteStoreCacheSize,
+	})
+	if gerr != nil {
+		return fmt.Errorf("byte store GCS: %w", gerr)
+	}
+	defer func() {
+		if err := gcsStore.Close(); err != nil {
+			logger.Warn("gcs byte store close", "error", err)
+		}
+	}()
+	var entryBytes bytestore.Store = gcsStore
+	logger.Info("operator-reader byte store is bytestore.GCS",
+		"bucket", cfg.ByteStoreGCSBucket,
+		"prefix", cfg.ByteStoreGCSPrefix,
+		"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
+		"anonymous", cfg.ByteStoreGCSAnon,
+	)
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
 	leafStore := store.NewPostgresLeafStore(pool.DB)
@@ -287,11 +281,11 @@ func loadConfig() readerConfig {
 		MaxDifficulty:     24,
 		HashFunction:      "sha256",
 
-		ByteStoreBackend:     envOr("ORTHOLOG_BYTE_STORE", "memory"),
-		ByteStoreGCSBucket:   os.Getenv("ORTHOLOG_BYTE_STORE_GCS_BUCKET"),
-		ByteStoreGCSEndpoint: os.Getenv("ORTHOLOG_BYTE_STORE_GCS_ENDPOINT"),
-		ByteStoreGCSAnon:     os.Getenv("ORTHOLOG_BYTE_STORE_GCS_ANONYMOUS") == "true",
-		ByteStoreGCSPrefix:   envOr("ORTHOLOG_BYTE_STORE_GCS_PREFIX", "entries"),
+		ByteStoreBackend:     os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
+		ByteStoreGCSBucket:   os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint: os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:     os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSPrefix:   envOr("OPERATOR_BYTE_STORE_GCS_PREFIX", "entries"),
 		ByteStoreCacheSize:   4096,
 	}
 }

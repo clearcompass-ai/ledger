@@ -1,19 +1,17 @@
 /*
-FILE PATH: tessera/gcs_entry_store.go
+FILE PATH: bytestore/gcs.go
 
-GCSEntryStore — GCS-backed implementation of EntryReader +
-EntryWriter. Replaces InMemoryEntryStore for production
-deployments where entry bytes must survive operator process
-restarts and be addressable from multiple operator instances
-(writer + reader sharing the same byte vault).
+GCS — GCS-backed bytestore.Store implementation. Production target
+where entry bytes must survive operator process restarts and be
+addressable from multiple operator instances (writer + reader
+sharing the same byte vault).
 
 WHY GCS:
 
-  The user's architectural directive specifies GCS via
-  Application Default Credentials (ADC) for the operator's
-  byte vault. fake-gcs-server speaks the same wire protocol,
-  so integration tests run against the docker-compose harness
-  without changing this file.
+  The operator targets GCS via Application Default Credentials (ADC)
+  for the byte vault. fake-gcs-server speaks the same wire protocol,
+  so integration tests run against the docker-compose harness without
+  changing this file.
 
 OBJECT LAYOUT:
 
@@ -21,39 +19,36 @@ OBJECT LAYOUT:
 
     gs://<bucket>/entries/<sequence>/data
 
-  The object body is the wire bytes verbatim — opaque to the
-  store; whatever was written is what reads return. Sequence
-  numbers are zero-padded to 16 hex digits so lexical ordering
-  matches numeric ordering; useful for ad-hoc gsutil ls
-  inspection.
+  The object body is the wire bytes verbatim — opaque to the store;
+  whatever was written is what reads return. Sequence numbers are
+  zero-padded to 16 hex digits so lexical ordering matches numeric
+  ordering; useful for ad-hoc gsutil ls inspection.
 
 CACHING:
 
-  GCS object reads are 50-200ms. At sustained 100 QPS (the
-  user's stated SLO target) with diverse access patterns,
-  per-request GCS hits would dominate latency. The store
-  fronts GCS with an LRU cache keyed by sequence number.
-  Cache size is caller-configurable.
+  GCS object reads are 50-200ms. At sustained 100 QPS with diverse
+  access patterns, per-request GCS hits would dominate latency. The
+  store fronts GCS with an LRU cache keyed by sequence number. Cache
+  size is caller-configurable.
 
-  Writes are write-through: WriteEntry pushes the blob to GCS
-  AND populates the cache. Read-after-write hits the cache.
+  Writes are write-through: WriteEntry pushes the blob to GCS AND
+  populates the cache. Read-after-write hits the cache.
 
 CREDENTIALS:
 
-  cloud.google.com/go/storage's NewClient honors ADC by
-  default — production deployments running on GCE/GKE pick
-  up the workload identity automatically. For local tests,
-  fake-gcs-server requires a custom endpoint and accepts
-  anonymous credentials; both are supported via
-  GCSEntryStoreConfig.{Endpoint, Anonymous}.
+  cloud.google.com/go/storage's NewClient honors ADC by default —
+  production deployments running on GCE/GKE pick up the workload
+  identity automatically. For local tests, fake-gcs-server requires
+  a custom endpoint and accepts anonymous credentials; both are
+  supported via GCSConfig.{Endpoint, Anonymous}.
 
 CONCURRENCY:
 
-  GCS client is goroutine-safe; the LRU cache is mutex-
-  guarded internally. Multiple concurrent readers + writers
-  on a single store instance are safe.
+  GCS client is goroutine-safe; the LRU cache is mutex-guarded
+  internally. Multiple concurrent readers + writers on a single
+  store instance are safe.
 */
-package tessera
+package bytestore
 
 import (
 	"bytes"
@@ -68,8 +63,8 @@ import (
 	"google.golang.org/api/option"
 )
 
-// GCSEntryStoreConfig configures NewGCSEntryStore.
-type GCSEntryStoreConfig struct {
+// GCSConfig configures NewGCS.
+type GCSConfig struct {
 	// Bucket is the GCS bucket name. REQUIRED.
 	Bucket string
 
@@ -80,9 +75,8 @@ type GCSEntryStoreConfig struct {
 	// production endpoint.
 	Endpoint string
 
-	// Anonymous bypasses ADC credential discovery. Set true
-	// for fake-gcs-server tests. Empty/false = use ADC
-	// (production).
+	// Anonymous bypasses ADC credential discovery. Set true for
+	// fake-gcs-server tests. Empty/false = use ADC (production).
 	Anonymous bool
 
 	// CacheSize is the LRU cache size (number of wire-byte blobs
@@ -90,24 +84,22 @@ type GCSEntryStoreConfig struct {
 	// is ~1KB on average; 4096 ≈ 4MB RAM.
 	CacheSize int
 
-	// ObjectPrefix is prepended to every object name.
-	// Defaults to "entries". Useful for sharing a bucket
-	// across multiple operator instances (one prefix per
-	// log).
+	// ObjectPrefix is prepended to every object name. Defaults to
+	// "entries". Useful for sharing a bucket across multiple
+	// operator instances (one prefix per log).
 	ObjectPrefix string
 
-	// WriteTimeout caps a single WriteEntry call. Defaults to
-	// 30s, generous for slow CI / cross-region writes.
+	// WriteTimeout caps a single WriteEntry call. Defaults to 30s,
+	// generous for slow CI / cross-region writes.
 	WriteTimeout time.Duration
 
-	// ReadTimeout caps a single ReadEntry / ReadEntryBatch
-	// call. Defaults to 30s.
+	// ReadTimeout caps a single ReadEntry / ReadEntryBatch call.
+	// Defaults to 30s.
 	ReadTimeout time.Duration
 }
 
-// GCSEntryStore satisfies EntryReader + EntryWriter against a
-// GCS bucket with an LRU cache layer.
-type GCSEntryStore struct {
+// GCS satisfies Store against a GCS bucket with an LRU cache layer.
+type GCS struct {
 	client       *storage.Client
 	bucket       *storage.BucketHandle
 	objectPrefix string
@@ -121,13 +113,12 @@ type GCSEntryStore struct {
 	maxSize int
 }
 
-// NewGCSEntryStore opens a GCS client and returns a store rooted
-// at cfg.Bucket. The bucket must already exist; this function
-// does NOT create it.
+// NewGCS opens a GCS client and returns a store rooted at cfg.Bucket.
+// The bucket must already exist; this function does NOT create it.
 //
 // For fake-gcs-server tests:
 //
-//	NewGCSEntryStore(ctx, GCSEntryStoreConfig{
+//	NewGCS(ctx, GCSConfig{
 //	    Bucket:    "test-bucket",
 //	    Endpoint:  "http://localhost:4443/storage/v1/",
 //	    Anonymous: true,
@@ -135,15 +126,15 @@ type GCSEntryStore struct {
 //
 // For production:
 //
-//	NewGCSEntryStore(ctx, GCSEntryStoreConfig{
+//	NewGCS(ctx, GCSConfig{
 //	    Bucket: "ortholog-prod-entries",
 //	})
 //
-// The latter form picks up Application Default Credentials
-// (workload identity on GCE/GKE; gcloud-auth on dev machines).
-func NewGCSEntryStore(ctx context.Context, cfg GCSEntryStoreConfig) (*GCSEntryStore, error) {
+// The latter form picks up Application Default Credentials (workload
+// identity on GCE/GKE; gcloud-auth on dev machines).
+func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	if cfg.Bucket == "" {
-		return nil, fmt.Errorf("tessera/gcs: NewGCSEntryStore requires non-empty Bucket")
+		return nil, fmt.Errorf("bytestore/gcs: NewGCS requires non-empty Bucket")
 	}
 	if cfg.CacheSize <= 0 {
 		cfg.CacheSize = 4096
@@ -188,10 +179,10 @@ func NewGCSEntryStore(ctx context.Context, cfg GCSEntryStoreConfig) (*GCSEntrySt
 
 	client, err := storage.NewClient(ctx, clientOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("tessera/gcs: storage.NewClient: %w", err)
+		return nil, fmt.Errorf("bytestore/gcs: storage.NewClient: %w", err)
 	}
 
-	return &GCSEntryStore{
+	return &GCS{
 		client:       client,
 		bucket:       client.Bucket(cfg.Bucket),
 		objectPrefix: cfg.ObjectPrefix,
@@ -204,15 +195,15 @@ func NewGCSEntryStore(ctx context.Context, cfg GCSEntryStoreConfig) (*GCSEntrySt
 }
 
 // objectName returns "<prefix>/<seq:016x>/data".
-func (s *GCSEntryStore) objectName(seq uint64) string {
+func (s *GCS) objectName(seq uint64) string {
 	return fmt.Sprintf("%s/%016x/data", s.objectPrefix, seq)
 }
 
-// WriteEntry uploads wire bytes to entries/<seq>/data and populates the
-// in-memory cache. Errors propagate from the GCS upload.
-func (s *GCSEntryStore) WriteEntry(seq uint64, wireBytes []byte) error {
+// WriteEntry uploads wire bytes to entries/<seq>/data and populates
+// the in-memory cache. Errors propagate from the GCS upload.
+func (s *GCS) WriteEntry(seq uint64, wireBytes []byte) error {
 	if len(wireBytes) == 0 {
-		return fmt.Errorf("tessera/gcs: WriteEntry seq=%d: empty wire bytes", seq)
+		return fmt.Errorf("bytestore/gcs: WriteEntry seq=%d: empty wire bytes", seq)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.writeTimeout)
@@ -223,10 +214,10 @@ func (s *GCSEntryStore) WriteEntry(seq uint64, wireBytes []byte) error {
 	w.ContentType = "application/octet-stream"
 	if _, err := io.Copy(w, bytes.NewReader(wireBytes)); err != nil {
 		_ = w.Close()
-		return fmt.Errorf("tessera/gcs: write seq=%d: %w", seq, err)
+		return fmt.Errorf("bytestore/gcs: write seq=%d: %w", seq, err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("tessera/gcs: close seq=%d: %w", seq, err)
+		return fmt.Errorf("bytestore/gcs: close seq=%d: %w", seq, err)
 	}
 
 	// Cache write — copy the slice so callers can mutate the input
@@ -248,7 +239,7 @@ func (s *GCSEntryStore) WriteEntry(seq uint64, wireBytes []byte) error {
 // ReadEntry fetches the wire bytes at entries/<seq>/data. Errors:
 //   - storage.ErrObjectNotExist when the object is missing
 //   - wrapped GCS errors for transport failures
-func (s *GCSEntryStore) ReadEntry(seq uint64) ([]byte, error) {
+func (s *GCS) ReadEntry(seq uint64) ([]byte, error) {
 	// Cache hit. Copy on the way out so callers cannot mutate the
 	// cached value.
 	s.mu.Lock()
@@ -269,19 +260,19 @@ func (s *GCSEntryStore) ReadEntry(seq uint64) ([]byte, error) {
 	r, err := obj.NewReader(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
-			return nil, fmt.Errorf("tessera/gcs: seq=%d not found: %w", seq, err)
+			return nil, fmt.Errorf("bytestore/gcs: seq=%d not found: %w", seq, err)
 		}
-		return nil, fmt.Errorf("tessera/gcs: read seq=%d: %w", seq, err)
+		return nil, fmt.Errorf("bytestore/gcs: read seq=%d: %w", seq, err)
 	}
 	defer r.Close()
 
 	blob, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("tessera/gcs: read body seq=%d: %w", seq, err)
+		return nil, fmt.Errorf("bytestore/gcs: read body seq=%d: %w", seq, err)
 	}
 
-	// Cache the freshly-fetched blob; copy on the way out for the same
-	// reason as the cache-hit path.
+	// Cache the freshly-fetched blob; copy on the way out for the
+	// same reason as the cache-hit path.
 	s.mu.Lock()
 	if len(s.cache) >= s.maxSize {
 		s.evictLRULocked()
@@ -297,29 +288,29 @@ func (s *GCSEntryStore) ReadEntry(seq uint64) ([]byte, error) {
 }
 
 // ReadEntryBatch returns each requested sequence's wire bytes in the
-// same order as the input slice. Mirrors InMemoryEntryStore semantics:
-// any missing sequence is a fatal error for the whole batch (so callers
+// same order as the input slice. Mirrors Memory semantics: any
+// missing sequence is a fatal error for the whole batch (so callers
 // don't get a silent short slice).
 //
-// Reads run sequentially. A future optimization could fan-out concurrent
-// goroutines bounded by a semaphore; the current shape is correctness-
-// first, optimize-later. At sustained 100 QPS with cache hit rates above
-// 80% the sequential path is fine.
-func (s *GCSEntryStore) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
+// Reads run sequentially. A future optimization could fan out
+// concurrent goroutines bounded by a semaphore; the current shape
+// is correctness-first, optimize-later. At sustained 100 QPS with
+// cache hit rates above 80% the sequential path is fine.
+func (s *GCS) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
 	out := make([][]byte, len(seqs))
 	for i, seq := range seqs {
 		entry, err := s.ReadEntry(seq)
 		if err != nil {
-			return nil, fmt.Errorf("tessera/gcs: ReadEntryBatch[%d/%d] seq=%d: %w", i, len(seqs), seq, err)
+			return nil, fmt.Errorf("bytestore/gcs: ReadEntryBatch[%d/%d] seq=%d: %w", i, len(seqs), seq, err)
 		}
 		out[i] = entry
 	}
 	return out, nil
 }
 
-// evictLRULocked drops the lowest-access-counter entry from the
-// cache. Caller MUST hold s.mu.
-func (s *GCSEntryStore) evictLRULocked() {
+// evictLRULocked drops the lowest-access-counter entry from the cache.
+// Caller MUST hold s.mu.
+func (s *GCS) evictLRULocked() {
 	var oldestSeq uint64
 	var oldestAccess int64 = 1<<63 - 1
 	for seq, ac := range s.access {
@@ -332,17 +323,14 @@ func (s *GCSEntryStore) evictLRULocked() {
 	delete(s.access, oldestSeq)
 }
 
-// Close releases the GCS client. Safe to call multiple times —
+// Close releases the GCS client. Safe to call multiple times — the
 // underlying client.Close() is idempotent.
-func (s *GCSEntryStore) Close() error {
+func (s *GCS) Close() error {
 	if s == nil || s.client == nil {
 		return nil
 	}
 	return s.client.Close()
 }
 
-// Compile-time pins.
-var (
-	_ EntryReader = (*GCSEntryStore)(nil)
-	_ EntryWriter = (*GCSEntryStore)(nil)
-)
+// Compile-time pin.
+var _ Store = (*GCS)(nil)

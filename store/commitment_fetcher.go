@@ -17,7 +17,7 @@ Wave 1 v3 §C5 contract:
     invariant; the SDK's *CommitmentEquivocationError construction
     depends on it.
   - Joins commitment_split_id (the secondary index) → entry_index
-    (metadata) → tessera.EntryReader (canonical bytes) so the
+    (metadata) → bytestore.Reader (canonical bytes) so the
     EntryWithMetadata struct returned matches what
     PostgresEntryFetcher.Fetch produces — same canonical bytes,
     same log_time, same position.
@@ -31,7 +31,7 @@ removed; this fetcher reads only what the type carries.
 DESIGN RULE (mirrors store/entries.go): Postgres is an index;
 Tessera is the source of truth for entry bytes. The fetcher reads
 sequence numbers + metadata from Postgres and bytes from
-tessera.EntryReader; the two sources stay separated.
+bytestore.Reader; the two sources stay separated.
 */
 package store
 
@@ -46,7 +46,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // PostgresCommitmentFetcher resolves a (schemaID, splitID) tuple to
@@ -58,7 +58,7 @@ import (
 // (potentially multiple rows under equivocation).
 type PostgresCommitmentFetcher struct {
 	db     *pgxpool.Pool
-	reader tessera.EntryReader
+	reader bytestore.Reader
 	logDID string
 }
 
@@ -68,7 +68,7 @@ type PostgresCommitmentFetcher struct {
 // callers see a fully-qualified position even though the underlying
 // commitment_split_id row carries only the sequence number.
 func NewPostgresCommitmentFetcher(
-	db *pgxpool.Pool, reader tessera.EntryReader, logDID string,
+	db *pgxpool.Pool, reader bytestore.Reader, logDID string,
 ) *PostgresCommitmentFetcher {
 	return &PostgresCommitmentFetcher{db: db, reader: reader, logDID: logDID}
 }

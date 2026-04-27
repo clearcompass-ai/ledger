@@ -1,5 +1,5 @@
 /*
-FILE PATH: tessera/entry_reader_test.go
+FILE PATH: bytestore/memory_test.go
 
 Evidence-based unit tests for the byte-store interface and the
 in-memory implementation. Establishes the load-bearing invariants
@@ -36,7 +36,7 @@ gcs_entry_store_test.go against fake-gcs-server / real GCS;
 together the two suites cover both the in-memory hot path and the
 network-bound impl.
 */
-package tessera
+package bytestore
 
 import (
 	"bytes"
@@ -52,10 +52,10 @@ import (
 // 1) Round-trip identity
 // ─────────────────────────────────────────────────────────────────────
 
-// TestInMemoryEntryStore_RoundTrip_PreservesBytes is the load-bearing
+// TestMemory_RoundTrip_PreservesBytes is the load-bearing
 // guarantee: whatever bytes go in come back out byte-identically. The
 // store does not interpret the blob.
-func TestInMemoryEntryStore_RoundTrip_PreservesBytes(t *testing.T) {
+func TestMemory_RoundTrip_PreservesBytes(t *testing.T) {
 	binarySeed := sha256.Sum256([]byte("k"))
 	cases := []struct {
 		name string
@@ -68,7 +68,7 @@ func TestInMemoryEntryStore_RoundTrip_PreservesBytes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewInMemoryEntryStore()
+			s := NewMemory()
 			if err := s.WriteEntry(7, tc.wire); err != nil {
 				t.Fatalf("WriteEntry: %v", err)
 			}
@@ -86,12 +86,12 @@ func TestInMemoryEntryStore_RoundTrip_PreservesBytes(t *testing.T) {
 	}
 }
 
-// TestInMemoryEntryStore_Opacity_StoresArbitraryBytes proves the
+// TestMemory_Opacity_StoresArbitraryBytes proves the
 // store is opaque w.r.t. envelope structure. Random bytes that are
 // NOT a valid envelope serialize identically — the store has no
 // dependency on envelope semantics.
-func TestInMemoryEntryStore_Opacity_StoresArbitraryBytes(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_Opacity_StoresArbitraryBytes(t *testing.T) {
+	s := NewMemory()
 	random := []byte("\x00\x01\x02\x03\xff\xfe\xfd\xfcRANDOMNOTANENVELOPE")
 	if err := s.WriteEntry(1, random); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
@@ -114,7 +114,7 @@ func TestInMemoryEntryStore_Opacity_StoresArbitraryBytes(t *testing.T) {
 // 2) Envelope round-trip — Tessera-alignment evidence
 // ─────────────────────────────────────────────────────────────────────
 
-// TestInMemoryEntryStore_Envelope_RoundTrip is the evidence that the
+// TestMemory_Envelope_RoundTrip is the evidence that the
 // byte store works correctly with the v7.75 wire format: the bytes
 // produced by envelope.Serialize round-trip through the store and
 // recover an Entry equal to the one we serialized.
@@ -122,8 +122,8 @@ func TestInMemoryEntryStore_Opacity_StoresArbitraryBytes(t *testing.T) {
 // Aligned with how Tessera consumes entries: Tessera.Add(ctx, &Entry{
 // Identity: hash, Data: wire}) treats Data as opaque, exactly like
 // our byte store does.
-func TestInMemoryEntryStore_Envelope_RoundTrip(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_Envelope_RoundTrip(t *testing.T) {
+	s := NewMemory()
 
 	original := mustNewSignedEntry(t, "did:web:envelope-rt.example", []byte("payload-rt"))
 	wire := envelope.Serialize(original)
@@ -166,13 +166,13 @@ func TestInMemoryEntryStore_Envelope_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestInMemoryEntryStore_Envelope_MultipleEntries_DistinctIdentities
+// TestMemory_Envelope_MultipleEntries_DistinctIdentities
 // covers the multi-entry case the operator's read path exercises:
 // each blob round-trips independently and identities remain
 // distinct. Catches bugs where a single global cache or backing
 // slice would return the wrong entry for a given seq.
-func TestInMemoryEntryStore_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
+	s := NewMemory()
 
 	const N = 8
 	originals := make([]*envelope.Entry, N)
@@ -210,17 +210,13 @@ func TestInMemoryEntryStore_Envelope_MultipleEntries_DistinctIdentities(t *testi
 // 3) Cross-impl parity (in-mem ↔ GCS contract)
 // ─────────────────────────────────────────────────────────────────────
 
-// TestEntryStore_InterfaceContract_RoundTrip exercises the EntryReader
-// + EntryWriter interface contract on an arbitrary impl. The GCS
-// store reuses this through gcs_entry_store_test.go; this version
-// pins the InMemory impl directly. If a future impl is added, it
-// should pass this same scenario.
-func TestEntryStore_InterfaceContract_RoundTrip(t *testing.T) {
-	type rw interface {
-		EntryReader
-		EntryWriter
-	}
-	s := rw(NewInMemoryEntryStore())
+// TestStore_InterfaceContract_RoundTrip exercises the Reader +
+// Writer interface contract on an arbitrary impl. The GCS store
+// reuses this through gcs_test.go; this version pins the Memory
+// impl directly. If a future impl is added, it should pass this
+// same scenario.
+func TestStore_InterfaceContract_RoundTrip(t *testing.T) {
+	s := Store(NewMemory())
 
 	wire := []byte("contract-test-blob")
 	if err := s.WriteEntry(33, wire); err != nil {
@@ -239,12 +235,12 @@ func TestEntryStore_InterfaceContract_RoundTrip(t *testing.T) {
 // 4) Defensive copy semantics
 // ─────────────────────────────────────────────────────────────────────
 
-// TestInMemoryEntryStore_DefensiveCopy_OnWrite proves mutating the
+// TestMemory_DefensiveCopy_OnWrite proves mutating the
 // input slice after WriteEntry returns does NOT corrupt the stored
 // value. Without this property, a caller who reuses a buffer across
 // admissions would silently overwrite prior entries' bytes.
-func TestInMemoryEntryStore_DefensiveCopy_OnWrite(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_DefensiveCopy_OnWrite(t *testing.T) {
+	s := NewMemory()
 	buf := []byte{0x01, 0x02, 0x03}
 	if err := s.WriteEntry(11, buf); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
@@ -260,12 +256,12 @@ func TestInMemoryEntryStore_DefensiveCopy_OnWrite(t *testing.T) {
 	}
 }
 
-// TestInMemoryEntryStore_DefensiveCopy_OnRead proves mutating the
+// TestMemory_DefensiveCopy_OnRead proves mutating the
 // returned slice from ReadEntry does NOT corrupt the stored value.
 // Two consecutive reads of the same seq must return byte-identical
 // slices regardless of what the first caller did with theirs.
-func TestInMemoryEntryStore_DefensiveCopy_OnRead(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_DefensiveCopy_OnRead(t *testing.T) {
+	s := NewMemory()
 	want := []byte{0x10, 0x11, 0x12}
 	if err := s.WriteEntry(12, want); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
@@ -288,8 +284,8 @@ func TestInMemoryEntryStore_DefensiveCopy_OnRead(t *testing.T) {
 // 5) Edge cases
 // ─────────────────────────────────────────────────────────────────────
 
-func TestInMemoryEntryStore_RejectsEmptyWire(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_RejectsEmptyWire(t *testing.T) {
+	s := NewMemory()
 	if err := s.WriteEntry(1, nil); err == nil {
 		t.Error("WriteEntry(nil) should error")
 	}
@@ -298,16 +294,16 @@ func TestInMemoryEntryStore_RejectsEmptyWire(t *testing.T) {
 	}
 }
 
-func TestInMemoryEntryStore_ReadMissing_Errors(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_ReadMissing_Errors(t *testing.T) {
+	s := NewMemory()
 	_, err := s.ReadEntry(99999)
 	if err == nil {
 		t.Fatal("ReadEntry on absent seq should error")
 	}
 }
 
-func TestInMemoryEntryStore_BatchPreservesInputOrder(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_BatchPreservesInputOrder(t *testing.T) {
+	s := NewMemory()
 	for i := uint64(1); i <= 5; i++ {
 		if err := s.WriteEntry(i, []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
@@ -328,8 +324,8 @@ func TestInMemoryEntryStore_BatchPreservesInputOrder(t *testing.T) {
 	}
 }
 
-func TestInMemoryEntryStore_BatchMissingSeqIsFatal(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_BatchMissingSeqIsFatal(t *testing.T) {
+	s := NewMemory()
 	if err := s.WriteEntry(1, []byte("x")); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
@@ -339,12 +335,12 @@ func TestInMemoryEntryStore_BatchMissingSeqIsFatal(t *testing.T) {
 	}
 }
 
-func TestInMemoryEntryStore_OverwriteSameSeq_LastWriteWins(t *testing.T) {
+func TestMemory_OverwriteSameSeq_LastWriteWins(t *testing.T) {
 	// Tessera-aligned semantics: the byte store does not enforce
 	// write-once. Dedup by content hash is the producer's
 	// responsibility (envelope.EntryIdentity + builder dedup).
 	// At the byte-store layer, the latest WriteEntry wins.
-	s := NewInMemoryEntryStore()
+	s := NewMemory()
 	if err := s.WriteEntry(5, []byte("first")); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
@@ -364,11 +360,11 @@ func TestInMemoryEntryStore_OverwriteSameSeq_LastWriteWins(t *testing.T) {
 // 6) Concurrency
 // ─────────────────────────────────────────────────────────────────────
 
-// TestInMemoryEntryStore_Concurrent_WritesAndReads stresses the
+// TestMemory_Concurrent_WritesAndReads stresses the
 // internal lock. Concurrent writers + readers must not produce
 // torn reads, lost writes, or data races (run with -race).
-func TestInMemoryEntryStore_Concurrent_WritesAndReads(t *testing.T) {
-	s := NewInMemoryEntryStore()
+func TestMemory_Concurrent_WritesAndReads(t *testing.T) {
+	s := NewMemory()
 	const goroutines = 8
 	const perGoroutine = 64
 

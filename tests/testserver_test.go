@@ -54,7 +54,7 @@ import (
 	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -67,7 +67,7 @@ type testOperator struct {
 	Cursor      *store.SequenceCursor
 	CreditStore *store.CreditStore
 	EntryStore  *store.EntryStore
-	EntryBytes  *optessera.InMemoryEntryStore
+	EntryBytes  *opbytestore.Memory
 	cancel      context.CancelFunc
 }
 
@@ -96,7 +96,7 @@ func startTestOperator(t *testing.T) *testOperator {
 	cleanTables(t, pool)
 
 	// ── Entry byte store ───────────────────────────────────────────────
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 
 	// ── Stores ─────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)

@@ -31,19 +31,19 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────
 // Test doubles
 // ─────────────────────────────────────────────────────────────────────
 
-// fakeEntryReader satisfies tessera.EntryReader by returning canned
+// fakeEntryReader satisfies bytestore.Reader by returning canned
 // wire bytes keyed by sequence number. Reads of unknown sequences
 // return an error so the test surfaces the fetcher's error path on
 // Tessera-side misses.
 //
-// tessera.EntryReader's full interface (per tessera/entry_reader.go):
+// bytestore.Reader's full interface (per tessera/entry_reader.go):
 //
 //	ReadEntry(seq uint64) ([]byte, error)
 //	ReadEntryBatch(seqs []uint64) ([][]byte, error)
@@ -78,9 +78,9 @@ func (f *fakeEntryReader) ReadEntryBatch(seqs []uint64) ([][]byte, error) {
 	return out, nil
 }
 
-// Compile-time check: a future tessera.EntryReader change surfaces
+// Compile-time check: a future bytestore.Reader change surfaces
 // here as a build error rather than at the call site.
-var _ tessera.EntryReader = (*fakeEntryReader)(nil)
+var _ bytestore.Reader = (*fakeEntryReader)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
 // Test fixtures
@@ -288,7 +288,7 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 }
 
 // TestFindCommitmentEntries_NilReader asserts the defensive guard
-// at the top of FindCommitmentEntries — a nil tessera.EntryReader
+// at the top of FindCommitmentEntries — a nil bytestore.Reader
 // would otherwise panic on the first ReadEntry call.
 func TestFindCommitmentEntries_NilReader(t *testing.T) {
 	fetcher := NewPostgresCommitmentFetcher(nil, nil, testLogDID)

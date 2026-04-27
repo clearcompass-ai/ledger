@@ -10,7 +10,7 @@ entry bytes. Always.
   - entry_index stores ~40 bytes/row: sequence, hash, log_time,
     signer_did, target_root, cosignature_of, schema_ref.
   - canonical_bytes and sig_bytes are NEVER in Postgres.
-  - EntryReader (tessera.EntryReader) is the ONLY source of entry bytes.
+  - EntryReader (bytestore.Reader) is the ONLY source of entry bytes.
   - PostgresEntryFetcher combines: metadata from entry_index + bytes from EntryReader.
   - SDK EntryFetcher interface unchanged: Fetch(pos) → *EntryWithMetadata.
 
@@ -38,7 +38,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,12 +125,12 @@ func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bo
 // CONTRACT (Decision 47): returns nil for foreign log DIDs.
 type PostgresEntryFetcher struct {
 	db     *pgxpool.Pool
-	reader tessera.EntryReader
+	reader bytestore.Reader
 	logDID string
 }
 
 // NewPostgresEntryFetcher creates a fetcher for the given log.
-func NewPostgresEntryFetcher(db *pgxpool.Pool, reader tessera.EntryReader, logDID string) *PostgresEntryFetcher {
+func NewPostgresEntryFetcher(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
 	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID}
 }
 

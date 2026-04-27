@@ -82,8 +82,8 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ type DIDResolver interface {
 type StorageDeps struct {
 	DB          *pgxpool.Pool
 	EntryStore  *store.EntryStore
-	EntryWriter tessera.EntryWriter
+	EntryWriter bytestore.Writer
 }
 
 // AdmissionConfig groups parameters that govern admission proof verification.

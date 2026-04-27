@@ -8,7 +8,7 @@ DESIGN RULE: Postgres is an index. Tessera is the source of truth for
 entry bytes. Always.
 
   - Queries hit entry_index for sequence numbers + metadata.
-  - Entry bytes hydrated via EntryReader (tessera.EntryReader).
+  - Entry bytes hydrated via EntryReader (bytestore.Reader).
   - scanAndHydrate: query rows → collect seqs + metadata → batch hydrate.
   - ReadEntryBatch is tile-aware: entries in the same tile = 1 read.
 
@@ -29,7 +29,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // MaxScanCount is the hard upper limit per scan request.
@@ -42,12 +42,12 @@ const DefaultScanCount = 100
 // Metadata from entry_index (Postgres). Bytes from EntryReader (Tessera).
 type PostgresQueryAPI struct {
 	db     *pgxpool.Pool
-	reader tessera.EntryReader
+	reader bytestore.Reader
 	logDID string
 }
 
 // NewPostgresQueryAPI creates the query API for a log.
-func NewPostgresQueryAPI(db *pgxpool.Pool, reader tessera.EntryReader, logDID string) *PostgresQueryAPI {
+func NewPostgresQueryAPI(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresQueryAPI {
 	return &PostgresQueryAPI{db: db, reader: reader, logDID: logDID}
 }
 

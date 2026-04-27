@@ -1,9 +1,9 @@
 /*
-FILE PATH: tessera/gcs_fake_diagnostic_test.go
+FILE PATH: bytestore/gcs_fake_diagnostic_test.go
 
 Targeted diagnostic tests for the fake-gcs-server failure pattern
-that surfaced in TestGCSEntryStore_Cache_EvictsOldestAtCapacity
-and TestGCSEntryStore_ConcurrentWriters: writes return success,
+that surfaced in TestGCS_Cache_EvictsOldestAtCapacity
+and TestGCS_ConcurrentWriters: writes return success,
 LIST returns the object's path, but GET on that exact path 404s
 even after a 1.5-second retry budget.
 
@@ -34,7 +34,7 @@ and explicit logging:
 Read the t.Logf output to interpret. Each test logs every read
 attempt with the exact path string for paste-into-an-issue clarity.
 */
-package tessera
+package bytestore
 
 import (
 	"bytes"
@@ -67,7 +67,7 @@ func requireFakeGCS(t *testing.T) (string, string) {
 }
 
 // rawClient builds a bare GCS client against fake-gcs. Used by
-// experiments that bypass GCSEntryStore so the diagnostic isn't
+// experiments that bypass bytestore.GCS so the diagnostic isn't
 // confounded by our own caching/path logic.
 func rawClient(t *testing.T, endpoint string) *storage.Client {
 	t.Helper()
@@ -90,7 +90,7 @@ func rawClient(t *testing.T, endpoint string) *storage.Client {
 // HYPOTHESIS:
 //   fake-gcs's GET handler canonicalizes the URL path differently
 //   from its LIST handler (e.g., slash collapsing, URL decoding,
-//   case folding), so the path GCSEntryStore.ReadEntry constructs
+//   case folding), so the path bytestore.GCS.ReadEntry constructs
 //   matches what was written but doesn't match what GET expects.
 //
 // PREDICTION:
@@ -266,7 +266,7 @@ func TestFakeGCS_Diagnostic_E2_FlatPath_NoSubdirPerSeq(t *testing.T) {
 		t.Errorf("FLAT layout: %d/17 reads missed → bug is NOT specific to nested subdirs", misses)
 	} else {
 		t.Logf("✓ FLAT layout: all 17 reads succeeded → bug IS specific to nested-directory paths")
-		t.Logf("  Action: change GCSEntryStore.objectName to flat layout in production.")
+		t.Logf("  Action: change bytestore.GCS.objectName to flat layout in production.")
 	}
 }
 
@@ -529,7 +529,7 @@ func TestFakeGCS_Diagnostic_E6_XMLDefault_vs_JSONReads(t *testing.T) {
 	switch {
 	case xmlMissing > 0 && jsonMissing == 0:
 		t.Logf("✓ HYPOTHESIS CONFIRMED: XML-API reads fail on fake-gcs; JSON-API reads work.")
-		t.Logf("  Production fix: pass storage.WithJSONReads() in NewGCSEntryStore.")
+		t.Logf("  Production fix: pass storage.WithJSONReads() in NewGCS.")
 	case xmlMissing == 0 && jsonMissing == 0:
 		t.Logf("Neither variant exhibited the bug — couldn't reproduce in this run.")
 	case xmlMissing == 0 && jsonMissing > 0:
@@ -545,12 +545,12 @@ func TestFakeGCS_Diagnostic_E6_XMLDefault_vs_JSONReads(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────
 //
 // SECONDARY HYPOTHESIS (specific to our code path):
-//   GCSEntryStore.objectName produces a STABLE string for a given
+//   bytestore.GCS.objectName produces a STABLE string for a given
 //   seq, but maybe somehow the writer and reader observe different
 //   strings due to concurrency. This eliminates that possibility.
 
 func TestFakeGCS_Diagnostic_E5_ObjectNameStability(t *testing.T) {
-	store := &GCSEntryStore{objectPrefix: "stability-test"}
+	store := &GCS{objectPrefix: "stability-test"}
 	for i := uint64(0); i < 100; i++ {
 		first := store.objectName(i)
 		second := store.objectName(i)

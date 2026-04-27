@@ -49,7 +49,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // getScaleN returns the entry count from ORTHOLOG_SCALE_N (default 1M).
@@ -326,7 +326,7 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 	cleanTables(t, pool)
 
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 
 	t.Logf("seeding %d entries...", N)
 

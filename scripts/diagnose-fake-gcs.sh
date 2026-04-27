@@ -70,7 +70,7 @@ echo
 echo "== running diagnostic tests (E1-E5) =="
 go test -v -count=1 -timeout=120s \
     -run 'TestFakeGCS_Diagnostic' \
-    ./tessera/ 2>&1 | tee /tmp/fake-gcs-diag-test.log || true
+    ./bytestore/ 2>&1 | tee /tmp/fake-gcs-diag-test.log || true
 
 # Let the log file flush.
 sleep 1

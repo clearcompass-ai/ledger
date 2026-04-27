@@ -56,7 +56,7 @@ import (
 //
 //	EntryStore     — hash → sequence lookup (FetchByHash).
 //	QueryAPI       — joined metadata + byte view. Hydrates bytes via
-//	                 tessera.EntryReader internally.
+//	                 bytestore.Reader internally.
 //	DiffController — live difficulty source for /v1/admission/difficulty.
 //	                 Nil-safe: the handler responds 503 when absent, which
 //	                 is what the read-only operator wants.

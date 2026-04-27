@@ -85,7 +85,7 @@ export ORTHOLOG_TEST_GCS_BUCKET="${ORTHOLOG_REAL_GCS_BUCKET}"
 # latency on the first request.
 go test -v -count=1 -timeout=300s \
     -run 'TestGCSEntryStore' \
-    ./tessera/
+    ./bytestore/
 
 echo
 echo "== done =="

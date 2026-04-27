@@ -36,7 +36,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ const testEpochAcceptanceWindow = 1
 // testEntryBytes is the package-level InMemoryEntryStore shared by all
 // Postgres-backed query tests. Reset in cleanTables. This is the ONLY
 // source of entry bytes in the test suite (Postgres stores index only).
-var testEntryBytes = optessera.NewInMemoryEntryStore()
+var testEntryBytes = opbytestore.NewMemory()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Position helpers
@@ -514,7 +514,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, "ALTER SEQUENCE entry_sequence RESTART WITH 1")
 
 	// Reset package-level entry byte store.
-	testEntryBytes = optessera.NewInMemoryEntryStore()
+	testEntryBytes = opbytestore.NewMemory()
 }
 
 // insertTestEntry directly inserts an entry into Postgres for query testing.
