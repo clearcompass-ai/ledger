@@ -53,18 +53,41 @@ import (
 // 1) TesseraAdapter — core adapter
 // -------------------------------------------------------------------------------------------------
 
-// TesseraAdapter implements the operator's MerkleAppender interface via the
-// Tessera personality HTTP API. Proof computation uses tiles, not HTTP endpoints.
+// AppenderBackend is the minimal append-side surface TesseraAdapter
+// needs. Two implementations satisfy it:
+//   - *Client          (HTTP — legacy tessera-personality binary)
+//   - *EmbeddedAppender (in-process — Phase 1B, replaces the personality)
+//
+// The adapter is backend-agnostic: AppendLeaf forwards to the
+// backend, Head forwards to the backend, and proof computation
+// (Inclusion / Consistency) reads tiles via *TileReader without
+// touching the backend at all. This split is the load-bearing
+// invariant — proof methods don't care which appender a leaf went
+// through, they only care about the immutable tiles those
+// integrations produced.
+type AppenderBackend interface {
+	AppendLeaf(data []byte) (uint64, error)
+	Head() (types.TreeHead, error)
+}
+
+// TesseraAdapter implements the operator's MerkleAppender interface
+// over an AppenderBackend (HTTP Client or in-process
+// EmbeddedAppender) and uses tiles for proof computation.
 type TesseraAdapter struct {
-	client     *Client
+	backend    AppenderBackend
 	tileReader *TileReader
 	logger     *slog.Logger
 }
 
-// NewTesseraAdapter creates an adapter wrapping the Tessera personality client.
-func NewTesseraAdapter(client *Client, tileReader *TileReader, logger *slog.Logger) *TesseraAdapter {
+// NewTesseraAdapter creates an adapter over the supplied backend.
+// The backend choice is the operator's deployment-time decision —
+// cmd/operator/main.go wires either an HTTP *Client (legacy,
+// pre-Phase-1B) or an *EmbeddedAppender (Phase 1B+, in-process
+// upstream Tessera). Both satisfy AppenderBackend so the adapter
+// itself is unaware of the choice.
+func NewTesseraAdapter(backend AppenderBackend, tileReader *TileReader, logger *slog.Logger) *TesseraAdapter {
 	return &TesseraAdapter{
-		client:     client,
+		backend:    backend,
 		tileReader: tileReader,
 		logger:     logger,
 	}
@@ -84,14 +107,14 @@ func (a *TesseraAdapter) AppendLeaf(data []byte) (uint64, error) {
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/proof_adapter: AppendLeaf requires exactly 32 bytes (SHA-256 hash), got %d — this is a programming error in the caller", len(data))
 	}
-	ctx := context.TODO()
-	return a.client.Append(ctx, data)
+	return a.backend.AppendLeaf(data)
 }
 
-// Head returns the current Merkle tree head from the Tessera checkpoint.
+// Head returns the current Merkle tree head from the underlying
+// backend (HTTP checkpoint fetch or LogReader.ReadCheckpoint
+// depending on which AppenderBackend implementation was wired).
 func (a *TesseraAdapter) Head() (types.TreeHead, error) {
-	ctx := context.TODO()
-	return a.client.TreeHead(ctx)
+	return a.backend.Head()
 }
 
 // -------------------------------------------------------------------------------------------------
