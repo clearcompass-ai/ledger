@@ -170,6 +170,25 @@ func NewGCSEntryStore(ctx context.Context, cfg GCSEntryStoreConfig) (*GCSEntrySt
 		clientOpts = append(clientOpts, option.WithoutAuthentication())
 	}
 
+	// Force ReadObject calls onto the JSON API instead of the XML
+	// API (the SDK default at v1.62.1; flagged to flip in a future
+	// release per cloud.google.com/go/storage option.go:124-138).
+	//
+	// Why this matters: WriteEntry uploads and bucket.Objects()
+	// LIST both go through the JSON API (`/storage/v1/...`), and
+	// option.WithEndpoint correctly redirects them to fake-gcs.
+	// But ObjectHandle.NewReader's XML default builds URLs like
+	// `<scheme>://<host>/<bucket>/<object>` — fake-gcs's XML
+	// surface has gaps that surface as 404s on read-after-write
+	// even when JSON LIST sees the object. Real GCS handles both
+	// transports identically so the bug is invisible there.
+	//
+	// WithJSONReads is recommended by the SDK regardless ("ensure
+	// consistency with other client operations"), so this is the
+	// right choice for production GCS too — not a fake-gcs-only
+	// workaround.
+	clientOpts = append(clientOpts, storage.WithJSONReads())
+
 	client, err := storage.NewClient(ctx, clientOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("tessera/gcs: storage.NewClient: %w", err)

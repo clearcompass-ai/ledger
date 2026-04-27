@@ -402,6 +402,145 @@ func TestFakeGCS_Diagnostic_E4_BurstWriteSettleTime(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// E6 — XML reads vs JSON reads against fake-gcs (the smoking gun)
+// ─────────────────────────────────────────────────────────────────
+//
+// HYPOTHESIS:
+//   The Cloud Storage Go SDK at v1.62.1 (and earlier) defaults
+//   ObjectHandle.NewReader to the XML API
+//   (GET <scheme>://<host>/<bucket>/<object>), while WriteEntry
+//   uploads and bucket.Objects() LIST both go through the JSON
+//   API (`/storage/v1/...`). option.WithEndpoint redirects the
+//   JSON API correctly to fake-gcs but does NOT cover the XML
+//   surface. Real GCS supports both transports identically so the
+//   bug is invisible there.
+//
+//   See cloud.google.com/go/storage/http_client.go:872-882:
+//     if c.config.useJSONforReads {
+//         return c.newRangeReaderJSON(...)
+//     }
+//     return c.newRangeReaderXML(...)
+//
+//   See option.go:124-138 docstring:
+//     "Currently, the default API used for reads is XML, but JSON
+//     will become the default in a future release."
+//
+// PREDICTION:
+//   - Without storage.WithJSONReads(): reads under burst load 404
+//     on fake-gcs (reproduces the production failure).
+//   - With storage.WithJSONReads(): reads succeed on fake-gcs.
+//
+// CONFIRMS BUG ROOT CAUSE if the WithJSONReads variant passes
+// while the default variant fails on the same write/read pattern.
+
+func TestFakeGCS_Diagnostic_E6_XMLDefault_vs_JSONReads(t *testing.T) {
+	endpoint, bucketName := requireFakeGCS(t)
+
+	mkClient := func(useJSONReads bool) *storage.Client {
+		opts := []option.ClientOption{
+			option.WithEndpoint(endpoint),
+			option.WithoutAuthentication(),
+		}
+		if useJSONReads {
+			opts = append(opts, storage.WithJSONReads())
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c, err := storage.NewClient(ctx, opts...)
+		if err != nil {
+			t.Fatalf("storage.NewClient(json=%v): %v", useJSONReads, err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	runBurst := func(label string, client *storage.Client) (int, int) {
+		t.Helper()
+		bucket := client.Bucket(bucketName)
+		prefix := fmt.Sprintf("diag-e6-%s/%d", label, time.Now().UnixNano())
+		objName := func(i uint64) string {
+			return fmt.Sprintf("%s/%016x/data", prefix, i)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// 17 sequential writes (matches the eviction test pattern).
+		for i := uint64(0); i < 17; i++ {
+			w := bucket.Object(objName(i)).NewWriter(ctx)
+			if _, err := w.Write([]byte{byte(i)}); err != nil {
+				_ = w.Close()
+				t.Fatalf("[%s] write seq=%d: %v", label, i, err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("[%s] close seq=%d: %v", label, i, err)
+			}
+		}
+
+		// Cleanup at end.
+		t.Cleanup(func() {
+			cleanCtx, c := context.WithTimeout(context.Background(), 30*time.Second)
+			defer c()
+			it := bucket.Objects(cleanCtx, &storage.Query{Prefix: prefix})
+			for {
+				a, err := it.Next()
+				if err == iterator.Done {
+					break
+				}
+				if err != nil {
+					return
+				}
+				_ = bucket.Object(a.Name).Delete(cleanCtx)
+			}
+		})
+
+		// Brief settle.
+		time.Sleep(300 * time.Millisecond)
+
+		// Read each back without retry; capture count of OK vs 404.
+		ok, missing := 0, 0
+		for i := uint64(0); i < 17; i++ {
+			r, err := bucket.Object(objName(i)).NewReader(ctx)
+			if err != nil {
+				if errors.Is(err, storage.ErrObjectNotExist) {
+					missing++
+					continue
+				}
+				t.Logf("[%s] seq=%d unexpected err: %v", label, i, err)
+				missing++
+				continue
+			}
+			_, _ = io.ReadAll(r)
+			_ = r.Close()
+			ok++
+		}
+		return ok, missing
+	}
+
+	// Variant 1: SDK default (XML reads).
+	xmlOK, xmlMissing := runBurst("xml", mkClient(false))
+	t.Logf("XML reads (SDK default): %d/17 ok, %d/17 missing", xmlOK, xmlMissing)
+
+	// Variant 2: WithJSONReads (the proposed fix).
+	jsonOK, jsonMissing := runBurst("json", mkClient(true))
+	t.Logf("JSON reads (WithJSONReads): %d/17 ok, %d/17 missing", jsonOK, jsonMissing)
+
+	// Conclusion.
+	switch {
+	case xmlMissing > 0 && jsonMissing == 0:
+		t.Logf("✓ HYPOTHESIS CONFIRMED: XML-API reads fail on fake-gcs; JSON-API reads work.")
+		t.Logf("  Production fix: pass storage.WithJSONReads() in NewGCSEntryStore.")
+	case xmlMissing == 0 && jsonMissing == 0:
+		t.Logf("Neither variant exhibited the bug — couldn't reproduce in this run.")
+	case xmlMissing == 0 && jsonMissing > 0:
+		t.Errorf("Unexpected: JSON reads failing but XML reads succeeded — refutes hypothesis.")
+	case xmlMissing > 0 && jsonMissing > 0:
+		t.Errorf("Both variants failed (%d xml, %d json missing) — bug isn't transport choice.",
+			xmlMissing, jsonMissing)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
 // E5 — Compare write paths byte-by-byte across the loop
 // ─────────────────────────────────────────────────────────────────
 //
