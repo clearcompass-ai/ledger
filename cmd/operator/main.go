@@ -152,6 +152,20 @@ type Config struct {
 	TesseraStorageDir    string
 	TesseraSignerKeyFile string
 	TesseraOrigin        string
+
+	// Byte store backend (Phase 2). Selects where the
+	// operator's entry bytes live.
+	//   - "memory" (default) — InMemoryEntryStore. Lost on
+	//     restart. Local dev only.
+	//   - "gcs" — GCSEntryStore. Production target. ADC
+	//     credentials by default; fake-gcs-server via
+	//     ByteStoreGCSEndpoint + ByteStoreGCSAnonymous.
+	ByteStoreBackend     string
+	ByteStoreGCSBucket   string
+	ByteStoreGCSEndpoint string // empty = default GCS endpoint
+	ByteStoreGCSAnon     bool   // true = no auth (fake-gcs-server)
+	ByteStoreGCSPrefix   string // empty = "entries"
+	ByteStoreCacheSize   int
 	TileCacheSize         int
 	SMTNodeCacheSize      int
 	DeltaWindow           int
@@ -188,6 +202,12 @@ func loadConfig() (*Config, error) {
 		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
+		ByteStoreBackend:      envOr("OPERATOR_BYTE_STORE", "memory"),
+		ByteStoreGCSBucket:    os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint:  os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:      os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSPrefix:    envOr("OPERATOR_BYTE_STORE_GCS_PREFIX", "entries"),
+		ByteStoreCacheSize:    4096,
 		TileCacheSize:         10_000,
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
@@ -267,16 +287,58 @@ func main() {
 
 	// ── Byte store ────────────────────────────────────────────────────
 	//
-	// WARNING: InMemoryEntryStore is the ONLY implementation shipped today.
-	// It holds entry bytes in a sync.RWMutex-guarded map; everything is
-	// lost on process exit. For production, build a persistent
-	// EntryReader/EntryWriter (disk, S3, GCS) and substitute it here.
+	// Phase 2: backend selectable via OPERATOR_BYTE_STORE.
+	//   - "memory" (default) — InMemoryEntryStore. Lost on
+	//     restart. Local dev only; explicit warn in logs.
+	//   - "gcs" — GCSEntryStore. Production target. ADC
+	//     credentials when no endpoint override; fake-gcs-server
+	//     when OPERATOR_BYTE_STORE_GCS_ENDPOINT is set.
 	//
-	// Single process contains both byte writer (admission path) and byte
-	// reader (builder fetcher, query API). Crossing process boundaries
-	// would require a shared backing store.
-	byteStore := tessera.NewInMemoryEntryStore()
-	logger.Warn("byte store is InMemoryEntryStore — bytes are lost on restart. Wire a persistent backend for production.")
+	// EntryReader interface is satisfied by both — fetcher / query
+	// API don't see the backend choice.
+	var byteStore interface {
+		WriteEntry(seq uint64, canonical []byte, sig []byte) error
+		ReadEntry(seq uint64) (tessera.RawEntry, error)
+		ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error)
+	}
+	switch cfg.ByteStoreBackend {
+	case "memory", "":
+		byteStore = tessera.NewInMemoryEntryStore()
+		logger.Warn("byte store is InMemoryEntryStore — bytes are lost on restart. Set OPERATOR_BYTE_STORE=gcs for production.")
+	case "gcs":
+		if cfg.ByteStoreGCSBucket == "" {
+			logger.Error("OPERATOR_BYTE_STORE=gcs requires OPERATOR_BYTE_STORE_GCS_BUCKET")
+			os.Exit(1)
+		}
+		gcsStore, err := tessera.NewGCSEntryStore(ctx, tessera.GCSEntryStoreConfig{
+			Bucket:       cfg.ByteStoreGCSBucket,
+			Endpoint:     cfg.ByteStoreGCSEndpoint,
+			Anonymous:    cfg.ByteStoreGCSAnon,
+			ObjectPrefix: cfg.ByteStoreGCSPrefix,
+			CacheSize:    cfg.ByteStoreCacheSize,
+		})
+		if err != nil {
+			logger.Error("byte store GCS", "error", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := gcsStore.Close(); err != nil {
+				logger.Warn("gcs byte store close", "error", err)
+			}
+		}()
+		byteStore = gcsStore
+		logger.Info("byte store is GCSEntryStore",
+			"bucket", cfg.ByteStoreGCSBucket,
+			"prefix", cfg.ByteStoreGCSPrefix,
+			"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
+			"anonymous", cfg.ByteStoreGCSAnon,
+			"cache_size", cfg.ByteStoreCacheSize,
+		)
+	default:
+		logger.Error("unknown OPERATOR_BYTE_STORE",
+			"value", cfg.ByteStoreBackend, "want", "memory|gcs")
+		os.Exit(1)
+	}
 
 	// ── Tessera personality ───────────────────────────────────────────
 	//
