@@ -32,7 +32,11 @@ func signedEntryFixture(t *testing.T) (*envelope.Entry, []byte, *ecdsa.PublicKey
 			Destination: "did:web:log.example",
 		},
 	}
-	hash := envelope.EntryIdentity(entry)
+	// v7.75 signing contract (envelope/serialize.go:218-225): sign over
+	// sha256(SigningPayload(entry)), NOT EntryIdentity. SigningPayload
+	// is computed without the signatures section, so it is safe to call
+	// on a struct-literal entry that has no Signatures yet.
+	hash := sha256.Sum256(envelope.SigningPayload(entry))
 	sig, err := signatures.SignEntry(hash, priv)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
