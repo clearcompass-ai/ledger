@@ -37,31 +37,16 @@ services:
   # Postgres — operator's metadata + index store
   # ─────────────────────────────────────────────────────────────────
   postgres:
-    # Pinned to a specific Postgres version. The operator schema
-    # uses only standard SQL (BIGINT[], BYTEA, partial indexes,
-    # ON CONFLICT DO UPDATE, RETURNING xmax) which Postgres has
-    # supported for many years; pinning to 16 just keeps test
-    # behavior reproducible across environments.
     image: postgres:16-alpine
     container_name: ortholog_test_postgres
     environment:
       POSTGRES_USER: ortholog
       POSTGRES_PASSWORD: ortholog
       POSTGRES_DB: ortholog_test
-      # fsync=off + synchronous_commit=off massively speed up
-      # test runs and are SAFE because the data is ephemeral.
-      # NEVER use these settings in production.
-      PGOPTIONS: "-c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+    # Pass tuning parameters directly to the server daemon:
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     ports:
       - "127.0.0.1:5544:5432"
-    healthcheck:
-      # The operator's RunMigrations starts as soon as the pool
-      # reports healthy; gating on pg_isready means tests don't
-      # race the postgres init sequence.
-      test: ["CMD-SHELL", "pg_isready -U ortholog -d ortholog_test"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
 
   # ─────────────────────────────────────────────────────────────────
   # fake-gcs-server — Tessera tile / entry-bundle storage
