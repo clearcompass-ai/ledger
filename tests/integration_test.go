@@ -126,17 +126,63 @@ func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
 	}
 }
 
+// TestAdmission_ExactlyMaxSize_SDK_D11 asserts that a near-cap entry
+// serializes successfully under the v7.75 size invariant.
+//
+// v7.75 changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+// (= 65535) per envelope/api.go:69-80, closing ORTHO-BUG-005 (entries
+// admitted under the old 1 MiB cap would later panic inside
+// MarshalBundleEntry's uint16 length prefix). The previous test fixture
+// (`payload = (1<<20)-200`) was sized for the 1 MiB cap and now fails
+// entry.Validate with ErrCanonicalTooLarge. New fixture uses a payload
+// that leaves comfortable margin for header + signature framing.
 func TestAdmission_ExactlyMaxSize_SDK_D11(t *testing.T) {
-	payload := make([]byte, (1<<20)-200)
+	// 1 KiB margin for preamble + header_body + signatures section.
+	payload := make([]byte, envelope.MaxCanonicalBytes-1024)
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:big"}, payload)
-	if len(envelope.Serialize(entry)) == 0 {
+	wire := envelope.Serialize(entry)
+	if len(wire) == 0 {
 		t.Fatal("near-max entry should serialize")
+	}
+	if len(wire) > envelope.MaxCanonicalBytes {
+		t.Fatalf("near-max entry serialized to %d bytes, exceeds cap %d",
+			len(wire), envelope.MaxCanonicalBytes)
 	}
 }
 
+// TestAdmission_OverMaxSize_SDK_D11 asserts that an over-cap entry is
+// rejected by entry.Validate (the SDK gate that prevents downstream
+// MarshalBundleEntry panic). Previously this test was a tautology
+// (`(1<<20)+1 > (1<<20)` always true) that asserted nothing about the
+// SDK; the v7.75 cap drop made the lazy form even more meaningless,
+// so the test now actually exercises the size cap.
 func TestAdmission_OverMaxSize_SDK_D11(t *testing.T) {
-	if int64(len(make([]byte, (1<<20)+1))) <= int64(1<<20) {
-		t.Fatal("should exceed max")
+	// Push 4 KiB past the cap so any reasonable header/sig overhead
+	// can't bring it back under.
+	payload := make([]byte, envelope.MaxCanonicalBytes+4096)
+	hdr := envelope.ControlHeader{
+		SignerDID:   "did:example:overcap",
+		Destination: testLogDID,
+	}
+	// NewUnsignedEntry runs the same validateHeaderForWrite that
+	// makeEntry would, but doesn't require a signature — sufficient to
+	// trip the size cap at entry.Validate time without minting an
+	// ECDSA signature for an entry we expect to be rejected anyway.
+	entry, err := envelope.NewUnsignedEntry(hdr, payload)
+	if err != nil {
+		// Some SDKs reject at NewUnsignedEntry, others at Validate;
+		// either is acceptable as long as the over-cap entry never
+		// reaches Serialize.
+		return
+	}
+	entry.Signatures = []envelope.Signature{{
+		SignerDID: hdr.SignerDID,
+		AlgoID:    envelope.SigAlgoECDSA,
+		Bytes:     make([]byte, 64),
+	}}
+	if err := entry.Validate(); err == nil {
+		t.Fatalf("over-cap entry (payload %d bytes) should fail Validate",
+			len(payload))
 	}
 }
 
