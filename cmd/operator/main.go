@@ -60,6 +60,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"golang.org/x/mod/sumdb/note"
+
+	"github.com/transparency-dev/tessera/storage/posix"
+
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
@@ -73,6 +77,46 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
 )
+
+// loadOrGenerateTesseraSigner resolves the checkpoint signer.
+// Priority:
+//   - keyFile non-empty: load note.Signer from disk; fail if
+//     unreadable. Production deployments MUST use this.
+//   - keyFile empty: generate an ephemeral Ed25519 signer with a
+//     loud warning log. Local-dev only — the verifier key is
+//     printed once and lost on next restart.
+//
+// origin / logDID are used to derive the signer name when
+// generating ephemerally (Tessera's signer name appears in every
+// checkpoint and identifies the log).
+func loadOrGenerateTesseraSigner(keyFile, origin, logDID string, logger *slog.Logger) (note.Signer, string, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("read tessera signer key %q: %w", keyFile, err)
+		}
+		signer, err := note.NewSigner(string(data))
+		if err != nil {
+			return nil, "", fmt.Errorf("parse tessera signer key %q: %w", keyFile, err)
+		}
+		logger.Info("tessera signer loaded from file", "key_file", keyFile, "name", signer.Name())
+		return signer, "", nil
+	}
+	// Ephemeral fallback for local dev.
+	name := origin
+	if name == "" {
+		name = logDID
+	}
+	signer, vkey, err := tessera.GenerateEphemeralSigner(name)
+	if err != nil {
+		return nil, "", err
+	}
+	logger.Warn("tessera signer is ephemeral — NOT for production",
+		"name", signer.Name(),
+		"verifier_key", vkey,
+	)
+	return signer, vkey, nil
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Config
@@ -90,7 +134,21 @@ type Config struct {
 	EpochAcceptanceWindow int
 	AnchorInterval        time.Duration
 	AnchorSources         []anchor.AnchorSource
-	TesseraBaseURL        string // HTTP URL of the Tessera personality.
+	// Tessera embedding — Phase 1B replaces the standalone
+	// tessera-personality binary with in-process upstream Tessera.
+	// TesseraStorageDir is the POSIX directory the embedded
+	// Tessera POSIX driver writes tiles, entry bundles, and the
+	// checkpoint to. Operator-reader and operator-writer must
+	// agree on this path.
+	// TesseraSignerKeyFile is the path to a note.Signer private
+	// key file. When empty, an ephemeral key is generated at boot
+	// (with a logged warning) — fine for local dev, never for
+	// production.
+	// TesseraOrigin is the c2sp.org/tlog-tiles origin string
+	// embedded in every signed checkpoint. Defaults to LogDID.
+	TesseraStorageDir    string
+	TesseraSignerKeyFile string
+	TesseraOrigin        string
 	TileCacheSize         int
 	SMTNodeCacheSize      int
 	DeltaWindow           int
@@ -124,7 +182,9 @@ func loadConfig() (*Config, error) {
 		EpochWindowSeconds:    3600, // 1h — matches testEpochWindowSeconds.
 		EpochAcceptanceWindow: 1,
 		AnchorInterval:        1 * time.Hour,
-		TesseraBaseURL:        envOr("OPERATOR_TESSERA_URL", "http://localhost:8081"),
+		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
+		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
+		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
 		TileCacheSize:         10_000,
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
@@ -174,7 +234,7 @@ func main() {
 		"log_did", cfg.LogDID,
 		"operator_did", cfg.OperatorDID,
 		"addr", cfg.ServerAddr,
-		"tessera_url", cfg.TesseraBaseURL,
+		"tessera_storage_dir", cfg.TesseraStorageDir,
 		"sdk_version", "v0.3.0-tessera",
 	)
 
@@ -217,17 +277,61 @@ func main() {
 
 	// ── Tessera personality ───────────────────────────────────────────
 	//
-	// Client talks HTTP to the personality (/add for appends, /checkpoint
-	// for tree head). TileReader fetches immutable tiles for on-demand
-	// proof computation. Adapter implements MerkleAppender + the proof
-	// interfaces server.go needs for tree endpoints.
-	tileBackend := tessera.NewHTTPTileBackend(cfg.TesseraBaseURL)
-	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
-	tesseraClient := tessera.NewClient(tessera.ClientConfig{
-		BaseURL: cfg.TesseraBaseURL,
-		Timeout: 30 * time.Second,
+	// Embedded Tessera (Phase 1B): in-process upstream Tessera
+	// over a POSIX storage driver. The standalone
+	// tessera-personality binary is gone — sequencing,
+	// integration, and checkpoint signing all run inside this
+	// process. TileReader reads tiles directly off the same
+	// directory Tessera writes to. Adapter satisfies the
+	// MerkleAppender interface the builder loop holds.
+	if err := os.MkdirAll(cfg.TesseraStorageDir, 0o755); err != nil {
+		logger.Error("tessera storage dir", "error", err, "dir", cfg.TesseraStorageDir)
+		os.Exit(1)
+	}
+	tesseraDriver, err := posix.New(ctx, posix.Config{Path: cfg.TesseraStorageDir})
+	if err != nil {
+		logger.Error("tessera posix driver", "error", err, "dir", cfg.TesseraStorageDir)
+		os.Exit(1)
+	}
+	tesseraSigner, vkey, err := loadOrGenerateTesseraSigner(cfg.TesseraSignerKeyFile, cfg.TesseraOrigin, cfg.LogDID, logger)
+	if err != nil {
+		logger.Error("tessera signer", "error", err)
+		os.Exit(1)
+	}
+	tesseraOrigin := cfg.TesseraOrigin
+	if tesseraOrigin == "" {
+		tesseraOrigin = cfg.LogDID
+	}
+	embeddedAppender, err := tessera.NewEmbeddedAppender(ctx, tesseraDriver, tessera.AppenderOptions{
+		Origin: tesseraOrigin,
+		Signer: tesseraSigner,
+		// Defaults applied for CheckpointInterval / BatchSize /
+		// BatchMaxAge — see tessera/embedded_appender.go.
 	}, logger)
-	tesseraAdapter := tessera.NewTesseraAdapter(tesseraClient, tileReader, logger)
+	if err != nil {
+		logger.Error("tessera embedded appender", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := embeddedAppender.Close(shutdownCtx); err != nil {
+			logger.Warn("tessera shutdown", "error", err)
+		}
+	}()
+	logger.Info("tessera embedded ready",
+		"storage_dir", cfg.TesseraStorageDir,
+		"origin", tesseraOrigin,
+		"verifier_key", vkey,
+	)
+
+	tileBackend, err := tessera.NewPOSIXTileBackend(cfg.TesseraStorageDir)
+	if err != nil {
+		logger.Error("tessera posix tile backend", "error", err)
+		os.Exit(1)
+	}
+	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
+	tesseraAdapter := tessera.NewTesseraAdapter(embeddedAppender, tileReader, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
 	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, cfg.LogDID)
