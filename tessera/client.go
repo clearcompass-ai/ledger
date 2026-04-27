@@ -168,6 +168,35 @@ func (c *Client) TreeHead(ctx context.Context) (types.TreeHead, error) {
 }
 
 // -------------------------------------------------------------------------------------------------
+// 4b) AppenderBackend forwarders — let *Client satisfy proof_adapter.go's interface
+// -------------------------------------------------------------------------------------------------
+
+// AppendLeaf is a context.TODO()-flavored forwarder over Append so
+// *Client satisfies proof_adapter.go's AppenderBackend interface.
+// The forwarder exists so the Phase 1B refactor (which lifted
+// TesseraAdapter onto an interface so *EmbeddedAppender can plug
+// in) keeps *Client working as the legacy backend during the
+// cutover. *Client itself is slated for deletion when
+// tessera-personality goes away — see commit 7/7 of the embed
+// series.
+func (c *Client) AppendLeaf(data []byte) (uint64, error) {
+	return c.Append(context.TODO(), data)
+}
+
+// Head is the parallel forwarder over TreeHead. Same rationale as
+// AppendLeaf — keeps *Client satisfying AppenderBackend during
+// the embed cutover.
+func (c *Client) Head() (types.TreeHead, error) {
+	return c.TreeHead(context.TODO())
+}
+
+// Compile-time pin: *Client satisfies AppenderBackend so
+// NewTesseraAdapter accepts it. If proof_adapter.go's interface
+// drifts, this fails at build time before any cmd-side wiring
+// breaks.
+var _ AppenderBackend = (*Client)(nil)
+
+// -------------------------------------------------------------------------------------------------
 // 5) Signed Note Checkpoint Parser
 // -------------------------------------------------------------------------------------------------
 

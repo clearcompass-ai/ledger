@@ -314,7 +314,4 @@ func GenerateEphemeralSigner(name string) (note.Signer, string, error) {
 // be used in place of *Client wrapped by *TesseraAdapter is
 // AppendLeaf([]byte) (uint64, error) and Head() (types.TreeHead, error).
 // Both are implemented above with matching signatures.
-var _ interface {
-	AppendLeaf(data []byte) (uint64, error)
-	Head() (types.TreeHead, error)
-} = (*EmbeddedAppender)(nil)
+var _ AppenderBackend = (*EmbeddedAppender)(nil)
