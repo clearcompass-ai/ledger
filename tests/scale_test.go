@@ -507,6 +507,16 @@ func TestScale_BuilderThroughput(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestScale_SDKProcessBatch(t *testing.T) {
+	// Scale benchmark — generates getScaleN() entries (default 1M)
+	// and runs them through builder.ProcessBatch + SMT root
+	// computation. At N=1M the SMT root walk dominates and the
+	// test runs >10 minutes on commodity hardware. Skip under
+	// -short so `go test -short ./...` stays fast; opt in via
+	// `go test -run TestScale_SDKProcessBatch ./tests/` (or set
+	// ORTHOLOG_SCALE_N=1000 for a quicker smoke test).
+	if testing.Short() {
+		t.Skip("scale benchmark skipped under -short; run without -short or with ORTHOLOG_SCALE_N=1000 for a smoke test")
+	}
 	N := getScaleN()
 
 	t.Logf("generating %d entries in memory...", N)

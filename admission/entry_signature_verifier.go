@@ -45,6 +45,7 @@ package admission
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -93,9 +94,19 @@ type DIDResolver interface {
 //   - ErrSignatureInvalid wrapped with the SDK error when the SDK
 //     primitive rejects the signature.
 //
-// The canonical hash is computed inside this function via
-// envelope.EntryIdentity to ensure the hash bound to the verifier
-// always matches the entry's canonical bytes.
+// The hash bound to the verifier is sha256(envelope.SigningPayload(entry)),
+// matching the SDK's documented signing contract at
+// envelope/serialize.go:218-225:
+//
+//	1. signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+//	2. signatures.SignEntry(signingHash, priv)
+//
+// SigningPayload covers preamble + header_body + payload but NOT the
+// signatures section. Hashing envelope.EntryIdentity (= sha256(Serialize)
+// which embeds the signatures section) here would (a) panic on entries
+// whose Signatures slice is the one being verified into, and (b)
+// disagree with what every legitimate signer actually signed over —
+// rejecting every well-formed entry.
 func VerifyEntrySignature(
 	ctx context.Context,
 	entry *envelope.Entry,
@@ -122,8 +133,8 @@ func VerifyEntrySignature(
 			ErrSignerDIDResolution, entry.Header.SignerDID)
 	}
 
-	canonicalHash := envelope.EntryIdentity(entry)
-	if err := signatures.VerifyEntry(canonicalHash, sigBytes, pub); err != nil {
+	signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+	if err := signatures.VerifyEntry(signingHash, sigBytes, pub); err != nil {
 		return fmt.Errorf("%w: %v", ErrSignatureInvalid, err)
 	}
 	return nil
