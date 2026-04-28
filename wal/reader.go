@@ -190,6 +190,38 @@ func (c *Committer) MarkManual(ctx context.Context, hash [32]byte) error {
 	})
 }
 
+// HashAt returns the entry's content hash for the given sequence
+// number. Returns ErrNotFound when no entry has been Sequence'd at
+// seq yet. Used by the integrity Detector for periodic sample
+// verification (compare WAL.HashAt vs Tessera.HashAt; mismatch =
+// divergence).
+func (c *Committer) HashAt(ctx context.Context, seq uint64) ([32]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return [32]byte{}, err
+	}
+	var hash [32]byte
+	err := c.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(seqIndexKey(seq))
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			if len(val) != 32 {
+				return fmt.Errorf("wal/reader: bad seq_index value len=%d for seq=%d", len(val), seq)
+			}
+			copy(hash[:], val)
+			return nil
+		})
+	})
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return hash, nil
+}
+
 // HWM returns the high-water mark — the highest contiguous sequence
 // number whose entry has been shipped. Returns 0 when no entries
 // have been shipped yet.
