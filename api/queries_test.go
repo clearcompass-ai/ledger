@@ -23,8 +23,7 @@ WHAT'S COVERED:
   WAL.ErrNotFound + nil EntryStore → handler reaches entry_index
   fall-through (covered by e2e tests).
 
-MMD handler unit-level tests are in submission_v2_test.go (it sits
-alongside the v2 surface architecturally).
+MMD handler unit-level tests are in api/mmd_test.go.
 */
 package api
 

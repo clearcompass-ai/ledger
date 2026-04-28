@@ -2,7 +2,7 @@
 FILE PATH: api/sct_test.go
 
 Round-trip + tamper-reject coverage for api/sct.go. The SCT is
-the operator's binding promise on POST /v2/entries — every field
+the operator's binding promise on POST /v1/entries — every field
 that's signed-over MUST invalidate the signature when mutated, and
 the JSON-only LogTime field MUST NOT (it's derived).
 

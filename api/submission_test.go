@@ -30,7 +30,7 @@ WHAT'S COVERED:
 	  - Insufficient-credits sentinel is comparable across boundaries.
 
 These are unit-level tests that mock WAL, EntryStore, Tessera via
-the existing fake types from submission_v2_test.go (same package).
+the shared fake types in api/submission_helpers_test.go.
 End-to-end coverage (real WAL, real Sequencer drain, full HTTP
 server) lives in tests/.
 */
@@ -39,7 +39,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -52,19 +51,6 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
-// makeV1Deps returns SubmissionDeps wired with the same stubs that
-// makeV2Deps uses, plus the SCT signing fields that the unified v1
-// handler now requires. Per-test mutation happens on the returned
-// pointer.
-func makeV1Deps(t *testing.T, opSignerPriv *ecdsa.PrivateKey, signerPub *ecdsa.PublicKey, walFake *stubV2WAL) *SubmissionDeps {
-	t.Helper()
-	v2 := makeV2Deps(t, opSignerPriv, signerPub, walFake)
-	// makeV2Deps puts OperatorSignerPriv on the outer SubmissionV2Deps
-	// struct; the unified v1 handler reads it off SubmissionDeps.
-	// Mirror it onto the embedded struct.
-	v2.SubmissionDeps.OperatorSignerPriv = opSignerPriv
-	return v2.SubmissionDeps
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Constructor guards
@@ -132,9 +118,9 @@ func TestNewSubmissionHandler_NilSignerPanics(t *testing.T) {
 
 func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
-	wire, _, signerPriv := signedV2EntryModeB(t, "did:test:log", []byte("v1-happy"), 1, 3600)
-	walFake := &stubV2WAL{}
-	deps := makeV1Deps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("v1-happy"), 1, 3600)
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
 
 	h := NewSubmissionHandler(deps)
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
@@ -172,7 +158,7 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 func TestV1Handler_BadPreamble_Rejects422(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
 	signerPriv, _ := signatures.GenerateKey()
-	deps := makeV1Deps(t, opSignerPriv, &signerPriv.PublicKey, &stubV2WAL{})
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, &stubSubmissionWAL{})
 	h := NewSubmissionHandler(deps)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader([]byte("xx")))
@@ -185,9 +171,9 @@ func TestV1Handler_BadPreamble_Rejects422(t *testing.T) {
 
 func TestV1Handler_WALQueueFull_Returns503(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
-	wire, _, signerPriv := signedV2EntryModeB(t, "did:test:log", []byte("queue-full"), 1, 3600)
-	walFake := &stubV2WAL{submitErr: wal.ErrQueueFull}
-	deps := makeV1Deps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("queue-full"), 1, 3600)
+	walFake := &stubSubmissionWAL{submitErr: wal.ErrQueueFull}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
 
 	h := NewSubmissionHandler(deps)
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
@@ -203,9 +189,9 @@ func TestV1Handler_WALQueueFull_Returns503(t *testing.T) {
 
 func TestV1Handler_WALInternalError_Returns500(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
-	wire, _, signerPriv := signedV2EntryModeB(t, "did:test:log", []byte("wal-broken"), 1, 3600)
-	walFake := &stubV2WAL{submitErr: errors.New("WAL: disk full")}
-	deps := makeV1Deps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("wal-broken"), 1, 3600)
+	walFake := &stubSubmissionWAL{submitErr: errors.New("WAL: disk full")}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
 
 	h := NewSubmissionHandler(deps)
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
@@ -231,9 +217,9 @@ func TestV1Handler_WALInternalError_Returns500(t *testing.T) {
 
 func TestV1Handler_UnauthenticatedSkipCreditDeduction(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
-	wire, _, signerPriv := signedV2EntryModeB(t, "did:test:log", []byte("anon"), 1, 3600)
-	walFake := &stubV2WAL{}
-	deps := makeV1Deps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("anon"), 1, 3600)
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
 	// Belt-and-suspenders: make absolutely sure no DB/CreditStore
 	// is wired so the deductCreditModeA short-circuits.
 	deps.Storage.DB = nil

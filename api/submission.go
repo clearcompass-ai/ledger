@@ -211,13 +211,10 @@ type submissionError struct {
 
 // prepareSubmission runs admission steps 1-9: read body, validate
 // preamble, deserialize, NFC, destination binding, freshness,
-// signature, schema dispatch, size, evidence cap, mode dispatch,
-// canonical hash, early-dup check, log_time. Returns either a
-// fully-populated preparedSubmission ready for wal.Submit, or
-// a submissionError to be written to the client.
-//
-// Identical for v1 and v2 — the SCT/MMD architecture only changes
-// what happens AFTER wal.Submit (steps 10+).
+// signature, size, evidence cap, mode dispatch, canonical hash,
+// early-dup check, log_time. Returns either a fully-populated
+// preparedSubmission ready for wal.Submit, or a submissionError
+// to be written to the client.
 func prepareSubmission(
 	ctx context.Context,
 	deps *SubmissionDeps,

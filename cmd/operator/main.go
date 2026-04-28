@@ -983,8 +983,8 @@ func main() {
 	// Asynchronous WAL → Tessera → entry_index pipeline. Drains
 	// StatePending entries continuously: AppendLeaf (antispam-
 	// idempotent) → entry_index INSERT → wal.Sequence. Supports
-	// the SCT/MMD architecture: v2 admission returns an SCT after
-	// WAL fsync; the Sequencer redeems within MMD.
+	// the SCT/MMD architecture: /v1/entries admission returns an SCT
+	// after WAL fsync; the Sequencer redeems within MMD.
 	seq := sequencer.NewSequencer(walc, embeddedAppender, pool, entryStore, sequencer.Config{
 		PollInterval: cfg.SequencerInterval,
 		MaxInFlight:  cfg.SequencerMaxInFlight,
