@@ -1,10 +1,8 @@
-# Operator architecture (Phase 3 + 4)
+# Operator architecture
 
-This document is the orientation map for the Phase 3+4 architecture
-— the WAL-first admission model, hexagonal bytestore, asynchronous
-Shipper, integrity Detector, and 302-redirect read path. For
-historical context (the v1 admission model and the migration to
-Tessera-aligned vocabulary) see `MIGRATION.md`.
+Orientation map for the operator's runtime architecture: the
+WAL-first admission model, hexagonal bytestore, asynchronous
+Shipper, integrity Detector, and 302-redirect read path.
 
 ## End-to-end flow
 
@@ -144,8 +142,8 @@ no separate signature-append step. Implications:
 
 ## Sequencing
 
-Tessera is the sole sequence authority. The Phase 1/2 Postgres
-`entry_sequence` SEQUENCE was dropped in commit 10. Admission flow:
+Tessera is the sole sequence authority — there is no Postgres
+sequence allocator. Admission flow:
 WAL Submit → Tessera AppendLeaf (assigns seq, dedup via antispam)
 → Postgres `entry_index` INSERT with the assigned seq → WAL
 Sequence transition. A failure between any two of these stages is
