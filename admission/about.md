@@ -6,15 +6,15 @@ Postgres. Each file in this package is one stage; each stage is
 fail-closed and returns a sentinel error the API layer maps to a
 specific HTTP status.
 
-## Pipeline ordering (Wave 1 plan v3 §3 Decision 1)
+## Pipeline ordering
 
 1. Deserialize (lives in `core/envelope`, not here)
 2. **NFC check** — `nfc_check.go` (this package)
 3. **Signature verify** — `entry_signature_verifier.go` (this package)
-4. Schema dispatch (Wave 1 C2 — `api/submission.go` calls into `schema/`)
-5. Witness quorum verify (Wave 1 S1 — `bls_quorum_verifier.go`, future)
-6. Index population (Wave 1 C3-C4 — `store/`)
-7. Tessera enqueue (existing `tessera/` adapter)
+4. Schema dispatch — `api/submission.go` calls into `schema/`
+5. Witness quorum verify — `bls_quorum_verifier.go` (not yet wired)
+6. Index population — `store/`
+7. Tessera enqueue — `tessera/` adapter
 
 ## Domain-agnostic boundary
 
