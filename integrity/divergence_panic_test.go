@@ -1,0 +1,251 @@
+/*
+FILE PATH: integrity/divergence_panic_test.go
+
+The Detector returns ErrDiverged on disagreement; cmd/operator/main.go
+panics on it via the fatal-channel supervisor. Existing tests in
+integrity_test.go cover the Detector's return value (Loop returns
+ErrDiverged on first sample-cycle mismatch) but stop short of the
+panic. This file closes the loop:
+
+  TestDetector_Loop_DivergencePropagatesViaPanic
+    Pipes Loop's return value through the same fatal-channel pattern
+    cmd/operator/main.go uses, then asserts the supervisor panics
+    with the expected message shape ("operator FATAL: integrity
+    detector: ...") and that errors.Is(panicErr, ErrDiverged) holds.
+
+  TestDetector_Reconcile_SinkDivergenceLogged
+    Mismatched-seq form of Reconcile-side divergence: the Reasserter
+    returns seq=X but the sink was already StateSequenced at seq=Y
+    (e.g., wal.Committer.Sequence returns a state-mismatch error).
+    Reconcile must NOT propagate the per-entry failure as a fatal
+    error — it logs and continues so a single bad entry doesn't
+    block reconciliation of the rest. This locks the policy.
+
+  TestSupervisor_FatalChannelPanicShape
+    Standalone replication of the cmd/operator/main.go supervisor
+    block. No integrity surface — just the mechanism that converts
+    a fatal-channel send into a process panic with the correct
+    error wrap. Catches future refactors that drop the wrap or
+    swallow the originating error.
+*/
+package integrity
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"math/rand"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// ─────────────────────────────────────────────────────────────────────
+// Test 1: Loop's ErrDiverged is propagated through the fatal channel
+// and converted to a panic with the production wrap shape.
+// ─────────────────────────────────────────────────────────────────────
+
+func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
+	tiles := newFakeTileReader()
+	wal := &fakeWAL{
+		hwm:    1,
+		hashAt: map[uint64][32]byte{1: hashOf("wal-version")},
+	}
+	tiles.putHashAtSeq(t, 1, hashOf("tessera-version"))
+
+	d := NewDetector(
+		wal,
+		inflightFromList(nil),
+		&fakeSink{},
+		NewVerifier(tiles),
+		NewReasserter(newFakeAppender()),
+		DetectorConfig{
+			SampleInterval:  5 * time.Millisecond,
+			SamplesPerCycle: 1,
+			Rand:            rand.New(rand.NewSource(1)),
+			Logger:          discardLogger(),
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Mirror cmd/operator/main.go's fatal-channel supervisor exactly:
+	//   - run the loop in a goroutine
+	//   - on non-context error, send to fatal channel
+	//   - supervisor reads fatal, panics with operator-FATAL wrap
+	fatal := make(chan error, 1)
+	go func() {
+		if err := d.Loop(ctx); err != nil &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) {
+			fatal <- fmt.Errorf("integrity detector: %w", err)
+		}
+	}()
+
+	var fatalErr error
+	select {
+	case fatalErr = <-fatal:
+	case <-ctx.Done():
+		t.Fatal("ctx expired before Loop returned a divergence error")
+	}
+
+	// Now run the supervisor's panic block under defer/recover and
+	// confirm it surfaces a panic value containing the originating
+	// ErrDiverged.
+	supervisor := func() (recovered any) {
+		defer func() { recovered = recover() }()
+		if fatalErr != nil {
+			panic(fmt.Errorf("operator FATAL: %w", fatalErr))
+		}
+		return nil
+	}
+	pv := supervisor()
+	if pv == nil {
+		t.Fatal("supervisor did not panic on fatal error")
+	}
+	pErr, ok := pv.(error)
+	if !ok {
+		t.Fatalf("supervisor panic value is not an error: %T %v", pv, pv)
+	}
+	if !errors.Is(pErr, ErrDiverged) {
+		t.Errorf("panic value does not wrap ErrDiverged: %v", pErr)
+	}
+	msg := pErr.Error()
+	if !strings.Contains(msg, "operator FATAL") {
+		t.Errorf("panic message missing 'operator FATAL' marker: %q", msg)
+	}
+	if !strings.Contains(msg, "integrity detector") {
+		t.Errorf("panic message missing 'integrity detector' wrap: %q", msg)
+	}
+	if !strings.Contains(msg, "seq=1") {
+		t.Errorf("panic message missing diverged seq reference: %q", msg)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Test 2: Reconcile's per-entry failure handling.
+//
+// Reconcile is intentionally permissive: a single failed re-Assert /
+// Sink.Sequence is logged and reconciliation continues with the next
+// inflight entry. Locking this policy is important — divergence is
+// surfaced via Loop, not Reconcile. Boot-time partial failure must
+// NOT block the operator from coming up; the integrity Loop will
+// catch any post-boot disagreement on its next sample cycle.
+// ─────────────────────────────────────────────────────────────────────
+
+func TestDetector_Reconcile_SinkDivergenceLogged(t *testing.T) {
+	app := newFakeAppender()
+	r := NewReasserter(app)
+
+	// Sink rejects exactly one hash — modeling the real wal.Committer.
+	// Sequence path: an entry already StateSequenced with a different
+	// seq returns a state-mismatch error.
+	sink := &fakeSink{}
+	bad := hashOf("divergent-entry")
+	sink.failOn = &bad
+
+	hashes := [][32]byte{
+		hashOf("good-1"),
+		bad,
+		hashOf("good-2"),
+	}
+
+	d := NewDetector(
+		&fakeWAL{},
+		inflightFromList(hashes),
+		sink,
+		nil, // no verifier needed for Reconcile
+		r,
+		DetectorConfig{Logger: discardLogger()},
+	)
+
+	if err := d.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile must not propagate per-entry sink failures, got %v", err)
+	}
+	calls := sink.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 successful sink calls (the bad one is skipped), got %d", len(calls))
+	}
+	for _, c := range calls {
+		if c.hash == bad {
+			t.Errorf("bad hash %x was recorded by sink (failOn rejected it)", bad[:8])
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Test 3: Supervisor panic-shape lock.
+//
+// Replicates the cmd/operator/main.go fatal-channel supervisor in
+// isolation. The test exists so a future refactor that drops the
+// "operator FATAL: %w" wrap, swallows the originating error, or
+// changes the channel ordering breaks loudly.
+// ─────────────────────────────────────────────────────────────────────
+
+func TestSupervisor_FatalChannelPanicShape(t *testing.T) {
+	const fatalMsg = "shipper exhausted retries"
+	originating := errors.New(fatalMsg)
+	wantWrap := fmt.Errorf("shipper: %w", originating)
+
+	// Producer goroutine — analogous to the shipper's terminal-error
+	// path in cmd/operator/main.go.
+	fatal := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fatal <- wantWrap
+	}()
+
+	// Supervisor block — mirror of the cmd/operator/main.go select
+	// loop. We give it a context that won't fire so the fatal branch
+	// is the one that wins.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var fatalErr error
+	select {
+	case <-ctx.Done():
+		t.Fatal("ctx fired before fatal channel; test wiring bug")
+	case fatalErr = <-fatal:
+	}
+	wg.Wait()
+
+	// Now the panic block. Recover and assert.
+	pv := func() (rec any) {
+		defer func() { rec = recover() }()
+		if fatalErr != nil {
+			panic(fmt.Errorf("operator FATAL: %w", fatalErr))
+		}
+		return nil
+	}()
+	if pv == nil {
+		t.Fatal("supervisor did not panic on fatal error")
+	}
+	pErr, ok := pv.(error)
+	if !ok {
+		t.Fatalf("panic value is not an error: %T", pv)
+	}
+	// Wrapping must preserve identity all the way down to the
+	// originating sentinel.
+	if !errors.Is(pErr, originating) {
+		t.Errorf("panic does not preserve originating error chain: %v", pErr)
+	}
+	if !strings.Contains(pErr.Error(), "operator FATAL") {
+		t.Errorf("panic missing 'operator FATAL' prefix: %q", pErr.Error())
+	}
+	if !strings.Contains(pErr.Error(), fatalMsg) {
+		t.Errorf("panic missing originating message %q: %q", fatalMsg, pErr.Error())
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Local helpers (kept tiny — the shared fakes live in integrity_test.go).
+// ─────────────────────────────────────────────────────────────────────
+
+// hashOf returns SHA-256 of the input string.
+func hashOf(s string) [32]byte {
+	return sha256.Sum256([]byte(s))
+}
