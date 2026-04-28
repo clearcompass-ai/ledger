@@ -53,7 +53,6 @@ package api
 import (
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -248,10 +247,3 @@ func marshalLookupEntry(e *types.EntryWithMetadata) CommitmentLookupEntry {
 		},
 	}
 }
-
-// ensureFetcherErr is a placeholder used by the handler's error
-// branch to guarantee the errors import is retained even if the
-// SDK stops returning sentinel errors from the fetcher path. The
-// import-pinning pattern matches the var _ assertion in
-// store/commitment_fetcher.go.
-var ensureFetcherErr = errors.New("api/commitments: fetcher path error")
