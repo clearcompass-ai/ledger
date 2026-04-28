@@ -27,13 +27,13 @@ WHAT THE SCT DOES NOT GUARANTEE:
 
 CANONICAL SIGNING PAYLOAD (RFC-6962-style binary packing):
 
-  version          (u8)
-  logDID_len       (u16, big-endian)
-  logDID_bytes     (variable; 0..65535)
-  canonical_hash   (32 bytes)
-  log_time_micros  (i64, big-endian; microseconds since Unix epoch)
+	version          (u8)
+	logDID_len       (u16, big-endian)
+	logDID_bytes     (variable; 0..65535)
+	canonical_hash   (32 bytes)
+	log_time_micros  (i64, big-endian; microseconds since Unix epoch)
 
-  Total size: 43 + len(logDID) bytes.
+	Total size: 43 + len(logDID) bytes.
 
 Length-prefixed encoding makes the parse unambiguous — concatenated
 fields cannot drift across boundaries (the classic
@@ -43,10 +43,10 @@ dispatch on the leading byte.
 
 VERIFICATION (consumer side):
 
-  1. Reconstruct the signing payload from the SCT's JSON fields
-     via SCTSigningPayload(...).
-  2. SHA-256 it.
-  3. signatures.VerifyEntry(hash, sct.Signature, operatorPubKey).
+ 1. Reconstruct the signing payload from the SCT's JSON fields
+    via SCTSigningPayload(...).
+ 2. SHA-256 it.
+ 3. signatures.VerifyEntry(hash, sct.Signature, operatorPubKey).
 
 The operator's public key is reachable via cfg.OperatorDID, which
 is always a did:key:z... — pure parse, no network. See
@@ -72,6 +72,15 @@ import (
 // dispatchable.
 const SCTVersion uint8 = 1
 
+const (
+	// SCTDomainSep is a strong domain separator that prevents cross-protocol
+	// signature confusion between SCT payloads and any other signed blobs.
+	SCTDomainSep = "ORTHOLOG_SCT_V1\x00"
+	// SCTSigAlgoECDSASecp256k1SHA256 identifies the algorithm used for SCT
+	// signatures in v1.
+	SCTSigAlgoECDSASecp256k1SHA256 = "ecdsa-secp256k1-sha256"
+)
+
 // SignedCertificateTimestamp is the JSON shape returned by
 // POST /v2/entries on successful admission. Consumers verify the
 // signature against the operator's public key (reachable via
@@ -82,6 +91,8 @@ const SCTVersion uint8 = 1
 // signature reconstruction.
 type SignedCertificateTimestamp struct {
 	Version       uint8  `json:"version"`
+	SignerDID     string `json:"signer_did"`  // DID/key identifier for verification across key rotation windows
+	SigAlgoID     string `json:"sig_algo_id"` // signature algorithm identifier (crypto agility)
 	LogDID        string `json:"log_did"`
 	CanonicalHash string `json:"canonical_hash"`  // hex-encoded sha256 of canonical bytes
 	LogTimeMicros int64  `json:"log_time_micros"` // microseconds since Unix epoch (signed-over)
@@ -93,16 +104,35 @@ type SignedCertificateTimestamp struct {
 // the SCT signature is computed over. Same packing on both sides:
 // the operator builds it during SignSCT, the consumer rebuilds
 // it during VerifySCT, and the two must match byte-for-byte.
-func SCTSigningPayload(logDID string, canonicalHash [32]byte, logTimeMicros int64) ([]byte, error) {
+func SCTSigningPayload(
+	signerDID string,
+	sigAlgoID string,
+	logDID string,
+	canonicalHash [32]byte,
+	logTimeMicros int64,
+) ([]byte, error) {
+	if len(signerDID) > 0xFFFF {
+		return nil, fmt.Errorf("api/sct: signerDID too long (%d bytes, max %d)", len(signerDID), 0xFFFF)
+	}
+	if len(sigAlgoID) > 0xFFFF {
+		return nil, fmt.Errorf("api/sct: sigAlgoID too long (%d bytes, max %d)", len(sigAlgoID), 0xFFFF)
+	}
 	if len(logDID) > 0xFFFF {
 		return nil, fmt.Errorf("api/sct: logDID too long (%d bytes, max %d)", len(logDID), 0xFFFF)
 	}
-	buf := make([]byte, 0, 1+2+len(logDID)+32+8)
+	buf := make([]byte, 0, len(SCTDomainSep)+1+2+len(signerDID)+2+len(sigAlgoID)+2+len(logDID)+32+8)
+	buf = append(buf, SCTDomainSep...)
 	buf = append(buf, SCTVersion)
 	var lenBuf [2]byte
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(signerDID)))
+	buf = append(buf, lenBuf[:]...)
+	buf = append(buf, signerDID...)
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(sigAlgoID)))
+	buf = append(buf, lenBuf[:]...)
+	buf = append(buf, sigAlgoID...)
 	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(logDID)))
 	buf = append(buf, lenBuf[:]...)
-	buf = append(buf, []byte(logDID)...)
+	buf = append(buf, logDID...)
 	buf = append(buf, canonicalHash[:]...)
 	var tsBuf [8]byte
 	binary.BigEndian.PutUint64(tsBuf[:], uint64(logTimeMicros))
@@ -117,6 +147,7 @@ func SCTSigningPayload(logDID string, canonicalHash [32]byte, logTimeMicros int6
 // against the operator's published public key without ambiguity.
 func SignSCT(
 	priv *ecdsa.PrivateKey,
+	signerDID string,
 	logDID string,
 	canonicalHash [32]byte,
 	logTime time.Time,
@@ -124,8 +155,11 @@ func SignSCT(
 	if priv == nil {
 		return nil, fmt.Errorf("api/sct: SignSCT requires non-nil priv")
 	}
+	if signerDID == "" {
+		return nil, fmt.Errorf("api/sct: SignSCT requires non-empty signerDID")
+	}
 	logTimeMicros := logTime.UTC().UnixMicro()
-	payload, err := SCTSigningPayload(logDID, canonicalHash, logTimeMicros)
+	payload, err := SCTSigningPayload(signerDID, SCTSigAlgoECDSASecp256k1SHA256, logDID, canonicalHash, logTimeMicros)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +170,8 @@ func SignSCT(
 	}
 	return &SignedCertificateTimestamp{
 		Version:       SCTVersion,
+		SignerDID:     signerDID,
+		SigAlgoID:     SCTSigAlgoECDSASecp256k1SHA256,
 		LogDID:        logDID,
 		CanonicalHash: hex.EncodeToString(canonicalHash[:]),
 		LogTimeMicros: logTimeMicros,
@@ -162,6 +198,16 @@ func VerifySCT(pub *ecdsa.PublicKey, sct *SignedCertificateTimestamp) error {
 	if sct.Version != SCTVersion {
 		return fmt.Errorf("api/sct: unsupported SCT version %d (want %d)", sct.Version, SCTVersion)
 	}
+	if sct.SignerDID == "" {
+		return fmt.Errorf("api/sct: missing signer_did")
+	}
+	if sct.SigAlgoID != SCTSigAlgoECDSASecp256k1SHA256 {
+		return fmt.Errorf("api/sct: unsupported sig_algo_id %q", sct.SigAlgoID)
+	}
+	expectedLogTime := time.UnixMicro(sct.LogTimeMicros).UTC().Format(time.RFC3339Nano)
+	if sct.LogTime != expectedLogTime {
+		return fmt.Errorf("api/sct: log_time mismatch (got %q want %q)", sct.LogTime, expectedLogTime)
+	}
 	canonicalHashBytes, err := hex.DecodeString(sct.CanonicalHash)
 	if err != nil {
 		return fmt.Errorf("api/sct: canonical_hash decode: %w", err)
@@ -177,7 +223,7 @@ func VerifySCT(pub *ecdsa.PublicKey, sct *SignedCertificateTimestamp) error {
 		return fmt.Errorf("api/sct: signature decode: %w", err)
 	}
 
-	payload, err := SCTSigningPayload(sct.LogDID, canonicalHash, sct.LogTimeMicros)
+	payload, err := SCTSigningPayload(sct.SignerDID, sct.SigAlgoID, sct.LogDID, canonicalHash, sct.LogTimeMicros)
 	if err != nil {
 		return err
 	}

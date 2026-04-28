@@ -6,18 +6,18 @@ and GET /v1/admission/mmd (NewMMDHandler).
 
 WHAT'S COVERED:
 
-  NewSubmissionV2Handler:
-    - Constructor panics on nil deps, nil signer key, missing
-      EpochWindowSeconds, missing LogDID.
-    - Handler returns 202 + signed SCT on the happy path
-      (Mode B / unauthenticated, with a stub DiffController).
-    - SCT signature verifies against the operator's public key.
-    - Invalid wire bytes → 422.
-    - WAL queue full → 503 + Retry-After.
-    - Insufficient credits (Mode A) → 402.
+	NewSubmissionV2Handler:
+	  - Constructor panics on nil deps, nil signer key, missing
+	    EpochWindowSeconds, missing LogDID.
+	  - Handler returns 202 + signed SCT on the happy path
+	    (Mode B / unauthenticated, with a stub DiffController).
+	  - SCT signature verifies against the operator's public key.
+	  - Invalid wire bytes → 422.
+	  - WAL queue full → 503 + Retry-After.
+	  - Insufficient credits (Mode A) → 402.
 
-  NewMMDHandler:
-    - Returns the configured MMD as both seconds and human form.
+	NewMMDHandler:
+	  - Returns the configured MMD as both seconds and human form.
 
 These are unit-level handler tests that mock out WAL, EntryStore,
 Tessera, etc. via the existing fake types. End-to-end coverage
@@ -38,8 +38,8 @@ import (
 	"testing"
 	"time"
 
-	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
@@ -198,6 +198,7 @@ func makeV2Deps(t *testing.T, opSignerPriv *ecdsa.PrivateKey, signerPub *ecdsa.P
 				CreditStore: nil,
 				DIDResolver: &fakeDIDResolver{pub: signerPub},
 			},
+			OperatorDID:        "did:test:operator",
 			LogDID:             "did:test:log",
 			MaxEntrySize:       1 << 20,
 			Logger:             discardLogger(),
@@ -221,6 +222,7 @@ func TestNewSubmissionV2Handler_NilSignerPanics(t *testing.T) {
 	NewSubmissionV2Handler(&SubmissionV2Deps{
 		SubmissionDeps: &SubmissionDeps{
 			Admission:    AdmissionConfig{EpochWindowSeconds: 3600},
+			OperatorDID:  "did:test:operator",
 			LogDID:       "did:test:log",
 			MaxEntrySize: 1 << 20,
 			Logger:       discardLogger(),
@@ -235,6 +237,7 @@ func TestNewSubmissionV2Handler_MissingEpochPanics(t *testing.T) {
 	NewSubmissionV2Handler(&SubmissionV2Deps{
 		SubmissionDeps: &SubmissionDeps{
 			Admission:    AdmissionConfig{EpochWindowSeconds: 0},
+			OperatorDID:  "did:test:operator",
 			LogDID:       "did:test:log",
 			MaxEntrySize: 1 << 20,
 			Logger:       discardLogger(),
@@ -249,7 +252,23 @@ func TestNewSubmissionV2Handler_MissingLogDIDPanics(t *testing.T) {
 	NewSubmissionV2Handler(&SubmissionV2Deps{
 		SubmissionDeps: &SubmissionDeps{
 			Admission:    AdmissionConfig{EpochWindowSeconds: 3600},
+			OperatorDID:  "did:test:operator",
 			LogDID:       "",
+			MaxEntrySize: 1 << 20,
+			Logger:       discardLogger(),
+		},
+		OperatorSignerPriv: priv,
+	})
+}
+
+func TestNewSubmissionV2Handler_MissingOperatorDIDPanics(t *testing.T) {
+	priv, _ := signatures.GenerateKey()
+	defer expectPanic(t, "OperatorDID")
+	NewSubmissionV2Handler(&SubmissionV2Deps{
+		SubmissionDeps: &SubmissionDeps{
+			Admission:    AdmissionConfig{EpochWindowSeconds: 3600},
+			OperatorDID:  "",
+			LogDID:       "did:test:log",
 			MaxEntrySize: 1 << 20,
 			Logger:       discardLogger(),
 		},

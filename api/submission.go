@@ -22,11 +22,14 @@ SDK v0.3.0 HARDENING:
   - Step 5/8: envelope.EntryIdentity for the canonical hash primitive.
 
 v7.75 WAVE 1 ADMISSION PACKAGE:
+
   - Step 3a-NFC: admission.CheckNFC asserts NFC normalization on every
     DID-shaped header field. Defensive only — no normalization on the
     caller's behalf (SDK Decision 52 caller-normalizes contract).
+
   - Step 4: admission.VerifyEntrySignature wraps SDK signatures.VerifyEntry
     and preserves the Phase 2 nil-resolver passthrough internally.
+
   - Step 4-Schema (NEW, Wave 1 v3 §C2): commitment-schema dispatch.
     Peeks the entry's payload schema_id and routes recognized
     cryptographic-commitment payloads through the SDK Parse* validators
@@ -37,6 +40,7 @@ v7.75 WAVE 1 ADMISSION PACKAGE:
     the operator does not interpret payload semantics for coupling,
     contestability, or governance. Domain-payload semantics remain
     opaque to the operator per the Domain/Protocol Separation Principle.
+
   - Step 11 (UPDATED): admission tx now also INSERTs into
     commitment_split_id when a SplitID was extracted at Step 4-Schema.
     Population is in the same Postgres transaction as the entry_index
@@ -171,8 +175,13 @@ type SubmissionDeps struct {
 	Admission    AdmissionConfig
 	Identity     IdentityDeps
 	LogDID       string
+	OperatorDID  string
 	MaxEntrySize int64
 	Logger       *slog.Logger
+
+	// OperatorSignerPriv signs SCTs returned by asynchronous
+	// submission endpoints, including POST /v1/entries/batch.
+	OperatorSignerPriv *ecdsa.PrivateKey
 
 	// FreshnessTolerance configures the late-replay rejection window
 	// at admission time. Zero defaults to policy.FreshnessInteractive.
@@ -580,10 +589,10 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGatewayTimeout)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":          "sequencer_lag",
-				"hash":           hex.EncodeToString(prep.canonicalHash[:]),
-				"wal_state":      "pending",
-				"follow_up":      "/v1/entries/hash/" + hex.EncodeToString(prep.canonicalHash[:]),
+				"error":           "sequencer_lag",
+				"hash":            hex.EncodeToString(prep.canonicalHash[:]),
+				"wal_state":       "pending",
+				"follow_up":       "/v1/entries/hash/" + hex.EncodeToString(prep.canonicalHash[:]),
 				"timeout_seconds": v1Timeout.Seconds(),
 			})
 			return

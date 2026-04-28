@@ -7,47 +7,48 @@ shape).
 
 PER-ENTRY PIPELINE:
 
-  for each StatePending entry in WAL.IterateInflight:
-    1. Re-probe MetaState — skip if no longer Pending (concurrent
-       drain or v1 facade picked it up).
-    2. wal.Read(hash) → wire bytes.
-    3. envelope.Deserialize(wire) → recover header metadata for
-       entry_index INSERT.
-    4. tessera.AppendLeaf(hash[:]) → assigned seq.
-       Antispam dedup makes this idempotent under retries: a
-       second AppendLeaf for the same hash returns the same seq.
-    5. WithReadCommittedTx: store.Insert(EntryRow{seq, hash, ...}).
-       UNIQUE(canonical_hash) collisions are tolerated — they
-       indicate a previous drain cycle already won this race.
-    6. wal.Sequence(hash, seq) — pending → sequenced.
+	for each StatePending entry in WAL.IterateInflight:
+	  1. Re-probe MetaState — skip if no longer Pending (concurrent
+	     drain or v1 facade picked it up).
+	  2. wal.Read(hash) → wire bytes.
+	  3. envelope.Deserialize(wire) → recover header metadata for
+	     entry_index INSERT.
+	  4. tessera.AppendLeaf(hash[:]) → assigned seq.
+	     Antispam dedup makes this idempotent under retries: a
+	     second AppendLeaf for the same hash returns the same seq.
+	  5. WithReadCommittedTx: store.Insert(EntryRow{seq, hash, ...}).
+	     UNIQUE(canonical_hash) collisions are tolerated — they
+	     indicate a previous drain cycle already won this race.
+	  6. wal.Sequence(hash, seq) — pending → sequenced.
 
 ERROR HANDLING:
 
-  Per-entry errors don't abort the iteration. Each entry tracks a
-  retry counter (in-memory; resets on operator restart). After
-  cfg.MaxAttempts (default 10) the entry transitions to
-  StateManual and the Sequencer stops attempting it; operators
-  inspect WAL state and take action.
+	Per-entry errors don't abort the iteration. Each entry tracks a
+	retry counter (in-memory; resets on operator restart). After
+	cfg.MaxAttempts (default 10) the entry transitions to
+	StateManual and the Sequencer stops attempting it; operators
+	inspect WAL state and take action.
 
-  Transient failures (Tessera transport blip, Postgres lock
-  contention) hit MarkRetry and exponential backoff before the
-  next cycle picks them up again.
+	Transient failures (Tessera transport blip, Postgres lock
+	contention) hit MarkRetry and exponential backoff before the
+	next cycle picks them up again.
 
 CONCURRENCY:
 
-  The drain is single-goroutine within a single drainOnce call.
-  Bounded concurrency across entries (cfg.MaxInFlight) is
-  intentionally NOT used here because the per-entry work
-  serializes through Tessera + Postgres anyway. If profiling
-  shows headroom we can parallelize within a cycle later; today
-  the cost is a sequential walk of (hash, AppendLeaf, INSERT,
-  Sequence) that runs at single-digit milliseconds per entry on
-  warm caches.
+	The drain is single-goroutine within a single drainOnce call.
+	Bounded concurrency across entries (cfg.MaxInFlight) is
+	intentionally NOT used here because the per-entry work
+	serializes through Tessera + Postgres anyway. If profiling
+	shows headroom we can parallelize within a cycle later; today
+	the cost is a sequential walk of (hash, AppendLeaf, INSERT,
+	Sequence) that runs at single-digit milliseconds per entry on
+	warm caches.
 */
 package sequencer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -56,6 +57,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
+	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
@@ -204,9 +208,13 @@ func (s *Sequencer) insertEntryIndex(
 	if entry.Header.EventTime != 0 {
 		logTime = time.UnixMicro(entry.Header.EventTime).UTC()
 	}
+	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
+	if dispatchErr != nil {
+		return fmt.Errorf("commitment schema: %w", dispatchErr)
+	}
 
 	return store.WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
-		return s.store.Insert(ctx, tx, store.EntryRow{
+		if err := s.store.Insert(ctx, tx, store.EntryRow{
 			SequenceNumber: seq,
 			CanonicalHash:  hash,
 			LogTime:        logTime,
@@ -214,8 +222,52 @@ func (s *Sequencer) insertEntryIndex(
 			TargetRoot:     targetRoot,
 			CosignatureOf:  cosigOf,
 			SchemaRef:      schemaRef,
-		})
+		}); err != nil {
+			return err
+		}
+		if extractedSplitID != nil {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
+				VALUES ($1, $2, $3)`,
+				seq, extractedSchemaID, extractedSplitID[:],
+			); err != nil {
+				return fmt.Errorf("commitment_split_id insert: %w", err)
+			}
+		}
+		return nil
 	})
+}
+
+type commitmentPayloadPeek struct {
+	SchemaID string `json:"schema_id"`
+}
+
+func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) {
+	if entry == nil || len(entry.DomainPayload) == 0 {
+		return nil, "", nil
+	}
+	var peek commitmentPayloadPeek
+	if err := json.Unmarshal(entry.DomainPayload, &peek); err != nil {
+		return nil, "", nil
+	}
+	switch peek.SchemaID {
+	case artifact.PREGrantCommitmentSchemaID:
+		commitment, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+		if err != nil {
+			return nil, "", err
+		}
+		sid := commitment.SplitID
+		return &sid, artifact.PREGrantCommitmentSchemaID, nil
+	case escrow.EscrowSplitCommitmentSchemaID:
+		commitment, err := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
+		if err != nil {
+			return nil, "", err
+		}
+		sid := commitment.SplitID
+		return &sid, escrow.EscrowSplitCommitmentSchemaID, nil
+	default:
+		return nil, "", nil
+	}
 }
 
 // handleEntryError centralizes the retry-vs-manual decision for a

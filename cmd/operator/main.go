@@ -261,10 +261,10 @@ type Config struct {
 	// drains StatePending entries asynchronously; v2 admission
 	// returns an SCT immediately after WAL fsync and the
 	// Sequencer redeems the promise within MMD.
-	SequencerInterval   time.Duration // default 1s; OPERATOR_SEQUENCER_INTERVAL
+	SequencerInterval    time.Duration // default 1s; OPERATOR_SEQUENCER_INTERVAL
 	SequencerMaxInFlight int           // default 4; OPERATOR_SEQUENCER_MAX_INFLIGHT
-	MMD                 time.Duration // default 24h; OPERATOR_MMD
-	V1Timeout           time.Duration // default 30s; OPERATOR_V1_TIMEOUT (facade)
+	MMD                  time.Duration // default 24h; OPERATOR_MMD
+	V1Timeout            time.Duration // default 30s; OPERATOR_V1_TIMEOUT (facade)
 	// Tessera embedding — Phase 1B replaces the standalone
 	// tessera-personality binary with in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
@@ -316,9 +316,9 @@ type Config struct {
 	// "memory" is intentionally rejected at the composition root —
 	// production must select a real backend. Tests that need a
 	// Store-only impl call bytestore.NewMemory directly.
-	ByteStoreBackend     string
-	ByteStorePrefix      string // empty = "entries"
-	ByteStoreCacheSize   int
+	ByteStoreBackend   string
+	ByteStorePrefix    string // empty = "entries"
+	ByteStoreCacheSize int
 
 	// GCS-specific.
 	ByteStoreGCSBucket   string
@@ -332,9 +332,9 @@ type Config struct {
 	ByteStoreS3AccessKey string // empty = default credential chain
 	ByteStoreS3SecretKey string // empty = default credential chain
 	ByteStoreS3PathStyle bool   // true for RustFS; false for AWS S3
-	TileCacheSize         int
-	SMTNodeCacheSize      int
-	DeltaWindow           int
+	TileCacheSize        int
+	SMTNodeCacheSize     int
+	DeltaWindow          int
 	// WitnessEndpoints is the comma-separated list of peer witness
 	// URLs the builder loop's HeadSync requester posts cosign
 	// requests to. Empty (default) → no cosignature collection;
@@ -387,24 +387,24 @@ func loadConfig() (*Config, error) {
 		ByteStorePrefix:       envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
 		ByteStoreCacheSize:    4096,
 		// GCS family.
-		ByteStoreGCSBucket:    os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
-		ByteStoreGCSEndpoint:  os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
-		ByteStoreGCSAnon:      os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSBucket:   os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint: os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:     os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
 		// S3 family.
-		ByteStoreS3Bucket:     os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
-		ByteStoreS3Endpoint:   os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
-		ByteStoreS3Region:     os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
-		ByteStoreS3AccessKey:  os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
-		ByteStoreS3SecretKey:  os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
-		ByteStoreS3PathStyle:  os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
-		TileCacheSize:         10_000,
-		SMTNodeCacheSize:      100_000,
-		DeltaWindow:           10,
-		WitnessEndpoints:      parseCSV(os.Getenv("OPERATOR_WITNESS_ENDPOINTS")),
-		WitnessQuorumK:        envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
-		WitnessKeyFile:        os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
-		WALPath:               envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
-		TesseraAntispamPath:   envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
+		ByteStoreS3Bucket:    os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
+		ByteStoreS3Endpoint:  os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
+		ByteStoreS3Region:    os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
+		ByteStoreS3AccessKey: os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
+		ByteStoreS3SecretKey: os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
+		ByteStoreS3PathStyle: os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
+		TileCacheSize:        10_000,
+		SMTNodeCacheSize:     100_000,
+		DeltaWindow:          10,
+		WitnessEndpoints:     parseCSV(os.Getenv("OPERATOR_WITNESS_ENDPOINTS")),
+		WitnessQuorumK:       envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
+		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
+		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
+		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 
 		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
@@ -865,7 +865,9 @@ func main() {
 			CreditStore: creditStore,
 			DIDResolver: admission.NewDIDKeyResolver(),
 		},
+		OperatorDID:        cfg.OperatorDID,
 		LogDID:             cfg.LogDID,
+		OperatorSignerPriv: operatorSignerPriv,
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
