@@ -332,7 +332,6 @@ func main() {
 		"operator_did", cfg.OperatorDID,
 		"addr", cfg.ServerAddr,
 		"tessera_storage_dir", cfg.TesseraStorageDir,
-		"sdk_version", "v0.3.0-tessera",
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
