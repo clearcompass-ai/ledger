@@ -165,8 +165,12 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 	// signing step happens in submitFn / SubmitViaHTTP downstream.
 	entry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
 		SignerDID:   p.cfg.OperatorDID,
-		Destination: p.cfg.LogDID, // v0.3.0 destination-binding requirement.
-		EventTime:   time.Now().UTC().Unix(),
+		Destination: p.cfg.LogDID,
+		// EventTime: SDK exchange/policy.CheckFreshness reads
+		// this via time.UnixMicro despite the doc comment
+		// claiming Unix seconds. Following the doc would make
+		// every self-anchor 56 years stale.
+		EventTime: time.Now().UTC().UnixMicro(),
 		// Target_Root=nil, Authority_Path=nil → commentary.
 	}, payload)
 	if err != nil {
