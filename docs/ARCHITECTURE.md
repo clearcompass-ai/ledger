@@ -143,6 +143,10 @@ no separate signature-append step. Implications:
 ## Sequencing
 
 Tessera is the sole sequence authority — there is no Postgres
+SEQUENCE backing entry numbers. Admission flow: WAL Submit →
+Tessera AppendLeaf (assigns seq, dedup via antispam) → Postgres
+`entry_index` INSERT with the assigned seq → WAL Sequence
+transition. A failure between any two of these stages is
 sequence allocator. Admission flow:
 WAL Submit → Tessera AppendLeaf (assigns seq, dedup via antispam)
 → Postgres `entry_index` INSERT with the assigned seq → WAL

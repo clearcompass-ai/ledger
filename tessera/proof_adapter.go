@@ -3,38 +3,47 @@ FILE PATH:
     tessera/proof_adapter.go
 
 DESCRIPTION:
-    TesseraAdapter wraps the Tessera personality client and implements the
-    operator's MerkleAppender interface. Computes Merkle inclusion and
-    consistency proofs locally from tiles — the tlog-tiles API has no
-    server-side proof endpoints.
+    TesseraAdapter implements the operator's MerkleAppender interface
+    over a Tessera AppenderBackend and computes Merkle inclusion and
+    consistency proofs locally from tiles — the tlog-tiles format has
+    no server-side proof endpoints.
 
-    The builder depends only on the MerkleAppender interface (AppendLeaf, Head).
-    Proof methods are on the concrete type for HTTP handler consumption.
+    The builder depends only on the MerkleAppender interface
+    (AppendLeaf, Head). Proof methods are on the concrete type for
+    HTTP handler consumption.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Hash-only AppendLeaf: receives 32-byte SHA-256(wire_bytes), not full entry
-      data. The operator computes the hash in builder/loop.go step 6 and passes
-      only the digest. Tessera never sees full entry bytes.
-    - Tile-based proof computation: InclusionProof and ConsistencyProof fetch
-      tiles from the personality's read API and compute proofs locally using
-      the transparency-dev/merkle library. No /api/v1/proof/* endpoints exist.
-    - TileHashReader bridges TileReader → merkle proof library's HashReaderFunc.
-      Fetches tiles on demand, extracts the required hashes by tile coordinate.
-    - TypedInclusionProof parses into SDK types.MerkleProof for Phase 4
+    - Hash-only AppendLeaf: receives 32-byte SHA-256(wire_bytes), not
+      full entry data. The operator computes the hash in
+      builder/loop.go step 6 and passes only the digest. Tessera
+      never sees the full entry data.
+    - Tile-based proof computation: InclusionProof and
+      ConsistencyProof fetch tiles via the operator's TileReader and
+      compute proofs locally using the transparency-dev/merkle
+      library. No proof endpoints exist in the tlog-tiles format.
+    - TileHashReader bridges TileReader → merkle proof library's
+      HashReaderFunc. Fetches tiles on demand, extracts the required
+      hashes by tile coordinate.
+    - TypedInclusionProof parses into SDK types.MerkleProof for
       cross-log verifiers.
 
 OVERVIEW:
-    AppendLeaf(hash) → Client.Append(ctx, hash) → POST /add → index.
-    Head() → Client.TreeHead(ctx) → GET /checkpoint → parsed tree state.
+    AppendLeaf(hash) → backend.AppendLeaf(hash) → assigned index.
+    Head()           → backend.Head()           → parsed tree state.
     InclusionProof(idx, size) → fetch tiles → compute from hash tree.
     ConsistencyProof(old, new) → fetch tiles → compute from hash tree.
 
 KEY DEPENDENCIES:
-    - tessera/client.go: HTTP communication with the personality.
-    - tessera/tile_reader.go: LRU-cached tile fetching from the read API.
-    - github.com/transparency-dev/merkle: Proof computation from tiles.
-    - builder/loop.go: Calls AppendLeaf and Head via the MerkleAppender interface.
-    - api/tree.go: Calls InclusionProof and ConsistencyProof for HTTP endpoints.
+    - tessera/embedded_appender.go: in-process upstream Tessera
+      (AppenderBackend implementation used in production).
+    - tessera/tile_reader.go: LRU-cached tile fetching from the
+      POSIX-backed Tessera storage directory.
+    - github.com/transparency-dev/merkle: proof computation from
+      tiles.
+    - builder/loop.go: calls AppendLeaf and Head via the
+      MerkleAppender interface.
+    - api/tree.go: calls InclusionProof and ConsistencyProof for
+      HTTP endpoints.
 */
 package tessera
 
@@ -54,9 +63,8 @@ import (
 // -------------------------------------------------------------------------------------------------
 
 // AppenderBackend is the minimal append-side surface TesseraAdapter
-// needs. Two implementations satisfy it:
-//   - *Client          (HTTP — legacy tessera-personality binary)
-//   - *EmbeddedAppender (in-process — Phase 1B, replaces the personality)
+// needs. The production implementation is *EmbeddedAppender —
+// in-process upstream Tessera over the POSIX storage driver.
 //
 // The adapter is backend-agnostic: AppendLeaf forwards to the
 // backend, Head forwards to the backend, and proof computation
@@ -71,8 +79,7 @@ type AppenderBackend interface {
 }
 
 // TesseraAdapter implements the operator's MerkleAppender interface
-// over an AppenderBackend (HTTP Client or in-process
-// EmbeddedAppender) and uses tiles for proof computation.
+// over an AppenderBackend and uses tiles for proof computation.
 type TesseraAdapter struct {
 	backend    AppenderBackend
 	tileReader *TileReader
@@ -80,11 +87,8 @@ type TesseraAdapter struct {
 }
 
 // NewTesseraAdapter creates an adapter over the supplied backend.
-// The backend choice is the operator's deployment-time decision —
-// cmd/operator/main.go wires either an HTTP *Client (legacy,
-// pre-Phase-1B) or an *EmbeddedAppender (Phase 1B+, in-process
-// upstream Tessera). Both satisfy AppenderBackend so the adapter
-// itself is unaware of the choice.
+// Production wires *EmbeddedAppender (in-process upstream Tessera);
+// tests inject lightweight fakes that satisfy AppenderBackend.
 func NewTesseraAdapter(backend AppenderBackend, tileReader *TileReader, logger *slog.Logger) *TesseraAdapter {
 	return &TesseraAdapter{
 		backend:    backend,
@@ -97,12 +101,14 @@ func NewTesseraAdapter(backend AppenderBackend, tileReader *TileReader, logger *
 // 2) MerkleAppender Interface — AppendLeaf + Head
 // -------------------------------------------------------------------------------------------------
 
-// AppendLeaf sends a 32-byte SHA-256 hash to the Tessera personality.
-// The hash is computed from the full wire bytes (canonical + sig_envelope)
-// by the builder in loop.go step 6. Tessera never sees the full entry data.
+// AppendLeaf forwards a 32-byte SHA-256 hash to the underlying
+// AppenderBackend. The hash is the canonical entry identity
+// (envelope.EntryIdentity); the builder computes it in loop.go
+// step 6 and passes only the digest. Tessera never sees the full
+// entry data.
 //
-// STRICT: panics if data is not exactly 32 bytes. This is a programming error
-// in the caller, not a runtime condition.
+// STRICT: returns an error if data is not exactly 32 bytes. This is
+// a programming error in the caller, not a runtime condition.
 func (a *TesseraAdapter) AppendLeaf(data []byte) (uint64, error) {
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/proof_adapter: AppendLeaf requires exactly 32 bytes (SHA-256 hash), got %d — this is a programming error in the caller", len(data))
@@ -140,7 +146,7 @@ func (a *TesseraAdapter) RawInclusionProof(position, treeSize uint64) (any, erro
 }
 
 // TypedInclusionProof computes a Merkle inclusion proof parsed into the SDK's
-// types.MerkleProof. Used by Phase 4 cross-log verifier which calls
+// types.MerkleProof. Used by cross-log verifiers which call
 // smt.VerifyMerkleInclusion(proof, rootHash).
 //
 // Note: LeafHash is left zeroed — the cross-log verifier already has the
