@@ -68,8 +68,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/transparency-dev/tessera/storage/posix"
@@ -247,6 +245,7 @@ func loadOrGenerateWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.Pr
 type Config struct {
 	ServerAddr            string
 	DatabaseURL           string
+	PgMaxConns            int32 // OPERATOR_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
 	LogDID                string // Destination for self-published entries (anchors, commitments).
 	OperatorDID           string // Signer DID for operator-authored commentary.
 	MaxEntrySize          int64
@@ -408,6 +407,13 @@ func loadConfig() (*Config, error) {
 		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
 		MMD:                  envDurationOr("OPERATOR_MMD", 24*time.Hour),
+
+		// Pool size: env override OR derived from MaxInFlight (set
+		// after we know the final MaxInFlight value below).
+		PgMaxConns: int32(envIntOr("OPERATOR_PG_MAX_CONNS", 0)),
+	}
+	if cfg.PgMaxConns == 0 {
+		cfg.PgMaxConns = defaultPgMaxConns(cfg.SequencerMaxInFlight)
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -432,7 +438,58 @@ func loadConfig() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
 	}
+	if err := validatePgPoolSizing(cfg.PgMaxConns, cfg.SequencerMaxInFlight); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// pgPoolHeadroom is the minimum extra connections the pool must
+// have above SequencerMaxInFlight, to leave room for HTTP admission,
+// auth middleware token lookups, builder + shipper background loops,
+// and ad-hoc query handlers.
+const pgPoolHeadroom = 8
+
+// defaultPgMaxConns returns the default Postgres pool size derived
+// from sequencerMaxInFlight. Floor at 20 so light-load deployments
+// have headroom for HTTP + auth + builder + shipper concurrency
+// without operator tuning. Otherwise pick MaxInFlight*4 so the
+// sequencer can't exceed a quarter of the pool during a drain
+// burst.
+func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
+	mif := sequencerMaxInFlight
+	if mif <= 0 {
+		mif = sequencer.DefaultMaxInFlight
+	}
+	derived := int32(mif * 4)
+	if derived < 20 {
+		return 20
+	}
+	return derived
+}
+
+// validatePgPoolSizing enforces the boot-time invariant that the
+// configured pool has enough connections to support the sequencer
+// plus headroom for the rest of the operator. Returns a clear
+// error if the operator was misconfigured — better to refuse to
+// start than to have HTTP admission hang on connection acquisition
+// under load.
+func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
+	mif := sequencerMaxInFlight
+	if mif <= 0 {
+		mif = sequencer.DefaultMaxInFlight
+	}
+	required := int32(mif) + pgPoolHeadroom
+	if maxConns < required {
+		return fmt.Errorf(
+			"OPERATOR_PG_MAX_CONNS=%d is below the minimum %d "+
+				"(SequencerMaxInFlight=%d + headroom=%d). "+
+				"Raise OPERATOR_PG_MAX_CONNS, lower OPERATOR_SEQUENCER_MAX_INFLIGHT, "+
+				"or unset OPERATOR_PG_MAX_CONNS to use the safe default",
+			maxConns, required, mif, pgPoolHeadroom,
+		)
+	}
+	return nil
 }
 
 // toBytestoreConfig flattens the operator config's bytestore-related
@@ -546,12 +603,28 @@ func main() {
 	defer cancel()
 
 	// ── Postgres ──────────────────────────────────────────────────────
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	// Pool is sized at max(20, SequencerMaxInFlight*4) by default so
+	// the Sequencer can drain at full MaxInFlight without starving
+	// the HTTP admission path for connections. Override via
+	// OPERATOR_PG_MAX_CONNS; validatePgPoolSizing rejects anything
+	// below SequencerMaxInFlight + pgPoolHeadroom at boot.
+	pgPool, err := store.InitPool(ctx, store.PoolConfig{
+		DSN:             cfg.DatabaseURL,
+		MaxConns:        cfg.PgMaxConns,
+		MinConns:        2,
+		MaxConnLifetime: 30 * time.Minute,
+		MaxConnIdleTime: 5 * time.Minute,
+	})
 	if err != nil {
 		logger.Error("pgxpool", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer pgPool.Close()
+	pool := pgPool.DB
+	logger.Info("postgres pool ready",
+		"max_conns", cfg.PgMaxConns,
+		"sequencer_max_inflight", cfg.SequencerMaxInFlight,
+	)
 
 	if err := store.RunMigrations(ctx, pool); err != nil {
 		logger.Error("migrations", "error", err)
