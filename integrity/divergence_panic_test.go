@@ -13,20 +13,19 @@ panic. This file closes the loop:
     with the expected message shape ("operator FATAL: integrity
     detector: ...") and that errors.Is(panicErr, ErrDiverged) holds.
 
-  TestDetector_Reconcile_SinkDivergenceLogged
-    Mismatched-seq form of Reconcile-side divergence: the Reasserter
-    returns seq=X but the sink was already StateSequenced at seq=Y
-    (e.g., wal.Committer.Sequence returns a state-mismatch error).
-    Reconcile must NOT propagate the per-entry failure as a fatal
-    error — it logs and continues so a single bad entry doesn't
-    block reconciliation of the rest. This locks the policy.
-
   TestSupervisor_FatalChannelPanicShape
     Standalone replication of the cmd/operator/main.go supervisor
     block. No integrity surface — just the mechanism that converts
     a fatal-channel send into a process panic with the correct
     error wrap. Catches future refactors that drop the wrap or
     swallow the originating error.
+
+POST-CLEANUP NOTE:
+  The Reconcile-side counterpart (TestDetector_Reconcile_Sink
+  DivergenceLogged) was deleted alongside the Reconcile method
+  itself. Boot recovery is now the Sequencer's responsibility;
+  Sequencer-side error-handling tests live in
+  sequencer/sequencer_test.go.
 */
 package integrity
 
@@ -41,6 +40,14 @@ import (
 	"testing"
 	"time"
 )
+
+// hashOf is a tiny SHA-256 helper for test fixtures. Kept here
+// rather than in integrity_test.go because the divergence-panic
+// scenarios were the original users; integrity_test.go has its
+// own inline call sites.
+func hashOf(s string) [32]byte {
+	return sha256.Sum256([]byte(s))
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Test 1: Loop's ErrDiverged is propagated through the fatal channel
@@ -57,10 +64,7 @@ func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
 
 	d := NewDetector(
 		wal,
-		inflightFromList(nil),
-		&fakeSink{},
 		NewVerifier(tiles),
-		NewReasserter(newFakeAppender()),
 		DetectorConfig{
 			SampleInterval:  5 * time.Millisecond,
 			SamplesPerCycle: 1,
@@ -92,9 +96,8 @@ func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
 		t.Fatal("ctx expired before Loop returned a divergence error")
 	}
 
-	// Now run the supervisor's panic block under defer/recover and
-	// confirm it surfaces a panic value containing the originating
-	// ErrDiverged.
+	// Run the supervisor's panic block under defer/recover and confirm
+	// it surfaces a panic value containing the originating ErrDiverged.
 	supervisor := func() (recovered any) {
 		defer func() { recovered = recover() }()
 		if fatalErr != nil {
@@ -126,58 +129,7 @@ func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Test 2: Reconcile's per-entry failure handling.
-//
-// Reconcile is intentionally permissive: a single failed re-Assert /
-// Sink.Sequence is logged and reconciliation continues with the next
-// inflight entry. Locking this policy is important — divergence is
-// surfaced via Loop, not Reconcile. Boot-time partial failure must
-// NOT block the operator from coming up; the integrity Loop will
-// catch any post-boot disagreement on its next sample cycle.
-// ─────────────────────────────────────────────────────────────────────
-
-func TestDetector_Reconcile_SinkDivergenceLogged(t *testing.T) {
-	app := newFakeAppender()
-	r := NewReasserter(app)
-
-	// Sink rejects exactly one hash — modeling the real wal.Committer.
-	// Sequence path: an entry already StateSequenced with a different
-	// seq returns a state-mismatch error.
-	sink := &fakeSink{}
-	bad := hashOf("divergent-entry")
-	sink.failOn = &bad
-
-	hashes := [][32]byte{
-		hashOf("good-1"),
-		bad,
-		hashOf("good-2"),
-	}
-
-	d := NewDetector(
-		&fakeWAL{},
-		inflightFromList(hashes),
-		sink,
-		nil, // no verifier needed for Reconcile
-		r,
-		DetectorConfig{Logger: discardLogger()},
-	)
-
-	if err := d.Reconcile(context.Background()); err != nil {
-		t.Fatalf("Reconcile must not propagate per-entry sink failures, got %v", err)
-	}
-	calls := sink.Calls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 successful sink calls (the bad one is skipped), got %d", len(calls))
-	}
-	for _, c := range calls {
-		if c.hash == bad {
-			t.Errorf("bad hash %x was recorded by sink (failOn rejected it)", bad[:8])
-		}
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Test 3: Supervisor panic-shape lock.
+// Test 2: Supervisor panic-shape lock.
 //
 // Replicates the cmd/operator/main.go fatal-channel supervisor in
 // isolation. The test exists so a future refactor that drops the
@@ -213,7 +165,6 @@ func TestSupervisor_FatalChannelPanicShape(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Now the panic block. Recover and assert.
 	pv := func() (rec any) {
 		defer func() { rec = recover() }()
 		if fatalErr != nil {
@@ -241,11 +192,3 @@ func TestSupervisor_FatalChannelPanicShape(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Local helpers (kept tiny — the shared fakes live in integrity_test.go).
-// ─────────────────────────────────────────────────────────────────────
-
-// hashOf returns SHA-256 of the input string.
-func hashOf(s string) [32]byte {
-	return sha256.Sum256([]byte(s))
-}

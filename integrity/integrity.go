@@ -87,12 +87,6 @@ var ErrPhantom = errors.New("integrity: phantom entry (Tessera refuses re-Add)")
 // integrity package depending on a wal.PendingHash named type that
 // would force a hard import.
 
-// InflightIterator yields each in-flight entry's hash. Caller
-// returning an error stops iteration. Production wiring uses a
-// thin closure that wraps wal.Committer.IterateInflight; tests use
-// stubs that walk an in-memory slice.
-type InflightIterator func(ctx context.Context, fn func(hash [32]byte) error) error
-
 // WALReader is the read surface integrity needs. Decoupled so the
 // composition root can mock it in tests.
 type WALReader interface {
@@ -103,13 +97,4 @@ type WALReader interface {
 	// HWM returns the highest contiguous shipped sequence — the
 	// upper bound on what the Detector samples.
 	HWM(ctx context.Context) (uint64, error)
-}
-
-// WALReassertSink is the Reconcile-side state-machine surface.
-// Reconcile reads inflight entries from the iterator and pushes the
-// Tessera-assigned sequence back via this sink.
-type WALReassertSink interface {
-	// Sequence transitions a WAL entry from pending → sequenced
-	// after Tessera assigned a sequence number for it.
-	Sequence(ctx context.Context, hash [32]byte, seq uint64) error
 }

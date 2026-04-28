@@ -948,27 +948,21 @@ func main() {
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
 	}
 
-	// ── Integrity Detector (boot Reconcile + periodic loop) ───────────
+	// ── Integrity Detector (periodic sample-verify) ──────────────────
 	//
-	// Wraps embeddedAppender (for re-Add via Reasserter) and
-	// tileReader (for HashAt via Verifier) into a single TesseraAdapter.
-	// The Detector reads from the WAL's inflight set on boot and
-	// samples random sequences below HWM during the periodic loop.
-	// On disagreement (ErrDiverged) it returns; the supervisor
-	// below converts that to panic so the operator stops serving
-	// before consumers see corrupt proofs.
-	integAdapter := integrity.NewTesseraAdapter(embeddedAppender, tileReader)
-	inflightIter := func(c context.Context, fn func([32]byte) error) error {
-		return walc.IterateInflight(c, func(p wal.PendingHash) error {
-			return fn(p.Hash)
-		})
-	}
+	// Read-only verifier: samples random sequences below HWM and
+	// compares WAL.HashAt to Tessera.HashAt. On disagreement
+	// (ErrDiverged) returns; the supervisor below converts that to
+	// panic so the operator stops serving before consumers see
+	// corrupt proofs.
+	//
+	// Boot recovery used to live here (Reconcile) but the Sequencer
+	// now subsumes that — its drainOnce on Run start picks up every
+	// StatePending entry left from a crash.
+	integAdapter := integrity.NewTesseraAdapter(tileReader)
 	detector := integrity.NewDetector(
-		walc,            // WALReader
-		inflightIter,    // InflightIterator
-		walc,            // WALReassertSink
-		integAdapter,    // Verifier
-		integAdapter,    // Reasserter
+		walc,         // WALReader
+		integAdapter, // Verifier
 		integrity.DetectorConfig{Logger: logger},
 	)
 
