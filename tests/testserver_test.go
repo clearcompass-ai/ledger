@@ -220,7 +220,7 @@ func startTestOperator(t *testing.T) *testOperator {
 		LogDID:    testLogDID,
 		Logger:    logger,
 	}
-	commitDeps := &api.CommitmentDeps{
+	commitDeps := &api.DerivationCommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 
@@ -244,7 +244,7 @@ func startTestOperator(t *testing.T) *testOperator {
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
+		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
 	}
 
 	serverCfg := api.DefaultServerConfig()

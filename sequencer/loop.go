@@ -35,14 +35,15 @@ ERROR HANDLING:
 
 CONCURRENCY:
 
-	The drain is single-goroutine within a single drainOnce call.
-	Bounded concurrency across entries (cfg.MaxInFlight) is
-	intentionally NOT used here because the per-entry work
-	serializes through Tessera + Postgres anyway. If profiling
-	shows headroom we can parallelize within a cycle later; today
-	the cost is a sequential walk of (hash, AppendLeaf, INSERT,
-	Sequence) that runs at single-digit milliseconds per entry on
-	warm caches.
+	Bounded concurrency across entries (cfg.MaxInFlight) is enforced
+	by a buffered channel acting as a semaphore. The Tessera antispam
+	dedup means re-Add of the same hash is idempotent, so concurrent
+	processOne calls on distinct hashes are safe — Tessera serializes
+	the antispam path internally and the Postgres
+	WithReadCommittedTx insulates entry_index + commitment_split_id
+	inserts. drainOnce blocks until every spawned worker completes,
+	so cycle metrics (currentLag, processed) reflect the actual
+	post-cycle state.
 */
 package sequencer
 
@@ -52,6 +53,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -66,12 +68,19 @@ import (
 )
 
 // drainOnce drains the WAL of all currently-Pending entries. Any
-// per-entry error is logged + counted; the iteration continues.
+// per-entry error is logged + counted; iteration continues. Per-
+// entry work runs concurrently up to cfg.MaxInFlight, with the
+// drain blocking until every worker completes.
 func (s *Sequencer) drainOnce(ctx context.Context) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
 	s.metrics.drainCycles.Add(1)
+
+	// Semaphore caps in-flight processOne workers. Buffered to
+	// MaxInFlight; sending blocks the iterator when the sem is full.
+	sem := make(chan struct{}, s.cfg.MaxInFlight)
+	var wg sync.WaitGroup
 
 	var pending int64
 	err := s.wal.IterateInflight(ctx, func(p wal.PendingHash) error {
@@ -80,11 +89,29 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 			return err
 		}
 		pending++
-		s.processOne(ctx, p.Hash)
-		// Continue iteration regardless of per-entry result.
-		// processOne handles its own logging + state transitions.
+
+		// Acquire a slot — respect ctx cancellation while waiting.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		wg.Add(1)
+		hash := p.Hash // capture by value for the goroutine
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.processOne(ctx, hash)
+		}()
 		return nil
 	})
+
+	// Wait for every goroutine spawned this cycle to complete
+	// before recording metrics — currentLag must reflect the
+	// state after this drain, not mid-flight.
+	wg.Wait()
+
 	s.metrics.currentLag.Store(pending)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		s.logger.Error("sequencer: drain iterate", "error", err)

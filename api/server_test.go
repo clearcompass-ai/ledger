@@ -1,10 +1,13 @@
 /*
 FILE PATH: api/server_test.go
 
-Locks the server's route table after the /v2/entries removal:
+Locks the server's route table after the /v2/entries removal +
+asynchronous batch-submission wiring:
 
   - POST /v2/entries returns 404 (route is not mounted).
   - POST /v1/entries reaches the configured submission handler.
+  - POST /v1/entries/batch reaches the configured batch handler
+    when wired; returns 404 when not.
   - GET  /v1/admission/mmd reaches the configured MMD handler.
   - GET  /healthz and /readyz remain wired.
 
@@ -104,6 +107,37 @@ func TestServer_V1EntriesRouteReachesSubmissionHandler(t *testing.T) {
 
 	if !called {
 		t.Errorf("submission handler not invoked; status=%d", rr.Code)
+	}
+}
+
+func TestServer_BatchEntriesRouteReachesBatchHandler(t *testing.T) {
+	called := false
+	batch := func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	}
+	srv := newTestServer(t, Handlers{BatchSubmission: batch})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries/batch", nil)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Errorf("batch handler not invoked; status=%d", rr.Code)
+	}
+}
+
+// When BatchSubmission is unset the route must not be mounted —
+// returning 404 (not 500 or panicking through a nil HandlerFunc).
+func TestServer_BatchEntriesRouteNotMountedWhenNil(t *testing.T) {
+	srv := newTestServer(t, Handlers{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries/batch", nil)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("POST /v1/entries/batch with nil handler: status = %d, want 404", rr.Code)
 	}
 }
 

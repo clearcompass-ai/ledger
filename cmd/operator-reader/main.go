@@ -187,7 +187,7 @@ func run(logger *slog.Logger) error {
 		LogDID:    cfg.LogDID,
 		Logger:    logger,
 	}
-	commitDeps := &api.CommitmentDeps{
+	commitDeps := &api.DerivationCommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 
@@ -211,7 +211,7 @@ func run(logger *slog.Logger) error {
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
+		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
 	}
 
 	serverCfg := api.DefaultServerConfig()

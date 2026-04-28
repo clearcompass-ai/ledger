@@ -510,6 +510,166 @@ func TestSequencer_isUniqueViolation_MatchesPgxShapes(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// drainOnce — bounded concurrency
+// ─────────────────────────────────────────────────────────────────────
+
+// concurrencyTrackingTessera mirrors fakeTessera but instruments the
+// AppendLeaf path so tests can prove that no more than MaxInFlight
+// goroutines are inside it at once.
+type concurrencyTrackingTessera struct {
+	mu              sync.Mutex
+	concurrent      int
+	peakConcurrent  int
+	holdInside      time.Duration
+	nextSeq         uint64
+	assigned        map[[32]byte]uint64
+}
+
+func newConcurrencyTrackingTessera(holdInside time.Duration) *concurrencyTrackingTessera {
+	return &concurrencyTrackingTessera{
+		holdInside: holdInside,
+		nextSeq:    1,
+		assigned:   make(map[[32]byte]uint64),
+	}
+}
+
+func (f *concurrencyTrackingTessera) AppendLeaf(data []byte) (uint64, error) {
+	f.mu.Lock()
+	f.concurrent++
+	if f.concurrent > f.peakConcurrent {
+		f.peakConcurrent = f.concurrent
+	}
+	f.mu.Unlock()
+
+	// Hold the slot to give the next iteration a chance to enter.
+	time.Sleep(f.holdInside)
+
+	defer func() {
+		f.mu.Lock()
+		f.concurrent--
+		f.mu.Unlock()
+	}()
+
+	if len(data) != 32 {
+		return 0, fmt.Errorf("concurrencyTrackingTessera: AppendLeaf wants 32 bytes, got %d", len(data))
+	}
+	var hash [32]byte
+	copy(hash[:], data)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if seq, ok := f.assigned[hash]; ok {
+		return seq, nil
+	}
+	seq := f.nextSeq
+	f.nextSeq++
+	f.assigned[hash] = seq
+	return seq, nil
+}
+
+func (f *concurrencyTrackingTessera) PeakConcurrent() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peakConcurrent
+}
+
+func TestSequencer_drainOnce_HonorsMaxInFlight(t *testing.T) {
+	const maxInFlight = 3
+	const numEntries = 12
+
+	w := newFakeWAL()
+	for i := 0; i < numEntries; i++ {
+		wire, hash := buildEntry(t, fmt.Sprintf("inflight-%d", i))
+		w.seed(hash, wire)
+	}
+	ts := newConcurrencyTrackingTessera(20 * time.Millisecond)
+
+	cfg := Config{
+		MaxInFlight: maxInFlight,
+		MaxAttempts: 3,
+		PollInterval: 1 * time.Hour, // we drive drainOnce manually
+	}
+	s := newTestSequencer(t, w, ts, cfg)
+
+	s.drainOnce(context.Background())
+
+	if peak := ts.PeakConcurrent(); peak > maxInFlight {
+		t.Errorf("peak concurrent AppendLeaf calls = %d, want <= %d", peak, maxInFlight)
+	}
+	if peak := ts.PeakConcurrent(); peak < 2 {
+		t.Errorf("peak concurrent AppendLeaf calls = %d, want >= 2 (concurrency must be exercised)", peak)
+	}
+	if got := s.metrics.processed.Load(); got != numEntries {
+		t.Errorf("processed = %d, want %d (drainOnce must wait for all workers)", got, numEntries)
+	}
+}
+
+// drainOnce must complete every spawned worker before returning,
+// so currentLag reflects the post-drain state — not a mid-flight
+// snapshot.
+func TestSequencer_drainOnce_BlocksUntilWorkersComplete(t *testing.T) {
+	w := newFakeWAL()
+	for i := 0; i < 5; i++ {
+		wire, hash := buildEntry(t, fmt.Sprintf("wait-%d", i))
+		w.seed(hash, wire)
+	}
+	ts := newConcurrencyTrackingTessera(15 * time.Millisecond)
+
+	s := newTestSequencer(t, w, ts, Config{
+		MaxInFlight: 2,
+		MaxAttempts: 3,
+	})
+
+	start := time.Now()
+	s.drainOnce(context.Background())
+	elapsed := time.Since(start)
+
+	// 5 entries × 15ms with 2 in-flight ⇒ ceil(5/2)*15ms = 45ms minimum.
+	// drainOnce must NOT return after the iterator finishes spawning;
+	// it must wait for the pipeline goroutines too.
+	if elapsed < 30*time.Millisecond {
+		t.Errorf("drainOnce returned in %v — too fast; workers must not have completed", elapsed)
+	}
+
+	// And every entry must be sequenced after drain returns.
+	if got := s.metrics.processed.Load(); got != 5 {
+		t.Errorf("processed = %d, want 5", got)
+	}
+}
+
+// ctx cancel during drain unwinds cleanly without deadlock.
+func TestSequencer_drainOnce_CtxCancelMidDrain(t *testing.T) {
+	w := newFakeWAL()
+	for i := 0; i < 20; i++ {
+		wire, hash := buildEntry(t, fmt.Sprintf("cancel-%d", i))
+		w.seed(hash, wire)
+	}
+	ts := newConcurrencyTrackingTessera(20 * time.Millisecond)
+
+	s := newTestSequencer(t, w, ts, Config{
+		MaxInFlight: 2,
+		MaxAttempts: 3,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		s.drainOnce(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// drainOnce returned cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainOnce did not return after ctx cancel — deadlock?")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 

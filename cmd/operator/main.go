@@ -871,6 +871,7 @@ func main() {
 		FreshnessTolerance: policy.FreshnessInteractive,
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
+	batchSubmitHandler := api.NewBatchSubmissionHandler(submissionDeps)
 	mmdHandler := api.NewMMDHandler(cfg.MMD)
 
 	// ── Shared stores for read handlers ───────────────────────────────
@@ -906,7 +907,7 @@ func main() {
 		LogDID:     cfg.LogDID,
 		Logger:     logger,
 	}
-	commitDeps := &api.CommitmentDeps{CommitmentStore: commitStore, Logger: logger}
+	commitDeps := &api.DerivationCommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
 	// ── Witness cosign endpoint (optional) ────────────────────────────
 	//
@@ -932,6 +933,7 @@ func main() {
 
 	handlers := api.Handlers{
 		Submission:      submitHandler,
+		BatchSubmission: batchSubmitHandler,
 		TreeHead:        api.NewTreeHeadHandler(treeDeps),
 		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
 		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
@@ -952,7 +954,7 @@ func main() {
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
+		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────
