@@ -33,6 +33,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
@@ -96,48 +97,91 @@ func scopeAuth() *envelope.AuthorityPath {
 // Entry construction helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// sharedTestPriv is the package-level test signing key used by makeEntry
-// to satisfy the v7.75 "Signatures must be non-empty before Serialize"
-// invariant. The key is generated lazily on first use; tests that need
-// real DID-resolvable keys (admission-pipeline tests) build their own
-// keypair via testKeypair and call makeSignedEntry directly.
-//
-// The signature this key produces is structurally well-formed (passes
-// envelope.Serialize and entry.Validate without panic) but does NOT
-// verify against the synthetic SignerDIDs (e.g., did:example:alice)
-// that integration_test.go uses, because those DIDs have no resolver.
-// That is intentional: the SDK builder / SMT / Postgres tests pinned
-// here don't exercise admission's signature-verification path.
-var (
-	sharedTestPrivOnce sync.Once
-	sharedTestPrivKey  *ecdsa.PrivateKey
-)
-
-func sharedTestPriv(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-	sharedTestPrivOnce.Do(func() {
-		priv, err := signatures.GenerateKey()
-		if err != nil {
-			t.Fatalf("sharedTestPriv: GenerateKey: %v", err)
-		}
-		sharedTestPrivKey = priv
-	})
-	return sharedTestPrivKey
+// synSigner is a deterministic test keypair: a freshly-generated
+// secp256k1 keypair plus its did:key:z... identifier. The two are
+// always paired so signatures verify cryptographically against the
+// admission resolver.
+type synSigner struct {
+	priv *ecdsa.PrivateKey
+	did  string
 }
 
-// makeEntry builds a v7.75-compliant signed *envelope.Entry suitable
-// for SDK builder / SMT / Postgres tests. Defaults:
+// resolveSyntheticSigner returns a stable keypair for a test label.
+// First call for a label generates a fresh did:key; subsequent calls
+// return the same keypair. Tests that historically passed
+// 'did:example:alice' as a SignerDID get a stable did:key:z... for
+// 'alice' that distinguishes them from other labels — fanout
+// queries continue to work — and the matching private key is used
+// to sign so the signature verifies under the operator's
+// admission.NewDIDKeyResolver.
 //
-//   - h.Destination defaults to testLogDID when empty
-//     (NewUnsignedEntry rejects empty Destination at write time).
-//   - Signature is produced by sharedTestPriv against the entry's
-//     SigningPayload, then assigned to entry.Signatures so Serialize
-//     and EntryIdentity become safe to call.
+// The label is used as the cache key verbatim. Tests don't need to
+// know whether a label has been seen before; idempotency is
+// guaranteed by the cache.
 //
-// h.SignerDID is preserved as-is — these tests use synthetic DIDs
-// (did:example:alice etc.) that the verifier-side resolver doesn't
-// recognize. Tests that need DID-resolvable signers use makeSignedEntry
-// from signing_helper_test.go with a real testKeypair.
+// Process-wide cache. Cleared between processes (no test in this
+// suite relies on cross-process determinism). Concurrent-safe.
+var (
+	synSignersMu sync.Mutex
+	synSigners   = make(map[string]synSigner)
+)
+
+func resolveSyntheticSigner(label string) synSigner {
+	synSignersMu.Lock()
+	defer synSignersMu.Unlock()
+	if s, ok := synSigners[label]; ok {
+		return s
+	}
+	kp, err := did.GenerateDIDKeySecp256k1()
+	if err != nil {
+		// Boot-time helper failure — there's no test context to
+		// route through; panic here is the only honest signal.
+		panic(fmt.Errorf("test/helpers: GenerateDIDKeySecp256k1 for label %q: %w", label, err))
+	}
+	s := synSigner{priv: kp.PrivateKey, did: kp.DID}
+	synSigners[label] = s
+	return s
+}
+
+// sharedSyntheticSigner returns the keypair backing the empty-label
+// bucket. Tests that need an explicit (priv, did) pair for code
+// paths that bypass makeEntry (Mode B PoW stamp construction in
+// http_integration_test.go, manual entry construction in
+// destination_binding_test.go) use this directly.
+func sharedSyntheticSigner(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	s := resolveSyntheticSigner("")
+	return s.priv, s.did
+}
+
+// sharedTestPriv is a backwards-compatibility shim for callers that
+// only need the private key. New code should prefer
+// sharedSyntheticSigner so the matching did:key is also in scope.
+func sharedTestPriv(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	priv, _ := sharedSyntheticSigner(t)
+	return priv
+}
+
+// makeEntry builds a signed *envelope.Entry suitable for SDK
+// builder / SMT / Postgres tests. The signature is structurally
+// well-formed (Validate passes; Serialize / EntryIdentity safe)
+// but is NOT cryptographically tied to h.SignerDID — the same
+// shared keypair signs every entry. Tests that exercise the
+// builder's authority-chain logic depend on string comparisons
+// over DIDs, so makeEntry preserves h.SignerDID verbatim.
+//
+// Tests that POST through admission (which DOES verify signatures
+// against did:key resolvers) use makeAdmissibleEntry, which
+// rewrites h.SignerDID into a real did:key and signs with the
+// matching private key.
+//
+// Defaults:
+//
+//   - h.Destination defaults to testLogDID when empty.
+//   - Signature is produced by sharedSyntheticSigner against the
+//     entry's SigningPayload, then assigned to entry.Signatures so
+//     Serialize and EntryIdentity become safe to call.
 func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope.Entry {
 	t.Helper()
 	if h.Destination == "" {
@@ -154,6 +198,47 @@ func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope
 	}
 	entry.Signatures = []envelope.Signature{{
 		SignerDID: h.SignerDID,
+		AlgoID:    envelope.SigAlgoECDSA,
+		Bytes:     sig,
+	}}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("entry.Validate: %v", err)
+	}
+	return entry
+}
+
+// makeAdmissibleEntry builds a signed entry whose Signatures[0]
+// verifies against the operator's admission DIDResolver. Use this
+// for tests that POST through HTTP — `buildWireEntry` and
+// destination-binding fixtures.
+//
+// Behaviour vs makeEntry:
+//
+//   - h.SignerDID is treated as a label. resolveSyntheticSigner
+//     deterministically maps the label to a did:key:z... and a
+//     matching keypair. h.SignerDID is rewritten and the signature
+//     is produced with the matching key, so admission's
+//     DIDKeyResolver returns the verifying public key.
+//   - Tests that distinguish 'alice' from 'bob' continue to do so
+//     — different labels yield different did:keys.
+func makeAdmissibleEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope.Entry {
+	t.Helper()
+	if h.Destination == "" {
+		h.Destination = testLogDID
+	}
+	signer := resolveSyntheticSigner(h.SignerDID)
+	h.SignerDID = signer.did
+	entry, err := envelope.NewUnsignedEntry(h, payload)
+	if err != nil {
+		t.Fatalf("NewUnsignedEntry: %v", err)
+	}
+	hash := sha256.Sum256(envelope.SigningPayload(entry))
+	sig, err := signatures.SignEntry(hash, signer.priv)
+	if err != nil {
+		t.Fatalf("SignEntry: %v", err)
+	}
+	entry.Signatures = []envelope.Signature{{
+		SignerDID: signer.did,
 		AlgoID:    envelope.SigAlgoECDSA,
 		Bytes:     sig,
 	}}

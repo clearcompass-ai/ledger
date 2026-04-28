@@ -119,6 +119,16 @@ override.tf.json
 /pkg
 /vendor/
 
+# Built binaries that land in the repo root when developers run
+# `go build ./cmd/<name>` without a -o flag. One entry per cmd/
+# subdir so additions are explicit.
+/operator
+/operator-reader
+/bootstrap-v775-schemas
+/rebuild-tiles
+/seed-session
+/submit-stamp
+
 # --- Node.js / npm / yarn ---
 node_modules/
 npm-debug.log*

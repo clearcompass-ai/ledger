@@ -53,11 +53,17 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -72,6 +78,8 @@ import (
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
@@ -86,6 +94,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ortholog-operator/witness"
 )
 
 // loadOrGenerateTesseraSigner resolves the checkpoint signer.
@@ -128,6 +137,108 @@ func loadOrGenerateTesseraSigner(keyFile, origin, logDID string, logger *slog.Lo
 	return signer, vkey, nil
 }
 
+// loadOrGenerateOperatorSigner resolves the operator's entry
+// signing key. The operator signs its own entries (anchor
+// commentary, commitment commentary) before submitting them to
+// admission, which then verifies the signature via
+// admission.NewDIDKeyResolver. Returns the private key plus the
+// computed did:key:z... identifier — that string becomes
+// cfg.OperatorDID at the composition root.
+//
+// Priority:
+//   - keyFile non-empty: PEM-decode + x509.ParseECPrivateKey.
+//     Production deployments MUST use this so the operator's DID
+//     is stable across restarts.
+//   - keyFile empty: generate an ephemeral secp256k1 key and log a
+//     warning. Local-dev only — entry consumers that pin the
+//     operator's DID will see a different DID on every restart.
+func loadOrGenerateOperatorSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, string, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("read operator signer key %q: %w", keyFile, err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			return nil, "", fmt.Errorf("operator signer key %q: PEM decode failed", keyFile)
+		}
+		priv, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse operator signer key %q: %w", keyFile, err)
+		}
+		didKey, err := didKeyFromSecp256k1Priv(priv)
+		if err != nil {
+			return nil, "", fmt.Errorf("encode did:key from %q: %w", keyFile, err)
+		}
+		logger.Info("operator signer loaded from file", "key_file", keyFile, "did", didKey)
+		return priv, didKey, nil
+	}
+	// Ephemeral fallback for local dev.
+	priv, err := sdkcryptosigs.GenerateKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate operator signer: %w", err)
+	}
+	didKey, err := didKeyFromSecp256k1Priv(priv)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode did:key for ephemeral signer: %w", err)
+	}
+	logger.Warn("operator signer is ephemeral — NOT for production",
+		"did", didKey,
+	)
+	return priv, didKey, nil
+}
+
+// didKeyFromSecp256k1Priv composes a did:key:z... identifier from
+// a secp256k1 private key. Same multibase + multicodec encoding
+// the SDK's did.GenerateDIDKeySecp256k1 produces internally; this
+// helper exists because the operator threads in keys loaded from
+// disk rather than generating them via the SDK constructor.
+func didKeyFromSecp256k1Priv(priv *ecdsa.PrivateKey) (string, error) {
+	uncompressed := sdkcryptosigs.PubKeyBytes(&priv.PublicKey)
+	compressed, err := sdkcryptosigs.CompressSecp256k1Pubkey(uncompressed)
+	if err != nil {
+		return "", err
+	}
+	return sdkdid.EncodeDIDKey(sdkdid.MulticodecSecp256k1, compressed), nil
+}
+
+// loadOrGenerateWitnessSigner resolves the witness cosign-server
+// signing key. Distinct from the operator's entry signer — this
+// key signs cosign responses (witness/serve.go), and its public
+// key fingerprint is what peer operators pin in their
+// HeadSync.WitnessEndpoints set.
+//
+// Priority:
+//   - keyFile non-empty: PEM-decode + x509.ParseECPrivateKey.
+//     Production deployments MUST use this so the witness's
+//     identity is stable across restarts.
+//   - keyFile empty: generate ephemeral. Local-dev only; peers
+//     will see a different witness fingerprint on each restart.
+func loadOrGenerateWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read witness signer key %q: %w", keyFile, err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			return nil, fmt.Errorf("witness signer key %q: PEM decode failed", keyFile)
+		}
+		priv, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse witness signer key %q: %w", keyFile, err)
+		}
+		logger.Info("witness signer loaded from file", "key_file", keyFile)
+		return priv, nil
+	}
+	priv, err := sdkcryptosigs.GenerateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate witness signer: %w", err)
+	}
+	logger.Warn("witness signer is ephemeral — NOT for production")
+	return priv, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────────────────
@@ -159,6 +270,18 @@ type Config struct {
 	TesseraStorageDir    string
 	TesseraSignerKeyFile string
 	TesseraOrigin        string
+	// OperatorSignerKeyFile is the path to a PEM-encoded
+	// secp256k1 ECDSA private key the operator uses to sign its
+	// own entries (anchor publisher, commitment publisher). When
+	// empty, an ephemeral key is generated at boot — fine for
+	// local dev, never for production. The corresponding did:key
+	// is computed from the public key and used as
+	// cfg.OperatorDID; OPERATOR_DID is ignored if it doesn't
+	// match. The same key is what admission's
+	// admission.NewDIDKeyResolver verifies signatures against, so
+	// the operator's self-published anchors and commitments
+	// satisfy the sig-verification path.
+	OperatorSignerKeyFile string
 	// TesseraAntispamPath is the BadgerDB directory backing
 	// Tessera's antispam (dedup) layer. Required so re-Add via
 	// integrity.Reasserter on boot returns the previously-assigned
@@ -202,8 +325,29 @@ type Config struct {
 	TileCacheSize         int
 	SMTNodeCacheSize      int
 	DeltaWindow           int
-	WitnessEndpoints      []string
-	WitnessQuorumK        int
+	// WitnessEndpoints is the comma-separated list of peer witness
+	// URLs the builder loop's HeadSync requester posts cosign
+	// requests to. Empty (default) → no cosignature collection;
+	// the BuilderLoop tolerates a nil cosigner and emits self-
+	// signed checkpoints unwitnessed.
+	//
+	// Local-dev "self-witness K=1" pattern: set this to the
+	// operator's own server addr (e.g. http://localhost:8080)
+	// and OPERATOR_WITNESS_QUORUM_K=1 plus
+	// OPERATOR_WITNESS_KEY_FILE — same code paths as production
+	// K=N witnesses, no test-mode flag.
+	WitnessEndpoints []string
+	WitnessQuorumK   int
+
+	// WitnessKeyFile is the path to a PEM-encoded secp256k1
+	// ECDSA private key the witness cosign endpoint
+	// (POST /v1/cosign) signs tree heads with. When set, the
+	// endpoint is mounted; when empty, the endpoint is absent
+	// from the route table (this operator does not act as a
+	// witness for anyone). Distinct from
+	// OPERATOR_SIGNER_KEY_FILE — that key signs the operator's
+	// own admitted entries; this key signs cosign responses.
+	WitnessKeyFile string
 
 	// WALPath is the BadgerDB directory the WAL Committer opens.
 	// Required for WAL-first admission (commit 10). The Shipper
@@ -227,6 +371,7 @@ func loadConfig() (*Config, error) {
 		AnchorInterval:        1 * time.Hour,
 		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
+		OperatorSignerKeyFile: os.Getenv("OPERATOR_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
 		ByteStoreBackend:      os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
 		ByteStorePrefix:       envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
@@ -245,7 +390,9 @@ func loadConfig() (*Config, error) {
 		TileCacheSize:         10_000,
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
-		WitnessQuorumK:        1,
+		WitnessEndpoints:      parseCSV(os.Getenv("OPERATOR_WITNESS_ENDPOINTS")),
+		WitnessQuorumK:        envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
+		WitnessKeyFile:        os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
 		WALPath:               envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:   envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 	}
@@ -308,6 +455,37 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// envIntOr reads an env var as a base-10 integer; returns fallback
+// if the var is unset or unparseable.
+func envIntOr(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// parseCSV splits a comma-separated env value into a slice of
+// trimmed non-empty entries. Empty input → nil. Used for
+// OPERATOR_WITNESS_ENDPOINTS.
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────
@@ -358,6 +536,7 @@ func main() {
 	commitStore := store.NewCommitmentStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, cfg.SMTNodeCacheSize)
+	treeHeadStore := store.NewTreeHeadStore(pool)
 
 	// ── WAL ───────────────────────────────────────────────────────────
 	// BadgerDB-backed WAL provides durable bytes for admission's HTTP
@@ -436,6 +615,24 @@ func main() {
 	if tesseraOrigin == "" {
 		tesseraOrigin = cfg.LogDID
 	}
+
+	// ── Operator entry-signing key + DID ──────────────────────────────
+	// The operator self-publishes anchor commentary and commitment
+	// commentary. Both go through admission, which now verifies
+	// signatures via admission.NewDIDKeyResolver. Load (or generate)
+	// the secp256k1 signing key, compute its did:key, and override
+	// cfg.OperatorDID so the resolver can find the matching public
+	// key for the entries we ourselves submit.
+	operatorSignerPriv, operatorSignerDID, err := loadOrGenerateOperatorSigner(cfg.OperatorSignerKeyFile, logger)
+	if err != nil {
+		logger.Error("operator signer", "error", err)
+		os.Exit(1)
+	}
+	if envOpDID := os.Getenv("OPERATOR_DID"); envOpDID != "" && envOpDID != operatorSignerDID {
+		logger.Warn("OPERATOR_DID env var ignored — overridden to match signer key",
+			"env_value", envOpDID, "signer_did", operatorSignerDID)
+	}
+	cfg.OperatorDID = operatorSignerDID
 
 	// ── Tessera antispam (dedup) ──────────────────────────────────────
 	// Persistent BadgerDB-backed dedup. Required so
@@ -522,7 +719,21 @@ func main() {
 		buffer = sdkbuilder.NewDeltaWindowBuffer(cfg.DeltaWindow)
 	}
 
-	// ── Commitment publisher (v0.3.0: LogDID threaded) ────────────────
+	// ── Self-submit pipeline ──────────────────────────────────────────
+	// The anchor and commitment publishers self-publish commentary
+	// entries to this operator's own admission endpoint. Both must be
+	// signed before submit so admission's DIDKeyResolver returns the
+	// matching public key. SignAndSubmit closes that gap by wrapping
+	// the transport-only SubmitViaHTTP with the per-entry ECDSA
+	// signing step.
+	selfSubmitURL := fmt.Sprintf("http://localhost%s", cfg.ServerAddr)
+	signedSelfSubmit := anchor.SignAndSubmit(
+		operatorSignerPriv,
+		operatorSignerDID,
+		anchor.SubmitViaHTTP(selfSubmitURL),
+	)
+
+	// ── Commitment publisher ──────────────────────────────────────────
 	commitPub := builder.NewCommitmentPublisher(
 		cfg.OperatorDID,
 		cfg.LogDID,
@@ -530,7 +741,7 @@ func main() {
 			IntervalEntries: 1000,
 			IntervalTime:    1 * time.Hour,
 		},
-		anchor.SubmitViaHTTP(fmt.Sprintf("http://localhost%s", cfg.ServerAddr)),
+		signedSelfSubmit,
 		logger,
 	).WithCommitmentStore(commitStore)
 
@@ -546,16 +757,33 @@ func main() {
 
 	// ── Witness cosigner (optional) ───────────────────────────────────
 	//
-	// Left nil for now. The operator's witness/ package today implements
-	// the witness-as-server side (serve.go, head_sync.go) — the
-	// witness-as-client requester (one operator asking N peer witnesses
-	// to cosign its checkpoints) is a separate subsystem not yet wired.
-	// BuilderLoop tolerates a nil cosigner: the cosignature step is
-	// skipped and self-signed checkpoints are published unwitnessed.
+	// When OPERATOR_WITNESS_ENDPOINTS is set, the builder loop's
+	// post-commit cosignature step posts to each peer witness and
+	// collects K-of-N signatures over the new tree head. With no
+	// endpoints configured, BuilderLoop tolerates a nil cosigner —
+	// the cosignature step is skipped and self-signed checkpoints
+	// are published unwitnessed.
 	//
-	// TODO: wire a real requester when multi-witness deployments go live.
-	// At that point cfg.WitnessEndpoints + cfg.WitnessQuorumK become live.
-	var cosigner builder.WitnessCosigner = nil
+	// Local-dev "self-witness K=1" pattern: set
+	// OPERATOR_WITNESS_ENDPOINTS=http://localhost:<port> +
+	// OPERATOR_WITNESS_QUORUM_K=1 + OPERATOR_WITNESS_KEY_FILE — the
+	// operator becomes its own witness, exercising the same code
+	// paths as production K=N deployments.
+	var cosigner builder.WitnessCosigner
+	if len(cfg.WitnessEndpoints) > 0 {
+		cosigner = witness.NewHeadSync(witness.HeadSyncConfig{
+			WitnessEndpoints:  cfg.WitnessEndpoints,
+			QuorumK:           cfg.WitnessQuorumK,
+			PerWitnessTimeout: 30 * time.Second,
+			SchemeTag:         1, // single-byte version tag for the witness scheme
+		}, treeHeadStore, logger)
+		logger.Info("witness cosigner: HeadSync requester enabled",
+			"endpoints", cfg.WitnessEndpoints,
+			"quorum_k", cfg.WitnessQuorumK,
+		)
+	} else {
+		logger.Info("witness cosigner: disabled (OPERATOR_WITNESS_ENDPOINTS unset)")
+	}
 
 	// ── Builder loop ──────────────────────────────────────────────────
 	loopCfg := builder.DefaultLoopConfig(cfg.LogDID)
@@ -583,7 +811,7 @@ func main() {
 			AnchorSources: cfg.AnchorSources,
 		},
 		tesseraAdapter,
-		anchor.SubmitViaHTTP(fmt.Sprintf("http://localhost%s", cfg.ServerAddr)),
+		signedSelfSubmit,
 		logger,
 	)
 
@@ -619,7 +847,6 @@ func main() {
 	// fallback) so query-by-* endpoints get the same routing as
 	// the single-entry fetcher.
 	queryAPI := indexes.NewPostgresQueryAPI(pool, compositeReader, cfg.LogDID)
-	treeHeadStore := store.NewTreeHeadStore(pool)
 
 	// ── Handler struct for api.Server ─────────────────────────────────
 	queryDeps := &api.QueryDeps{
@@ -646,6 +873,28 @@ func main() {
 	}
 	commitDeps := &api.CommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
+	// ── Witness cosign endpoint (optional) ────────────────────────────
+	//
+	// Mounted only when OPERATOR_WITNESS_KEY_FILE is set (or for local-
+	// dev when no key is configured but the self-witness loop is
+	// active — keeping things simple, we treat the file as the
+	// gate). Peers POSTing to /v1/cosign get a signed tree head
+	// back; api/server.go skips the route if WitnessCosign is nil.
+	var witnessHandler http.HandlerFunc
+	if cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0 {
+		witnessKey, err := loadOrGenerateWitnessSigner(cfg.WitnessKeyFile, logger)
+		if err != nil {
+			logger.Error("witness signer", "error", err)
+			os.Exit(1)
+		}
+		cosignH := witness.NewCosignHandler(witness.ServeConfig{
+			WitnessKey: witnessKey,
+			Logger:     logger,
+		})
+		witnessHandler = cosignH.ServeHTTP
+		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
+	}
+
 	handlers := api.Handlers{
 		Submission:      submitHandler,
 		TreeHead:        api.NewTreeHeadHandler(treeDeps),
@@ -660,7 +909,7 @@ func main() {
 		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		WitnessCosign:   nil, // TODO: wire witness.NewCosignServer when this operator is also a witness.
+		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),

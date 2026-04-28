@@ -65,10 +65,15 @@ import (
 // mode) per testserver_test.go:166, so the signature is not crypto-
 // verified end-to-end; we just need it to be structurally well-formed
 // so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
-// gives us exactly that.
+// gives us exactly that. The operator now wires
+// admission.NewDIDKeyResolver, so signatures are verified
+// cryptographically against the resolved public key — we route
+// through makeAdmissibleEntry which translates synthetic
+// 'did:example:alice' labels to deterministic did:key:z...
+// identifiers and signs with the matching keypair.
 func buildWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte) []byte {
 	t.Helper()
-	return envelope.Serialize(makeEntry(t, header, payload))
+	return envelope.Serialize(makeAdmissibleEntry(t, header, payload))
 }
 
 // buildModeBWireEntry creates a v5 entry with a valid compute stamp for Mode B.
@@ -108,7 +113,12 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 	// We sign on every iteration. ECDSA SignEntry over a 32-byte hash
 	// is ~50µs; at difficulty=8 the search expects ~256 iterations,
 	// well within the test budget.
-	priv := sharedTestPriv(t)
+	//
+	// Resolve the SignerDID label once before the loop so the same
+	// keypair is used across iterations and admission verifies the
+	// signature against the matching did:key.
+	signer := resolveSyntheticSigner(header.SignerDID)
+	header.SignerDID = signer.did
 	for nonce := uint64(0); nonce < 20_000_000; nonce++ {
 		header.AdmissionProof.Nonce = nonce
 		entry, err := envelope.NewUnsignedEntry(header, payload)
@@ -116,12 +126,12 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 			t.Fatalf("NewUnsignedEntry: %v", err)
 		}
 		signingHash := sha256.Sum256(envelope.SigningPayload(entry))
-		sig, err := signatures.SignEntry(signingHash, priv)
+		sig, err := signatures.SignEntry(signingHash, signer.priv)
 		if err != nil {
 			t.Fatalf("SignEntry: %v", err)
 		}
 		entry.Signatures = []envelope.Signature{{
-			SignerDID: header.SignerDID,
+			SignerDID: signer.did,
 			AlgoID:    envelope.SigAlgoECDSA,
 			Bytes:     sig,
 		}}
@@ -738,7 +748,11 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 	// Brute force a valid nonce against the stale epoch. Same v7.75
 	// chicken-and-egg as buildModeBWireEntry — sign per iteration so
 	// EntryIdentity reflects the stamp target the operator computes.
-	priv := sharedTestPriv(t)
+	//
+	// Resolve the SignerDID label once before the loop so admission's
+	// DIDResolver returns the matching public key.
+	signer := resolveSyntheticSigner(header.SignerDID)
+	header.SignerDID = signer.did
 	var wire []byte
 	for nonce := uint64(0); nonce < 5_000_000; nonce++ {
 		header.AdmissionProof.Nonce = nonce
@@ -747,12 +761,12 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 			t.Fatalf("NewUnsignedEntry: %v", err)
 		}
 		signingHash := sha256.Sum256(envelope.SigningPayload(entry))
-		sig, err := signatures.SignEntry(signingHash, priv)
+		sig, err := signatures.SignEntry(signingHash, signer.priv)
 		if err != nil {
 			t.Fatalf("SignEntry: %v", err)
 		}
 		entry.Signatures = []envelope.Signature{{
-			SignerDID: header.SignerDID,
+			SignerDID: signer.did,
 			AlgoID:    envelope.SigAlgoECDSA,
 			Bytes:     sig,
 		}}

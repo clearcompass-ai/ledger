@@ -32,6 +32,8 @@ package anchor
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +43,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 )
 
@@ -184,14 +187,16 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 	return nil
 }
 
-// SubmitViaHTTP creates a submitFn that POSTs signed entry bytes to a URL.
+// SubmitViaHTTP creates a submitFn that POSTs an entry's wire bytes
+// to a URL. The entry MUST be signed before this function is called —
+// envelope.Serialize fails on entries with empty Signatures, and
+// admission rejects unsigned bytes regardless. Wrap with
+// SignAndSubmit at the composition root to get a signed-and-submit
+// pipeline.
 func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	return func(entry *envelope.Entry) error {
 		canonical := envelope.Serialize(entry)
-		// In production: sign canonical bytes, append signature envelope.
-		// For now: submit raw canonical (the local operator would need to
-		// accept self-submissions, or use a pre-signed path).
 		resp, err := client.Post(targetURL+"/v1/entries", "application/octet-stream",
 			bytes.NewReader(canonical))
 		if err != nil {
@@ -203,5 +208,47 @@ func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
 			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 		}
 		return nil
+	}
+}
+
+// SignAndSubmit wraps a submitFn (typically SubmitViaHTTP) with the
+// per-entry ECDSA signing step. The returned function:
+//
+//  1. Verifies entry.Header.SignerDID matches signerDID — admission
+//     would reject a mismatch on signature verify, so we fail fast
+//     with a useful error here.
+//  2. Computes sha256(envelope.SigningPayload(entry)).
+//  3. Signs the hash with priv via signatures.SignEntry.
+//  4. Populates entry.Signatures with one envelope.Signature whose
+//     SignerDID matches Header.SignerDID and AlgoID is ECDSA.
+//  5. Calls submit(entry).
+//
+// Used by the anchor and commitment publishers. Both call
+// envelope.NewUnsignedEntry to build their entries; SignAndSubmit
+// closes the contract so envelope.Serialize and admission are
+// happy.
+func SignAndSubmit(
+	priv *ecdsa.PrivateKey,
+	signerDID string,
+	submit func(*envelope.Entry) error,
+) func(*envelope.Entry) error {
+	return func(entry *envelope.Entry) error {
+		if entry.Header.SignerDID != signerDID {
+			return fmt.Errorf(
+				"anchor/SignAndSubmit: Header.SignerDID %q != signer DID %q (caller bug)",
+				entry.Header.SignerDID, signerDID,
+			)
+		}
+		signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+		sig, err := signatures.SignEntry(signingHash, priv)
+		if err != nil {
+			return fmt.Errorf("anchor/SignAndSubmit: SignEntry: %w", err)
+		}
+		entry.Signatures = []envelope.Signature{{
+			SignerDID: signerDID,
+			AlgoID:    envelope.SigAlgoECDSA,
+			Bytes:     sig,
+		}}
+		return submit(entry)
 	}
 }
