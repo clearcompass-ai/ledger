@@ -45,6 +45,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ortholog-operator/sequencer"
 	"github.com/clearcompass-ai/ortholog-operator/shipper"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
@@ -189,16 +190,27 @@ func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarn
 	}
 	baseURL := fmt.Sprintf("http://%s", ln.Addr().String())
 
+	// Sequencer first — v1 admission is now a polling facade and
+	// needs the sequencer running to advance WAL state.
+	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
+		PollInterval: 10 * time.Millisecond,
+		Logger:       logger,
+	})
+
 	ship := shipper.NewShipper(walc, backend, shipper.Config{
 		PollInterval: 50 * time.Millisecond,
 		MaxInFlight:  4,
 		Logger:       logger,
 	})
 
-	done := make(chan struct{}, 2)
+	done := make(chan struct{}, 3)
 	go func() {
 		defer func() { done <- struct{}{} }()
 		_ = server.Serve(ln)
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		_ = seq.Run(ctx)
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()

@@ -38,6 +38,7 @@ package tests
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -54,10 +55,12 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ortholog-operator/sequencer"
 	"github.com/clearcompass-ai/ortholog-operator/shipper"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
@@ -141,6 +144,11 @@ type e2eOperator struct {
 	WAL     *wal.Committer
 	Backend *localPresignBackend
 	Shipper *shipper.Shipper
+
+	// SCT/MMD additions
+	OperatorSignerPriv *ecdsa.PrivateKey
+	LogDID             string
+	MMD                time.Duration
 
 	cancel context.CancelFunc
 }
@@ -241,7 +249,11 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		Logger:       logger,
 	}
 	queryDeps := &api.QueryDeps{
-		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
+		QueryAPI:       queryAPI,
+		DiffController: diffController,
+		Logger:         logger,
+		EntryStore:     entryStore,
+		WAL:            walc,
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher:    fetcher,
@@ -253,8 +265,26 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		Logger:     logger,
 	}
 
+	// Operator signer key — secp256k1 ECDSA, used to sign v2 SCTs.
+	// Tests get a fresh ephemeral key per operator boot.
+	opSignerPriv, err := signatures.GenerateKey()
+	if err != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("operator signer key: %v", err)
+	}
+
+	const testMMD = 24 * time.Hour
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
+		SubmissionV2: api.NewSubmissionV2Handler(&api.SubmissionV2Deps{
+			SubmissionDeps:     submissionDeps,
+			OperatorSignerPriv: opSignerPriv,
+		}),
+		MMD:             api.NewMMDHandler(testMMD),
+		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
@@ -274,6 +304,15 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	}
 	baseURL := fmt.Sprintf("http://%s", ln.Addr().String())
 
+	// ── Sequencer (WAL StatePending → Tessera + entry_index) ───────
+	// With the SCT/MMD architecture in place, v1 admission is a
+	// polling facade; the Sequencer is what advances WAL state from
+	// Pending to Sequenced. 10ms poll interval keeps tests fast.
+	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
+		PollInterval: 10 * time.Millisecond,
+		Logger:       logger,
+	})
+
 	// ── Shipper (WAL → bytestore migrator) ──────────────────────────
 	ship := shipper.NewShipper(walc, backend, shipper.Config{
 		PollInterval: 50 * time.Millisecond,
@@ -282,15 +321,19 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	})
 
 	go func() { _ = server.Serve(ln) }()
+	go func() { _ = seq.Run(ctx) }()
 	go func() { _ = ship.Run(ctx) }()
 
 	op := &e2eOperator{
-		BaseURL: baseURL,
-		Pool:    pool,
-		WAL:     walc,
-		Backend: backend,
-		Shipper: ship,
-		cancel:  cancel,
+		BaseURL:            baseURL,
+		Pool:               pool,
+		WAL:                walc,
+		Backend:            backend,
+		Shipper:            ship,
+		OperatorSignerPriv: opSignerPriv,
+		LogDID:             testLogDID,
+		MMD:                testMMD,
+		cancel:             cancel,
 	}
 
 	t.Cleanup(func() {
