@@ -175,6 +175,7 @@ type SubmissionDeps struct {
 	Admission    AdmissionConfig
 	Identity     IdentityDeps
 	LogDID       string
+	OperatorDID  string
 	MaxEntrySize int64
 	Logger       *slog.Logger
 

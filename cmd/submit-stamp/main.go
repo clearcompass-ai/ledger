@@ -4,14 +4,14 @@ FILE PATH: cmd/submit-stamp/main.go
 submit-stamp — local-dev / CI client that submits a single signed
 entry to the operator. Handles both admission modes:
 
-  Mode A (authenticated): -token "tok-dev"
-    Adds Authorization: Bearer <token>; admission deducts one
-    credit from the seeded session's balance.
+	Mode A (authenticated): -token "tok-dev"
+	  Adds Authorization: Bearer <token>; admission deducts one
+	  credit from the seeded session's balance.
 
-  Mode B (anonymous): no -token
-    Brute-forces a Mode B PoW stamp at the difficulty advertised
-    by GET /v1/admission/difficulty (or the supplied -difficulty
-    flag), embeds it in the entry header, signs, POSTs.
+	Mode B (anonymous): no -token
+	  Brute-forces a Mode B PoW stamp at the difficulty advertised
+	  by GET /v1/admission/difficulty (or the supplied -difficulty
+	  flag), embeds it in the entry header, signs, POSTs.
 
 A fresh did:key:z... keypair is generated per invocation and used
 both as the SignerDID and as the signing key. With the operator
@@ -98,7 +98,7 @@ func main() {
 		// (default 5min interactive tolerance) accepts the
 		// submission instead of stale-rejecting it as 56 years
 		// old.
-		EventTime:   time.Now().UTC().UnixMicro(),
+		EventTime: time.Now().UTC().UnixMicro(),
 	}
 
 	var wire []byte
@@ -175,6 +175,8 @@ func printSCTResponse(body []byte, operatorDID string) {
 		return
 	}
 	fmt.Printf("SCT.version            = %d\n", sct.Version)
+	fmt.Printf("SCT.signer_did         = %s\n", sct.SignerDID)
+	fmt.Printf("SCT.sig_algo_id        = %s\n", sct.SigAlgoID)
 	fmt.Printf("SCT.log_did            = %s\n", sct.LogDID)
 	fmt.Printf("SCT.canonical_hash     = %s\n", sct.CanonicalHash)
 	fmt.Printf("SCT.log_time           = %s\n", sct.LogTime)
@@ -207,6 +209,8 @@ func printSCTResponse(body []byte, operatorDID string) {
 // reverse dep from cmd to api).
 type apiSCT struct {
 	Version       uint8  `json:"version"`
+	SignerDID     string `json:"signer_did"`
+	SigAlgoID     string `json:"sig_algo_id"`
 	LogDID        string `json:"log_did"`
 	CanonicalHash string `json:"canonical_hash"`
 	LogTimeMicros int64  `json:"log_time_micros"`
@@ -222,6 +226,16 @@ func verifyClientSCT(pub *ecdsa.PublicKey, sct *apiSCT) error {
 	if sct.Version != 1 {
 		return fmt.Errorf("unsupported SCT version %d", sct.Version)
 	}
+	if sct.SignerDID == "" {
+		return fmt.Errorf("missing signer_did")
+	}
+	if sct.SigAlgoID != "ecdsa-secp256k1-sha256" {
+		return fmt.Errorf("unsupported sig_algo_id %q", sct.SigAlgoID)
+	}
+	expectedLogTime := time.UnixMicro(sct.LogTimeMicros).UTC().Format(time.RFC3339Nano)
+	if sct.LogTime != expectedLogTime {
+		return fmt.Errorf("log_time mismatch (got %q want %q)", sct.LogTime, expectedLogTime)
+	}
 	canonicalHashBytes, err := hex.DecodeString(sct.CanonicalHash)
 	if err != nil {
 		return fmt.Errorf("canonical_hash decode: %w", err)
@@ -234,15 +248,19 @@ func verifyClientSCT(pub *ecdsa.PublicKey, sct *apiSCT) error {
 		return fmt.Errorf("signature decode: %w", err)
 	}
 	// Match the packing in api/sct.go::SCTSigningPayload exactly.
+	const domainSep = "ORTHOLOG_SCT_V1\x00"
+	buf := make([]byte, 0, len(domainSep)+1+2+len(sct.SignerDID)+2+len(sct.SigAlgoID)+2+len(sct.LogDID)+32+8)
+	buf = append(buf, domainSep...)
+	buf = append(buf, sct.Version)
+	buf = append(buf, byte(len(sct.SignerDID)>>8), byte(len(sct.SignerDID)))
+	buf = append(buf, sct.SignerDID...)
+	buf = append(buf, byte(len(sct.SigAlgoID)>>8), byte(len(sct.SigAlgoID)))
+	buf = append(buf, sct.SigAlgoID...)
 	if len(sct.LogDID) > 0xFFFF {
 		return fmt.Errorf("logDID too long")
 	}
-	buf := make([]byte, 0, 1+2+len(sct.LogDID)+32+8)
-	buf = append(buf, sct.Version)
-	buf = append(buf,
-		byte(len(sct.LogDID)>>8), byte(len(sct.LogDID)),
-	)
-	buf = append(buf, []byte(sct.LogDID)...)
+	buf = append(buf, byte(len(sct.LogDID)>>8), byte(len(sct.LogDID)))
+	buf = append(buf, sct.LogDID...)
 	buf = append(buf, canonicalHashBytes...)
 	micros := uint64(sct.LogTimeMicros)
 	buf = append(buf,

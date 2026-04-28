@@ -66,6 +66,9 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if deps.LogDID == "" {
 		panic("api: SubmissionDeps.LogDID must be non-empty (destination-binding enforcement)")
 	}
+	if deps.OperatorDID == "" {
+		panic("api: SubmissionDeps.OperatorDID must be non-empty for batch SCT signing")
+	}
 	if deps.OperatorSignerPriv == nil {
 		panic("api: SubmissionDeps.OperatorSignerPriv must be non-nil for batch SCT signing")
 	}
@@ -138,7 +141,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			sct, signErr := SignSCT(deps.OperatorSignerPriv, deps.LogDID, pe.canonicalHash, pe.logTime)
+			sct, signErr := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, pe.canonicalHash, pe.logTime)
 			if signErr != nil {
 				deps.Logger.Error("batch SCT signing failed", "index", i, "error", signErr)
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))

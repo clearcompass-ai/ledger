@@ -8,29 +8,29 @@ Sequencer (sequencer/).
 
 CONTRACT VS V1:
 
-  v1 (legacy, facade): synchronous {sequence_number, canonical_hash,
-      log_time}. Caller blocks until the Sequencer advances the
-      entry to StateSequenced; on V1Timeout expiry caller gets
-      HTTP 504 with a follow-up pointer to GET /v1/entries/hash/{hash}.
+	v1 (legacy, facade): synchronous {sequence_number, canonical_hash,
+	    log_time}. Caller blocks until the Sequencer advances the
+	    entry to StateSequenced; on V1Timeout expiry caller gets
+	    HTTP 504 with a follow-up pointer to GET /v1/entries/hash/{hash}.
 
-  v2 (this handler): asynchronous SignedCertificateTimestamp.
-      Caller never blocks on Tessera or Postgres. The SCT is the
-      operator's binding promise to sequence within MMD
-      (OPERATOR_MMD, default 24h). Consumers verify the SCT
-      signature against the operator's public key (reachable via
-      cfg.OperatorDID, a did:key:z...).
+	v2 (this handler): asynchronous SignedCertificateTimestamp.
+	    Caller never blocks on Tessera or Postgres. The SCT is the
+	    operator's binding promise to sequence within MMD
+	    (OPERATOR_MMD, default 24h). Consumers verify the SCT
+	    signature against the operator's public key (reachable via
+	    cfg.OperatorDID, a did:key:z...).
 
 FAST-PATH SHAPE (matches the user's locked design):
 
-  1. Read & Parse                         (steps 1-2 in
-                                            prepareSubmission)
-  2. Validate Signature                   (step 4)
-  3. Check Freshness                      (step 3c — late-replay defense)
-  4. Calculate Hash & Check Duplicates    (steps 8 + 8a — immediate
-                                            replay defense)
-  5. Mode A credit deduction              (own tx, before WAL)
-  6. Write to local NVMe WAL              (step 10)
-  7. Sign and Return the SCT              (this file)
+ 1. Read & Parse                         (steps 1-2 in
+    prepareSubmission)
+ 2. Validate Signature                   (step 4)
+ 3. Check Freshness                      (step 3c — late-replay defense)
+ 4. Calculate Hash & Check Duplicates    (steps 8 + 8a — immediate
+    replay defense)
+ 5. Mode A credit deduction              (own tx, before WAL)
+ 6. Write to local NVMe WAL              (step 10)
+ 7. Sign and Return the SCT              (this file)
 
 What's missing from the fast path (vs the old v1 inline pipeline):
 Tessera AppendLeaf, Postgres entry_index INSERT, WAL.Sequence.
@@ -38,12 +38,12 @@ All three move to the Sequencer.
 
 DEPENDENCIES:
 
-  SubmissionV2Deps wraps SubmissionDeps for prepareSubmission +
-  deductCreditModeA reuse, then adds:
+	SubmissionV2Deps wraps SubmissionDeps for prepareSubmission +
+	deductCreditModeA reuse, then adds:
 
-    OperatorSignerPriv — secp256k1 ECDSA key (the same one
-                          OPERATOR_SIGNER_KEY_FILE loads). Signs
-                          the SCT canonical payload.
+	  OperatorSignerPriv — secp256k1 ECDSA key (the same one
+	                        OPERATOR_SIGNER_KEY_FILE loads). Signs
+	                        the SCT canonical payload.
 */
 package api
 
@@ -90,6 +90,9 @@ func NewSubmissionV2Handler(deps *SubmissionV2Deps) http.HandlerFunc {
 	}
 	if deps.LogDID == "" {
 		panic("api: SubmissionV2Deps.LogDID must be non-empty")
+	}
+	if deps.OperatorDID == "" {
+		panic("api: SubmissionV2Deps.OperatorDID must be non-empty")
 	}
 
 	freshness := deps.FreshnessTolerance
@@ -142,7 +145,7 @@ func NewSubmissionV2Handler(deps *SubmissionV2Deps) http.HandlerFunc {
 		// Sequencer-side log_time (entry_index.log_time) is a
 		// separate value; both are operator-asserted, the v2 SCT
 		// preserves the earlier admission-time value.
-		sct, err := SignSCT(deps.OperatorSignerPriv, deps.LogDID, prep.canonicalHash, prep.logTime)
+		sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
 		if err != nil {
 			deps.Logger.Error("v2: SignSCT", "error", err)
 			writeError(w, http.StatusInternalServerError, "SCT signing failed")
