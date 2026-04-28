@@ -84,14 +84,20 @@ type Handlers struct {
 	Scan            http.HandlerFunc
 	Difficulty      http.HandlerFunc
 
+	// ── SCT/MMD architecture ────────────────────────────────────────
+	SubmissionV2 http.HandlerFunc // POST /v2/entries — returns SCT
+	MMD          http.HandlerFunc // GET /v1/admission/mmd — operator's
+	                              // promised maximum merge delay
+
 	// ── Phase 4 prep: witness cosign (optional) ─────────────────────
 	WitnessCosign http.Handler // nil if not serving as witness
 
 	// ── Full buildout: read endpoints for remote consumers ──────────
 	// Entry fetch by position — blocks Phase 5 verifiers.
-	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}     (JSON metadata)
-	EntryBatch      http.HandlerFunc // GET /v1/entries/batch          (JSON list)
-	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw (wire bytes; 200 inline OR 302 redirect)
+	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
+	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
+	EntryByHash     http.HandlerFunc // GET /v1/entries/hash/{hashHex}  (WAL-aware metadata; pending-state surface for SCTs)
+	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw  (wire bytes; 200 inline OR 302 redirect)
 
 	// SMT leaf data — blocks origin_evaluator.
 	SMTLeaf      http.HandlerFunc // GET /v1/smt/leaf/{key}
@@ -137,6 +143,18 @@ func NewServer(
 		mux.Handle("POST /v1/entries", submissionChain)
 	}
 
+	// ── SCT/MMD: v2 submission + MMD info ──────────────────────────────
+	if handlers.SubmissionV2 != nil {
+		v2Chain := middleware.SizeLimit(
+			cfg.MaxEntrySize+1024,
+			middleware.Auth(db, handlers.SubmissionV2),
+		)
+		mux.Handle("POST /v2/entries", v2Chain)
+	}
+	if handlers.MMD != nil {
+		mux.HandleFunc("GET /v1/admission/mmd", handlers.MMD)
+	}
+
 	// ── Tree head + proofs (read-only) ─────────────────────────────────
 	mux.HandleFunc("GET /v1/tree/head", handlers.TreeHead)
 	mux.HandleFunc("GET /v1/tree/inclusion/{seq}", handlers.TreeInclusion)
@@ -172,6 +190,13 @@ func NewServer(
 	}
 	if handlers.EntryBatch != nil {
 		mux.HandleFunc("GET /v1/entries/batch", handlers.EntryBatch)
+	}
+	if handlers.EntryByHash != nil {
+		// Hash-keyed lookup. The v1 facade's 504 timeout response
+		// points clients here for follow-up; v2 SCT-receivers
+		// poll this to learn whether their SCT has been
+		// redeemed (state transitions pending → sequenced).
+		mux.HandleFunc("GET /v1/entries/hash/{hashHex}", handlers.EntryByHash)
 	}
 	if handlers.EntryRaw != nil {
 		// /raw subroute: wire bytes via WAL inline OR bytestore 302 redirect.
