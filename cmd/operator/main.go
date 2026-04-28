@@ -907,7 +907,7 @@ func main() {
 		LogDID:     cfg.LogDID,
 		Logger:     logger,
 	}
-	commitDeps := &api.CommitmentDeps{CommitmentStore: commitStore, Logger: logger}
+	commitDeps := &api.DerivationCommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
 	// ── Witness cosign endpoint (optional) ────────────────────────────
 	//
@@ -954,7 +954,7 @@ func main() {
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
+		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────

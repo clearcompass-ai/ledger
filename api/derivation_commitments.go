@@ -22,19 +22,12 @@ import (
 )
 
 // DerivationCommitmentDeps groups the derivation-commitment query handler
-// dependencies. Renamed from CommitmentDeps in the v0.3.0-tessera → v7.75
-// disambiguation pass.
+// dependencies. Distinct from CryptographicCommitmentDeps (api/commitments.go),
+// which serves the v7.75 cryptographic-commitment lookup endpoint.
 type DerivationCommitmentDeps struct {
 	CommitmentStore *store.CommitmentStore
 	Logger          *slog.Logger
 }
-
-// CommitmentDeps is retained as a deprecated alias so existing wiring in
-// cmd/operator/main.go continues to compile across the rename. Remove
-// once the call site has migrated to DerivationCommitmentDeps.
-//
-// Deprecated: use DerivationCommitmentDeps.
-type CommitmentDeps = DerivationCommitmentDeps
 
 // NewDerivationCommitmentQueryHandler returns the GET
 // /v1/derivation-commitments?seq=N HTTP handler.
@@ -75,11 +68,3 @@ func NewDerivationCommitmentQueryHandler(deps *DerivationCommitmentDeps) http.Ha
 	}
 }
 
-// NewCommitmentQueryHandler is retained as a deprecated alias to keep
-// cmd/operator/main.go compiling across the rename. Routes to the
-// renamed handler unchanged.
-//
-// Deprecated: use NewDerivationCommitmentQueryHandler.
-func NewCommitmentQueryHandler(deps *DerivationCommitmentDeps) http.HandlerFunc {
-	return NewDerivationCommitmentQueryHandler(deps)
-}
