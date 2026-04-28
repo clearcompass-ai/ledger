@@ -53,6 +53,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -72,6 +75,8 @@ import (
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
@@ -128,6 +133,71 @@ func loadOrGenerateTesseraSigner(keyFile, origin, logDID string, logger *slog.Lo
 	return signer, vkey, nil
 }
 
+// loadOrGenerateOperatorSigner resolves the operator's entry
+// signing key. The operator signs its own entries (anchor
+// commentary, commitment commentary) before submitting them to
+// admission, which then verifies the signature via
+// admission.NewDIDKeyResolver. Returns the private key plus the
+// computed did:key:z... identifier — that string becomes
+// cfg.OperatorDID at the composition root.
+//
+// Priority:
+//   - keyFile non-empty: PEM-decode + x509.ParseECPrivateKey.
+//     Production deployments MUST use this so the operator's DID
+//     is stable across restarts.
+//   - keyFile empty: generate an ephemeral secp256k1 key and log a
+//     warning. Local-dev only — entry consumers that pin the
+//     operator's DID will see a different DID on every restart.
+func loadOrGenerateOperatorSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, string, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("read operator signer key %q: %w", keyFile, err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			return nil, "", fmt.Errorf("operator signer key %q: PEM decode failed", keyFile)
+		}
+		priv, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse operator signer key %q: %w", keyFile, err)
+		}
+		didKey, err := didKeyFromSecp256k1Priv(priv)
+		if err != nil {
+			return nil, "", fmt.Errorf("encode did:key from %q: %w", keyFile, err)
+		}
+		logger.Info("operator signer loaded from file", "key_file", keyFile, "did", didKey)
+		return priv, didKey, nil
+	}
+	// Ephemeral fallback for local dev.
+	priv, err := sdkcryptosigs.GenerateKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate operator signer: %w", err)
+	}
+	didKey, err := didKeyFromSecp256k1Priv(priv)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode did:key for ephemeral signer: %w", err)
+	}
+	logger.Warn("operator signer is ephemeral — NOT for production",
+		"did", didKey,
+	)
+	return priv, didKey, nil
+}
+
+// didKeyFromSecp256k1Priv composes a did:key:z... identifier from
+// a secp256k1 private key. Same multibase + multicodec encoding
+// the SDK's did.GenerateDIDKeySecp256k1 produces internally; this
+// helper exists because the operator threads in keys loaded from
+// disk rather than generating them via the SDK constructor.
+func didKeyFromSecp256k1Priv(priv *ecdsa.PrivateKey) (string, error) {
+	uncompressed := sdkcryptosigs.PubKeyBytes(&priv.PublicKey)
+	compressed, err := sdkcryptosigs.CompressSecp256k1Pubkey(uncompressed)
+	if err != nil {
+		return "", err
+	}
+	return sdkdid.EncodeDIDKey(sdkdid.MulticodecSecp256k1, compressed), nil
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────────────────
@@ -159,6 +229,18 @@ type Config struct {
 	TesseraStorageDir    string
 	TesseraSignerKeyFile string
 	TesseraOrigin        string
+	// OperatorSignerKeyFile is the path to a PEM-encoded
+	// secp256k1 ECDSA private key the operator uses to sign its
+	// own entries (anchor publisher, commitment publisher). When
+	// empty, an ephemeral key is generated at boot — fine for
+	// local dev, never for production. The corresponding did:key
+	// is computed from the public key and used as
+	// cfg.OperatorDID; OPERATOR_DID is ignored if it doesn't
+	// match. The same key is what admission's
+	// admission.NewDIDKeyResolver verifies signatures against, so
+	// the operator's self-published anchors and commitments
+	// satisfy the sig-verification path.
+	OperatorSignerKeyFile string
 	// TesseraAntispamPath is the BadgerDB directory backing
 	// Tessera's antispam (dedup) layer. Required so re-Add via
 	// integrity.Reasserter on boot returns the previously-assigned
@@ -227,6 +309,7 @@ func loadConfig() (*Config, error) {
 		AnchorInterval:        1 * time.Hour,
 		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
+		OperatorSignerKeyFile: os.Getenv("OPERATOR_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
 		ByteStoreBackend:      os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
 		ByteStorePrefix:       envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
@@ -437,6 +520,24 @@ func main() {
 		tesseraOrigin = cfg.LogDID
 	}
 
+	// ── Operator entry-signing key + DID ──────────────────────────────
+	// The operator self-publishes anchor commentary and commitment
+	// commentary. Both go through admission, which now verifies
+	// signatures via admission.NewDIDKeyResolver. Load (or generate)
+	// the secp256k1 signing key, compute its did:key, and override
+	// cfg.OperatorDID so the resolver can find the matching public
+	// key for the entries we ourselves submit.
+	operatorSignerPriv, operatorSignerDID, err := loadOrGenerateOperatorSigner(cfg.OperatorSignerKeyFile, logger)
+	if err != nil {
+		logger.Error("operator signer", "error", err)
+		os.Exit(1)
+	}
+	if envOpDID := os.Getenv("OPERATOR_DID"); envOpDID != "" && envOpDID != operatorSignerDID {
+		logger.Warn("OPERATOR_DID env var ignored — overridden to match signer key",
+			"env_value", envOpDID, "signer_did", operatorSignerDID)
+	}
+	cfg.OperatorDID = operatorSignerDID
+
 	// ── Tessera antispam (dedup) ──────────────────────────────────────
 	// Persistent BadgerDB-backed dedup. Required so
 	// integrity.Reasserter is idempotent across boots: re-Add of an
@@ -522,7 +623,21 @@ func main() {
 		buffer = sdkbuilder.NewDeltaWindowBuffer(cfg.DeltaWindow)
 	}
 
-	// ── Commitment publisher (v0.3.0: LogDID threaded) ────────────────
+	// ── Self-submit pipeline ──────────────────────────────────────────
+	// The anchor and commitment publishers self-publish commentary
+	// entries to this operator's own admission endpoint. Both must be
+	// signed before submit so admission's DIDKeyResolver returns the
+	// matching public key. SignAndSubmit closes that gap by wrapping
+	// the transport-only SubmitViaHTTP with the per-entry ECDSA
+	// signing step.
+	selfSubmitURL := fmt.Sprintf("http://localhost%s", cfg.ServerAddr)
+	signedSelfSubmit := anchor.SignAndSubmit(
+		operatorSignerPriv,
+		operatorSignerDID,
+		anchor.SubmitViaHTTP(selfSubmitURL),
+	)
+
+	// ── Commitment publisher ──────────────────────────────────────────
 	commitPub := builder.NewCommitmentPublisher(
 		cfg.OperatorDID,
 		cfg.LogDID,
@@ -530,7 +645,7 @@ func main() {
 			IntervalEntries: 1000,
 			IntervalTime:    1 * time.Hour,
 		},
-		anchor.SubmitViaHTTP(fmt.Sprintf("http://localhost%s", cfg.ServerAddr)),
+		signedSelfSubmit,
 		logger,
 	).WithCommitmentStore(commitStore)
 
@@ -583,7 +698,7 @@ func main() {
 			AnchorSources: cfg.AnchorSources,
 		},
 		tesseraAdapter,
-		anchor.SubmitViaHTTP(fmt.Sprintf("http://localhost%s", cfg.ServerAddr)),
+		signedSelfSubmit,
 		logger,
 	)
 
