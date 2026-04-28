@@ -74,6 +74,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
+	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
@@ -601,7 +602,11 @@ func main() {
 		},
 		Identity: api.IdentityDeps{
 			CreditStore: creditStore,
-			DIDResolver: nil, // Phase 4: wire did.DefaultVerifierRegistry.
+			// did:key resolver — content-addressed, no network.
+			// Operators that need richer methods (did:web, did:pkh)
+			// compose a multi-method resolver here; this stays as
+			// the secp256k1 / P-256 leaf.
+			DIDResolver: admission.NewDIDKeyResolver(),
 		},
 		LogDID:             cfg.LogDID,
 		MaxEntrySize:       cfg.MaxEntrySize,
