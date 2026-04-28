@@ -87,13 +87,23 @@ func (f *fakeDIDResolver) ResolvePublicKey(ctx context.Context, did string) (*ec
 
 // signedEntryModeB produces wire bytes for a Mode B (anonymous,
 // PoW-stamped) submission. Brute-forces the nonce at difficulty=1
-// (~2 iterations average) so the test is fast.
+// (~2 iterations average) so the test is fast. Generates a fresh
+// signing key per call.
 func signedEntryModeB(t *testing.T, logDID string, payload []byte, difficulty uint32, epochWindowSec uint64) (wire []byte, hash [32]byte, priv *ecdsa.PrivateKey) {
 	t.Helper()
 	priv, err := signatures.GenerateKey()
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
+	wire, hash = signedEntryModeBWithKey(t, priv, logDID, payload, difficulty, epochWindowSec)
+	return wire, hash, priv
+}
+
+// signedEntryModeBWithKey is like signedEntryModeB but uses the
+// caller-supplied signing key. Lets a test build N entries that
+// all verify against the same fakeDIDResolver pubkey.
+func signedEntryModeBWithKey(t *testing.T, priv *ecdsa.PrivateKey, logDID string, payload []byte, difficulty uint32, epochWindowSec uint64) (wire []byte, hash [32]byte) {
+	t.Helper()
 	hdr := envelope.ControlHeader{
 		SignerDID:   "did:test:signer",
 		Destination: logDID,
@@ -135,7 +145,7 @@ func signedEntryModeB(t *testing.T, logDID string, payload []byte, difficulty ui
 			sdkadmission.CurrentEpoch(epochWindowSec),
 			1,
 		); err == nil {
-			return canonical, entryHash, priv
+			return canonical, entryHash
 		}
 	}
 	t.Fatalf("could not find valid stamp at difficulty=%d in %d iterations", difficulty, maxIter)

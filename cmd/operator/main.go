@@ -871,6 +871,7 @@ func main() {
 		FreshnessTolerance: policy.FreshnessInteractive,
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
+	batchSubmitHandler := api.NewBatchSubmissionHandler(submissionDeps)
 	mmdHandler := api.NewMMDHandler(cfg.MMD)
 
 	// ── Shared stores for read handlers ───────────────────────────────
@@ -932,6 +933,7 @@ func main() {
 
 	handlers := api.Handlers{
 		Submission:      submitHandler,
+		BatchSubmission: batchSubmitHandler,
 		TreeHead:        api.NewTreeHeadHandler(treeDeps),
 		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
 		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),

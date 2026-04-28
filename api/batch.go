@@ -21,8 +21,24 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
-const MaxBatchSize = 256
-const maxBatchPayloadBytes = 4 << 20
+const (
+	// MaxBatchSize caps the number of entries per batch request.
+	MaxBatchSize = 256
+
+	// AbsoluteMaxBatchPayloadBytes is the hard ceiling on the
+	// HTTP request body size for /v1/entries/batch. Caps heap
+	// pressure under malicious payloads regardless of the per-entry
+	// MaxEntrySize configuration: a 1 MB single-entry cap can still
+	// admit 256 entries × ~2× hex overhead, but the total request
+	// body never exceeds this absolute ceiling.
+	AbsoluteMaxBatchPayloadBytes = 64 << 20 // 64 MiB
+
+	// maxBatchPayloadBytes is the floor used when a tiny per-entry
+	// MaxEntrySize would otherwise produce a request-body cap below
+	// the minimum useful size. Pre-existing constant kept for
+	// backwards compatibility with callers expecting a fixed floor.
+	maxBatchPayloadBytes = 4 << 20 // 4 MiB
+)
 
 type BatchEntry struct {
 	WireBytesHex string `json:"wire_bytes_hex"`
@@ -57,6 +73,30 @@ func preflightFail(status int, format string, args ...any) *preflightError {
 	return &preflightError{status: status, msg: fmt.Sprintf(format, args...)}
 }
 
+// computeEffectiveBatchPayloadCap derives the io.LimitReader cap
+// for a batch request body from the per-entry MaxEntrySize.
+//
+// Bounds:
+//   - Floor at maxBatchPayloadBytes (4 MiB): a tiny per-entry cap
+//     would otherwise produce a request-body cap below the minimum
+//     useful size; raise to 4 MiB so legitimate small-entry callers
+//     are not artificially capped.
+//   - Ceiling at AbsoluteMaxBatchPayloadBytes (64 MiB): defends
+//     against OOM via crafted batches. The naive formula
+//     (MaxBatchSize × per-entry × 2 + headroom) yields ~512 MiB at
+//     the default 1 MiB MaxEntrySize, far above any legitimate
+//     batch payload size.
+func computeEffectiveBatchPayloadCap(maxEntrySize int64) int64 {
+	cap := int64(MaxBatchSize)*((maxEntrySize+512)*2+128) + 1024
+	if cap < maxBatchPayloadBytes {
+		cap = maxBatchPayloadBytes
+	}
+	if cap > AbsoluteMaxBatchPayloadBytes {
+		cap = AbsoluteMaxBatchPayloadBytes
+	}
+	return cap
+}
+
 func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if deps.Admission.EpochWindowSeconds <= 0 {
 		panic("api: SubmissionDeps.Admission.EpochWindowSeconds must be positive")
@@ -75,10 +115,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if freshness <= 0 {
 		freshness = policy.FreshnessInteractive
 	}
-	effectiveBatchPayloadCap := int64(MaxBatchSize)*((deps.MaxEntrySize+512)*2+128) + 1024
-	if effectiveBatchPayloadCap < maxBatchPayloadBytes {
-		effectiveBatchPayloadCap = maxBatchPayloadBytes
-	}
+	effectiveBatchPayloadCap := computeEffectiveBatchPayloadCap(deps.MaxEntrySize)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

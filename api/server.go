@@ -71,6 +71,7 @@ type Server struct {
 type Handlers struct {
 	// ── Core endpoints (Phase 2) ────────────────────────────────────
 	Submission      http.HandlerFunc
+	BatchSubmission http.HandlerFunc // POST /v1/entries/batch — async; returns array of SCTs
 	TreeHead        http.HandlerFunc
 	TreeInclusion   http.HandlerFunc
 	TreeConsistency http.HandlerFunc
@@ -140,6 +141,18 @@ func NewServer(
 			middleware.Auth(db, handlers.Submission),
 		)
 		mux.Handle("POST /v1/entries", submissionChain)
+	}
+
+	// ── Batch submission — async, returns SCTs ─────────────────────────
+	// SizeLimit cap mirrors api/batch.go::AbsoluteMaxBatchPayloadBytes
+	// (64 MiB hard ceiling). The handler itself enforces a tighter
+	// per-deployment cap derived from MaxEntrySize × MaxBatchSize.
+	if handlers.BatchSubmission != nil {
+		batchChain := middleware.SizeLimit(
+			AbsoluteMaxBatchPayloadBytes+1024,
+			middleware.Auth(db, handlers.BatchSubmission),
+		)
+		mux.Handle("POST /v1/entries/batch", batchChain)
 	}
 
 	// ── SCT/MMD: MMD info (POST /v1/entries returns the SCT itself) ──
