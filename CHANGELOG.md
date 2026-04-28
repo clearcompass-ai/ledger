@@ -1,6 +1,6 @@
 # Changelog
 
-## Phase 3+4 — WAL-first admission, hexagonal bytestore, async Shipper
+## v0.4 — WAL-first admission, hexagonal bytestore, async Shipper
 
 ### Required infra additions before deploy
 
@@ -15,7 +15,7 @@ bucket. All four MUST be provisioned before the v0.4 binary boots:
   directory. Required for idempotent re-Add under concurrent
   admission of the same content.
 - **`OPERATOR_TESSERA_STORAGE_DIR`** — Tessera tile + checkpoint
-  storage. Existed in earlier phases.
+  storage. Existed in earlier releases.
 - **`OPERATOR_BYTE_STORE_BACKEND`** — `gcs` or `s3`. Selects the
   production bytestore adapter; the factory enforces per-backend
   required fields.
@@ -42,12 +42,12 @@ See `docs/CONFIG.md` for the full env-var matrix and
 
 ### Wire format
 
-- Wire bytes ARE the canonical bytes (v7.75). The multi-sig section
-  is appended INSIDE `envelope.Serialize`'s output; there is no
+- Wire bytes ARE the canonical bytes. The multi-sig section is
+  appended INSIDE `envelope.Serialize`'s output; there is no
   separate signature-append step. Consumers feed the wire bytes
   directly to `envelope.Deserialize`.
-- `sig_algorithm_id` end-to-end was dropped (Phase 3) — algo IDs
-  live inside the multi-sig section.
+- `sig_algorithm_id` was dropped end-to-end — algo IDs live
+  inside the multi-sig section.
 
 ### Bytestore
 
@@ -91,7 +91,7 @@ See `docs/CONFIG.md` for the full env-var matrix and
   `ErrDiverged` with wrap `operator FATAL: integrity detector: %w`.
   This is the only deliberate panic in the codebase.
 
-### Migration steps from v0.3 (Tessera-aligned vocabulary)
+### Migration steps
 
 1. Provision the WAL + antispam volumes alongside the existing
    Tessera storage volume.
@@ -102,14 +102,14 @@ See `docs/CONFIG.md` for the full env-var matrix and
      `s3:ListBucket` (+ `s3:DeleteObject` for soak /
      conformance). Prefer IAM roles on AWS; static creds for
      RustFS / on-prem.
-3. Drain the v0.3 operator (let `builder_queue` empty and Tessera
-   integrate the last entries).
+3. Drain the previous operator release (let any pre-existing
+   `builder_queue` empty and Tessera integrate the last entries).
 4. Update the manifests to set `OPERATOR_WAL_PATH`,
    `OPERATOR_TESSERA_ANTISPAM_PATH`, `OPERATOR_BYTE_STORE_BACKEND`
    (`gcs` or `s3`), and the matching bucket / S3 family vars.
-5. Boot the v0.4 binary. Migrations run automatically; the
-   `builder_queue` table is left in place but unused — drop it in
-   a follow-up maintenance window.
+5. Boot the v0.4 binary. Migrations run automatically; any
+   pre-existing `builder_queue` table is left in place but unused —
+   drop it in a follow-up maintenance window.
 
 ### Test surface additions
 
