@@ -511,7 +511,9 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 		}
 	}
 	// Reset sequence.
-	_, _ = pool.Exec(ctx, "ALTER SEQUENCE entry_sequence RESTART WITH 1")
+	// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first
+	// admission; Tessera owns sequence allocation now). Tests that
+	// seed entries supply seq numbers explicitly via insertTestEntry.
 
 	// Reset package-level entry byte store.
 	testEntryBytes = opbytestore.NewMemory()

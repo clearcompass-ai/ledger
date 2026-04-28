@@ -80,6 +80,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // loadOrGenerateTesseraSigner resolves the checkpoint signer.
@@ -172,6 +173,13 @@ type Config struct {
 	DeltaWindow           int
 	WitnessEndpoints      []string
 	WitnessQuorumK        int
+
+	// WALPath is the BadgerDB directory the WAL Committer opens.
+	// Required for WAL-first admission (commit 10). The Shipper
+	// migrates entries from this path into the byte store; the
+	// integrity Detector reconciles inflight entries against
+	// Tessera at boot.
+	WALPath string
 }
 
 func loadConfig() (*Config, error) {
@@ -199,6 +207,7 @@ func loadConfig() (*Config, error) {
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
 		WitnessQuorumK:        1,
+		WALPath:               envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -279,6 +288,30 @@ func main() {
 	commitStore := store.NewCommitmentStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, cfg.SMTNodeCacheSize)
+
+	// ── WAL ───────────────────────────────────────────────────────────
+	// BadgerDB-backed WAL provides durable bytes for admission's HTTP
+	// 202 promise. Group commit + fsync semantics live in wal/committer.go.
+	// The same Badger DB also backs Tessera's deduplicator (commit 12
+	// wires tessera.WithDeduplication) so dedup state shares the
+	// operator's single durability medium.
+	walDB, err := wal.Open(cfg.WALPath, logger)
+	if err != nil {
+		logger.Error("wal open", "error", err, "path", cfg.WALPath)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := walDB.Close(); err != nil {
+			logger.Warn("wal db close", "error", err)
+		}
+	}()
+	walc := wal.NewCommitter(walDB, wal.CommitterConfig{Logger: logger})
+	defer func() {
+		if err := walc.Close(); err != nil {
+			logger.Warn("wal committer close", "error", err)
+		}
+	}()
+	logger.Info("wal ready", "path", cfg.WALPath)
 
 	// ── Byte store ────────────────────────────────────────────────────
 	//
@@ -453,12 +486,13 @@ func main() {
 		logger,
 	)
 
-	// ── Submission handler (v0.3.0: 13-step pipeline) ─────────────────
+	// ── Submission handler (WAL-first 14-step pipeline) ───────────────
 	submitHandler := api.NewSubmissionHandler(&api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:          pool,
-			EntryStore:  entryStore,
-			EntryWriter: byteStore, // same store the fetcher reads from.
+			DB:         pool,
+			EntryStore: entryStore,
+			WAL:        walc,
+			Tessera:    embeddedAppender,
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,

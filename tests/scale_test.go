@@ -34,8 +34,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,74 +61,16 @@ func getScaleN() int {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 1. Sequence Allocation Throughput
+// 1. Sequence Allocation Throughput — REMOVED in commit 10
 // ═════════════════════════════════════════════════════════════════════════════
-
-func TestScale_SequenceAllocation(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-
-	const N = 100_000
-	start := time.Now()
-	for i := 0; i < N; i++ {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = es.NextSequence(ctx, tx)
-		if err != nil {
-			tx.Rollback(ctx)
-			t.Fatal(err)
-		}
-		tx.Commit(ctx)
-	}
-	elapsed := time.Since(start)
-	rate := float64(N) / elapsed.Seconds()
-	t.Logf("SEQUENCE ALLOCATION: %d sequences in %s (%.0f seq/sec)", N, elapsed, rate)
-
-	if rate < 1000 {
-		t.Logf("WARNING: sequence rate %.0f/sec is below 1K/sec — may bottleneck admission", rate)
-	}
-}
-
-func TestScale_SequenceAllocation_Concurrent(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-
-	const perGoroutine = 10_000
-	const goroutines = 10
-	var total atomic.Int64
-
-	start := time.Now()
-	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < perGoroutine; i++ {
-				tx, err := pool.Begin(ctx)
-				if err != nil {
-					return
-				}
-				_, err = es.NextSequence(ctx, tx)
-				if err != nil {
-					tx.Rollback(ctx)
-					return
-				}
-				tx.Commit(ctx)
-				total.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(start)
-	rate := float64(total.Load()) / elapsed.Seconds()
-	t.Logf("CONCURRENT SEQUENCE: %d sequences in %s (%.0f seq/sec, %d goroutines)",
-		total.Load(), elapsed, rate, goroutines)
-}
-
+//
+// Tessera, not Postgres, owns sequence allocation under WAL-first
+// admission. The Postgres entry_sequence SEQUENCE was dropped
+// alongside store.EntryStore.NextSequence. End-to-end submission
+// throughput at scale is measured at the admission layer in
+// tests/scale_test.go's TestScale_HTTPAdmission_* tests, which
+// implicitly cover the WAL → Tessera → Postgres pipeline.
+//
 // ═════════════════════════════════════════════════════════════════════════════
 // 2. Bulk Entry Insertion (measures Postgres write throughput)
 // ═════════════════════════════════════════════════════════════════════════════

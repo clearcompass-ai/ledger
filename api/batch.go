@@ -61,6 +61,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,45 +231,61 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			prepared = append(prepared, pe)
 		}
 
-		// ── C) Single Postgres tx for the whole batch ──────────────────
-		// All entries land together or none do (Decision 2). On any
-		// per-entry insert failure, WithReadCommittedTx rolls back the
-		// transaction; allocated sequence numbers are not consumed
-		// from the gapless-sequence invariant's perspective because
-		// the SEQUENCE is the single source of truth.
+		// ── C) Per-entry WAL-first admission ──────────────────────────
+		// Under WAL-first, each entry's persistence is a 4-stage
+		// pipeline (wal.Submit → tessera.AppendLeaf → Postgres txn →
+		// wal.Sequence) that cannot be wrapped in a single batch-level
+		// Postgres tx — Tessera assigns the seq before Postgres ever
+		// sees the row, and the WAL commits durable bytes before
+		// Tessera. Decision 2's "atomic batch" semantics shift here:
+		// preflight (already done in stage B) is the all-or-nothing
+		// gate; once preflight passes, persistence is best-effort
+		// per-entry. On the first persistence failure we ABORT the
+		// batch and return 500; the user retries, and previously-
+		// admitted entries surface as 409 (duplicate) so the caller
+		// can locate the partition point.
 		results := make([]BatchResultEntry, 0, len(prepared))
 		authenticated := middleware.IsAuthenticated(ctx)
 		exchangeDID := middleware.ExchangeDID(ctx)
 
-		txErr := store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
-			for _, pe := range prepared {
-				seq, admitErr := admitPreparedEntry(ctx, tx, pe, deps, authenticated, exchangeDID)
-				if admitErr != nil {
-					return admitErr
+		for i, pe := range prepared {
+			seq, admitErr := admitPreparedEntry(ctx, pe, deps, authenticated, exchangeDID)
+			if admitErr != nil {
+				if errors.Is(admitErr, wal.ErrQueueFull) {
+					w.Header().Set("Retry-After", "5")
+					writeError(w, http.StatusServiceUnavailable,
+						fmt.Sprintf("backpressure at entry %d/%d: WAL queue full",
+							i, len(prepared)))
+					return
 				}
-				results = append(results, BatchResultEntry{
-					SequenceNumber: seq,
-					CanonicalHash:  hex.EncodeToString(pe.canonicalHash[:]),
-					LogTime:        pe.logTime.Format(time.RFC3339Nano),
-				})
-			}
-			return nil
-		})
-
-		if txErr != nil {
-			if errors.Is(txErr, store.ErrInsufficientCredits) {
-				writeError(w, http.StatusPaymentRequired,
-					"insufficient write credits for batch")
+				if errors.Is(admitErr, store.ErrInsufficientCredits) {
+					writeError(w, http.StatusPaymentRequired,
+						fmt.Sprintf("insufficient write credits at entry %d/%d", i, len(prepared)))
+					return
+				}
+				if errors.Is(admitErr, store.ErrDuplicateEntry) {
+					existingSeq, found, _ := deps.Storage.EntryStore.FetchByHash(ctx, pe.canonicalHash)
+					if found {
+						writeError(w, http.StatusConflict,
+							fmt.Sprintf("entry %d/%d duplicate: existing sequence %d",
+								i, len(prepared), existingSeq))
+					} else {
+						writeError(w, http.StatusConflict,
+							fmt.Sprintf("entry %d/%d duplicate", i, len(prepared)))
+					}
+					return
+				}
+				deps.Logger.Error("batch admission entry failed",
+					"index", i, "error", admitErr)
+				writeError(w, http.StatusInternalServerError,
+					fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))
 				return
 			}
-			if errors.Is(txErr, store.ErrDuplicateEntry) {
-				writeError(w, http.StatusConflict,
-					"duplicate entry in batch")
-				return
-			}
-			deps.Logger.Error("batch admission failed", "error", txErr)
-			writeError(w, http.StatusInternalServerError, "batch admission failed")
-			return
+			results = append(results, BatchResultEntry{
+				SequenceNumber: seq,
+				CanonicalHash:  hex.EncodeToString(pe.canonicalHash[:]),
+				LogTime:        pe.logTime.Format(time.RFC3339Nano),
+			})
 		}
 
 		// ── D) Success ─────────────────────────────────────────────────
@@ -442,90 +459,105 @@ func preflightEntry(
 // 6) Per-entry transactional admission
 // ─────────────────────────────────────────────────────────────────────────────
 
-// admitPreparedEntry inserts one preparedEntry inside the supplied
-// Postgres tx. Caller is responsible for opening + committing the
-// transaction; this function returns the assigned sequence number
-// on success and an error that surfaces to WithReadCommittedTx for
-// rollback on failure.
+// admitPreparedEntry runs the full WAL-first admission pipeline for
+// a single preflighted entry. Returns the Tessera-assigned sequence
+// number on success.
 //
-// Steps performed (mirrors single-entry submission's atomic block):
+// Pipeline:
+//   1. Early duplicate check (Postgres entry_index).
+//   2. wal.Submit — bytes durable on local disk.
+//   3. tessera.AppendLeaf — sequence assigned (dedup-aware).
+//   4. Postgres txn:
+//        - Mode A credit deduction
+//        - entry_index INSERT
+//        - commitment_split_id INSERT (when SplitID was extracted)
+//   5. wal.Sequence — WAL state pending → sequenced.
 //
-//  1. Mode A credit deduction (if authenticated).
-//  2. NextSequence allocation.
-//  3. entry_index insert.
-//  4. commitment_split_id insert (when SplitID was extracted at
-//     preflight stage 4-Schema).
-//  5. EntryWriter byte persistence (Tessera).
-//  6. builder queue enqueue.
+// Errors are returned verbatim so the caller can map them to HTTP
+// status codes (wal.ErrQueueFull → 503, store.ErrDuplicateEntry → 409,
+// store.ErrInsufficientCredits → 402, default → 500).
 //
-// Order matters: NextSequence must precede entry_index so the
-// canonical_hash UNIQUE constraint catches duplicates inside the
-// same transaction; commitment_split_id's FOREIGN KEY on
-// sequence_number requires the entry_index row to exist first.
+// This is the shared kernel between single-entry POST /v1/entries
+// and batch POST /v1/entries/batch. Tests pin the pipeline against
+// fakes; integration tests cover the full chain through real
+// Postgres + WAL + Tessera.
 func admitPreparedEntry(
 	ctx context.Context,
-	tx pgx.Tx,
 	pe *preparedEntry,
 	deps *SubmissionDeps,
 	authenticated bool,
 	exchangeDID string,
 ) (uint64, error) {
-	if authenticated {
-		if _, deductErr := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID); deductErr != nil {
-			return 0, deductErr
+	// Step 1: Early duplicate check — avoid a wasted WAL write.
+	if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, pe.canonicalHash); fetchErr == nil && found {
+		_ = existingSeq
+		return 0, store.ErrDuplicateEntry
+	}
+
+	// Step 2: WAL durability.
+	if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical); err != nil {
+		return 0, fmt.Errorf("wal submit: %w", err)
+	}
+
+	// Step 3: Tessera sequence assignment (dedup-aware).
+	seq, err := deps.Storage.Tessera.AppendLeaf(pe.canonicalHash[:])
+	if err != nil {
+		return 0, fmt.Errorf("tessera AppendLeaf: %w", err)
+	}
+
+	// Step 4: Postgres sidecar.
+	err = store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
+		if authenticated {
+			if _, deductErr := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID); deductErr != nil {
+				return deductErr
+			}
 		}
-	}
 
-	seq, seqErr := deps.Storage.EntryStore.NextSequence(ctx, tx)
-	if seqErr != nil {
-		return 0, seqErr
-	}
-
-	var targetRootBytes, cosigOfBytes, schemaRefBytes []byte
-	if pe.entry.Header.TargetRoot != nil {
-		targetRootBytes = store.SerializeLogPosition(*pe.entry.Header.TargetRoot)
-	}
-	if pe.entry.Header.CosignatureOf != nil {
-		cosigOfBytes = store.SerializeLogPosition(*pe.entry.Header.CosignatureOf)
-	}
-	if pe.entry.Header.SchemaRef != nil {
-		schemaRefBytes = store.SerializeLogPosition(*pe.entry.Header.SchemaRef)
-	}
-
-	if insertErr := deps.Storage.EntryStore.Insert(ctx, tx, store.EntryRow{
-		SequenceNumber: seq,
-		CanonicalHash:  pe.canonicalHash,
-		LogTime:        pe.logTime,
-		SignerDID:      pe.entry.Header.SignerDID,
-		TargetRoot:     targetRootBytes,
-		CosignatureOf:  cosigOfBytes,
-		SchemaRef:      schemaRefBytes,
-	}); insertErr != nil {
-		return 0, insertErr
-	}
-
-	if pe.extractedSplitID != nil {
-		if _, splitErr := tx.Exec(ctx, `
-			INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
-			VALUES ($1, $2, $3)`,
-			seq, pe.extractedSchemaID, pe.extractedSplitID[:],
-		); splitErr != nil {
-			return 0, fmt.Errorf("commitment_split_id insert: %w", splitErr)
+		var targetRootBytes, cosigOfBytes, schemaRefBytes []byte
+		if pe.entry.Header.TargetRoot != nil {
+			targetRootBytes = store.SerializeLogPosition(*pe.entry.Header.TargetRoot)
 		}
-	}
-
-	if deps.Storage.EntryWriter != nil {
-		// Wire bytes ARE the canonical bytes under v7.75 — the
-		// signatures section is appended INSIDE the canonical form
-		// by envelope.Serialize, so pe.canonical is the full opaque
-		// blob the byte store stores.
-		if writeErr := deps.Storage.EntryWriter.WriteEntry(ctx, seq, pe.canonicalHash, pe.canonical); writeErr != nil {
-			return 0, fmt.Errorf("write entry bytes: %w", writeErr)
+		if pe.entry.Header.CosignatureOf != nil {
+			cosigOfBytes = store.SerializeLogPosition(*pe.entry.Header.CosignatureOf)
 		}
+		if pe.entry.Header.SchemaRef != nil {
+			schemaRefBytes = store.SerializeLogPosition(*pe.entry.Header.SchemaRef)
+		}
+
+		if insertErr := deps.Storage.EntryStore.Insert(ctx, tx, store.EntryRow{
+			SequenceNumber: seq,
+			CanonicalHash:  pe.canonicalHash,
+			LogTime:        pe.logTime,
+			SignerDID:      pe.entry.Header.SignerDID,
+			TargetRoot:     targetRootBytes,
+			CosignatureOf:  cosigOfBytes,
+			SchemaRef:      schemaRefBytes,
+		}); insertErr != nil {
+			return insertErr
+		}
+
+		if pe.extractedSplitID != nil {
+			if _, splitErr := tx.Exec(ctx, `
+				INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
+				VALUES ($1, $2, $3)`,
+				seq, pe.extractedSchemaID, pe.extractedSplitID[:],
+			); splitErr != nil {
+				return fmt.Errorf("commitment_split_id insert: %w", splitErr)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 
-	// Cursor mode: the entry_index INSERT IS the enqueue — the
-	// builder cursor reader tails entry_index and advances
-	// builder_cursor in its own atomic commit.
+	// Step 5: WAL state transition pending → sequenced.
+	if err := deps.Storage.WAL.Sequence(ctx, pe.canonicalHash, seq); err != nil {
+		// Bytes durable, Tessera has the seq, Postgres has the row;
+		// only the WAL meta state didn't advance. Recoverable on
+		// next boot via integrity.Reasserter (re-Add returns the
+		// same seq via dedup, then Sequence transitions state).
+		return 0, fmt.Errorf("wal Sequence: %w", err)
+	}
 	return seq, nil
 }

@@ -344,8 +344,14 @@ var schemaDDL = []string{
 		ON commitment_equivocation_proofs (first_detected_at)
 		WHERE alert_dispatched_at IS NULL`,
 
-	// ── Sequence ─────────────────────────────────────────────────────
-	`CREATE SEQUENCE IF NOT EXISTS entry_sequence START 1 NO CYCLE`,
+	// Sequence numbers are assigned by the embedded Tessera library
+	// (the c2sp.org/tlog-tiles integrator), not by Postgres. The
+	// entry_sequence SEQUENCE that lived here in v1 was dropped in
+	// the WAL-first admission migration: admission now blocks on
+	// wal.Submit (durable bytes), then tessera.AppendLeaf (Tessera-
+	// assigned seq), then INSERTs the resulting (seq, hash, ...) row
+	// into entry_index. Postgres only records what Tessera already
+	// committed to.
 }
 
 // RunMigrations creates the schema. Fully idempotent.

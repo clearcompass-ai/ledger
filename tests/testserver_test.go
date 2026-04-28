@@ -52,9 +52,10 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -110,6 +111,21 @@ func startTestOperator(t *testing.T) *testOperator {
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
 
+	// ── WAL ────────────────────────────────────────────────────────────
+	// In-memory Badger for tests. DisableSync mirrors the production
+	// "no WAL to fsync" flag; in-memory mode has no on-disk WAL.
+	walDB, err := wal.OpenInMemory(nil)
+	if err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("wal open: %v", err)
+	}
+	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
+	t.Cleanup(func() {
+		_ = walc.Close()
+		_ = walDB.Close()
+	})
+
 	// ── Delta buffer ───────────────────────────────────────────────────
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
 	deltaBuffer, _ := bufferStore.Load(ctx)
@@ -151,11 +167,16 @@ func startTestOperator(t *testing.T) *testOperator {
 	queryAPI := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
 
 	// SubmissionDeps using the cohesive sub-struct shape.
+	// stubMerkleAppender doubles as the api.TesseraAppender for
+	// tests — its AppendLeaf signature satisfies the interface
+	// even though its primary role is as the builder-side
+	// MerkleAppender. Production wires *tessera.EmbeddedAppender.
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:          pool,
-			EntryStore:  entryStore,
-			EntryWriter: entryBytes,
+			DB:         pool,
+			EntryStore: entryStore,
+			WAL:        walc,
+			Tessera:    merkle,
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,

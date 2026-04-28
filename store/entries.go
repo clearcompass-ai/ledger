@@ -88,16 +88,6 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	return nil
 }
 
-// NextSequence atomically allocates the next gapless sequence number.
-func (s *EntryStore) NextSequence(ctx context.Context, tx pgx.Tx) (uint64, error) {
-	var seq uint64
-	err := tx.QueryRow(ctx, "SELECT nextval('entry_sequence')").Scan(&seq)
-	if err != nil {
-		return 0, fmt.Errorf("store/entries: nextval: %w", err)
-	}
-	return seq, nil
-}
-
 // FetchByHash checks if an entry with the given canonical hash exists.
 func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bool, error) {
 	var seq uint64

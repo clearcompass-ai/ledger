@@ -116,7 +116,8 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		`TRUNCATE TABLE commitment_equivocation_proofs RESTART IDENTITY`,
 		`TRUNCATE TABLE commitment_split_id`,
 		`TRUNCATE TABLE entry_index CASCADE`,
-		`ALTER SEQUENCE entry_sequence RESTART WITH 1`,
+		// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first;
+		// Tessera owns sequence allocation now).
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("reset %q: %v", stmt, err)

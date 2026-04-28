@@ -23,7 +23,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -772,80 +771,16 @@ func TestLogTime_InEntryWithMetadata(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Category 7: Sequence Integrity (4 tests)
+// Category 7: Sequence Integrity — REMOVED in commit 10
 // ═════════════════════════════════════════════════════════════════════════════
-
-func TestSequence_Monotonic(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-	var seqs []uint64
-	for i := 0; i < 100; i++ {
-		tx, _ := pool.Begin(ctx)
-		s, _ := es.NextSequence(ctx, tx)
-		seqs = append(seqs, s)
-		tx.Commit(ctx)
-	}
-	for i := 1; i < len(seqs); i++ {
-		if seqs[i] != seqs[i-1]+1 {
-			t.Fatalf("gap at %d", i)
-		}
-	}
-}
-
-func TestSequence_GaplessUnderConcurrency(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-	var mu sync.Mutex
-	var all []uint64
-	var wg sync.WaitGroup
-	for g := 0; g < 5; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 10; i++ {
-				tx, _ := pool.Begin(ctx)
-				s, _ := es.NextSequence(ctx, tx)
-				tx.Commit(ctx)
-				mu.Lock()
-				all = append(all, s)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	if len(all) != 50 {
-		t.Fatal("expected 50")
-	}
-	seen := map[uint64]bool{}
-	for _, s := range all {
-		if seen[s] {
-			t.Fatalf("dup %d", s)
-		}
-		seen[s] = true
-	}
-}
-
-func TestSequence_GaplessAcrossRestart(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-	var last uint64
-	for i := 0; i < 10; i++ {
-		tx, _ := pool.Begin(ctx)
-		last, _ = es.NextSequence(ctx, tx)
-		tx.Commit(ctx)
-	}
-	es2 := store.NewEntryStore(pool)
-	tx, _ := pool.Begin(ctx)
-	next, _ := es2.NextSequence(ctx, tx)
-	tx.Commit(ctx)
-	if next != last+1 {
-		t.Fatalf("gap: %d → %d", last, next)
-	}
-}
-
+//
+// Tests for store.EntryStore.NextSequence (gapless / monotonic /
+// across-restart) lived here. Under WAL-first admission, Tessera —
+// not Postgres — owns sequence allocation; NextSequence is gone.
+// Tessera's tile-builder enforces the equivalent properties (the
+// log's append-only Merkle tree). End-to-end integration tests
+// (commit 13) cover the same invariants at the admission layer.
+//
 // ═════════════════════════════════════════════════════════════════════════════
 // Category 8: Delta Buffer & OCC (5 tests)
 // ═════════════════════════════════════════════════════════════════════════════
