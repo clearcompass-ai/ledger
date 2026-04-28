@@ -33,6 +33,7 @@ package api
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -46,6 +47,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -66,6 +68,15 @@ type QueryDeps struct {
 	QueryAPI       *indexes.PostgresQueryAPI
 	DiffController *middleware.DifficultyController
 	Logger         *slog.Logger
+
+	// WAL is the optional WAL probe surface used by
+	// NewHashLookupHandler to detect entries that have been
+	// admitted (durable in WAL) but not yet sequenced
+	// (entry_index INSERT happens in the background sequencer).
+	// Nil-safe: when WAL is nil the handler skips the probe and
+	// the v1 hash lookup behaves as it always did. The read-only
+	// operator-reader binary leaves this nil — it has no WAL.
+	WAL EntryWALReader
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -187,6 +198,26 @@ func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 // ─────────────────────────────────────────────────────────────────────
 
 // NewHashLookupHandler returns a single entry by its canonical hash.
+//
+// Routing decision matrix:
+//
+//   WAL.MetaState (when configured)   entry_index    Outcome
+//   ───────────────────────────────   ──────────     ──────────────────
+//   StatePending                      —              200 {state:pending}
+//   StateManual                       —              200 {state:manual}
+//   StateSequenced / StateShipped     row exists     200 + full metadata
+//   StateSequenced / StateShipped     no row         500 (state machine
+//                                                       desync; sequencer
+//                                                       will catch up)
+//   wal.ErrNotFound                   row exists     200 + full metadata
+//                                                       (post-GC-retention
+//                                                       case; sequencer
+//                                                       processed long ago)
+//   wal.ErrNotFound                   no row         404
+//   WAL transport error               —              500
+//
+// When deps.WAL is nil (read-only operator), the WAL probe is
+// skipped and the handler falls through to entry_index directly.
 func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -200,6 +231,51 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 		var hash [32]byte
 		copy(hash[:], hashBytes)
 
+		// Step 1: probe WAL (when configured) — catches entries
+		// that are durable in WAL but not yet in entry_index. The
+		// background sequencer eventually transitions them to
+		// StateSequenced and INSERTs the entry_index row; until
+		// then the truthful response is "pending", not 404.
+		if deps.WAL != nil {
+			meta, walErr := deps.WAL.MetaState(ctx, hash)
+			switch {
+			case walErr == nil:
+				// State machine determines whether to short-circuit
+				// or fall through to entry_index.
+				switch meta.State {
+				case wal.StatePending:
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"state":          "pending",
+						"canonical_hash": hashHex,
+					})
+					return
+				case wal.StateManual:
+					// Sequencer gave up after MaxAttempts. Bytes
+					// are durable in WAL but never reached
+					// entry_index; consumer needs operator
+					// intervention.
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"state":          "manual",
+						"canonical_hash": hashHex,
+					})
+					return
+				case wal.StateSequenced, wal.StateShipped:
+					// Fall through — the row should be in entry_index.
+				}
+			case errors.Is(walErr, wal.ErrNotFound):
+				// Either never admitted, or admitted-and-GC'd. If
+				// entry_index has the row we'll find it below; if
+				// not, 404.
+			default:
+				deps.Logger.Error("hash lookup: WAL probe", "error", walErr)
+				writeError(w, http.StatusInternalServerError, "WAL probe failed")
+				return
+			}
+		}
+
+		// Step 2: entry_index lookup (the original v1 code path).
 		seq, found, err := deps.EntryStore.FetchByHash(ctx, hash)
 		if err != nil {
 			deps.Logger.Error("hash lookup failed", "error", err)
