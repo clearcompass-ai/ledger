@@ -56,7 +56,7 @@ import (
 //
 //	EntryStore     — hash → sequence lookup (FetchByHash).
 //	QueryAPI       — joined metadata + byte view. Hydrates bytes via
-//	                 tessera.EntryReader internally.
+//	                 bytestore.Reader internally.
 //	DiffController — live difficulty source for /v1/admission/difficulty.
 //	                 Nil-safe: the handler responds 503 when absent, which
 //	                 is what the read-only operator wants.
@@ -73,13 +73,18 @@ type QueryDeps struct {
 // ─────────────────────────────────────────────────────────────────────
 
 // EntryResponse is the JSON shape returned by query handlers.
+//
+// sig_algorithm_id is intentionally absent: surfacing it here forces a
+// per-row Deserialize (or, post-shipper, a per-row bytestore Get) on
+// list endpoints, which turns metadata queries into payload-fetching
+// storms. Auditors who need the algorithm dereference the entry via
+// GET /v1/entries/{seq} and inspect the envelope locally.
 type EntryResponse struct {
 	SequenceNumber uint64 `json:"sequence_number"`
 	CanonicalHash  string `json:"canonical_hash"`
 	LogTime        string `json:"log_time"`
 	SignerDID      string `json:"signer_did,omitempty"`
 	ProtocolVer    uint16 `json:"protocol_version"`
-	SigAlgorithmID uint16 `json:"sig_algorithm_id"`
 	PayloadSize    int    `json:"payload_size"`
 	CanonicalSize  int    `json:"canonical_size"`
 }
@@ -89,15 +94,11 @@ type EntryResponse struct {
 // ─────────────────────────────────────────────────────────────────────
 
 // toEntryResponses converts []types.EntryWithMetadata into API responses.
-// This is the single site where canonical hashes are computed for the
-// read path — aligning here aligns every query endpoint at once.
+// Single site where canonical hashes are computed for the read path.
 //
-// SignerDID and SigAlgorithmID are not fields on EntryWithMetadata
-// under v7.75 — both live inside CanonicalBytes (in the v6 multi-sig
-// section) and surface via envelope.Deserialize. We deserialize once
-// per entry to extract them alongside protocol version and payload
-// size. On a malformed-bytes degraded path SigAlgorithmID is left
-// at its zero value (the entry is structurally broken anyway).
+// SignerDID lives inside CanonicalBytes (v6 multi-sig section) and
+// surfaces via envelope.Deserialize; we deserialize once per entry
+// to extract it alongside protocol version and payload size.
 func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 	out := make([]EntryResponse, 0, len(metas))
 	for _, ewm := range metas {
@@ -109,7 +110,7 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 
 		entry, err := envelope.Deserialize(ewm.CanonicalBytes)
 		if err != nil {
-			// Malformed bytes in the byte store — log and degrade gracefully.
+			// Malformed bytes in the byte store — degrade gracefully.
 			h := crypto.HashBytes(ewm.CanonicalBytes)
 			resp.CanonicalHash = hex.EncodeToString(h[:])
 		} else {
@@ -118,9 +119,6 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 			resp.ProtocolVer = entry.Header.ProtocolVersion
 			resp.PayloadSize = len(entry.DomainPayload)
 			resp.SignerDID = entry.Header.SignerDID
-			// Deserialize rejects zero-sig sections, so Signatures[0]
-			// is safe inside this success branch.
-			resp.SigAlgorithmID = entry.Signatures[0].AlgoID
 		}
 
 		out = append(out, resp)
@@ -225,46 +223,11 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// GET /v1/entries/{seq}/raw — raw wire bytes
-// ─────────────────────────────────────────────────────────────────────
-
-// NewRawEntryHandler returns the entry's full wire bytes as a single
-// byte stream. Under v7.75 the wire bytes ARE the canonical bytes —
-// the multi-sig section is appended INSIDE the canonical form by
-// envelope.Serialize, so EntryWithMetadata.CanonicalBytes already
-// carries the signatures. Consumers feed this directly into
-// envelope.Deserialize then envelope.EntryIdentity to verify.
-func NewRawEntryHandler(deps *QueryDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		seqStr := r.URL.Path[len("/v1/entries/"):]
-		if i := len(seqStr) - len("/raw"); i > 0 && seqStr[i:] == "/raw" {
-			seqStr = seqStr[:i]
-		}
-		seq, err := strconv.ParseUint(seqStr, 10, 64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid sequence")
-			return
-		}
-
-		entries, err := deps.QueryAPI.ScanFromPosition(seq, 1)
-		if err != nil {
-			deps.Logger.Error("raw entry fetch", "seq", seq, "error", err)
-			writeError(w, http.StatusInternalServerError, "fetch failed")
-			return
-		}
-		if len(entries) == 0 || entries[0].Position.Sequence != seq {
-			writeError(w, http.StatusNotFound, "entry not found")
-			return
-		}
-		ewm := entries[0]
-
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("X-Sequence", strconv.FormatUint(seq, 10))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(ewm.CanonicalBytes)
-	}
-}
+// The raw-bytes endpoint (GET /v1/entries/{seq}/raw) lives in
+// api/entries_read.go (NewRawEntryHandler). It does WAL-aware
+// routing: 200 OK + inline body for un-shipped entries, 302
+// Found + presigned URL for shipped entries past WAL retention.
+// See entries_read.go's docblock for the full state machine.
 
 // ─────────────────────────────────────────────────────────────────────
 // Index-backed query handlers (ControlHeader field lookups)

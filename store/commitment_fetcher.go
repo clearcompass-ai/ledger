@@ -17,7 +17,7 @@ Wave 1 v3 §C5 contract:
     invariant; the SDK's *CommitmentEquivocationError construction
     depends on it.
   - Joins commitment_split_id (the secondary index) → entry_index
-    (metadata) → tessera.EntryReader (canonical bytes) so the
+    (metadata) → bytestore.Reader (canonical bytes) so the
     EntryWithMetadata struct returned matches what
     PostgresEntryFetcher.Fetch produces — same canonical bytes,
     same log_time, same position.
@@ -31,7 +31,7 @@ removed; this fetcher reads only what the type carries.
 DESIGN RULE (mirrors store/entries.go): Postgres is an index;
 Tessera is the source of truth for entry bytes. The fetcher reads
 sequence numbers + metadata from Postgres and bytes from
-tessera.EntryReader; the two sources stay separated.
+bytestore.Reader; the two sources stay separated.
 */
 package store
 
@@ -46,7 +46,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // PostgresCommitmentFetcher resolves a (schemaID, splitID) tuple to
@@ -58,7 +58,7 @@ import (
 // (potentially multiple rows under equivocation).
 type PostgresCommitmentFetcher struct {
 	db     *pgxpool.Pool
-	reader tessera.EntryReader
+	reader bytestore.Reader
 	logDID string
 }
 
@@ -68,7 +68,7 @@ type PostgresCommitmentFetcher struct {
 // callers see a fully-qualified position even though the underlying
 // commitment_split_id row carries only the sequence number.
 func NewPostgresCommitmentFetcher(
-	db *pgxpool.Pool, reader tessera.EntryReader, logDID string,
+	db *pgxpool.Pool, reader bytestore.Reader, logDID string,
 ) *PostgresCommitmentFetcher {
 	return &PostgresCommitmentFetcher{db: db, reader: reader, logDID: logDID}
 }
@@ -120,10 +120,11 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 
 	// Join: commitment_split_id provides the candidate sequence
 	// numbers under (schema_id, split_id); entry_index supplies the
-	// matching log_time. Stable ASC sort by sequence so equivocation
-	// evidence has deterministic order.
+	// matching log_time and canonical_hash (the latter is required
+	// to construct the bytestore object key). Stable ASC sort by
+	// sequence so equivocation evidence has deterministic order.
 	rows, err := f.db.Query(ctx, `
-		SELECT csi.sequence_number, ei.log_time
+		SELECT csi.sequence_number, ei.log_time, ei.canonical_hash
 		FROM commitment_split_id AS csi
 		JOIN entry_index           AS ei  USING (sequence_number)
 		WHERE csi.schema_id = $1 AND csi.split_id = $2
@@ -141,15 +142,24 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	type rowMeta struct {
 		seq     uint64
 		logTime time.Time
+		hash    [32]byte
 	}
 	var rowMetas []rowMeta
 	for rows.Next() {
 		var rm rowMeta
-		if scanErr := rows.Scan(&rm.seq, &rm.logTime); scanErr != nil {
+		var hashCol []byte
+		if scanErr := rows.Scan(&rm.seq, &rm.logTime, &hashCol); scanErr != nil {
 			return nil, fmt.Errorf(
 				"store/commitment_fetcher: scan: %w", scanErr,
 			)
 		}
+		if len(hashCol) != 32 {
+			return nil, fmt.Errorf(
+				"store/commitment_fetcher: corrupt canonical_hash seq=%d (len=%d, want 32)",
+				rm.seq, len(hashCol),
+			)
+		}
+		copy(rm.hash[:], hashCol)
 		rowMetas = append(rowMetas, rm)
 	}
 	if iterErr := rows.Err(); iterErr != nil {
@@ -172,7 +182,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	// envelope.Deserialize on it when they need the parsed Entry.
 	out := make([]*types.EntryWithMetadata, 0, len(rowMetas))
 	for _, rm := range rowMetas {
-		raw, readErr := f.reader.ReadEntry(rm.seq)
+		wire, readErr := f.reader.ReadEntry(ctx, rm.seq, rm.hash)
 		if readErr != nil {
 			return nil, fmt.Errorf(
 				"store/commitment_fetcher: tessera read seq=%d: %w",
@@ -184,7 +194,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 				LogDID:   f.logDID,
 				Sequence: rm.seq,
 			},
-			CanonicalBytes: raw.CanonicalBytes,
+			CanonicalBytes: wire,
 			LogTime:        rm.logTime,
 		})
 	}

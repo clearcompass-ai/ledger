@@ -52,9 +52,10 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -64,10 +65,10 @@ import (
 type testOperator struct {
 	BaseURL     string
 	Pool        *pgxpool.Pool
-	Queue       *opbuilder.Queue
+	Cursor      *store.SequenceCursor
 	CreditStore *store.CreditStore
 	EntryStore  *store.EntryStore
-	EntryBytes  *optessera.InMemoryEntryStore
+	EntryBytes  *opbytestore.Memory
 	cancel      context.CancelFunc
 }
 
@@ -96,18 +97,34 @@ func startTestOperator(t *testing.T) *testOperator {
 	cleanTables(t, pool)
 
 	// ── Entry byte store ───────────────────────────────────────────────
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 
 	// ── Stores ─────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)
 	creditStore := store.NewCreditStore(pool)
-	queue := opbuilder.NewQueue(pool)
+	sequenceCursor := store.NewSequenceCursor(pool)
+	reader := opbuilder.NewCursorReader(sequenceCursor)
 	treeHeadStore := store.NewTreeHeadStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
+
+	// ── WAL ────────────────────────────────────────────────────────────
+	// In-memory Badger for tests. DisableSync mirrors the production
+	// "no WAL to fsync" flag; in-memory mode has no on-disk WAL.
+	walDB, err := wal.OpenInMemory(nil)
+	if err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("wal open: %v", err)
+	}
+	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
+	t.Cleanup(func() {
+		_ = walc.Close()
+		_ = walDB.Close()
+	})
 
 	// ── Delta buffer ───────────────────────────────────────────────────
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
@@ -136,25 +153,30 @@ func startTestOperator(t *testing.T) *testOperator {
 
 	builderLoop := opbuilder.NewBuilderLoop(
 		loopCfg, pool, tree, leafStore, nodeCache,
-		queue, fetcher, nil, deltaBuffer, bufferStore, commitPub,
+		reader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
 		merkle, witnessCosigner, logger,
 	)
 	go builderLoop.Run(ctx)
 
 	// ── Difficulty controller ──────────────────────────────────────────
 	diffController := middleware.NewDifficultyController(
-		queue, middleware.DefaultDifficultyConfig(), logger,
+		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
 	// ── HTTP handlers ──────────────────────────────────────────────────
 	queryAPI := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
 
 	// SubmissionDeps using the cohesive sub-struct shape.
+	// stubMerkleAppender doubles as the api.TesseraAppender for
+	// tests — its AppendLeaf signature satisfies the interface
+	// even though its primary role is as the builder-side
+	// MerkleAppender. Production wires *tessera.EmbeddedAppender.
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:          pool,
-			EntryStore:  entryStore,
-			EntryWriter: entryBytes,
+			DB:         pool,
+			EntryStore: entryStore,
+			WAL:        walc,
+			Tessera:    merkle,
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,
@@ -165,7 +187,6 @@ func startTestOperator(t *testing.T) *testOperator {
 			CreditStore: creditStore,
 			DIDResolver: nil,
 		},
-		Queue:        queue,
 		LogDID:       testLogDID,
 		MaxEntrySize: 1 << 20,
 		Logger:       logger,
@@ -181,7 +202,16 @@ func startTestOperator(t *testing.T) *testOperator {
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
-		LogDID: testLogDID, Logger: logger,
+		EntryStore: entryStore,
+		WAL:        walc,
+		// Tests don't exercise the 302 redirect path; the in-memory
+		// bytestore is reachable but doesn't presign. Setting
+		// Presigner to nil makes the handler return 500 if it hits
+		// the redirect branch — desirable for tests, since any
+		// redirect attempt indicates an unexpected state transition.
+		Presigner: nil,
+		LogDID:    testLogDID,
+		Logger:    logger,
 	}
 	commitDeps := &api.CommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
@@ -204,6 +234,7 @@ func startTestOperator(t *testing.T) *testOperator {
 		WitnessCosign:   nil,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
@@ -225,7 +256,7 @@ func startTestOperator(t *testing.T) *testOperator {
 	go server.Serve(ln)
 
 	op := &testOperator{
-		BaseURL: baseURL, Pool: pool, Queue: queue,
+		BaseURL: baseURL, Pool: pool, Cursor: sequenceCursor,
 		CreditStore: creditStore, EntryStore: entryStore,
 		EntryBytes: entryBytes, cancel: cancel,
 	}

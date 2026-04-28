@@ -2,11 +2,15 @@
 FILE PATH: api/middleware/rate_limit.go
 
 DifficultyController manages dynamic difficulty for Mode B admission stamps.
-Adjusts based on builder queue depth — more entries waiting means higher
-difficulty. Thread-safe atomic reads for serving the difficulty endpoint.
+Adjusts based on cursor lag — the count of admitted entries the builder has
+not yet processed. Higher lag means higher PoW difficulty, which throttles
+unauthenticated submissions until the builder catches up.
 
 KEY ARCHITECTURAL DECISIONS:
-  - Queue-depth-based: direct signal of load pressure.
+  - Cursor-lag-based: log-tailing replacement for the legacy queue-depth
+    signal. Mathematically identical (MAX(entry_index.seq) - cursor) but
+    bounds Postgres MVCC pressure to one row UPDATE per builder batch
+    instead of two writes per admitted entry.
   - Floor/ceiling: minimum 8 bits, maximum 24 bits.
   - Recomputed every 30 seconds via background goroutine.
   - CurrentDifficulty() is atomic — safe for per-request reads.
@@ -18,13 +22,18 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
-
-	"github.com/clearcompass-ai/ortholog-operator/builder"
 )
+
+// LagProvider returns the current builder lag (admitted-but-unprocessed
+// entries). Implemented by store.SequenceCursor.Lag in production; tests
+// inject fakes.
+type LagProvider interface {
+	Lag(ctx context.Context) (int64, error)
+}
 
 // DifficultyController dynamically adjusts Mode B stamp difficulty.
 type DifficultyController struct {
-	queue         *builder.Queue
+	lag           LagProvider
 	difficulty    atomic.Uint32
 	minDifficulty uint32
 	maxDifficulty uint32
@@ -58,10 +67,12 @@ func DefaultDifficultyConfig() DifficultyConfig {
 	}
 }
 
-// NewDifficultyController creates a difficulty controller.
-func NewDifficultyController(queue *builder.Queue, cfg DifficultyConfig, logger *slog.Logger) *DifficultyController {
+// NewDifficultyController creates a difficulty controller. lag may be nil
+// for read-only operators that do not run admission; in that case the
+// auto-adjust loop runs at static initial difficulty.
+func NewDifficultyController(lag LagProvider, cfg DifficultyConfig, logger *slog.Logger) *DifficultyController {
 	dc := &DifficultyController{
-		queue:         queue,
+		lag:           lag,
 		minDifficulty: cfg.MinDifficulty,
 		maxDifficulty: cfg.MaxDifficulty,
 		lowThreshold:  cfg.LowThreshold,
@@ -99,17 +110,12 @@ func (dc *DifficultyController) Run(ctx context.Context, interval time.Duration)
 }
 
 func (dc *DifficultyController) adjust(ctx context.Context) {
-	// Cursor mode (Phase 1a) and read-only operator both pass
-	// queue=nil — there is no queue to poll, so the auto-adjust
-	// loop runs at static initial difficulty. The Phase 4 design
-	// rewires this to poll Badger WAL depth; until then, static
-	// is the safe fallback.
-	if dc.queue == nil {
+	if dc.lag == nil {
 		return
 	}
-	depth, err := dc.queue.PendingCount(ctx)
+	depth, err := dc.lag.Lag(ctx)
 	if err != nil {
-		dc.logger.Error("difficulty: queue depth query", "error", err)
+		dc.logger.Error("difficulty: cursor lag query", "error", err)
 		return
 	}
 
@@ -126,5 +132,5 @@ func (dc *DifficultyController) adjust(ctx context.Context) {
 
 	dc.difficulty.Store(next)
 	dc.logger.Info("difficulty adjusted",
-		"from", current, "to", next, "queue_depth", depth)
+		"from", current, "to", next, "cursor_lag", depth)
 }

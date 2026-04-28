@@ -27,7 +27,7 @@ SAFETY CONTRACT:
  3. Point --tessera-url at a FRESH personality with empty storage. If
     the target contains existing tile data, rebuild will APPEND rather
     than replace.
- 4. BYTE STORE: uses tessera.NewInMemoryEntryStore() here, which is
+ 4. BYTE STORE: uses bytestore.NewMemory() here, which is
     EMPTY at startup. For a real rebuild, the byte store MUST be the
     same persistent backend the production operator wrote to —
     otherwise the fetcher will find nothing to replay. Wire your
@@ -44,9 +44,9 @@ USAGE:
 	# 3. Start a FRESH Tessera personality on a new port with empty
 	#    storage (or wipe the existing personality's storage and restart).
 
-	# 4. Reset queue + tree state so every admitted entry replays.
+	# 4. Reset cursor + tree state so every admitted entry replays.
 	psql ortholog <<SQL
-	    UPDATE builder_queue SET status = 0, processed_at = NULL;
+	    UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1;
 	    DELETE FROM derivation_commitments WHERE true;
 	    DELETE FROM smt_leaves WHERE true;
 	    DELETE FROM smt_nodes WHERE true;
@@ -89,6 +89,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
 
 	"github.com/clearcompass-ai/ortholog-operator/builder"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
 )
@@ -148,7 +149,7 @@ func main() {
 	// persistent byte store implementation. The rebuild loop reads entry
 	// bytes from here when replaying each sequence through ProcessBatch;
 	// if the store is empty the replay produces zero output.
-	byteStore := tessera.NewInMemoryEntryStore()
+	byteStore := bytestore.NewMemory()
 	logger.Warn("byte store is InMemoryEntryStore — rebuild will find no entries to replay unless you wire the production byte store here")
 
 	// ── Embedded Tessera (fresh storage) ──────────────────────────
@@ -200,7 +201,7 @@ func main() {
 		logger.Warn("delta buffer load — starting cold", "error", loadErr)
 		buffer = sdkbuilder.NewDeltaWindowBuffer(*deltaWindow)
 	}
-	queue := builder.NewQueue(pool)
+	reader := builder.NewCursorReader(store.NewSequenceCursor(pool))
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	bl := builder.NewBuilderLoop(
@@ -211,7 +212,7 @@ func main() {
 			DeltaWindow:  *deltaWindow,
 		},
 		pool, tree, leafStore, nodeCache,
-		queue, fetcher,
+		reader, fetcher,
 		nil, // schema resolver
 		buffer, bufferStore,
 		nil,    // commitPub — no commentary on partial mid-rebuild state.

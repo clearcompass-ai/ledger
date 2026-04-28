@@ -17,7 +17,7 @@ import (
 func (q *PostgresQueryAPI) QueryBySignerDID(did string) ([]types.EntryWithMetadata, error) {
 	ctx := context.TODO()
 	rows, err := q.db.Query(ctx, `
-		SELECT sequence_number, log_time, sig_algorithm_id
+		SELECT sequence_number, log_time, canonical_hash
 		FROM entry_index WHERE signer_did = $1 ORDER BY sequence_number ASC`,
 		did,
 	)

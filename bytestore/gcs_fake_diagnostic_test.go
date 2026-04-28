@@ -1,9 +1,9 @@
 /*
-FILE PATH: tessera/gcs_fake_diagnostic_test.go
+FILE PATH: bytestore/gcs_fake_diagnostic_test.go
 
 Targeted diagnostic tests for the fake-gcs-server failure pattern
-that surfaced in TestGCSEntryStore_Cache_EvictsOldestAtCapacity
-and TestGCSEntryStore_ConcurrentWriters: writes return success,
+that surfaced in TestGCS_Cache_EvictsOldestAtCapacity
+and TestGCS_ConcurrentWriters: writes return success,
 LIST returns the object's path, but GET on that exact path 404s
 even after a 1.5-second retry budget.
 
@@ -34,11 +34,12 @@ and explicit logging:
 Read the t.Logf output to interpret. Each test logs every read
 attempt with the exact path string for paste-into-an-issue clarity.
 */
-package tessera
+package bytestore
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -67,7 +68,7 @@ func requireFakeGCS(t *testing.T) (string, string) {
 }
 
 // rawClient builds a bare GCS client against fake-gcs. Used by
-// experiments that bypass GCSEntryStore so the diagnostic isn't
+// experiments that bypass bytestore.GCS so the diagnostic isn't
 // confounded by our own caching/path logic.
 func rawClient(t *testing.T, endpoint string) *storage.Client {
 	t.Helper()
@@ -90,11 +91,11 @@ func rawClient(t *testing.T, endpoint string) *storage.Client {
 // HYPOTHESIS:
 //   fake-gcs's GET handler canonicalizes the URL path differently
 //   from its LIST handler (e.g., slash collapsing, URL decoding,
-//   case folding), so the path GCSEntryStore.ReadEntry constructs
+//   case folding), so the path bytestore.GCS.ReadEntry constructs
 //   matches what was written but doesn't match what GET expects.
 //
 // PREDICTION:
-//   If hypothesis holds: store.objectName(seq) != attrs.Name from
+//   If hypothesis holds: store.keyOf(seq, sha256.Sum256([]byte{byte(seq)})) != attrs.Name from
 //   listing, OR the byte string matches but GET on attrs.Name also
 //   404s.
 //   If refuted: paths match exactly AND GET on either string works.
@@ -108,7 +109,7 @@ func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
 
 	// Reproduce the eviction-style burst: 17 writes, cache cap=16.
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+		if err := store.WriteEntry(ctx, i, sha256.Sum256([]byte{byte(i)}), []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
@@ -134,8 +135,8 @@ func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
 	t.Logf("LIST returned %d entries", len(listed))
 
 	// Step 2: what does our code expect to GET for seq=0?
-	expectedSeq0 := store.objectName(0)
-	t.Logf("─── store.objectName(0) = %q ───", expectedSeq0)
+	expectedSeq0 := store.keyOf(0, sha256.Sum256([]byte{0}))
+	t.Logf("─── store.keyOf(0, sha256.Sum256([]byte{0})) = %q ───", expectedSeq0)
 
 	// Step 3: byte-equality check.
 	if listed[expectedSeq0] {
@@ -152,11 +153,11 @@ func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
 	// production test).
 	r1, err1 := store.bucket.Object(expectedSeq0).NewReader(ctx)
 	if err1 != nil {
-		t.Logf("GET store.objectName(0)=%q: ERR %v", expectedSeq0, err1)
+		t.Logf("GET store.keyOf(0, sha256.Sum256([]byte{0}))=%q: ERR %v", expectedSeq0, err1)
 	} else {
 		_, _ = io.ReadAll(r1)
 		_ = r1.Close()
-		t.Logf("GET store.objectName(0)=%q: OK", expectedSeq0)
+		t.Logf("GET store.keyOf(0, sha256.Sum256([]byte{0}))=%q: OK", expectedSeq0)
 	}
 
 	// Step 5: GET on every name returned by LIST. If any of these
@@ -266,7 +267,7 @@ func TestFakeGCS_Diagnostic_E2_FlatPath_NoSubdirPerSeq(t *testing.T) {
 		t.Errorf("FLAT layout: %d/17 reads missed → bug is NOT specific to nested subdirs", misses)
 	} else {
 		t.Logf("✓ FLAT layout: all 17 reads succeeded → bug IS specific to nested-directory paths")
-		t.Logf("  Action: change GCSEntryStore.objectName to flat layout in production.")
+		t.Logf("  Action: change bytestore.GCS.objectName to flat layout in production.")
 	}
 }
 
@@ -366,15 +367,15 @@ func TestFakeGCS_Diagnostic_E4_BurstWriteSettleTime(t *testing.T) {
 	defer cancel()
 
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte("s")); err != nil {
+		if err := store.WriteEntry(ctx, i, sha256.Sum256([]byte{byte(i)}), []byte{byte(i)}); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
 
 	// Force seq=0 out of the in-process cache so the read goes to GCS.
 	store.mu.Lock()
-	delete(store.cache, 0)
-	delete(store.access, 0)
+	delete(store.cache, store.keyOf(0, sha256.Sum256([]byte{0})))
+	delete(store.access, store.keyOf(0, sha256.Sum256([]byte{0})))
 	store.mu.Unlock()
 
 	// Settle period — 5 seconds, ~3.3x the previous retry budget.
@@ -382,7 +383,7 @@ func TestFakeGCS_Diagnostic_E4_BurstWriteSettleTime(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Single GET, no retry.
-	expected := store.objectName(0)
+	expected := store.keyOf(0, sha256.Sum256([]byte{0}))
 	r, err := store.bucket.Object(expected).NewReader(ctx)
 	if err != nil {
 		t.Errorf("✗ seq=0 still NOT visible after 5s settle: %v", err)
@@ -529,7 +530,7 @@ func TestFakeGCS_Diagnostic_E6_XMLDefault_vs_JSONReads(t *testing.T) {
 	switch {
 	case xmlMissing > 0 && jsonMissing == 0:
 		t.Logf("✓ HYPOTHESIS CONFIRMED: XML-API reads fail on fake-gcs; JSON-API reads work.")
-		t.Logf("  Production fix: pass storage.WithJSONReads() in NewGCSEntryStore.")
+		t.Logf("  Production fix: pass storage.WithJSONReads() in NewGCS.")
 	case xmlMissing == 0 && jsonMissing == 0:
 		t.Logf("Neither variant exhibited the bug — couldn't reproduce in this run.")
 	case xmlMissing == 0 && jsonMissing > 0:
@@ -545,15 +546,15 @@ func TestFakeGCS_Diagnostic_E6_XMLDefault_vs_JSONReads(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────
 //
 // SECONDARY HYPOTHESIS (specific to our code path):
-//   GCSEntryStore.objectName produces a STABLE string for a given
+//   bytestore.GCS.objectName produces a STABLE string for a given
 //   seq, but maybe somehow the writer and reader observe different
 //   strings due to concurrency. This eliminates that possibility.
 
 func TestFakeGCS_Diagnostic_E5_ObjectNameStability(t *testing.T) {
-	store := &GCSEntryStore{objectPrefix: "stability-test"}
+	store := &GCS{objectPrefix: "stability-test"}
 	for i := uint64(0); i < 100; i++ {
-		first := store.objectName(i)
-		second := store.objectName(i)
+		first := store.keyOf(i, sha256.Sum256([]byte{byte(i)}))
+		second := store.keyOf(i, sha256.Sum256([]byte{byte(i)}))
 		if first != second {
 			t.Errorf("seq=%d: %q != %q (objectName is non-deterministic!)", i, first, second)
 		}
@@ -561,6 +562,6 @@ func TestFakeGCS_Diagnostic_E5_ObjectNameStability(t *testing.T) {
 	// Specifically check the seqs that failed in production.
 	cases := []uint64{0, 100, 101, 200}
 	for _, seq := range cases {
-		t.Logf("objectName(%d) = %q", seq, store.objectName(seq))
+		t.Logf("objectName(%d) = %q", seq, store.keyOf(seq, sha256.Sum256([]byte{byte(seq)})))
 	}
 }

@@ -132,7 +132,6 @@ var schemaDDL = []string{
 		sequence_number  BIGINT       PRIMARY KEY,
 		canonical_hash   BYTEA        NOT NULL UNIQUE,
 		log_time         TIMESTAMPTZ  NOT NULL,
-		sig_algorithm_id SMALLINT     NOT NULL,
 		signer_did       TEXT         NOT NULL CHECK (signer_did <> ''),
 		target_root      BYTEA,
 		cosignature_of   BYTEA,
@@ -192,42 +191,21 @@ var schemaDDL = []string{
 		updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
-	// ── Builder queue ────────────────────────────────────────────────
-	`CREATE TABLE IF NOT EXISTS builder_queue (
-		sequence_number BIGINT      PRIMARY KEY,
-		status          SMALLINT    NOT NULL DEFAULT 0,
-		enqueued_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		processed_at    TIMESTAMPTZ
-	)`,
-
-	// ── Builder cursor (CT-native tailing follower) ──────────────────
+	// ── Builder cursor (CT-native log-tailing follower) ──────────────
 	//
 	// One-row table holding the highest sequence number the builder
-	// has fully processed. The "cursor" reader reads
+	// has fully processed. The cursor reader (builder/cursor_reader.go)
+	// tails entry_index by sequence_number > cursor. Admission writes
+	// only entry_index — the log itself is the queue.
 	//
-	//     SELECT sequence_number FROM entry_index
-	//     WHERE  sequence_number > $cursor
-	//     ORDER  BY sequence_number ASC
-	//     LIMIT  $batch
-	//
-	// in place of pulling from builder_queue. Admission stops writing
-	// queue rows in cursor mode; the entry_index INSERT is the only
-	// "enqueue" — the log itself is the queue.
-	//
-	// At 10B+ scale this eliminates the builder_queue UPDATE/DELETE
-	// thrash that produces dead tuples faster than autovacuum can
-	// reclaim. Cursor mutation is a single-row UPDATE per batch
-	// inside the builder's atomic commit transaction, so MVCC
-	// pressure on this table is bounded by batches/sec, not
-	// entries/sec.
+	// At 10B+ scale this avoids per-entry MVCC thrash entirely:
+	// cursor mutation is a single-row UPDATE per builder batch inside
+	// the builder's atomic commit transaction, so dead-tuple
+	// pressure is bounded by batches/sec, not entries/sec.
 	//
 	// id = 1 invariant: the table holds exactly one row, primary
-	// key fixed at 1. INSERT...ON CONFLICT(id) DO UPDATE keeps it
+	// key fixed at 1. INSERT...ON CONFLICT(id) DO NOTHING keeps it
 	// idempotent on bootstrap.
-	//
-	// Coexists with builder_queue during the cursor-cutover window;
-	// builder_queue is dropped in a follow-up migration once the
-	// cursor path has run stably for one release cycle.
 	`CREATE TABLE IF NOT EXISTS builder_cursor (
 		id                      SMALLINT    PRIMARY KEY DEFAULT 1
 		                                    CONSTRAINT builder_cursor_singleton CHECK (id = 1),
@@ -366,8 +344,14 @@ var schemaDDL = []string{
 		ON commitment_equivocation_proofs (first_detected_at)
 		WHERE alert_dispatched_at IS NULL`,
 
-	// ── Sequence ─────────────────────────────────────────────────────
-	`CREATE SEQUENCE IF NOT EXISTS entry_sequence START 1 NO CYCLE`,
+	// Sequence numbers are assigned by the embedded Tessera library
+	// (the c2sp.org/tlog-tiles integrator), not by Postgres. The
+	// entry_sequence SEQUENCE that lived here in v1 was dropped in
+	// the WAL-first admission migration: admission now blocks on
+	// wal.Submit (durable bytes), then tessera.AppendLeaf (Tessera-
+	// assigned seq), then INSERTs the resulting (seq, hash, ...) row
+	// into entry_index. Postgres only records what Tessera already
+	// committed to.
 }
 
 // RunMigrations creates the schema. Fully idempotent.

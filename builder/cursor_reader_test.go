@@ -86,8 +86,8 @@ func seedSeqs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seqs ...uin
 		hash[3] = byte(seq >> 24)
 		_, err := pool.Exec(ctx, `
 			INSERT INTO entry_index
-				(sequence_number, canonical_hash, log_time, sig_algorithm_id, signer_did)
-			VALUES ($1, $2, NOW(), 1, 'did:web:test-signer.example')`,
+				(sequence_number, canonical_hash, log_time, signer_did)
+			VALUES ($1, $2, NOW(), 'did:web:test-signer.example')`,
 			seq, hash,
 		)
 		if err != nil {

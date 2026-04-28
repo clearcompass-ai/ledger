@@ -82,9 +82,8 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,14 +104,46 @@ type DIDResolver interface {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2) Submission Dependencies — grouped by cohesion
+// 2) WAL + Tessera interfaces (minimal admission-side surfaces)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// StorageDeps groups persistence dependencies for the submission handler.
+// WALCommitter is the WAL surface admission needs.
+// *wal.Committer satisfies it.
+type WALCommitter interface {
+	// Submit blocks until wire bytes are durably persisted to local
+	// disk. Returns wal.ErrQueueFull when the in-memory queue is
+	// saturated; admission maps this to HTTP 503 + Retry-After.
+	Submit(ctx context.Context, hash [32]byte, wire []byte) error
+
+	// Sequence transitions the WAL state pending → sequenced after
+	// Tessera assigned a sequence number for the entry.
+	Sequence(ctx context.Context, hash [32]byte, seq uint64) error
+}
+
+// TesseraAppender is the Tessera surface admission needs.
+// *tessera.EmbeddedAppender satisfies it. AppendLeaf is dedup-aware
+// when the appender is constructed with tessera.WithDeduplication
+// (wired in cmd/operator/main.go) — re-Add of an existing identity
+// returns the previously-assigned sequence rather than integrating
+// again. This is the load-bearing safety property under concurrent
+// admission of the same content.
+type TesseraAppender interface {
+	AppendLeaf(data []byte) (uint64, error)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) Submission Dependencies — grouped by cohesion
+// ─────────────────────────────────────────────────────────────────────────────
+
+// StorageDeps groups persistence dependencies for the submission
+// handler. The byte-store writer that lived here in v1 is gone:
+// admission writes wire bytes to the WAL only; the Shipper migrates
+// them to the byte store asynchronously.
 type StorageDeps struct {
-	DB          *pgxpool.Pool
-	EntryStore  *store.EntryStore
-	EntryWriter tessera.EntryWriter
+	DB         *pgxpool.Pool
+	EntryStore *store.EntryStore
+	WAL        WALCommitter
+	Tessera    TesseraAppender
 }
 
 // AdmissionConfig groups parameters that govern admission proof verification.
@@ -133,7 +164,6 @@ type SubmissionDeps struct {
 	Storage      StorageDeps
 	Admission    AdmissionConfig
 	Identity     IdentityDeps
-	Queue        *builder.Queue
 	LogDID       string
 	MaxEntrySize int64
 	Logger       *slog.Logger
@@ -410,23 +440,60 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		// ── Step 8: Canonical hash (Tessera-aligned vocabulary) ────────
 		canonicalHash := envelope.EntryIdentity(entry)
 
+		// ── Step 8a: Early duplicate check ─────────────────────────────
+		// Hits in the index when a previous submission with the same
+		// hash already landed. Avoids a wasted wal.Submit (durable
+		// disk write) for duplicates. Race losers (two concurrent
+		// submissions of the same hash that both pass this check)
+		// converge: Tessera dedup at Step 11 returns the same seq, the
+		// Postgres INSERT at Step 12 fails on canonical_hash UNIQUE
+		// for one of them, that one returns 409.
+		if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash); fetchErr == nil && found {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("duplicate entry: existing sequence %d", existingSeq))
+			return
+		}
+
 		// ── Step 9: Log_Time assignment (SDK-D1, Decision 50) ──────────
 		logTime := time.Now().UTC()
 
-		// ── Steps 10-12: Atomic persist + index + enqueue ──────────────
-		var seq uint64
+		// ── Step 10: WAL durability ────────────────────────────────────
+		// Submit blocks until wire bytes are fsync'd to local NVMe.
+		// Group commit amortizes fsync across concurrent admissions;
+		// see wal/committer.go. ErrQueueFull → 503 + Retry-After
+		// (backpressure, not failure).
+		if err := deps.Storage.WAL.Submit(ctx, canonicalHash, raw); err != nil {
+			if errors.Is(err, wal.ErrQueueFull) {
+				w.Header().Set("Retry-After", "5")
+				writeError(w, http.StatusServiceUnavailable,
+					"backpressure: WAL queue full, retry shortly")
+				return
+			}
+			deps.Logger.Error("wal submit", "error", err)
+			writeError(w, http.StatusInternalServerError, "WAL persist failed")
+			return
+		}
+
+		// ── Step 11: Tessera sequence assignment ───────────────────────
+		// AppendLeaf blocks until Tessera's batcher integrates the
+		// hash and the IndexFuture resolves. With dedup wired at the
+		// composition root, re-Add of an existing identity returns
+		// the previously-assigned seq (race-safe under concurrent
+		// admission of the same content).
+		seq, err := deps.Storage.Tessera.AppendLeaf(canonicalHash[:])
+		if err != nil {
+			deps.Logger.Error("tessera AppendLeaf", "error", err)
+			writeError(w, http.StatusInternalServerError, "Tessera sequencing failed")
+			return
+		}
+
+		// ── Step 12: Postgres sidecar — entry_index + commitment_split_id
 		err = store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
 			// Mode A credit deduction (inside transaction).
 			if authenticated {
 				if _, deductErr := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID); deductErr != nil {
 					return deductErr
 				}
-			}
-
-			var seqErr error
-			seq, seqErr = deps.Storage.EntryStore.NextSequence(ctx, tx)
-			if seqErr != nil {
-				return seqErr
 			}
 
 			var targetRootBytes, cosigOfBytes, schemaRefBytes []byte
@@ -440,27 +507,23 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				schemaRefBytes = store.SerializeLogPosition(*entry.Header.SchemaRef)
 			}
 
-			insertErr := deps.Storage.EntryStore.Insert(ctx, tx, store.EntryRow{
+			if insertErr := deps.Storage.EntryStore.Insert(ctx, tx, store.EntryRow{
 				SequenceNumber: seq,
 				CanonicalHash:  canonicalHash,
 				LogTime:        logTime,
-				SigAlgorithmID: algoID,
 				SignerDID:      entry.Header.SignerDID,
 				TargetRoot:     targetRootBytes,
 				CosignatureOf:  cosigOfBytes,
 				SchemaRef:      schemaRefBytes,
-			})
-			if insertErr != nil {
+			}); insertErr != nil {
 				return insertErr
 			}
 
-			// ── Step 11: SplitID index population (Wave 1 v3 §C2/C3) ─
-			// When Step 4-Schema extracted a SplitID, persist the
-			// (sequence, schema_id, split_id) tuple inside the same
-			// transaction so the index never references a non-existent
-			// sequence. The (schema_id, split_id) tuple is intentionally
-			// non-unique (Decision 3); duplicates here are equivocation
-			// evidence, not a constraint violation.
+			// SplitID index population (Wave 1 v3 §C2/C3). Same Postgres
+			// transaction as the entry_index insert so the index never
+			// references a non-existent sequence. (schema_id, split_id)
+			// is intentionally non-unique (Decision 3); duplicates here
+			// are equivocation evidence, not a constraint violation.
 			if extractedSplitID != nil {
 				if _, splitErr := tx.Exec(ctx, `
 					INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
@@ -471,25 +534,11 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				}
 			}
 
-			if deps.Storage.EntryWriter != nil {
-				// Wire bytes ARE the canonical bytes under v7.75; the
-				// signatures section lives inside `raw`. The legacy
-				// (canonical, sig) split is no longer meaningful — pass
-				// the full wire bytes as canonical and a nil sig.
-				if writeErr := deps.Storage.EntryWriter.WriteEntry(seq, raw, nil); writeErr != nil {
-					return fmt.Errorf("write entry bytes: %w", writeErr)
-				}
-			}
-
-			// Enqueue is a no-op under cursor mode (deps.Queue == nil).
-			// In cursor mode the entry_index INSERT above IS the
-			// enqueue — the log itself is the queue. Phase 1a flag
-			// in cmd/operator/main.go selects which mode wires the
-			// queue field.
-			if deps.Queue == nil {
-				return nil
-			}
-			return deps.Queue.Enqueue(ctx, tx, seq)
+			// Cursor mode: the entry_index INSERT IS the enqueue — the
+			// log itself is the queue. The builder cursor reader tails
+			// entry_index and advances builder_cursor in its own atomic
+			// commit. No separate queue write needed.
+			return nil
 		})
 
 		if err != nil {
@@ -498,6 +547,10 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				return
 			}
 			if errors.Is(err, store.ErrDuplicateEntry) {
+				// Race-loser path: another concurrent submission of the
+				// same hash got there first. Tessera dedup gave us the
+				// same seq, the Postgres INSERT lost on canonical_hash
+				// UNIQUE. Return 409 with the existing seq.
 				existingSeq, found, _ := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash)
 				if found {
 					writeError(w, http.StatusConflict,
@@ -512,7 +565,23 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
-		// ── Step 13: Success ───────────────────────────────────────────
+		// ── Step 13: WAL state transition pending → sequenced ─────────
+		// Bytes are durable (Step 10), Tessera assigned a seq (Step 11),
+		// Postgres has the row (Step 12). Recording the Tessera-assigned
+		// seq in the WAL meta lets the Shipper find this entry on its
+		// next scan. A failure HERE is recoverable: the inflight
+		// breadcrumb stays set, and integrity.Reasserter on next boot
+		// re-Adds (dedups to the same seq) and calls Sequence again.
+		// We surface 500 to the user so they don't think a new entry
+		// landed when in reality one is mid-recovery.
+		if err := deps.Storage.WAL.Sequence(ctx, canonicalHash, seq); err != nil {
+			deps.Logger.Error("wal Sequence", "error", err, "seq", seq)
+			writeError(w, http.StatusInternalServerError,
+				"WAL state transition failed (entry recoverable on next boot)")
+			return
+		}
+
+		// ── Step 14: Success ───────────────────────────────────────────
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{

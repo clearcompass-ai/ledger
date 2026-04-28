@@ -101,6 +101,50 @@ services:
         esac
       '
 
-# Networks are auto-created. Service names (postgres, fake-gcs)
+  # ─────────────────────────────────────────────────────────────────
+  # MinIO — S3-compatible byte store for the bytestore.S3 adapter
+  # ─────────────────────────────────────────────────────────────────
+  #
+  # Validates the S3 adapter against the same docker-compose harness
+  # that exercises the GCS adapter against fake-gcs-server. RustFS
+  # would slot in here identically — both speak the S3 wire — but
+  # MinIO has the broader CI ecosystem so we default to it. The
+  # adapter is byte-identical against either; switching is a
+  # docker-compose change, not a code change.
+  minio:
+    image: minio/minio:latest
+    container_name: ortholog_test_minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console (optional, for debugging)
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  # minio-init — one-shot job that creates the bytestore test bucket
+  # on MinIO before the S3-adapter tests run.
+  # ─────────────────────────────────────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: ortholog_test_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c '
+        set -e;
+        mc alias set local http://minio:9000 minioadmin minioadmin;
+        mc mb --ignore-existing local/ortholog-test-bytes;
+        echo "bucket ortholog-test-bytes ready";
+      '
+
+# Networks are auto-created. Service names (postgres, fake-gcs, minio)
 # resolve via Docker's embedded DNS for inter-container access;
 # host-side access is via the published 127.0.0.1 ports above.

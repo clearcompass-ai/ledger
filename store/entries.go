@@ -7,21 +7,17 @@ of sdk builder.EntryFetcher.
 DESIGN RULE: Postgres is an index. Tessera is the source of truth for
 entry bytes. Always.
 
-  - entry_index stores ~50 bytes/row: sequence, hash, log_time, sig_algo,
+  - entry_index stores ~40 bytes/row: sequence, hash, log_time,
     signer_did, target_root, cosignature_of, schema_ref.
   - canonical_bytes and sig_bytes are NEVER in Postgres.
-  - EntryReader (tessera.EntryReader) is the ONLY source of entry bytes.
+  - EntryReader (bytestore.Reader) is the ONLY source of entry bytes.
   - PostgresEntryFetcher combines: metadata from entry_index + bytes from EntryReader.
   - SDK EntryFetcher interface unchanged: Fetch(pos) → *EntryWithMetadata.
 
 EntryWithMetadata field set: under v6 the SDK type carries only
 CanonicalBytes, LogTime, Position. Signatures live inside
-CanonicalBytes (extracted via envelope.Deserialize when needed).
-The earlier SignatureAlgoID/SignatureBytes sidecar fields were
-removed; this fetcher reads only what the type carries. The
-sig_algorithm_id column remains in entry_index for diagnostics
-and for any future SDK-internal need, but is not surfaced through
-EntryWithMetadata.
+CanonicalBytes (extracted via envelope.Deserialize when needed);
+no sidecar fields exist.
 
 INVARIANTS:
   - SDK-D5: all returned entries have verified signatures.
@@ -42,7 +38,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,7 +60,6 @@ type EntryRow struct {
 	SequenceNumber uint64
 	CanonicalHash  [32]byte
 	LogTime        time.Time
-	SigAlgorithmID uint16
 	SignerDID      string
 	TargetRoot     []byte // nil if null
 	CosignatureOf  []byte // nil if null
@@ -78,11 +73,10 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	_, err := tx.Exec(ctx, `
 		INSERT INTO entry_index (
 			sequence_number, canonical_hash, log_time,
-			sig_algorithm_id, signer_did, target_root,
-			cosignature_of, schema_ref
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			signer_did, target_root, cosignature_of, schema_ref
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		row.SequenceNumber, row.CanonicalHash[:],
-		row.LogTime, row.SigAlgorithmID, row.SignerDID,
+		row.LogTime, row.SignerDID,
 		row.TargetRoot, row.CosignatureOf, row.SchemaRef,
 	)
 	if err != nil {
@@ -94,14 +88,32 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	return nil
 }
 
-// NextSequence atomically allocates the next gapless sequence number.
-func (s *EntryStore) NextSequence(ctx context.Context, tx pgx.Tx) (uint64, error) {
-	var seq uint64
-	err := tx.QueryRow(ctx, "SELECT nextval('entry_sequence')").Scan(&seq)
-	if err != nil {
-		return 0, fmt.Errorf("store/entries: nextval: %w", err)
+// FetchHashBySeq returns the canonical_hash for a given sequence number.
+// Returns (hash, true, nil) on hit, ([32]byte{}, false, nil) when no
+// row at that seq, ([32]byte{}, false, err) on transport failure.
+//
+// Used by the /v1/entries/{seq}/raw byte-fetch handler to decide
+// between inline (WAL) serve and 302 redirect (bytestore) — both
+// require the (seq, hash) tuple as the key into the byte source.
+func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, bool, error) {
+	var hashCol []byte
+	err := s.db.QueryRow(ctx,
+		"SELECT canonical_hash FROM entry_index WHERE sequence_number = $1", seq,
+	).Scan(&hashCol)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return [32]byte{}, false, nil
 	}
-	return seq, nil
+	if err != nil {
+		return [32]byte{}, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
+	}
+	if len(hashCol) != 32 {
+		return [32]byte{}, false, fmt.Errorf(
+			"store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", seq, len(hashCol))
+	}
+	var hash [32]byte
+	copy(hash[:], hashCol)
+	return hash, true, nil
 }
 
 // FetchByHash checks if an entry with the given canonical hash exists.
@@ -131,12 +143,12 @@ func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bo
 // CONTRACT (Decision 47): returns nil for foreign log DIDs.
 type PostgresEntryFetcher struct {
 	db     *pgxpool.Pool
-	reader tessera.EntryReader
+	reader bytestore.Reader
 	logDID string
 }
 
 // NewPostgresEntryFetcher creates a fetcher for the given log.
-func NewPostgresEntryFetcher(db *pgxpool.Pool, reader tessera.EntryReader, logDID string) *PostgresEntryFetcher {
+func NewPostgresEntryFetcher(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
 	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID}
 }
 
@@ -149,15 +161,18 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 
 	ctx := context.TODO()
 
-	// (1) Metadata from entry_index. log_time is the only field
-	// EntryWithMetadata exposes from the index; signatures are
-	// served as part of CanonicalBytes from Tessera.
-	var logTime time.Time
+	// (1) Metadata from entry_index. canonical_hash is required to
+	// construct the bytestore object key; log_time populates the
+	// EntryWithMetadata response.
+	var (
+		logTime  time.Time
+		hashCol  []byte
+	)
 	err := f.db.QueryRow(ctx, `
-		SELECT log_time
+		SELECT log_time, canonical_hash
 		FROM entry_index WHERE sequence_number = $1`,
 		pos.Sequence,
-	).Scan(&logTime)
+	).Scan(&logTime, &hashCol)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -165,19 +180,24 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 	if err != nil {
 		return nil, fmt.Errorf("store/entries: fetch index seq=%d: %w", pos.Sequence, err)
 	}
+	if len(hashCol) != 32 {
+		return nil, fmt.Errorf("store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", pos.Sequence, len(hashCol))
+	}
+	var hash [32]byte
+	copy(hash[:], hashCol)
 
-	// (2) Bytes from EntryReader (Tessera tiles).
-	raw, err := f.reader.ReadEntry(pos.Sequence)
+	// (2) Wire bytes from EntryReader.
+	wire, err := f.reader.ReadEntry(ctx, pos.Sequence, hash)
 	if err != nil {
 		return nil, fmt.Errorf("store/entries: read bytes seq=%d: %w", pos.Sequence, err)
 	}
 
 	// (3) Assemble — three-field EntryWithMetadata per the v6 SDK
-	// type. Callers that need the primary signature's algoID or
-	// raw bytes call envelope.Deserialize on CanonicalBytes and
-	// read entry.Signatures[0]; see the type's godoc.
+	// type. Wire bytes ARE the canonical bytes under v7.75 (signatures
+	// section embedded). Callers that need the primary signature's
+	// algoID call envelope.Deserialize and read entry.Signatures[0].
 	return &types.EntryWithMetadata{
-		CanonicalBytes: raw.CanonicalBytes,
+		CanonicalBytes: wire,
 		LogTime:        logTime,
 		Position:       pos,
 	}, nil

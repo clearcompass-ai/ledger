@@ -88,7 +88,7 @@ type CommitmentEquivocationAlertConfig struct {
 
 // EntryByteFetcher returns the canonical wire bytes for a sequence
 // number. Implementations include the operator's existing
-// tessera.EntryReader and lifecycle/archive_reader.go for entries
+// bytestore.Reader and lifecycle/archive_reader.go for entries
 // in archived shards. The publisher accepts the interface (rather
 // than a concrete type) so test deployments can substitute a stub.
 type EntryByteFetcher interface {

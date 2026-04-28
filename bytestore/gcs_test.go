@@ -1,29 +1,27 @@
 /*
-FILE PATH: tessera/gcs_entry_store_test.go
+FILE PATH: bytestore/gcs_test.go
 
-Tests for GCSEntryStore. Run against the fake-gcs-server harness
-exposed by integration/docker-compose.yml. Skip cleanly when
-ORTHOLOG_TEST_GCS_ENDPOINT is unset, mirroring the
-ORTHOLOG_TEST_DSN skip pattern in store/sequence_cursor_test.go
-and store/commitment_fetcher_test.go.
+Tests for bytestore.GCS. Run against the fake-gcs-server harness
+exposed by integration/docker-compose.yml. Skip cleanly when the env
+vars are unset, mirroring the ORTHOLOG_TEST_DSN skip pattern in
+store/sequence_cursor_test.go and store/commitment_fetcher_test.go.
 
 Coverage:
   - Constructor validation (empty bucket).
-  - Object naming (zero-padded sequence).
+  - Object naming uses the canonical layoutKey (<prefix>/<seq:016x>/<hash_hex>).
   - WriteEntry → ReadEntry round-trip.
-  - ReadEntry on missing key surfaces storage.ErrObjectNotExist
-    (wrapped).
-  - LRU cache hit on read-after-write (no GCS round-trip second
-    time).
+  - ReadEntry on missing key returns ErrNotFound (also wraps GCS's
+    ErrObjectNotExist).
+  - LRU cache hit on read-after-write.
   - LRU eviction at capacity.
-  - ReadEntryBatch in-order.
-  - Empty canonical bytes rejected.
+  - ReadEntryBatch in-order; missing entry fatal for batch.
+  - Empty wire bytes rejected.
   - Concurrent writers (interface goroutine-safety pin).
   - Custom ObjectPrefix isolates two stores in the same bucket.
-  - Compile-time interface satisfaction (already in gcs_entry_store.go;
-    test file adds a redundant pin to make any future drift loud).
+  - PresignGet returns a URL whose HTTP GET fetches the bytes.
 
-The fake-gcs-server endpoint and bucket are read from env:
+Env vars (mirrors the operator's production OPERATOR_BYTE_STORE_*
+naming so tests and prod stay in sync):
 
   ORTHOLOG_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
   ORTHOLOG_TEST_GCS_BUCKET     e.g. ortholog-test-bytes
@@ -32,7 +30,7 @@ The docker-compose harness creates the bucket at startup; tests
 that need a clean state delete + recreate per-test via the
 ObjectPrefix knob (each test gets its own prefix).
 */
-package tessera
+package bytestore
 
 import (
 	"bytes"
@@ -40,6 +38,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sync"
 	"testing"
@@ -49,37 +49,29 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-// requireGCS opens a GCSEntryStore configured for either fake-gcs-server
-// (integration harness) or real GCS (sanity check against production
-// credentials), depending on which env vars are set:
+// requireGCS opens a bytestore.GCS configured for either fake-gcs-
+// server (integration harness) or real GCS, depending on which env
+// vars are set:
 //
-//	ORTHOLOG_TEST_GCS_ENDPOINT  set  → fake-gcs mode
-//	                                   anonymous=true, endpoint override
-//	ORTHOLOG_TEST_GCS_BUCKET    set  → real GCS mode
-//	                                   anonymous=false (ADC), no endpoint override
-//	neither set                      → t.Skip
+//	ORTHOLOG_TEST_GCS_ENDPOINT  set → fake-gcs mode (anonymous=true)
+//	ORTHOLOG_TEST_GCS_BUCKET    set → real GCS mode (ADC)
+//	neither set                     → t.Skip
 //
-// Real GCS mode requires GOOGLE_APPLICATION_CREDENTIALS pointing at a
-// service-account key file with storage.objects.create + .get + .delete
-// on the named bucket. Each test gets a unique prefix
-// (test/<TestName>/<unix-nano>) so concurrent runs don't collide AND
-// t.Cleanup deletes every object under that prefix at test end — real
-// GCS otherwise accumulates test junk forever.
-//
-// fake-gcs mode skips the cleanup pass since `down -v` wipes the
-// container's data dir between runs anyway.
-func requireGCS(t *testing.T) *GCSEntryStore {
+// Real-GCS mode requires GOOGLE_APPLICATION_CREDENTIALS pointing at
+// a service-account key with storage.objects.create + .get + .delete
+// on the named bucket. Each test gets a unique prefix so concurrent
+// runs don't collide AND t.Cleanup deletes every object under that
+// prefix at test end (real GCS otherwise accumulates test junk).
+func requireGCS(t *testing.T) *GCS {
 	t.Helper()
 
 	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
 	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
 
-	// Skip when nothing is wired up.
 	if endpoint == "" && bucket == "" {
 		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set; skipping GCS test")
 	}
 
-	// Mode detection.
 	fakeMode := endpoint != ""
 	if !fakeMode && bucket == "" {
 		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset for real-GCS mode; skipping")
@@ -88,15 +80,12 @@ func requireGCS(t *testing.T) *GCSEntryStore {
 		bucket = "ortholog-test-bytes"
 	}
 
-	// Per-test isolation via prefix.
 	prefix := fmt.Sprintf("test/%s/%d", t.Name(), time.Now().UnixNano())
 
-	// Real GCS first-connection can take a few seconds; bump the
-	// timeout from the fake-gcs-friendly 5s.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg := GCSEntryStoreConfig{
+	cfg := GCSConfig{
 		Bucket:       bucket,
 		ObjectPrefix: prefix,
 		CacheSize:    16,
@@ -106,22 +95,15 @@ func requireGCS(t *testing.T) *GCSEntryStore {
 		cfg.Anonymous = true
 		t.Logf("GCS test mode: fake-gcs-server (endpoint=%s, bucket=%s)", endpoint, bucket)
 	} else {
-		// Real GCS: ADC via GOOGLE_APPLICATION_CREDENTIALS or
-		// workload identity. Anonymous stays false.
 		t.Logf("GCS test mode: real GCS (bucket=%s, prefix=%s)", bucket, prefix)
 	}
 
-	store, err := NewGCSEntryStore(ctx, cfg)
+	store, err := NewGCS(ctx, cfg)
 	if err != nil {
-		t.Fatalf("NewGCSEntryStore: %v", err)
+		t.Fatalf("NewGCS: %v", err)
 	}
 
 	t.Cleanup(func() {
-		// Delete every object under the test's prefix so real-GCS
-		// runs don't accumulate junk. fake-gcs-server is wiped by
-		// `down -v` between runs anyway, but the same code path is
-		// safe to run there too — the iterator simply finds zero
-		// objects to delete on a fresh container.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		deletePrefix(t, cleanupCtx, store, prefix)
@@ -134,11 +116,7 @@ func requireGCS(t *testing.T) *GCSEntryStore {
 	return store
 }
 
-// deletePrefix lists every object under prefix in the supplied
-// store's bucket and deletes them. Best-effort: a delete failure is
-// logged but doesn't fail the test — we don't want a stale ACL or
-// transient 5xx to mask a real test pass.
-func deletePrefix(t *testing.T, ctx context.Context, store *GCSEntryStore, prefix string) {
+func deletePrefix(t *testing.T, ctx context.Context, store *GCS, prefix string) {
 	t.Helper()
 	it := store.bucket.Objects(ctx, &storage.Query{Prefix: prefix})
 	deleted := 0
@@ -166,33 +144,24 @@ func deletePrefix(t *testing.T, ctx context.Context, store *GCSEntryStore, prefi
 // Constructor validation (always runs, no GCS needed)
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_New_RejectsEmptyBucket(t *testing.T) {
-	_, err := NewGCSEntryStore(context.Background(), GCSEntryStoreConfig{Bucket: ""})
+func TestGCS_New_RejectsEmptyBucket(t *testing.T) {
+	_, err := NewGCS(context.Background(), GCSConfig{Bucket: ""})
 	if err == nil {
 		t.Fatal("expected error on empty Bucket")
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Object naming (always runs, no GCS needed)
+// Object naming uses the shared layoutKey
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_ObjectName_ZeroPadded16Hex(t *testing.T) {
-	store := &GCSEntryStore{objectPrefix: "entries"}
-	cases := []struct {
-		seq  uint64
-		want string
-	}{
-		{0, "entries/0000000000000000/data"},
-		{1, "entries/0000000000000001/data"},
-		{255, "entries/00000000000000ff/data"},
-		{0xdeadbeef, "entries/00000000deadbeef/data"},
-		{0xFFFFFFFFFFFFFFFF, "entries/ffffffffffffffff/data"},
-	}
-	for _, tc := range cases {
-		if got := store.objectName(tc.seq); got != tc.want {
-			t.Errorf("seq=%x: got %q, want %q", tc.seq, got, tc.want)
-		}
+func TestGCS_ObjectName_UsesLayoutKey(t *testing.T) {
+	store := &GCS{objectPrefix: "entries"}
+	hash := sha256.Sum256([]byte("k"))
+	got := store.keyOf(42, hash)
+	want := fmt.Sprintf("entries/%016x/%x", uint64(42), hash[:])
+	if got != want {
+		t.Errorf("keyOf: got %q, want %q", got, want)
 	}
 }
 
@@ -200,25 +169,24 @@ func TestGCSEntryStore_ObjectName_ZeroPadded16Hex(t *testing.T) {
 // Round-trip: write then read
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_WriteThenRead_RoundTrip(t *testing.T) {
+func TestGCS_WriteThenRead_RoundTrip(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
 
-	canonical := []byte("the canonical bytes for the entry")
-	sig := sha256.Sum256([]byte("signature input"))
+	seed := sha256.Sum256([]byte("seed"))
+	wire := append([]byte("the wire bytes for the entry|"), seed[:]...)
+	hash := sha256.Sum256(wire)
 
-	if err := store.WriteEntry(42, canonical, sig[:]); err != nil {
+	if err := store.WriteEntry(ctx, 42, hash, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
-	got, err := store.ReadEntry(42)
+	got, err := store.ReadEntry(ctx, 42, hash)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, canonical) {
-		t.Errorf("CanonicalBytes mismatch")
-	}
-	if !bytes.Equal(got.SigBytes, sig[:]) {
-		t.Errorf("SigBytes mismatch")
+	if !bytes.Equal(got, wire) {
+		t.Errorf("round-trip mismatch:\n  got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -226,12 +194,16 @@ func TestGCSEntryStore_WriteThenRead_RoundTrip(t *testing.T) {
 // Missing key
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_ReadEntry_MissingKeyWrapsErrObjectNotExist(t *testing.T) {
+func TestGCS_ReadEntry_MissingKeyWrapsErrNotFound(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
 
-	_, err := store.ReadEntry(99999)
+	_, err := store.ReadEntry(ctx, 99999, sha256.Sum256([]byte("nope")))
 	if err == nil {
 		t.Fatal("expected error reading missing key")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected wrapped ErrNotFound, got %v", err)
 	}
 	if !errors.Is(err, storage.ErrObjectNotExist) {
 		t.Errorf("expected wrapped storage.ErrObjectNotExist, got %v", err)
@@ -242,33 +214,29 @@ func TestGCSEntryStore_ReadEntry_MissingKeyWrapsErrObjectNotExist(t *testing.T) 
 // LRU cache hit on read-after-write
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_ReadAfterWrite_HitsCache(t *testing.T) {
+func TestGCS_ReadAfterWrite_HitsCache(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
 
-	canonical := []byte("cached entry")
-	sig := []byte("sig")
-	if err := store.WriteEntry(7, canonical, sig); err != nil {
+	wire := []byte("cached entry wire blob")
+	hash := sha256.Sum256(wire)
+	if err := store.WriteEntry(ctx, 7, hash, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
-	// First read should hit the cache (write-through populated it).
-	// We can't directly verify "no GCS round trip happened" without
-	// instrumenting, but we CAN verify the in-memory map contains
-	// the seq.
 	store.mu.Lock()
-	_, cached := store.cache[7]
+	_, cached := store.cache[store.keyOf(7, hash)]
 	store.mu.Unlock()
 	if !cached {
 		t.Fatal("WriteEntry should have populated the cache")
 	}
 
-	// Read returns the cached entry.
-	got, err := store.ReadEntry(7)
+	got, err := store.ReadEntry(ctx, 7, hash)
 	if err != nil {
 		t.Fatalf("ReadEntry: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, canonical) {
-		t.Errorf("CanonicalBytes mismatch")
+	if !bytes.Equal(got, wire) {
+		t.Errorf("cached read mismatch:\n  got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -276,19 +244,22 @@ func TestGCSEntryStore_ReadAfterWrite_HitsCache(t *testing.T) {
 // LRU eviction at capacity
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
+func TestGCS_Cache_EvictsOldestAtCapacity(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
-	// requireGCS configures CacheSize=16. Write 17 entries; the
-	// first should be evicted from cache.
 
+	wires := make([][]byte, 17)
+	hashes := make([][32]byte, 17)
 	for i := uint64(0); i < 17; i++ {
-		if err := store.WriteEntry(i, []byte("c"), []byte("s")); err != nil {
+		wires[i] = []byte{byte(i)}
+		hashes[i] = sha256.Sum256(wires[i])
+		if err := store.WriteEntry(ctx, i, hashes[i], wires[i]); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
 
 	store.mu.Lock()
-	_, firstStillCached := store.cache[0]
+	_, firstStillCached := store.cache[store.keyOf(0, hashes[0])]
 	cacheSize := len(store.cache)
 	store.mu.Unlock()
 
@@ -299,64 +270,57 @@ func TestGCSEntryStore_Cache_EvictsOldestAtCapacity(t *testing.T) {
 		t.Errorf("cache size %d exceeds maxSize 16", cacheSize)
 	}
 
-	// Sanity: re-reading seq=0 hits GCS, not the cache. fake-gcs-
-	// server has a tiny read-after-write consistency window after
-	// bursty writes; real GCS doesn't. Retry-with-backoff handles
-	// either case without changing production semantics.
-	got, err := readEntryWithRetry(t, store, 0)
+	got, err := readEntryWithRetry(t, store, 0, hashes[0])
 	if err != nil {
 		t.Fatalf("ReadEntry seq=0 after eviction: %v", err)
 	}
-	if !bytes.Equal(got.CanonicalBytes, []byte("c")) {
-		t.Errorf("post-eviction read returned wrong bytes")
+	if !bytes.Equal(got, wires[0]) {
+		t.Errorf("post-eviction read returned wrong bytes: %x", got)
 	}
 }
 
-// readEntryWithRetry calls store.ReadEntry, retrying on
-// storage.ErrObjectNotExist up to 5 times with 50ms exponential
-// backoff. Exists because fake-gcs-server has a brief read-after-
-// write consistency lag under bursty writes (seen reproducibly in
-// the eviction + concurrent-writers tests). Real GCS is strongly
-// consistent and the first attempt always succeeds; the retry is
-// a no-op there.
+// readEntryWithRetry calls store.ReadEntry, retrying on ErrNotFound
+// up to 5 times with 50ms exponential backoff. Exists because
+// fake-gcs-server has a brief read-after-write consistency lag under
+// bursty writes; real GCS is strongly consistent and the first
+// attempt always succeeds.
 //
-// Production code (GCSEntryStore.ReadEntry) does NOT retry —
-// cache miss → ErrObjectNotExist surfaces as "entry doesn't
-// exist", which is the correct semantic for the operator's
-// query path. This helper exists only inside test code to
-// paper over a fake-gcs-server quirk.
-func readEntryWithRetry(t *testing.T, store *GCSEntryStore, seq uint64) (RawEntry, error) {
+// Production code (bytestore.GCS.ReadEntry) does NOT retry — cache
+// miss → ErrNotFound surfaces as "entry doesn't exist". The retry
+// here is a fake-gcs-only test workaround.
+func readEntryWithRetry(t *testing.T, store *GCS, seq uint64, hash [32]byte) ([]byte, error) {
 	t.Helper()
+	ctx := context.Background()
 	var lastErr error
 	delay := 50 * time.Millisecond
 	for i := 0; i < 5; i++ {
-		got, err := store.ReadEntry(seq)
+		got, err := store.ReadEntry(ctx, seq, hash)
 		if err == nil {
 			return got, nil
 		}
-		// Only retry on the specific "not yet visible" signal.
-		// Anything else (auth, network, decode error) propagates
-		// immediately so tests don't silently retry past real bugs.
-		if !errors.Is(err, storage.ErrObjectNotExist) {
-			return RawEntry{}, err
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
 		}
 		lastErr = err
 		time.Sleep(delay)
 		delay *= 2
 	}
-	return RawEntry{}, fmt.Errorf("readEntryWithRetry seq=%d: 5 attempts: %w", seq, lastErr)
+	return nil, fmt.Errorf("readEntryWithRetry seq=%d: 5 attempts: %w", seq, lastErr)
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Empty canonical rejection
+// Empty wire bytes rejection
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_WriteEntry_RejectsEmptyCanonical(t *testing.T) {
+func TestGCS_WriteEntry_RejectsEmptyWire(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
-
-	err := store.WriteEntry(1, nil, []byte("sig"))
-	if err == nil {
-		t.Error("expected error on empty canonical bytes")
+	hash := sha256.Sum256([]byte("x"))
+	if err := store.WriteEntry(ctx, 1, hash, nil); err == nil {
+		t.Error("expected error on nil wire bytes")
+	}
+	if err := store.WriteEntry(ctx, 1, hash, []byte{}); err == nil {
+		t.Error("expected error on empty wire bytes")
 	}
 }
 
@@ -364,39 +328,50 @@ func TestGCSEntryStore_WriteEntry_RejectsEmptyCanonical(t *testing.T) {
 // ReadEntryBatch
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_ReadEntryBatch_PreservesInputOrder(t *testing.T) {
+func TestGCS_ReadEntryBatch_PreservesInputOrder(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
 
-	// Seed five entries.
+	hashes := make(map[uint64][32]byte, 5)
 	for i := uint64(1); i <= 5; i++ {
-		if err := store.WriteEntry(i, []byte{byte(i)}, []byte{byte(i + 100)}); err != nil {
+		wire := []byte{byte(i)}
+		h := sha256.Sum256(wire)
+		hashes[i] = h
+		if err := store.WriteEntry(ctx, i, h, wire); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
 	}
 
-	// Read them out of order; result must follow input order.
-	want := []uint64{3, 5, 1, 4, 2}
-	got, err := store.ReadEntryBatch(want)
+	wantOrder := []uint64{3, 5, 1, 4, 2}
+	refs := make([]EntryRef, len(wantOrder))
+	for i, seq := range wantOrder {
+		refs[i] = EntryRef{Seq: seq, Hash: hashes[seq]}
+	}
+	got, err := store.ReadEntryBatch(ctx, refs)
 	if err != nil {
 		t.Fatalf("ReadEntryBatch: %v", err)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("length: got %d, want %d", len(got), len(want))
+	if len(got) != len(wantOrder) {
+		t.Fatalf("length: got %d, want %d", len(got), len(wantOrder))
 	}
-	for i, seq := range want {
-		if !bytes.Equal(got[i].CanonicalBytes, []byte{byte(seq)}) {
-			t.Errorf("position %d: got canonical %v, want [%d]", i, got[i].CanonicalBytes, seq)
+	for i, seq := range wantOrder {
+		if !bytes.Equal(got[i], []byte{byte(seq)}) {
+			t.Errorf("position %d: got %v, want [%d]", i, got[i], seq)
 		}
 	}
 }
 
-func TestGCSEntryStore_ReadEntryBatch_MissingSeqIsFatalForBatch(t *testing.T) {
+func TestGCS_ReadEntryBatch_MissingSeqIsFatalForBatch(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
-	if err := store.WriteEntry(1, []byte("c"), []byte("s")); err != nil {
+	wire := []byte("blob")
+	hash := sha256.Sum256(wire)
+	if err := store.WriteEntry(ctx, 1, hash, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
 	}
 
-	_, err := store.ReadEntryBatch([]uint64{1, 99999})
+	missing := EntryRef{Seq: 99999, Hash: sha256.Sum256([]byte("missing"))}
+	_, err := store.ReadEntryBatch(ctx, []EntryRef{{Seq: 1, Hash: hash}, missing})
 	if err == nil {
 		t.Fatal("expected fatal error on batch with missing seq")
 	}
@@ -406,10 +381,14 @@ func TestGCSEntryStore_ReadEntryBatch_MissingSeqIsFatalForBatch(t *testing.T) {
 // Concurrent writers
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
+func TestGCS_ConcurrentWriters(t *testing.T) {
+	ctx := context.Background()
 	store := requireGCS(t)
 	const goroutines = 4
 	const perGoroutine = 5
+
+	hashes := make([][32]byte, goroutines*perGoroutine)
+	wires := make([][]byte, goroutines*perGoroutine)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -418,8 +397,12 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
-				seq := uint64(g*100 + i)
-				if err := store.WriteEntry(seq, []byte{byte(g), byte(i)}, []byte("s")); err != nil {
+				seq := uint64(g*perGoroutine + i)
+				wire := []byte{byte(g), byte(i)}
+				h := sha256.Sum256(wire)
+				wires[seq] = wire
+				hashes[seq] = h
+				if err := store.WriteEntry(ctx, seq, h, wire); err != nil {
 					errs <- err
 					return
 				}
@@ -433,22 +416,14 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 		t.Errorf("concurrent write: %v", err)
 	}
 
-	// Verify a sample of writes. readEntryWithRetry papers over
-	// fake-gcs-server's read-after-write consistency lag under
-	// concurrent writes. Real GCS is strongly consistent; the
-	// retry never fires there.
-	for g := 0; g < goroutines; g++ {
-		for i := 0; i < perGoroutine; i++ {
-			seq := uint64(g*100 + i)
-			got, err := readEntryWithRetry(t, store, seq)
-			if err != nil {
-				t.Errorf("ReadEntry seq=%d: %v", seq, err)
-				continue
-			}
-			want := []byte{byte(g), byte(i)}
-			if !bytes.Equal(got.CanonicalBytes, want) {
-				t.Errorf("seq=%d: got %v, want %v", seq, got.CanonicalBytes, want)
-			}
+	for seq := 0; seq < goroutines*perGoroutine; seq++ {
+		got, err := readEntryWithRetry(t, store, uint64(seq), hashes[seq])
+		if err != nil {
+			t.Errorf("ReadEntry seq=%d: %v", seq, err)
+			continue
+		}
+		if !bytes.Equal(got, wires[seq]) {
+			t.Errorf("seq=%d: got %v, want %v", seq, got, wires[seq])
 		}
 	}
 }
@@ -457,11 +432,9 @@ func TestGCSEntryStore_ConcurrentWriters(t *testing.T) {
 // Custom ObjectPrefix isolates two stores in the same bucket
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
+func TestGCS_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
 	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
-	// Same dual-mode logic as requireGCS — fake-gcs (endpoint set)
-	// or real GCS (bucket only).
 	if endpoint == "" && bucket == "" {
 		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set")
 	}
@@ -473,9 +446,9 @@ func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mkStore := func(prefix string) *GCSEntryStore {
+	mkStore := func(prefix string) *GCS {
 		t.Helper()
-		cfg := GCSEntryStoreConfig{
+		cfg := GCSConfig{
 			Bucket:       bucket,
 			ObjectPrefix: prefix,
 			CacheSize:    8,
@@ -484,9 +457,9 @@ func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 			cfg.Endpoint = endpoint
 			cfg.Anonymous = true
 		}
-		s, err := NewGCSEntryStore(ctx, cfg)
+		s, err := NewGCS(ctx, cfg)
 		if err != nil {
-			t.Fatalf("NewGCSEntryStore(%s): %v", prefix, err)
+			t.Fatalf("NewGCS(%s): %v", prefix, err)
 		}
 		t.Cleanup(func() {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -503,17 +476,68 @@ func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 	storeA := mkStore(prefixA)
 	storeB := mkStore(prefixB)
 
-	if err := storeA.WriteEntry(42, []byte("from A"), []byte("sigA")); err != nil {
+	wire := []byte("from A")
+	hash := sha256.Sum256(wire)
+	if err := storeA.WriteEntry(ctx, 42, hash, wire); err != nil {
 		t.Fatalf("storeA write: %v", err)
 	}
 
-	// storeB at same seq should NOT find anything.
-	_, err := storeB.ReadEntry(42)
+	_, err := storeB.ReadEntry(ctx, 42, hash)
 	if err == nil {
 		t.Fatal("storeB should not see storeA's entries (different prefix)")
 	}
-	if !errors.Is(err, storage.ErrObjectNotExist) {
-		t.Errorf("expected ErrObjectNotExist, got %v", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PresignGet — V4 signed URL fetches the bytes
+// ─────────────────────────────────────────────────────────────────
+
+// TestGCS_PresignGet_FetchesBytes proves the 302-redirect path:
+// the URL returned by PresignGet is fetchable via HTTP GET and
+// returns the same bytes WriteEntry stored.
+//
+// Skipped on fake-gcs-server: the local emulator's V4 signing is
+// not byte-equivalent to real GCS, and even when the URL parses,
+// the server may not validate the signature the way real GCS does.
+// Real-GCS mode runs this; fake-gcs mode skips with a log line.
+func TestGCS_PresignGet_FetchesBytes(t *testing.T) {
+	if os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT") != "" {
+		t.Skip("PresignGet uses real GCS V4 signing; fake-gcs-server does not validate it")
+	}
+	ctx := context.Background()
+	store := requireGCS(t)
+
+	wire := []byte("presign me — fetch by URL not by SDK")
+	hash := sha256.Sum256(wire)
+	if err := store.WriteEntry(ctx, 100, hash, wire); err != nil {
+		t.Fatalf("WriteEntry: %v", err)
+	}
+
+	url, err := store.PresignGet(ctx, 100, hash, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("PresignGet: %v", err)
+	}
+	if url == "" {
+		t.Fatal("PresignGet returned empty URL")
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("HTTP GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTP status: %d %s", resp.StatusCode, resp.Status)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(got, wire) {
+		t.Fatalf("presigned GET returned wrong bytes:\n  got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -521,8 +545,8 @@ func TestGCSEntryStore_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 // Close idempotency
 // ─────────────────────────────────────────────────────────────────
 
-func TestGCSEntryStore_Close_NilSafe(t *testing.T) {
-	var s *GCSEntryStore
+func TestGCS_Close_NilSafe(t *testing.T) {
+	var s *GCS
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close: expected nil, got %v", err)
 	}

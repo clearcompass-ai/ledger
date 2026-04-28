@@ -34,8 +34,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,7 +47,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/store"
-	optessera "github.com/clearcompass-ai/ortholog-operator/tessera"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 )
 
 // getScaleN returns the entry count from ORTHOLOG_SCALE_N (default 1M).
@@ -63,74 +61,16 @@ func getScaleN() int {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 1. Sequence Allocation Throughput
+// 1. Sequence Allocation Throughput — REMOVED in commit 10
 // ═════════════════════════════════════════════════════════════════════════════
-
-func TestScale_SequenceAllocation(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-
-	const N = 100_000
-	start := time.Now()
-	for i := 0; i < N; i++ {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = es.NextSequence(ctx, tx)
-		if err != nil {
-			tx.Rollback(ctx)
-			t.Fatal(err)
-		}
-		tx.Commit(ctx)
-	}
-	elapsed := time.Since(start)
-	rate := float64(N) / elapsed.Seconds()
-	t.Logf("SEQUENCE ALLOCATION: %d sequences in %s (%.0f seq/sec)", N, elapsed, rate)
-
-	if rate < 1000 {
-		t.Logf("WARNING: sequence rate %.0f/sec is below 1K/sec — may bottleneck admission", rate)
-	}
-}
-
-func TestScale_SequenceAllocation_Concurrent(t *testing.T) {
-	pool := skipIfNoPostgres(t)
-	ctx := context.Background()
-	es := store.NewEntryStore(pool)
-
-	const perGoroutine = 10_000
-	const goroutines = 10
-	var total atomic.Int64
-
-	start := time.Now()
-	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < perGoroutine; i++ {
-				tx, err := pool.Begin(ctx)
-				if err != nil {
-					return
-				}
-				_, err = es.NextSequence(ctx, tx)
-				if err != nil {
-					tx.Rollback(ctx)
-					return
-				}
-				tx.Commit(ctx)
-				total.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(start)
-	rate := float64(total.Load()) / elapsed.Seconds()
-	t.Logf("CONCURRENT SEQUENCE: %d sequences in %s (%.0f seq/sec, %d goroutines)",
-		total.Load(), elapsed, rate, goroutines)
-}
-
+//
+// Tessera, not Postgres, owns sequence allocation under WAL-first
+// admission. The Postgres entry_sequence SEQUENCE was dropped
+// alongside store.EntryStore.NextSequence. End-to-end submission
+// throughput at scale is measured at the admission layer in
+// tests/scale_test.go's TestScale_HTTPAdmission_* tests, which
+// implicitly cover the WAL → Tessera → Postgres pipeline.
+//
 // ═════════════════════════════════════════════════════════════════════════════
 // 2. Bulk Entry Insertion (measures Postgres write throughput)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -170,10 +110,10 @@ func TestScale_BulkInsert(t *testing.T) {
 
 			_, err := tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:signer%d", signerIdx),
+				fmt.Sprintf("did:example:signer%d", signerIdx),
 			)
 			if err != nil {
 				tx.Rollback(ctx)
@@ -208,10 +148,10 @@ func TestScale_BulkInsert(t *testing.T) {
 			hash := envelope.EntryIdentity(entry)
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(1), fmt.Sprintf("did:example:signer%d", signerIdx),
+				fmt.Sprintf("did:example:signer%d", signerIdx),
 			)
 		}
 		tx.Commit(ctx)
@@ -259,15 +199,14 @@ func TestScale_QueryIndex(t *testing.T) {
 	t.Logf("QUERY signer_did COUNT: %d results in %s", signerCount, elapsed)
 
 	start = time.Now()
-	rows, _ := pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ := pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE signer_did = $1 ORDER BY sequence_number ASC`,
 		"did:example:signer0")
 	var rowCount int
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
@@ -276,15 +215,14 @@ func TestScale_QueryIndex(t *testing.T) {
 
 	// Scan from middle — PK range.
 	start = time.Now()
-	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE sequence_number >= $1 ORDER BY sequence_number ASC LIMIT 1000`,
 		count/2)
 	rowCount = 0
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
@@ -293,30 +231,29 @@ func TestScale_QueryIndex(t *testing.T) {
 
 	// Max scan (10K).
 	start = time.Now()
-	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time, sig_algorithm_id
+	rows, _ = pool.Query(ctx, `SELECT sequence_number, log_time
 		FROM entry_index WHERE sequence_number >= 1 ORDER BY sequence_number ASC LIMIT 10000`,
 	)
 	rowCount = 0
 	for rows.Next() {
 		var seq uint64
 		var lt time.Time
-		var algo int16
-		rows.Scan(&seq, &lt, &algo)
+		rows.Scan(&seq, &lt)
 		rowCount++
 	}
 	rows.Close()
 	elapsed = time.Since(start)
 	t.Logf("QUERY scan(1, 10000): %d rows in %s", rowCount, elapsed)
 
-	// entry_index row size (should be ~50 bytes, NOT ~600 bytes).
+	// entry_index row size (should be ~40 bytes, NOT ~600 bytes).
 	var avgRowSize string
 	pool.QueryRow(ctx, `SELECT pg_size_pretty(pg_total_relation_size('entry_index') / GREATEST(COUNT(*),1))
 		FROM entry_index`).Scan(&avgRowSize)
-	t.Logf("ENTRY_INDEX avg row size: %s (target: ~50 bytes, no canonical_bytes/sig_bytes)", avgRowSize)
+	t.Logf("ENTRY_INDEX avg row size: %s (target: ~40 bytes, no canonical_bytes/sig_bytes)", avgRowSize)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 4. Builder Throughput — Full Queue Drain
+// 4. Builder Throughput — Cursor Drain
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestScale_BuilderThroughput(t *testing.T) {
@@ -329,19 +266,18 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 	cleanTables(t, pool)
 
-	// Entry byte store — created BEFORE seeding because seeding writes bytes here.
-	entryBytes := optessera.NewInMemoryEntryStore()
+	entryBytes := opbytestore.NewMemory()
 
-	t.Logf("seeding %d entries + queue...", N)
+	t.Logf("seeding %d entries...", N)
 
 	const batchSize = 10_000
 	seedStart := time.Now()
 	seeded := 0
 
-	for batch := 0; batch < N/batchSize; batch++ {
+	seedRange := func(from, count int) {
 		tx, _ := pool.Begin(ctx)
-		for i := 0; i < batchSize; i++ {
-			seq := uint64(batch*batchSize + i + 1)
+		for i := 0; i < count; i++ {
+			seq := uint64(from + i + 1)
 			payload := make([]byte, 8)
 			binary.BigEndian.PutUint64(payload, seq)
 
@@ -353,66 +289,41 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
+					signer_did)
+				VALUES ($1, $2, $3, $4)`,
 				seq, hash[:], time.Now().UTC(),
-				uint16(envelope.SigAlgoECDSA), fmt.Sprintf("did:example:scale-signer%d", seq/100),
+				fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
-			tx.Exec(ctx, `INSERT INTO builder_queue (sequence_number) VALUES ($1)`, seq)
 			// v7.75: wire bytes ARE canonical bytes; no separate sig.
-			entryBytes.WriteEntry(seq, wire, nil)
+			entryBytes.WriteEntry(ctx, seq, hash, wire)
 		}
 		tx.Commit(ctx)
-		seeded += batchSize
+	}
 
+	for batch := 0; batch < N/batchSize; batch++ {
+		seedRange(batch*batchSize, batchSize)
+		seeded += batchSize
 		if seeded%(N/10) == 0 {
 			elapsed := time.Since(seedStart)
 			rate := float64(seeded) / elapsed.Seconds()
 			t.Logf("  seeded %d/%d (%.0f entries/sec, %s elapsed)", seeded, N, rate, elapsed.Round(time.Second))
 		}
 	}
-
-	// Remainder.
-	remainder := N % batchSize
-	if remainder > 0 {
-		tx, _ := pool.Begin(ctx)
-		for i := 0; i < remainder; i++ {
-			seq := uint64(seeded + i + 1)
-			payload := make([]byte, 8)
-			binary.BigEndian.PutUint64(payload, seq)
-			entry := makeEntry(t, envelope.ControlHeader{
-				SignerDID: fmt.Sprintf("did:example:scale-signer%d", seq/100),
-			}, payload)
-			hash := envelope.EntryIdentity(entry)
-			wire := envelope.Serialize(entry)
-			tx.Exec(ctx, `
-				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
-					sig_algorithm_id, signer_did)
-				VALUES ($1, $2, $3, $4, $5)`,
-				seq, hash[:], time.Now().UTC(),
-				uint16(envelope.SigAlgoECDSA), fmt.Sprintf("did:example:scale-signer%d", seq/100),
-			)
-			tx.Exec(ctx, `INSERT INTO builder_queue (sequence_number) VALUES ($1)`, seq)
-			// v7.75: wire bytes ARE canonical bytes; no separate sig.
-			entryBytes.WriteEntry(seq, wire, nil)
-		}
-		tx.Commit(ctx)
+	if remainder := N % batchSize; remainder > 0 {
+		seedRange(seeded, remainder)
 		seeded += remainder
 	}
 
 	seedElapsed := time.Since(seedStart)
 	t.Logf("seeding complete: %d entries in %s (%.0f entries/sec)", seeded, seedElapsed, float64(seeded)/seedElapsed.Seconds())
 
-	var queueCount int64
-	pool.QueryRow(ctx, "SELECT COUNT(*) FROM builder_queue WHERE status = 0").Scan(&queueCount)
-	t.Logf("queue pending: %d", queueCount)
-
-	// Wire up builder — entryBytes already created above during seeding.
+	// Wire up builder using cursor-mode reader.
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, 100_000)
 	tree := smt.NewTree(leafStore, nodeCache)
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
-	queue := opbuilder.NewQueue(pool)
+	sequenceCursor := store.NewSequenceCursor(pool)
+	reader := opbuilder.NewCursorReader(sequenceCursor)
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
 	deltaBuffer := sdkbuilder.NewDeltaWindowBuffer(10)
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
@@ -431,46 +342,37 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 	bl := opbuilder.NewBuilderLoop(
 		loopCfg, pool, tree, leafStore, nodeCache,
-		queue, fetcher, nil, deltaBuffer, bufferStore, commitPub,
+		reader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
 		merkle, witness, logger,
 	)
 
-	// Start builder.
 	t.Logf("starting builder (batch_size=%d)...", loopCfg.BatchSize)
 	buildStart := time.Now()
 	go bl.Run(ctx)
 
-	// Poll until queue drained.
-	lastPending := int64(N)
+	// Poll until cursor catches up (lag == 0).
 	lastReport := time.Now()
 	for {
 		time.Sleep(1 * time.Second)
-		var pending int64
-		pool.QueryRow(ctx, "SELECT COUNT(*) FROM builder_queue WHERE status != 2").Scan(&pending)
+		lag, lagErr := sequenceCursor.Lag(ctx)
+		if lagErr != nil {
+			t.Fatalf("cursor lag query: %v", lagErr)
+		}
 
-		if time.Since(lastReport) > 10*time.Second || pending == 0 {
+		if time.Since(lastReport) > 10*time.Second || lag == 0 {
 			elapsed := time.Since(buildStart)
-			processed := N - int(pending)
+			processed := int64(N) - lag
 			rate := float64(processed) / elapsed.Seconds()
 			t.Logf("  builder: %d/%d processed (%.0f entries/sec, %s elapsed)",
 				processed, N, rate, elapsed.Round(time.Second))
 			lastReport = time.Now()
 		}
 
-		if pending == 0 {
+		if lag == 0 {
 			break
 		}
-		if pending == lastPending {
-			var processing int64
-			pool.QueryRow(ctx, "SELECT COUNT(*) FROM builder_queue WHERE status = 1").Scan(&processing)
-			if processing > 0 {
-				continue
-			}
-		}
-		lastPending = pending
-
 		if time.Since(buildStart) > 25*time.Minute {
-			t.Fatalf("builder timed out with %d entries pending", pending)
+			t.Fatalf("builder timed out with %d entries pending", lag)
 		}
 	}
 
@@ -484,20 +386,15 @@ func TestScale_BuilderThroughput(t *testing.T) {
 	t.Logf("  Batch size: %d", loopCfg.BatchSize)
 	t.Logf("═══════════════════════════════════════════════════════════")
 
-	// Verify completeness.
-	var doneCount int64
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM builder_queue WHERE status = 2").Scan(&doneCount)
-	if doneCount != int64(N) {
-		t.Fatalf("expected %d done, got %d", N, doneCount)
+	// Verify cursor reached N.
+	cursorAt, _ := sequenceCursor.Read(context.Background())
+	if cursorAt != uint64(N) {
+		t.Fatalf("expected cursor at %d, got %d", N, cursorAt)
 	}
 
-	// Table sizes.
 	reportTableSizes(t, pool)
-
-	// Dead tuples.
 	reportDeadTuples(t, pool)
 
-	// Builder stats.
 	batches, entries, errs := bl.Stats()
 	t.Logf("  Builder stats: batches=%d entries=%d errors=%d", batches, entries, errs)
 }
@@ -626,16 +523,16 @@ func TestScale_HTTPAdmission_10K(t *testing.T) {
 	rate := float64(N) / elapsed.Seconds()
 	t.Logf("HTTP ADMISSION (Mode A): %d entries in %s (%.0f entries/sec, %d errors)", N, elapsed, rate, errCount)
 
-	// Wait for builder to drain.
-	t.Log("waiting for builder to drain queue...")
+	// Wait for builder cursor to catch up.
+	t.Log("waiting for builder cursor to catch up...")
 	drainStart := time.Now()
 	for {
-		pending, _ := op.Queue.PendingCount(context.Background())
-		if pending == 0 {
+		lag, _ := op.Cursor.Lag(context.Background())
+		if lag == 0 {
 			break
 		}
 		if time.Since(drainStart) > 2*time.Minute {
-			t.Fatalf("builder did not drain within 2 minutes (%d pending)", pending)
+			t.Fatalf("builder did not catch up within 2 minutes (%d lagging)", lag)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -726,15 +623,15 @@ func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 			accepted, N, 100*float64(accepted)/float64(N))
 	}
 
-	// Wait for builder drain.
+	// Wait for builder cursor to catch up.
 	drainStart := time.Now()
 	for {
-		pending, _ := op.Queue.PendingCount(context.Background())
-		if pending == 0 {
+		lag, _ := op.Cursor.Lag(context.Background())
+		if lag == 0 {
 			break
 		}
 		if time.Since(drainStart) > 5*time.Minute {
-			t.Fatalf("builder did not drain within 5 minutes (%d pending)", pending)
+			t.Fatalf("builder did not catch up within 5 minutes (%d lagging)", lag)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -747,7 +644,7 @@ func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 
 func reportTableSizes(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	for _, table := range []string{"entry_index", "smt_leaves", "smt_nodes", "builder_queue", "delta_window_buffers"} {
+	for _, table := range []string{"entry_index", "smt_leaves", "smt_nodes", "builder_cursor", "delta_window_buffers"} {
 		var size string
 		pool.QueryRow(context.Background(),
 			fmt.Sprintf("SELECT pg_size_pretty(pg_total_relation_size('%s'))", table)).Scan(&size)
@@ -763,7 +660,7 @@ func reportDeadTuples(t *testing.T, pool *pgxpool.Pool) {
 	rows, _ := pool.Query(context.Background(), `
 		SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
 		FROM pg_stat_user_tables
-		WHERE relname IN ('entry_index', 'smt_leaves', 'builder_queue')
+		WHERE relname IN ('entry_index', 'smt_leaves', 'builder_cursor')
 		ORDER BY n_dead_tup DESC`)
 	defer rows.Close()
 	t.Logf("  %-25s %12s %12s %s", "TABLE", "LIVE", "DEAD", "LAST_VACUUM")

@@ -89,7 +89,7 @@ esac
 echo "== running GCS entry-store tests =="
 go test -v -count=1 -timeout=120s \
     -run 'TestGCSEntryStore' \
-    ./tessera/
+    ./bytestore/
 
 echo
 echo "== done — to tear down: ./scripts/run-gcs-tests.sh down =="

@@ -20,7 +20,7 @@ func (q *PostgresQueryAPI) QueryByCosignatureOf(pos types.LogPosition) ([]types.
 	ctx := context.TODO()
 	posBytes := store.SerializeLogPosition(pos)
 	rows, err := q.db.Query(ctx, `
-		SELECT sequence_number, log_time, sig_algorithm_id
+		SELECT sequence_number, log_time, canonical_hash
 		FROM entry_index WHERE cosignature_of = $1 ORDER BY sequence_number ASC`,
 		posBytes,
 	)

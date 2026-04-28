@@ -53,6 +53,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -66,6 +67,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/transparency-dev/tessera/storage/posix"
+	posixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
@@ -76,9 +78,13 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	"github.com/clearcompass-ai/ortholog-operator/builder"
+	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ortholog-operator/integrity"
+	"github.com/clearcompass-ai/ortholog-operator/shipper"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
 // loadOrGenerateTesseraSigner resolves the checkpoint signer.
@@ -152,6 +158,14 @@ type Config struct {
 	TesseraStorageDir    string
 	TesseraSignerKeyFile string
 	TesseraOrigin        string
+	// TesseraAntispamPath is the BadgerDB directory backing
+	// Tessera's antispam (dedup) layer. Required so re-Add via
+	// integrity.Reasserter on boot returns the previously-assigned
+	// seq instead of allocating a new one. Separate Badger DB
+	// from cfg.WALPath — antispam is recoverable from the log
+	// (Follower tails entries and rebuilds the index) so the
+	// recovery story differs.
+	TesseraAntispamPath string
 
 	// Byte store backend (Phase 2). Selects where the
 	// operator's entry bytes live.
@@ -172,19 +186,12 @@ type Config struct {
 	WitnessEndpoints      []string
 	WitnessQuorumK        int
 
-	// BuilderReaderMode selects the builder's pending-work source.
-	//   - "queue" (default) — legacy builder_queue table. Admission
-	//     INSERTs a row per entry; the builder dequeues and marks
-	//     processed.
-	//   - "cursor" — CT-native log-tailing follower. Admission writes
-	//     entry_index only; the builder reads
-	//     entry_index WHERE sequence_number > builder_cursor and
-	//     advances the cursor in its atomic commit.
-	// Default stays "queue" so existing deployments behave exactly
-	// as before. The cursor path eliminates the per-entry MVCC
-	// pressure on builder_queue at 10B+ scale; flip the default in
-	// a follow-up release once the cursor path has run stably.
-	BuilderReaderMode string
+	// WALPath is the BadgerDB directory the WAL Committer opens.
+	// Required for WAL-first admission (commit 10). The Shipper
+	// migrates entries from this path into the byte store; the
+	// integrity Detector reconciles inflight entries against
+	// Tessera at boot.
+	WALPath string
 }
 
 func loadConfig() (*Config, error) {
@@ -202,7 +209,7 @@ func loadConfig() (*Config, error) {
 		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
-		ByteStoreBackend:      envOr("OPERATOR_BYTE_STORE", "memory"),
+		ByteStoreBackend:      os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
 		ByteStoreGCSBucket:    os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
 		ByteStoreGCSEndpoint:  os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
 		ByteStoreGCSAnon:      os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
@@ -212,7 +219,8 @@ func loadConfig() (*Config, error) {
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
 		WitnessQuorumK:        1,
-		BuilderReaderMode:     envOr("OPERATOR_BUILDER_READER", "queue"),
+		WALPath:               envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
+		TesseraAntispamPath:   envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -222,6 +230,15 @@ func loadConfig() (*Config, error) {
 	}
 	if cfg.OperatorDID == "" {
 		cfg.OperatorDID = cfg.LogDID
+	}
+	if cfg.ByteStoreBackend == "" {
+		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (only valid value: gcs)")
+	}
+	if cfg.ByteStoreBackend != "gcs" {
+		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (only valid value: gcs)", cfg.ByteStoreBackend)
+	}
+	if cfg.ByteStoreGCSBucket == "" {
+		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
 	}
 	return cfg, nil
 }
@@ -285,60 +302,61 @@ func main() {
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(pool, cfg.SMTNodeCacheSize)
 
-	// ── Byte store ────────────────────────────────────────────────────
-	//
-	// Phase 2: backend selectable via OPERATOR_BYTE_STORE.
-	//   - "memory" (default) — InMemoryEntryStore. Lost on
-	//     restart. Local dev only; explicit warn in logs.
-	//   - "gcs" — GCSEntryStore. Production target. ADC
-	//     credentials when no endpoint override; fake-gcs-server
-	//     when OPERATOR_BYTE_STORE_GCS_ENDPOINT is set.
-	//
-	// EntryReader interface is satisfied by both — fetcher / query
-	// API don't see the backend choice.
-	var byteStore interface {
-		WriteEntry(seq uint64, canonical []byte, sig []byte) error
-		ReadEntry(seq uint64) (tessera.RawEntry, error)
-		ReadEntryBatch(seqs []uint64) ([]tessera.RawEntry, error)
-	}
-	switch cfg.ByteStoreBackend {
-	case "memory", "":
-		byteStore = tessera.NewInMemoryEntryStore()
-		logger.Warn("byte store is InMemoryEntryStore — bytes are lost on restart. Set OPERATOR_BYTE_STORE=gcs for production.")
-	case "gcs":
-		if cfg.ByteStoreGCSBucket == "" {
-			logger.Error("OPERATOR_BYTE_STORE=gcs requires OPERATOR_BYTE_STORE_GCS_BUCKET")
-			os.Exit(1)
-		}
-		gcsStore, err := tessera.NewGCSEntryStore(ctx, tessera.GCSEntryStoreConfig{
-			Bucket:       cfg.ByteStoreGCSBucket,
-			Endpoint:     cfg.ByteStoreGCSEndpoint,
-			Anonymous:    cfg.ByteStoreGCSAnon,
-			ObjectPrefix: cfg.ByteStoreGCSPrefix,
-			CacheSize:    cfg.ByteStoreCacheSize,
-		})
-		if err != nil {
-			logger.Error("byte store GCS", "error", err)
-			os.Exit(1)
-		}
-		defer func() {
-			if err := gcsStore.Close(); err != nil {
-				logger.Warn("gcs byte store close", "error", err)
-			}
-		}()
-		byteStore = gcsStore
-		logger.Info("byte store is GCSEntryStore",
-			"bucket", cfg.ByteStoreGCSBucket,
-			"prefix", cfg.ByteStoreGCSPrefix,
-			"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
-			"anonymous", cfg.ByteStoreGCSAnon,
-			"cache_size", cfg.ByteStoreCacheSize,
-		)
-	default:
-		logger.Error("unknown OPERATOR_BYTE_STORE",
-			"value", cfg.ByteStoreBackend, "want", "memory|gcs")
+	// ── WAL ───────────────────────────────────────────────────────────
+	// BadgerDB-backed WAL provides durable bytes for admission's HTTP
+	// 202 promise. Group commit + fsync semantics live in wal/committer.go.
+	// The same Badger DB also backs Tessera's deduplicator (commit 12
+	// wires tessera.WithDeduplication) so dedup state shares the
+	// operator's single durability medium.
+	walDB, err := wal.Open(cfg.WALPath, logger)
+	if err != nil {
+		logger.Error("wal open", "error", err, "path", cfg.WALPath)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := walDB.Close(); err != nil {
+			logger.Warn("wal db close", "error", err)
+		}
+	}()
+	walc := wal.NewCommitter(walDB, wal.CommitterConfig{Logger: logger})
+	defer func() {
+		if err := walc.Close(); err != nil {
+			logger.Warn("wal committer close", "error", err)
+		}
+	}()
+	logger.Info("wal ready", "path", cfg.WALPath)
+
+	// ── Byte store ────────────────────────────────────────────────────
+	//
+	// OPERATOR_BYTE_STORE_BACKEND is required; only "gcs" is supported
+	// today. Validation already happened in loadConfig — boot would
+	// have failed before this point with a missing or unsupported
+	// backend. The `bytestore.Memory` impl is test-only and is not
+	// available as a production backend.
+	gcsStore, err := bytestore.NewGCS(ctx, bytestore.GCSConfig{
+		Bucket:       cfg.ByteStoreGCSBucket,
+		Endpoint:     cfg.ByteStoreGCSEndpoint,
+		Anonymous:    cfg.ByteStoreGCSAnon,
+		ObjectPrefix: cfg.ByteStoreGCSPrefix,
+		CacheSize:    cfg.ByteStoreCacheSize,
+	})
+	if err != nil {
+		logger.Error("byte store GCS", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := gcsStore.Close(); err != nil {
+			logger.Warn("gcs byte store close", "error", err)
+		}
+	}()
+	var byteStore bytestore.Store = gcsStore
+	logger.Info("byte store is bytestore.GCS",
+		"bucket", cfg.ByteStoreGCSBucket,
+		"prefix", cfg.ByteStoreGCSPrefix,
+		"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
+		"anonymous", cfg.ByteStoreGCSAnon,
+		"cache_size", cfg.ByteStoreCacheSize,
+	)
 
 	// ── Tessera personality ───────────────────────────────────────────
 	//
@@ -367,11 +385,40 @@ func main() {
 	if tesseraOrigin == "" {
 		tesseraOrigin = cfg.LogDID
 	}
+
+	// ── Tessera antispam (dedup) ──────────────────────────────────────
+	// Persistent BadgerDB-backed dedup. Required so
+	// integrity.Reasserter is idempotent across boots: re-Add of an
+	// already-integrated identity returns the previously-assigned
+	// seq instead of polluting the log with a fresh seq.
+	if err := os.MkdirAll(cfg.TesseraAntispamPath, 0o755); err != nil {
+		logger.Error("tessera antispam dir", "error", err, "dir", cfg.TesseraAntispamPath)
+		os.Exit(1)
+	}
+	antispamStorage, err := posixantispam.NewAntispam(ctx, cfg.TesseraAntispamPath, posixantispam.AntispamOpts{})
+	if err != nil {
+		logger.Error("tessera antispam open", "error", err, "path", cfg.TesseraAntispamPath)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = shutdownCtx
+		if closer, ok := any(antispamStorage).(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("antispam close", "error", err)
+			}
+		}
+	}()
+	logger.Info("tessera antispam ready", "path", cfg.TesseraAntispamPath)
+
 	embeddedAppender, err := tessera.NewEmbeddedAppender(ctx, tesseraDriver, tessera.AppenderOptions{
-		Origin: tesseraOrigin,
-		Signer: tesseraSigner,
+		Origin:   tesseraOrigin,
+		Signer:   tesseraSigner,
+		Antispam: antispamStorage,
 		// Defaults applied for CheckpointInterval / BatchSize /
-		// BatchMaxAge — see tessera/embedded_appender.go.
+		// BatchMaxAge / AntispamInMemEntries — see
+		// tessera/embedded_appender.go.
 	}, logger)
 	if err != nil {
 		logger.Error("tessera embedded appender", "error", err)
@@ -398,39 +445,22 @@ func main() {
 	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
 	tesseraAdapter := tessera.NewTesseraAdapter(embeddedAppender, tileReader, logger)
 
+	// ── Composite byte reader ─────────────────────────────────────────
+	// Routes per-entry: WAL first (local NVMe, fast for un-shipped
+	// entries) then bytestore fallback (network, for shipped entries
+	// past WAL retention). PostgresEntryFetcher and
+	// PostgresQueryAPI take a bytestore.Reader; the composite
+	// satisfies that interface so they're unaware of the routing.
+	compositeReader := store.NewCompositeByteReader(walc, byteStore, logger)
+
 	// ── Builder dependencies ──────────────────────────────────────────
-	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, compositeReader, cfg.LogDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, logger)
-	// Builder pending-work source: queue (legacy) or cursor
-	// (CT-native log-tailing). queue is the *builder.Queue passed
-	// to api.SubmissionDeps for the admission-side Enqueue write
-	// (nil under cursor mode → admission skips the queue write).
-	// reader is the builder.BatchReader the builder loop holds —
-	// either the queue or the cursor reader, never both.
-	var (
-		queue  *builder.Queue
-		reader builder.BatchReader
-	)
-	switch cfg.BuilderReaderMode {
-	case "queue", "":
-		queue = builder.NewQueue(pool)
-		reader = queue
-		logger.Info("builder reader",
-			"mode", "queue",
-			"note", "legacy builder_queue path; cursor mode eliminates per-entry MVCC pressure")
-	case "cursor":
-		reader = builder.NewCursorReader(store.NewSequenceCursor(pool))
-		// queue stays nil — admission's Enqueue is gated on
-		// deps.Queue != nil (see api/submission.go and
-		// api/batch.go nil-guards from commit 7/8).
-		logger.Info("builder reader",
-			"mode", "cursor",
-			"note", "log-tailing follower; admission skips builder_queue write")
-	default:
-		logger.Error("unknown OPERATOR_BUILDER_READER",
-			"value", cfg.BuilderReaderMode, "want", "queue|cursor")
-		os.Exit(1)
-	}
+	// Builder pending-work source: CT-native log-tailing follower.
+	// Admission writes only entry_index; the cursor reader tails it
+	// and advances builder_cursor in its atomic commit.
+	sequenceCursor := store.NewSequenceCursor(pool)
+	reader := builder.NewCursorReader(sequenceCursor)
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	// Load buffer from persistence (cold start = strict OCC per SDK-D9).
@@ -453,13 +483,14 @@ func main() {
 		logger,
 	).WithCommitmentStore(commitStore)
 
-	// ── Difficulty controller (queue-depth-driven) ────────────────────
+	// ── Difficulty controller (cursor-lag-driven) ─────────────────────
 	//
 	// DefaultDifficultyConfig() is the ready-made production preset:
 	//   Initial=16, Min=8, Max=24, Low=100, High=10000, Interval=30s, SHA-256.
-	// NewDifficultyController takes (queue, cfg, logger) — queue first.
+	// SequenceCursor.Lag returns MAX(entry_index.seq) - cursor and
+	// drives PoW difficulty via the cursor-mode lag signal.
 	diffController := middleware.NewDifficultyController(
-		queue, middleware.DefaultDifficultyConfig(), logger,
+		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
 	// ── Witness cosigner (optional) ───────────────────────────────────
@@ -505,12 +536,13 @@ func main() {
 		logger,
 	)
 
-	// ── Submission handler (v0.3.0: 13-step pipeline) ─────────────────
+	// ── Submission handler (WAL-first 14-step pipeline) ───────────────
 	submitHandler := api.NewSubmissionHandler(&api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:          pool,
-			EntryStore:  entryStore,
-			EntryWriter: byteStore, // same store the fetcher reads from.
+			DB:         pool,
+			EntryStore: entryStore,
+			WAL:        walc,
+			Tessera:    embeddedAppender,
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,
@@ -521,7 +553,6 @@ func main() {
 			CreditStore: creditStore,
 			DIDResolver: nil, // Phase 4: wire did.DefaultVerifierRegistry.
 		},
-		Queue:              queue,
 		LogDID:             cfg.LogDID,
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
@@ -529,7 +560,10 @@ func main() {
 	})
 
 	// ── Shared stores for read handlers ───────────────────────────────
-	queryAPI := indexes.NewPostgresQueryAPI(pool, byteStore, cfg.LogDID)
+	// Query API also reads through the composite (WAL → bytestore
+	// fallback) so query-by-* endpoints get the same routing as
+	// the single-entry fetcher.
+	queryAPI := indexes.NewPostgresQueryAPI(pool, compositeReader, cfg.LogDID)
 	treeHeadStore := store.NewTreeHeadStore(pool)
 
 	// ── Handler struct for api.Server ─────────────────────────────────
@@ -547,10 +581,13 @@ func main() {
 	}
 	smtDeps := &api.SMTDeps{Tree: tree, LeafStore: leafStore, Logger: logger}
 	entryReadDeps := &api.EntryReadDeps{
-		Fetcher:  fetcher,
-		QueryAPI: queryAPI,
-		LogDID:   cfg.LogDID,
-		Logger:   logger,
+		Fetcher:    fetcher,
+		QueryAPI:   queryAPI,
+		EntryStore: entryStore,
+		WAL:        walc,
+		Presigner:  gcsStore, // bytestore.GCS satisfies api.Presigner
+		LogDID:     cfg.LogDID,
+		Logger:     logger,
 	}
 	commitDeps := &api.CommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
@@ -571,10 +608,50 @@ func main() {
 		WitnessCosign:   nil, // TODO: wire witness.NewCosignServer when this operator is also a witness.
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),
 	}
+
+	// ── Integrity Detector (boot Reconcile + periodic loop) ───────────
+	//
+	// Wraps embeddedAppender (for re-Add via Reasserter) and
+	// tileReader (for HashAt via Verifier) into a single TesseraAdapter.
+	// The Detector reads from the WAL's inflight set on boot and
+	// samples random sequences below HWM during the periodic loop.
+	// On disagreement (ErrDiverged) it returns; the supervisor
+	// below converts that to panic so the operator stops serving
+	// before consumers see corrupt proofs.
+	integAdapter := integrity.NewTesseraAdapter(embeddedAppender, tileReader)
+	inflightIter := func(c context.Context, fn func([32]byte) error) error {
+		return walc.IterateInflight(c, func(p wal.PendingHash) error {
+			return fn(p.Hash)
+		})
+	}
+	detector := integrity.NewDetector(
+		walc,            // WALReader
+		inflightIter,    // InflightIterator
+		walc,            // WALReassertSink
+		integAdapter,    // Verifier
+		integAdapter,    // Reasserter
+		integrity.DetectorConfig{Logger: logger},
+	)
+
+	// Boot reconciliation: re-Add inflight entries to Tessera.
+	// Idempotent via antispam dedup. Hard fail on transport error
+	// (process exit triggers orchestrator restart, which retries).
+	if err := detector.Reconcile(ctx); err != nil {
+		logger.Error("integrity boot reconcile", "error", err)
+		os.Exit(1)
+	}
+
+	// ── Shipper ──────────────────────────────────────────────────────
+	// Migrates StateSequenced entries from the WAL to the byte store,
+	// marks them StateShipped, advances HWM through contiguous runs.
+	// Bytes durability is the load-bearing property: bytestore upload
+	// completes BEFORE wal.MarkShipped runs, BEFORE HWM advances.
+	ship := shipper.NewShipper(walc, gcsStore, shipper.Config{Logger: logger})
 
 	// ── HTTP server ───────────────────────────────────────────────────
 	serverCfg := api.DefaultServerConfig()
@@ -582,7 +659,20 @@ func main() {
 	serverCfg.MaxEntrySize = cfg.MaxEntrySize
 	server := api.NewServer(serverCfg, pool, handlers, logger)
 
-	// ── Goroutines ────────────────────────────────────────────────────
+	// ── Goroutines + fatal supervisor ─────────────────────────────────
+	//
+	// Each long-running goroutine reports its terminal error to the
+	// fatal channel. The supervisor below reads the FIRST error and
+	// panics on it — the only place in the entire codebase that
+	// panics deliberately. This is the infra-agnostic boundary:
+	// process exit on fatal, orchestrator (k8s/systemd/bare-metal)
+	// decides what's next.
+	//
+	// Distinguished from ctx.Done() (graceful shutdown via SIGTERM):
+	// the supervisor closes ctx via the parent cancel before
+	// panicking, giving other goroutines a chance to flush, but
+	// the panic surfaces the originating error.
+	fatal := make(chan error, 8)
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -613,9 +703,48 @@ func main() {
 		anchorPub.Run(ctx)
 	}()
 
-	// ── Shutdown ──────────────────────────────────────────────────────
-	<-ctx.Done()
-	logger.Info("shutdown initiated")
+	// Shipper: migrates WAL → bytestore. Returns ctx.Err() on shutdown
+	// (not fatal); other errors are fatal.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := ship.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			fatal <- fmt.Errorf("shipper: %w", err)
+		}
+	}()
+
+	// Integrity Detector loop: returns ErrDiverged on disagreement,
+	// ctx.Err() on shutdown. Divergence is FATAL — must panic so
+	// consumers stop seeing corrupt proofs.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := detector.Loop(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			fatal <- fmt.Errorf("integrity detector: %w", err)
+		}
+	}()
+
+	// ── Supervisor: shutdown OR fatal ────────────────────────────────
+	//
+	// Two exit paths:
+	//   - ctx.Done(): graceful shutdown (SIGTERM/SIGINT). Cancel
+	//     all goroutines, drain, exit cleanly with code 0.
+	//   - fatal channel: a goroutine returned a non-recoverable
+	//     error (Tessera divergence, shipper exhaustion, etc.).
+	//     Cancel ctx so other goroutines unwind, then PANIC so
+	//     the process exits non-zero and the orchestrator
+	//     restart-loops (or escalates per its policy).
+	var fatalErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown initiated (graceful)")
+	case fatalErr = <-fatal:
+		logger.Error("FATAL: operator must terminate", "error", fatalErr)
+		// Cancel ctx so other goroutines see the shutdown signal
+		// and unwind. The panic below is what actually terminates
+		// the process.
+		cancel()
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -629,4 +758,12 @@ func main() {
 	logger.Info("operator stopped",
 		"batches", b, "entries", e, "errors", errs,
 	)
+
+	if fatalErr != nil {
+		// Process-level termination on fatal — the only deliberate
+		// panic in the entire codebase. The orchestrator (k8s,
+		// systemd, bare metal) sees a non-zero exit and decides
+		// what's next.
+		panic(fmt.Errorf("operator FATAL: %w", fatalErr))
+	}
 }
