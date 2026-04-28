@@ -194,7 +194,7 @@ func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// GET /v1/entries/hash/{hash_hex} — hash lookup
+// GET /v1/entries-hash/{hash_hex} — hash lookup
 // ─────────────────────────────────────────────────────────────────────
 
 // NewHashLookupHandler returns a single entry by its canonical hash.
@@ -222,7 +222,7 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		hashHex := r.URL.Path[len("/v1/entries/hash/"):]
+		hashHex := r.URL.Path[len("/v1/entries-hash/"):]
 		hashBytes, err := hex.DecodeString(hashHex)
 		if err != nil || len(hashBytes) != 32 {
 			writeError(w, http.StatusBadRequest, "invalid canonical hash")

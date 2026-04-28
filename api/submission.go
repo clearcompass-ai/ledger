@@ -17,7 +17,7 @@ CONTRACT:
 	all happen asynchronously in the background Sequencer.
 
 	Consumers waiting for sequencing confirmation poll
-	GET /v1/entries/hash/{canonical_hash} — the same endpoint used by
+	GET /v1/entries-hash/{canonical_hash} — the same endpoint used by
 	monitors, audit jobs, and the SDK's HTTP entry fetcher.
 
 FAST-PATH SHAPE (admission steps run inline):

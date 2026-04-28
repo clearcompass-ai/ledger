@@ -19,7 +19,7 @@ WHAT'S COVERED:
       from StatePending → StateSequenced and an entry_index row
       lands in Postgres.
 
-  GET /v1/entries/hash/{hash} during the inflight window:
+  GET /v1/entries-hash/{hash} during the inflight window:
     - Returns 200 {state:"pending"} immediately after the POST.
     - After Sequencer drain, returns full metadata (sequence_number).
 
@@ -86,7 +86,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Test 2: GET /v1/entries/hash/{hash} returns pending then sequenced.
+// Test 2: GET /v1/entries-hash/{hash} returns pending then sequenced.
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
@@ -104,7 +104,7 @@ func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
 	// Probe immediately. With a 10ms sequencer interval, we may
 	// catch the entry as either pending or sequenced — both are
 	// valid passing states; we just need the body to decode.
-	url := op.BaseURL + "/v1/entries/hash/" + hashHex
+	url := op.BaseURL + "/v1/entries-hash/" + hashHex
 	got := pollHashLookup(t, url, func(rec map[string]any) bool {
 		// Accept the moment state==sequenced (entry_index row written)
 		// OR the call returns full metadata (sequence_number present).

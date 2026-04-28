@@ -19,7 +19,7 @@ WHAT THE SCT GUARANTEES:
 
 WHAT THE SCT DOES NOT GUARANTEE:
 
-  - Visibility in /v1/entries/{seq} or /v1/entries/hash/{hash}
+  - Visibility in /v1/entries/{seq} or /v1/entries-hash/{hash}
     metadata. That happens when the background Sequencer drains
     StatePending and writes the row to entry_index.
   - Bytestore migration. That's the Shipper's job; surfaces as

@@ -183,7 +183,7 @@ func TestHTTP_SubmitRejectsForeignDestination(t *testing.T) {
 	wire := signedWireBytes(t, priv, envelope.ControlHeader{
 		SignerDID:   signerDID,
 		Destination: "did:web:other-log.example", // NOT testLogDID
-		EventTime:   time.Now().UTC().Unix(),
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("cross-destination-replay-attempt"), false)
 
 	resp := postEntry(t, srv.URL, wire)
@@ -222,7 +222,7 @@ func TestHTTP_SubmitRejectsMalformedDestination(t *testing.T) {
 	wire := signedWireBytes(t, priv, envelope.ControlHeader{
 		SignerDID:   signerDID,
 		Destination: "", // forged empty — bypasses NewEntry
-		EventTime:   time.Now().UTC().Unix(),
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("malformed-destination-forgery"), true /* skipValidate */)
 
 	resp := postEntry(t, srv.URL, wire)
@@ -257,7 +257,7 @@ func TestHTTP_SubmitRejectsStaleEventTime(t *testing.T) {
 	// EventTime 10 minutes in the past — well outside FreshnessInteractive.
 	// The test server is configured with FreshnessInteractive (5 min); an
 	// entry older than 5 minutes + 30s clock skew must fail.
-	stale := time.Now().UTC().Add(-10 * time.Minute).Unix()
+	stale := time.Now().UTC().Add(-10 * time.Minute).UnixMicro()
 
 	wire := signedWireBytes(t, priv, envelope.ControlHeader{
 		SignerDID:   signerDID,
@@ -286,7 +286,7 @@ func TestHTTP_SubmitRejectsFutureEventTime(t *testing.T) {
 	priv, signerDID := testKeyDID(t)
 
 	// 5 minutes in the future — well beyond ClockSkewTolerance (30s).
-	future := time.Now().UTC().Add(5 * time.Minute).Unix()
+	future := time.Now().UTC().Add(5 * time.Minute).UnixMicro()
 
 	wire := signedWireBytes(t, priv, envelope.ControlHeader{
 		SignerDID:   signerDID,
@@ -326,7 +326,7 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 	// Fresh EventTime, testLogDID destination — should sail through.
 	entry := makeSignedEntry(t, envelope.ControlHeader{
 		Destination: testLogDID,
-		EventTime:   time.Now().UTC().Unix(),
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("positive-path-admission"), priv, signerDID)
 	wire := envelope.Serialize(entry)
 
@@ -376,7 +376,7 @@ func TestMerkleLeaf_IsEntryIdentity(t *testing.T) {
 
 	entry := makeSignedEntry(t, envelope.ControlHeader{
 		Destination: testLogDID,
-		EventTime:   time.Now().UTC().Unix(),
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("merkle-leaf-identity-test"), priv, signerDID)
 	expectedIdentity := envelope.EntryIdentity(entry)
 	wire := envelope.Serialize(entry)

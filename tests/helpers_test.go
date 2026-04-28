@@ -187,6 +187,12 @@ func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope
 	if h.Destination == "" {
 		h.Destination = testLogDID
 	}
+	// EventTime is microseconds since Unix epoch — matches the SDK's
+	// exchange/policy.CheckFreshness unit. A zero EventTime causes
+	// the operator to reject the entry as 56-years-stale (Unix epoch).
+	if h.EventTime == 0 {
+		h.EventTime = time.Now().UTC().UnixMicro()
+	}
 	entry, err := envelope.NewUnsignedEntry(h, payload)
 	if err != nil {
 		t.Fatalf("NewUnsignedEntry: %v", err)
@@ -225,6 +231,9 @@ func makeAdmissibleEntry(t *testing.T, h envelope.ControlHeader, payload []byte)
 	t.Helper()
 	if h.Destination == "" {
 		h.Destination = testLogDID
+	}
+	if h.EventTime == 0 {
+		h.EventTime = time.Now().UTC().UnixMicro()
 	}
 	signer := resolveSyntheticSigner(h.SignerDID)
 	h.SignerDID = signer.did
