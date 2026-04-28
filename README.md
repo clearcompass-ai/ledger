@@ -6,6 +6,10 @@ Separate deployable from the SDK. Kubernetes target. Single binary.
 
 ## Architecture
 
+Phase 3+4 architecture (WAL-first admission, hexagonal bytestore,
+async Shipper, integrity Detector, 302-redirect read path) is
+documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ```
                   ┌─────────────┐
                   │   Clients   │
@@ -13,31 +17,33 @@ Separate deployable from the SDK. Kubernetes target. Single binary.
                          │ POST /v1/entries
                          ▼
                ┌───────────────────┐
-               │  Admission (10    │      Middleware chain:
-               │  sequential steps)│      SizeLimit → Auth → Handler
+               │  Admission        │      Middleware chain:
+               │  (sequential)     │      SizeLimit → Auth → Handler
                └────────┬──────────┘
-                        │ atomic: INSERT entry + ENQUEUE
+                        │ wal.Submit (durable on local NVMe)
+                        ▼
+               ┌───────────────────┐
+               │   WAL (Badger)    │ ← state: pending → sequenced → shipped
+               └────────┬──────────┘
+                        │
+                        │ tessera AppendLeaf (sequence + dedup)
                         ▼
                ┌───────────────────┐       ┌──────────────────┐
-               │   Builder Loop    │──────▶│  TesseraAdapter  │
-               │  (single goroutine│       │ (sdk MerkleTree) │
-               │   advisory lock)  │       └──────────────────┘
-               └────────┬──────────┘                │
-                        │ SDK ProcessBatch           │ AppendLeaf
-                        ▼                            ▼
-               ┌───────────────────┐       ┌──────────────┐
-               │   Postgres        │       │   Tessera    │
-               │  ATOMIC COMMIT:   │       │  Merkle Tree │
-               │  leaves + nodes   │       └──────────────┘
-               │  + buffer + queue │                │
-               └───────────────────┘                │ Head()
-                                                    ▼
-                                           ┌──────────────┐
-                                           │   Witnesses  │
-                                           │  K-of-N      │
-                                           │  cosignatures│
-                                           └──────────────┘
+               │  entry_index +    │       │   Tessera tiles  │
+               │  Postgres         │       │   + antispam     │
+               └───────────────────┘       └──────────────────┘
+                        │
+                        │ Shipper (async migrator)
+                        ▼
+               ┌───────────────────┐
+               │  Bytestore (GCS)  │ ← 302 target for shipped reads
+               └───────────────────┘
 ```
+
+For day-2 operations (alerts, recovery, volume failure semantics)
+see [`docs/RUNBOOK.md`](docs/RUNBOOK.md). For environment-variable
+configuration see [`docs/CONFIG.md`](docs/CONFIG.md). Phase-3+4
+migration notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 The operator never reimplements builder logic. It calls `sdk builder.ProcessBatch` — the same deterministic function that two independent operators processing the same log must agree on.
 
@@ -63,20 +69,30 @@ The CID is the only identifier shared between operator and artifact store. The C
 ```bash
 # 1. Database
 createdb ortholog
-export ORTHOLOG_POSTGRES_DSN="postgres://user:pass@localhost:5432/ortholog?sslmode=disable"
+export OPERATOR_DATABASE_URL="postgres://user:pass@localhost:5432/ortholog?sslmode=disable"
 
-# 2. Build
-cd ortholog-operator
+# 2. Required identity + storage env
+export OPERATOR_LOG_DID="did:ortholog:operator:001"
+export OPERATOR_WAL_PATH="/var/lib/ortholog/wal"
+export OPERATOR_TESSERA_STORAGE_DIR="/var/lib/ortholog/tessera"
+export OPERATOR_TESSERA_ANTISPAM_PATH="/var/lib/ortholog/tessera-antispam"
+export OPERATOR_BYTE_STORE_BACKEND="gcs"
+export OPERATOR_BYTE_STORE_GCS_BUCKET="my-ortholog-bucket"
+# GOOGLE_APPLICATION_CREDENTIALS or workload identity for GCS auth.
+
+# 3. Build
 go mod tidy
 go build -o operator ./cmd/operator
 
-# 3. Run (migrations execute automatically on first start)
+# 4. Run (migrations execute automatically on first start)
 ./operator
 
-# 4. Verify
+# 5. Verify
 curl http://localhost:8080/healthz   # → "ok"
 curl http://localhost:8080/readyz    # → "ready"
 ```
+
+The full env-var reference is in [`docs/CONFIG.md`](docs/CONFIG.md).
 
 ## Startup Sequence
 
@@ -203,7 +219,6 @@ Six migration versions, each statement executed individually. All additive.
 | `entries` | `sequence_number BIGINT` | Log entries with canonical bytes, hash, signature, indexed fields |
 | `smt_leaves` | `leaf_key BYTEA(32)` | SMT leaf state: origin_tip + authority_tip |
 | `smt_nodes` | `path_key BYTEA` | SMT internal node hashes with correct depth tracking |
-| `builder_queue` | `sequence_number BIGINT` | FIFO: pending → processing → done, with processed_at |
 | `credits` | `exchange_did TEXT` | Mode A write credit balances |
 | `tree_heads` | `tree_size BIGINT` | Cosigned tree head history |
 | `delta_window_buffers` | `leaf_key BYTEA` | Per-leaf OCC authority tip history |
@@ -233,7 +248,7 @@ Each cycle:
 5. **Atomic commit** — Serializable transaction:
    - Leaf mutations → `smt_leaves` (via `SetTx`)
    - Delta buffer → `delta_window_buffers` (via `SaveTx`)
-   - Queue status → `builder_queue` (via `MarkProcessed`)
+   - Cursor advance → `builder_cursor` (via `AdvanceTx`)
 6. **Tessera append** — `merkleTree.AppendLeaf()` per entry (idempotent)
 7. **Commitment** — `MaybePublish()` with frequency control
 8. **Cosignatures** — `merkleTree.Head()` → `witness.RequestCosignatures()`
@@ -289,13 +304,27 @@ All settings via environment variables. Config file at `config/operator.yaml` fo
 ## Testing
 
 ```bash
-# Unit-level tests (no Postgres required)
-go test ./tests/ -v -count=1
+# Unit-level tests (no Postgres / no cloud required)
+go test ./... -count=1
 
-# Full integration tests (Postgres required)
+# HTTP integration + e2e tests (Postgres required)
 export ORTHOLOG_TEST_DSN="postgres://user:pass@localhost:5432/ortholog_test?sslmode=disable"
-go test ./tests/ -v -count=1 -tags=integration
+go test ./tests/ -count=1 -v
+
+# Bytestore conformance against fake-gcs-server (Docker required)
+./scripts/run-gcs-tests.sh
+
+# Bytestore conformance against real GCS bucket
+ORTHOLOG_REAL_GCS_BUCKET=my-bucket ./scripts/run-gcs-tests-real.sh
+
+# Operator soak (1M entries against real GCS — minutes, real cloud cost)
+ORTHOLOG_TEST_DSN=... ORTHOLOG_TEST_GCS_BUCKET=... ./scripts/run-soak.sh
 ```
+
+Test gating envs (`ORTHOLOG_TEST_*`) and soak knobs (`ORTHOLOG_SOAK_*`)
+are documented in [`docs/CONFIG.md`](docs/CONFIG.md). Soak is
+build-tag-isolated under `//go:build soak` — the default
+`go test ./...` never invokes it.
 
 **85 tests across 14 categories:**
 
@@ -326,7 +355,7 @@ These are structural properties enforced by code, not guidelines.
 
 **Atomic commit:** Leaf mutations + node cache + delta buffer + queue status happen in ONE Serializable Postgres transaction. No orphaned entries. No partial state.
 
-**Gapless sequence:** `entry_sequence` Postgres sequence with `NO CYCLE`. Builder processes entries in this order. Gaps break determinism.
+**Gapless sequence:** Tessera owns sequence allocation. Admission obtains the seq from `tessera.AppendLeaf` (the antispam dedup keeps it idempotent under concurrent submissions of the same content) and inserts the assigned value into `entry_index`. The Phase 1/2 `entry_sequence` Postgres SEQUENCE was dropped in commit 10. Builder processes entries in seq order via the cursor reader. Gaps break determinism.
 
 **Decision 47 (locality):** `PostgresEntryFetcher.Fetch` returns nil for foreign log DIDs. The builder only processes local entries.
 
