@@ -47,6 +47,7 @@ import (
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/api"
@@ -171,6 +172,10 @@ func startTestOperator(t *testing.T) *testOperator {
 	// tests — its AppendLeaf signature satisfies the interface
 	// even though its primary role is as the builder-side
 	// MerkleAppender. Production wires *tessera.EmbeddedAppender.
+	opSignerPriv, err := signatures.GenerateKey()
+	if err != nil {
+		t.Fatalf("operator signer key: %v", err)
+	}
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
 			DB:         pool,
@@ -187,9 +192,11 @@ func startTestOperator(t *testing.T) *testOperator {
 			CreditStore: creditStore,
 			DIDResolver: nil,
 		},
-		LogDID:       testLogDID,
-		MaxEntrySize: 1 << 20,
-		Logger:       logger,
+		LogDID:             testLogDID,
+		OperatorDID:        testOperatorDID,
+		OperatorSignerPriv: opSignerPriv,
+		MaxEntrySize:       1 << 20,
+		Logger:             logger,
 	}
 
 	treeDeps := &api.TreeDeps{

@@ -223,8 +223,18 @@ func pollQueryResults(t *testing.T, baseURL, signerDID string, expectedCount int
 	return nil
 }
 
-// submitEntry POSTs a wire entry with auth and returns the parsed response.
-// Used in happy-path tests; fails the test if status != 202.
+// submitEntry POSTs a wire entry with auth, waits for sequencing,
+// and returns a map with the SCT fields plus sequence_number,
+// canonical_hash, and log_time pulled from /v1/entries/hash/{hash}
+// once the Sequencer has drained.
+//
+// Returning the merged shape preserves the legacy
+// {sequence_number, canonical_hash, log_time, signer_did}
+// expectations that pre-SCT integration tests depend on, while
+// honoring the new asynchronous /v1 contract.
+//
+// Fails the test if status != 202 or if sequencing doesn't
+// complete inside the polling budget.
 func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]any {
 	t.Helper()
 	req, _ := http.NewRequest("POST", baseURL+"/v1/entries", bytes.NewReader(wire))
@@ -237,9 +247,45 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", resp.StatusCode, body)
 	}
-	var result map[string]any
-	json.Unmarshal(body, &result)
-	return result
+	var sct map[string]any
+	if err := json.Unmarshal(body, &sct); err != nil {
+		t.Fatalf("decode SCT: %v\nbody: %s", err, body)
+	}
+	hashHex, _ := sct["canonical_hash"].(string)
+	if hashHex == "" {
+		t.Fatalf("SCT missing canonical_hash: %s", body)
+	}
+
+	// Poll the hash-lookup endpoint until Sequencer drains.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		lookup, err := http.Get(baseURL + "/v1/entries/hash/" + hashHex)
+		if err == nil && lookup.StatusCode == http.StatusOK {
+			var rec map[string]any
+			if decErr := json.NewDecoder(lookup.Body).Decode(&rec); decErr == nil {
+				lookup.Body.Close()
+				if _, hasSeq := rec["sequence_number"]; hasSeq {
+					// Merge SCT fields with the indexed record so
+					// callers see the union — sequence_number,
+					// signer_did, etc. from the index plus the
+					// SCT fields callers may also need.
+					for k, v := range sct {
+						if _, exists := rec[k]; !exists {
+							rec[k] = v
+						}
+					}
+					return rec
+				}
+				continue
+			}
+			lookup.Body.Close()
+		} else if lookup != nil {
+			lookup.Body.Close()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("hash-lookup did not return sequence_number within budget for hash %s", hashHex)
+	return nil
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -316,7 +362,7 @@ func TestHTTP_Submission_ModeB_ValidStamp(t *testing.T) {
 
 	var result map[string]any
 	json.Unmarshal(body, &result)
-	t.Logf("Mode B accepted: seq=%v hash=%s", result["sequence_number"], result["canonical_hash"].(string)[:16])
+	t.Logf("Mode B accepted: SCT version=%v hash=%s", result["version"], result["canonical_hash"].(string)[:16])
 }
 
 func TestHTTP_Submission_ModeB_NoStamp_403(t *testing.T) {
