@@ -52,7 +52,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
@@ -158,16 +157,3 @@ func NewSubmissionV2Handler(deps *SubmissionV2Deps) http.HandlerFunc {
 	}
 }
 
-// MMDHandler returns the operator's Maximum Merge Delay — the SLA
-// on the Sequencer's drain latency. Consumers programmatically
-// verify the operator's promised redemption window before trusting
-// the SCT. RFC 6962 logs publish this; we follow the same model.
-func NewMMDHandler(mmd time.Duration) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mmd_seconds": mmd.Seconds(),
-			"mmd_human":   mmd.String(),
-		})
-	}
-}

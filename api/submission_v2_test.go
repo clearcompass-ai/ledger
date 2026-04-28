@@ -1,8 +1,7 @@
 /*
 FILE PATH: api/submission_v2_test.go
 
-Handler-level tests for POST /v2/entries (NewSubmissionV2Handler)
-and GET /v1/admission/mmd (NewMMDHandler).
+Handler-level tests for POST /v2/entries (NewSubmissionV2Handler).
 
 WHAT'S COVERED:
 
@@ -16,13 +15,12 @@ WHAT'S COVERED:
 	  - WAL queue full → 503 + Retry-After.
 	  - Insufficient credits (Mode A) → 402.
 
-	NewMMDHandler:
-	  - Returns the configured MMD as both seconds and human form.
-
 These are unit-level handler tests that mock out WAL, EntryStore,
 Tessera, etc. via the existing fake types. End-to-end coverage
 (real WAL, real Sequencer drain, full HTTP server) lives in
 tests/e2e_v2_sct_test.go (commit 9).
+
+GET /v1/admission/mmd unit tests live in api/mmd_test.go.
 */
 package api
 
@@ -371,34 +369,3 @@ func TestV2Handler_WALInternalError_Returns500(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// MMD handler
-// ─────────────────────────────────────────────────────────────────────
-
-func TestMMDHandler_RoundsToConfiguredValue(t *testing.T) {
-	for _, mmd := range []time.Duration{
-		time.Second, 30 * time.Second, 24 * time.Hour, 7 * 24 * time.Hour,
-	} {
-		h := NewMMDHandler(mmd)
-		req := httptest.NewRequest(http.MethodGet, "/v1/admission/mmd", nil)
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Errorf("mmd=%v: status = %d, want 200", mmd, rr.Code)
-		}
-		var body struct {
-			MMDSeconds float64 `json:"mmd_seconds"`
-			MMDHuman   string  `json:"mmd_human"`
-		}
-		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
-			t.Errorf("mmd=%v: decode: %v", mmd, err)
-			continue
-		}
-		if body.MMDSeconds != mmd.Seconds() {
-			t.Errorf("mmd=%v: mmd_seconds = %v, want %v", mmd, body.MMDSeconds, mmd.Seconds())
-		}
-		if body.MMDHuman != mmd.String() {
-			t.Errorf("mmd=%v: mmd_human = %q, want %q", mmd, body.MMDHuman, mmd.String())
-		}
-	}
-}
