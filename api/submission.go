@@ -116,8 +116,14 @@ type WALCommitter interface {
 	Submit(ctx context.Context, hash [32]byte, wire []byte) error
 
 	// Sequence transitions the WAL state pending → sequenced after
-	// Tessera assigned a sequence number for the entry.
+	// Tessera assigned a sequence number for the entry. Used by the
+	// sequencer; v1 facade reads MetaState only.
 	Sequence(ctx context.Context, hash [32]byte, seq uint64) error
+
+	// MetaState returns the current WAL state record for an entry.
+	// The v1 facade polls this to wait for the background Sequencer
+	// to advance Pending → Sequenced.
+	MetaState(ctx context.Context, hash [32]byte) (wal.Meta, error)
 }
 
 // TesseraAppender is the Tessera surface admission needs.
@@ -171,7 +177,25 @@ type SubmissionDeps struct {
 	// FreshnessTolerance configures the late-replay rejection window
 	// at admission time. Zero defaults to policy.FreshnessInteractive.
 	FreshnessTolerance time.Duration
+
+	// V1Timeout caps how long the v1 facade polls WAL.MetaState for
+	// the Sequencer to advance the entry to StateSequenced. Zero
+	// defaults to DefaultV1Timeout. On expiry the handler returns
+	// HTTP 504 with a structured payload pointing the client at
+	// GET /v1/entries/hash/{hash} for a follow-up.
+	V1Timeout time.Duration
 }
+
+// V1 facade timing constants. The facade pattern preserves the
+// historical /v1/entries synchronous contract under the SCT/MMD
+// architecture: wal.Submit completes synchronously, then the
+// handler polls WAL.MetaState until the background Sequencer
+// transitions the entry to StateSequenced (or the timeout
+// elapses).
+const (
+	DefaultV1Timeout     = 30 * time.Second
+	V1FacadePollInterval = 50 * time.Millisecond
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3) Schema dispatch (C2 — commitment SplitID extraction)
@@ -253,11 +277,236 @@ func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) 
 // 4) Submission Handler
 // ─────────────────────────────────────────────────────────────────────────────
 
+// preparedSubmission is the result of running steps 1-9 of the
+// admission fast path. v1 (facade) and v2 (SCT) handlers both call
+// prepareSubmission and then diverge at step 10+ — v1 polls WAL,
+// v2 returns an SCT.
+type preparedSubmission struct {
+	raw               []byte
+	entry             *envelope.Entry
+	canonicalHash     [32]byte
+	logTime           time.Time
+	authenticated     bool
+	exchangeDID       string
+	extractedSplitID  *[32]byte
+	extractedSchemaID string
+}
+
+// submissionError carries the HTTP status + message a fast-path
+// validation failure should surface to the caller. The handler
+// (v1 or v2) is responsible for writing the response — keeping
+// the helper free of *http.ResponseWriter so it can be unit-tested
+// without httptest plumbing.
+type submissionError struct {
+	Status  int
+	Message string
+}
+
+// prepareSubmission runs admission steps 1-9: read body, validate
+// preamble, deserialize, NFC, destination binding, freshness,
+// signature, schema dispatch, size, evidence cap, mode dispatch,
+// canonical hash, early-dup check, log_time. Returns either a
+// fully-populated preparedSubmission ready for wal.Submit, or
+// a submissionError to be written to the client.
+//
+// Identical for v1 and v2 — the SCT/MMD architecture only changes
+// what happens AFTER wal.Submit (steps 10+).
+func prepareSubmission(
+	ctx context.Context,
+	deps *SubmissionDeps,
+	r *http.Request,
+	freshness time.Duration,
+) (*preparedSubmission, *submissionError) {
+	// ── Step 1: Read raw bytes + validate preamble ─────────────────
+	sigOverhead := int64(512)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, deps.MaxEntrySize+sigOverhead))
+	if err != nil {
+		return nil, &submissionError{http.StatusBadRequest, "failed to read request body"}
+	}
+	if len(raw) < 6 {
+		return nil, &submissionError{http.StatusUnprocessableEntity, "entry too short for preamble"}
+	}
+	protocolVersion := binary.BigEndian.Uint16(raw[0:2])
+	if protocolVersion != envelope.CurrentProtocolVersion() {
+		return nil, &submissionError{
+			http.StatusUnprocessableEntity,
+			fmt.Sprintf("unsupported protocol version %d (expected %d)",
+				protocolVersion, envelope.CurrentProtocolVersion()),
+		}
+	}
+
+	// ── Step 2: Deserialize wire bytes, validate algo ID ───────────
+	entry, err := envelope.Deserialize(raw)
+	if err != nil {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("deserialize: %s", err)}
+	}
+	algoID := entry.Signatures[0].AlgoID
+	sigBytes := entry.Signatures[0].Bytes
+	if err := envelope.ValidateAlgorithmID(algoID); err != nil {
+		return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+	}
+
+	// ── Step 3a: Re-apply NewEntry's write-time invariants ─────────
+	if err := entry.Validate(); err != nil {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("entry validation: %s", err)}
+	}
+	// ── Step 3a-NFC ────────────────────────────────────────────────
+	if err := admission.CheckNFC(entry); err != nil {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("NFC: %s", err)}
+	}
+	// ── Step 3b: Destination binding ───────────────────────────────
+	if entry.Header.Destination != deps.LogDID {
+		return nil, &submissionError{http.StatusForbidden,
+			fmt.Sprintf("entry destination %q does not match log %q",
+				entry.Header.Destination, deps.LogDID)}
+	}
+	// ── Step 3c: Late-replay freshness ─────────────────────────────
+	if err := policy.CheckFreshness(entry, time.Now().UTC(), freshness); err != nil {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("freshness: %s", err)}
+	}
+
+	// ── Step 4: Signature verification ─────────────────────────────
+	if entry.Header.SignerDID == "" {
+		return nil, &submissionError{http.StatusUnprocessableEntity, "empty signer DID"}
+	}
+	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
+		switch {
+		case errors.Is(err, admission.ErrSignerDIDResolution),
+			errors.Is(err, admission.ErrSignatureInvalid):
+			return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+		default:
+			deps.Logger.Error("signature verification path failed", "error", err)
+			return nil, &submissionError{http.StatusInternalServerError, "signature verification failed"}
+		}
+	}
+
+	// ── Step 4-Schema: Commitment dispatch ─────────────────────────
+	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
+	if dispatchErr != nil {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("commitment schema: %s", dispatchErr)}
+	}
+
+	// ── Step 5: Entry size ─────────────────────────────────────────
+	if int64(len(raw)) > deps.MaxEntrySize {
+		return nil, &submissionError{http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("canonical bytes %d exceed max %d", len(raw), deps.MaxEntrySize)}
+	}
+
+	// ── Step 6: Evidence_Pointers cap ──────────────────────────────
+	if !middleware.CheckEvidenceCap(entry) {
+		return nil, &submissionError{http.StatusUnprocessableEntity,
+			fmt.Sprintf("Evidence_Pointers %d exceeds cap %d (non-snapshot)",
+				len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)}
+	}
+
+	// ── Step 7: Admission mode (Mode B stamp verify; auth probe) ───
+	authenticated := middleware.IsAuthenticated(ctx)
+	exchangeDID := middleware.ExchangeDID(ctx)
+	if !authenticated {
+		h := &entry.Header
+		if h.AdmissionProof == nil {
+			return nil, &submissionError{http.StatusForbidden,
+				"unauthenticated submission requires compute stamp"}
+		}
+		apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
+		canonicalHash := envelope.EntryIdentity(entry)
+		var hashFunc sdkadmission.HashFunc
+		switch deps.Admission.DiffController.HashFunction() {
+		case "argon2id":
+			hashFunc = sdkadmission.HashArgon2id
+		default:
+			hashFunc = sdkadmission.HashSHA256
+		}
+		if err := sdkadmission.VerifyStamp(
+			apiProof,
+			canonicalHash,
+			deps.LogDID,
+			deps.Admission.DiffController.CurrentDifficulty(),
+			hashFunc,
+			nil,
+			sdkadmission.CurrentEpoch(uint64(deps.Admission.EpochWindowSeconds)),
+			uint64(deps.Admission.EpochAcceptanceWindow),
+		); err != nil {
+			return nil, &submissionError{http.StatusForbidden,
+				fmt.Sprintf("stamp verification failed: %s", err)}
+		}
+	}
+
+	// ── Step 8: Canonical hash ─────────────────────────────────────
+	canonicalHash := envelope.EntryIdentity(entry)
+
+	// ── Step 8a: Early duplicate check ─────────────────────────────
+	// Skipped when EntryStore is nil (unit-test path where there is
+	// no Postgres pool). Real production wiring always provides one.
+	if deps.Storage.EntryStore != nil {
+		if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash); fetchErr == nil && found {
+			return nil, &submissionError{http.StatusConflict,
+				fmt.Sprintf("duplicate entry: existing sequence %d", existingSeq)}
+		}
+	}
+
+	// ── Step 9: Log_Time assignment ────────────────────────────────
+	logTime := time.Now().UTC()
+
+	return &preparedSubmission{
+		raw:               raw,
+		entry:             entry,
+		canonicalHash:     canonicalHash,
+		logTime:           logTime,
+		authenticated:     authenticated,
+		exchangeDID:       exchangeDID,
+		extractedSplitID:  extractedSplitID,
+		extractedSchemaID: extractedSchemaID,
+	}, nil
+}
+
+// deductCreditModeA decrements one credit for the authenticated
+// exchange DID inside its own Postgres transaction. Called by
+// both v1 and v2 handlers BEFORE wal.Submit so a credit-exhausted
+// caller never gets an SCT (v2) or a slot in the WAL (v1).
+//
+// Returns nil for unauthenticated callers (Mode B), or for the
+// dev/test path where DB and CreditStore are nil. Returns
+// store.ErrInsufficientCredits to surface as HTTP 402.
+func deductCreditModeA(
+	ctx context.Context,
+	deps *SubmissionDeps,
+	authenticated bool,
+	exchangeDID string,
+) error {
+	if !authenticated {
+		return nil
+	}
+	if deps.Storage.DB == nil || deps.Identity.CreditStore == nil {
+		return nil
+	}
+	return store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID)
+		return err
+	})
+}
+
 // NewSubmissionHandler creates the POST /v1/entries handler.
 //
 // Panics if AdmissionConfig.EpochWindowSeconds is non-positive — without
 // a valid epoch window, the handler cannot validate Mode B admission proofs
 // and the operator should refuse to start.
+//
+// Under the SCT/MMD architecture, this handler is now a polling
+// FACADE over the asynchronous Sequencer. Steps 1-10 run inline
+// (durable wal.Submit), then the handler polls WAL.MetaState
+// until the background Sequencer transitions the entry to
+// StateSequenced. The legacy {sequence_number, canonical_hash,
+// log_time} JSON shape is preserved for backwards compatibility.
+//
+// Clients that want an immediate non-blocking response should
+// migrate to POST /v2/entries which returns an SCT after wal.Submit
+// without polling.
 func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if deps.Admission.EpochWindowSeconds <= 0 {
 		panic("api: SubmissionDeps.Admission.EpochWindowSeconds must be positive")
@@ -270,199 +519,39 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if freshness <= 0 {
 		freshness = policy.FreshnessInteractive
 	}
+	v1Timeout := deps.V1Timeout
+	if v1Timeout <= 0 {
+		v1Timeout = DefaultV1Timeout
+	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// ── Step 1: Read raw bytes + validate preamble ─────────────────
-		sigOverhead := int64(512)
-		raw, err := io.ReadAll(io.LimitReader(r.Body, deps.MaxEntrySize+sigOverhead))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "failed to read request body")
+		// ── Steps 1-9 (validation + early-dup + log_time) ──────────────
+		prep, errResp := prepareSubmission(ctx, deps, r, freshness)
+		if errResp != nil {
+			writeError(w, errResp.Status, errResp.Message)
 			return
 		}
 
-		if len(raw) < 6 {
-			writeError(w, http.StatusUnprocessableEntity, "entry too short for preamble")
-			return
-		}
-		protocolVersion := binary.BigEndian.Uint16(raw[0:2])
-		if protocolVersion != envelope.CurrentProtocolVersion() {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("unsupported protocol version %d (expected %d)",
-					protocolVersion, envelope.CurrentProtocolVersion()))
-			return
-		}
-
-		// ── Step 2: Deserialize wire bytes, validate algo ID ───────────
-		// Under v7.75 the wire bytes ARE the canonical bytes — the
-		// multi-sig section is appended INSIDE the canonical form by
-		// envelope.Serialize, so envelope.StripSignature is gone.
-		// Deserialize rejects zero-sig sections (ErrEmptySignatureList),
-		// so entry.Signatures[0] is safe here.
-		entry, err := envelope.Deserialize(raw)
-		if err != nil {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("deserialize: %s", err))
-			return
-		}
-		algoID := entry.Signatures[0].AlgoID
-		sigBytes := entry.Signatures[0].Bytes
-
-		if err := envelope.ValidateAlgorithmID(algoID); err != nil {
-			writeError(w, http.StatusUnauthorized, err.Error())
-			return
-		}
-
-		// ── Step 3a: Re-apply NewEntry's write-time invariants ─────────
-		if err := entry.Validate(); err != nil {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("entry validation: %s", err))
-			return
-		}
-
-		// ── Step 3a-NFC: Defensive NFC assertion (Wave 1 v7.75 F2) ─────
-		if err := admission.CheckNFC(entry); err != nil {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("NFC: %s", err))
-			return
-		}
-
-		// ── Step 3b: Destination binding enforcement ───────────────────
-		if entry.Header.Destination != deps.LogDID {
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("entry destination %q does not match log %q",
-					entry.Header.Destination, deps.LogDID))
-			return
-		}
-
-		// ── Step 3c: Late-replay freshness ─────────────────────────────
-		if err := policy.CheckFreshness(entry, time.Now().UTC(), freshness); err != nil {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("freshness: %s", err))
-			return
-		}
-
-		// ── Step 4: Signature verification (SDK-D5, Wave 1 F3a) ────────
-		if entry.Header.SignerDID == "" {
-			writeError(w, http.StatusUnprocessableEntity, "empty signer DID")
-			return
-		}
-		if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
-			switch {
-			case errors.Is(err, admission.ErrSignerDIDResolution):
-				writeError(w, http.StatusUnauthorized, err.Error())
-			case errors.Is(err, admission.ErrSignatureInvalid):
-				writeError(w, http.StatusUnauthorized, err.Error())
-			default:
-				deps.Logger.Error("signature verification path failed", "error", err)
-				writeError(w, http.StatusInternalServerError, "signature verification failed")
-			}
-			return
-		}
-
-		// ── Step 4-Schema: Commitment dispatch (Wave 1 v3 §C2) ─────────
-		// Recognized cryptographic-commitment payloads route through
-		// the SDK Parse* validators to extract the SplitID. Recognized
-		// failures (ErrCommitmentPayloadMalformed, ErrCommitmentSchemaIDMismatch)
-		// reject with HTTP 422. Unrecognized schemas pass through —
-		// see dispatchCommitmentSchema's Passthrough invariant.
-		extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
-		if dispatchErr != nil {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("commitment schema: %s", dispatchErr))
-			return
-		}
-
-		// ── Step 5: Entry size (SDK-D11) ───────────────────────────────
-		// Wire bytes ARE the canonical bytes under v7.75 (multi-sig
-		// section is part of the canonical form).
-		if int64(len(raw)) > deps.MaxEntrySize {
-			writeError(w, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("canonical bytes %d exceed max %d",
-					len(raw), deps.MaxEntrySize))
-			return
-		}
-
-		// ── Step 6: Evidence_Pointers cap (Decision 51) ────────────────
-		if !middleware.CheckEvidenceCap(entry) {
-			writeError(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("Evidence_Pointers %d exceeds cap %d (non-snapshot)",
-					len(entry.Header.EvidencePointers),
-					middleware.MaxEvidencePointers))
-			return
-		}
-
-		// ── Step 7: Admission mode ─────────────────────────────────────
-		authenticated := middleware.IsAuthenticated(ctx)
-		exchangeDID := middleware.ExchangeDID(ctx)
-
-		if !authenticated {
-			h := &entry.Header
-			if h.AdmissionProof == nil {
-				writeError(w, http.StatusForbidden,
-					"unauthenticated submission requires compute stamp")
+		// ── Step 7-credit: Mode A credit deduction ─────────────────────
+		// Moved out of the original step-12 entry_index transaction so
+		// the SCT/MMD architecture has a single writer to entry_index
+		// (the Sequencer). Failure modes preserved:
+		//   - insufficient credits → 402
+		//   - transient DB error  → 500
+		if err := deductCreditModeA(ctx, deps, prep.authenticated, prep.exchangeDID); err != nil {
+			if errors.Is(err, store.ErrInsufficientCredits) {
+				writeError(w, http.StatusPaymentRequired, "insufficient write credits")
 				return
 			}
-
-			apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
-
-			canonicalHash := envelope.EntryIdentity(entry)
-			currentDifficulty := deps.Admission.DiffController.CurrentDifficulty()
-			hashFuncName := deps.Admission.DiffController.HashFunction()
-			var hashFunc sdkadmission.HashFunc
-			switch hashFuncName {
-			case "argon2id":
-				hashFunc = sdkadmission.HashArgon2id
-			default:
-				hashFunc = sdkadmission.HashSHA256
-			}
-
-			currentEpoch := sdkadmission.CurrentEpoch(uint64(deps.Admission.EpochWindowSeconds))
-			acceptanceWindow := uint64(deps.Admission.EpochAcceptanceWindow)
-
-			if err := sdkadmission.VerifyStamp(
-				apiProof,
-				canonicalHash,
-				deps.LogDID,
-				currentDifficulty,
-				hashFunc,
-				nil,
-				currentEpoch,
-				acceptanceWindow,
-			); err != nil {
-				writeError(w, http.StatusForbidden,
-					fmt.Sprintf("stamp verification failed: %s", err))
-				return
-			}
-		}
-
-		// ── Step 8: Canonical hash (Tessera-aligned vocabulary) ────────
-		canonicalHash := envelope.EntryIdentity(entry)
-
-		// ── Step 8a: Early duplicate check ─────────────────────────────
-		// Hits in the index when a previous submission with the same
-		// hash already landed. Avoids a wasted wal.Submit (durable
-		// disk write) for duplicates. Race losers (two concurrent
-		// submissions of the same hash that both pass this check)
-		// converge: Tessera dedup at Step 11 returns the same seq, the
-		// Postgres INSERT at Step 12 fails on canonical_hash UNIQUE
-		// for one of them, that one returns 409.
-		if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash); fetchErr == nil && found {
-			writeError(w, http.StatusConflict,
-				fmt.Sprintf("duplicate entry: existing sequence %d", existingSeq))
+			deps.Logger.Error("credit deduction", "error", err)
+			writeError(w, http.StatusInternalServerError, "credit deduction failed")
 			return
 		}
-
-		// ── Step 9: Log_Time assignment (SDK-D1, Decision 50) ──────────
-		logTime := time.Now().UTC()
 
 		// ── Step 10: WAL durability ────────────────────────────────────
-		// Submit blocks until wire bytes are fsync'd to local NVMe.
-		// Group commit amortizes fsync across concurrent admissions;
-		// see wal/committer.go. ErrQueueFull → 503 + Retry-After
-		// (backpressure, not failure).
-		if err := deps.Storage.WAL.Submit(ctx, canonicalHash, raw); err != nil {
+		if err := deps.Storage.WAL.Submit(ctx, prep.canonicalHash, prep.raw); err != nil {
 			if errors.Is(err, wal.ErrQueueFull) {
 				w.Header().Set("Retry-After", "5")
 				writeError(w, http.StatusServiceUnavailable,
@@ -474,121 +563,96 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
-		// ── Step 11: Tessera sequence assignment ───────────────────────
-		// AppendLeaf blocks until Tessera's batcher integrates the
-		// hash and the IndexFuture resolves. With dedup wired at the
-		// composition root, re-Add of an existing identity returns
-		// the previously-assigned seq (race-safe under concurrent
-		// admission of the same content).
-		seq, err := deps.Storage.Tessera.AppendLeaf(canonicalHash[:])
-		if err != nil {
-			deps.Logger.Error("tessera AppendLeaf", "error", err)
-			writeError(w, http.StatusInternalServerError, "Tessera sequencing failed")
+		// ── Step 11 (facade): Poll WAL for the Sequencer to advance ────
+		//
+		// The background Sequencer drains StatePending entries in its
+		// own pollInterval cadence (default 1s; tunable to ~10ms in
+		// tests). The v1 facade pattern: tick every
+		// V1FacadePollInterval (50ms) on WAL.MetaState; return on
+		// StateSequenced; bail on r.Context().Done() (client
+		// disconnect) OR after V1Timeout (sequencer wedged).
+		seq, ok := pollForSequenced(ctx, deps, prep.canonicalHash, v1Timeout)
+		if !ok {
+			// 504 with a structured payload pointing at the
+			// follow-up endpoint — clients can ask hash-side at
+			// their leisure to confirm sequencing eventually
+			// completed.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":          "sequencer_lag",
+				"hash":           hex.EncodeToString(prep.canonicalHash[:]),
+				"wal_state":      "pending",
+				"follow_up":      "/v1/entries/hash/" + hex.EncodeToString(prep.canonicalHash[:]),
+				"timeout_seconds": v1Timeout.Seconds(),
+			})
 			return
 		}
 
-		// ── Step 12: Postgres sidecar — entry_index + commitment_split_id
-		err = store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
-			// Mode A credit deduction (inside transaction).
-			if authenticated {
-				if _, deductErr := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID); deductErr != nil {
-					return deductErr
-				}
-			}
-
-			var targetRootBytes, cosigOfBytes, schemaRefBytes []byte
-			if entry.Header.TargetRoot != nil {
-				targetRootBytes = store.SerializeLogPosition(*entry.Header.TargetRoot)
-			}
-			if entry.Header.CosignatureOf != nil {
-				cosigOfBytes = store.SerializeLogPosition(*entry.Header.CosignatureOf)
-			}
-			if entry.Header.SchemaRef != nil {
-				schemaRefBytes = store.SerializeLogPosition(*entry.Header.SchemaRef)
-			}
-
-			if insertErr := deps.Storage.EntryStore.Insert(ctx, tx, store.EntryRow{
-				SequenceNumber: seq,
-				CanonicalHash:  canonicalHash,
-				LogTime:        logTime,
-				SignerDID:      entry.Header.SignerDID,
-				TargetRoot:     targetRootBytes,
-				CosignatureOf:  cosigOfBytes,
-				SchemaRef:      schemaRefBytes,
-			}); insertErr != nil {
-				return insertErr
-			}
-
-			// SplitID index population (Wave 1 v3 §C2/C3). Same Postgres
-			// transaction as the entry_index insert so the index never
-			// references a non-existent sequence. (schema_id, split_id)
-			// is intentionally non-unique (Decision 3); duplicates here
-			// are equivocation evidence, not a constraint violation.
-			if extractedSplitID != nil {
-				if _, splitErr := tx.Exec(ctx, `
-					INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
-					VALUES ($1, $2, $3)`,
-					seq, extractedSchemaID, extractedSplitID[:],
-				); splitErr != nil {
-					return fmt.Errorf("commitment_split_id insert: %w", splitErr)
-				}
-			}
-
-			// Cursor mode: the entry_index INSERT IS the enqueue — the
-			// log itself is the queue. The builder cursor reader tails
-			// entry_index and advances builder_cursor in its own atomic
-			// commit. No separate queue write needed.
-			return nil
-		})
-
-		if err != nil {
-			if errors.Is(err, store.ErrInsufficientCredits) {
-				writeError(w, http.StatusPaymentRequired, "insufficient write credits")
-				return
-			}
-			if errors.Is(err, store.ErrDuplicateEntry) {
-				// Race-loser path: another concurrent submission of the
-				// same hash got there first. Tessera dedup gave us the
-				// same seq, the Postgres INSERT lost on canonical_hash
-				// UNIQUE. Return 409 with the existing seq.
-				existingSeq, found, _ := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash)
-				if found {
-					writeError(w, http.StatusConflict,
-						fmt.Sprintf("duplicate entry: existing sequence %d", existingSeq))
-				} else {
-					writeError(w, http.StatusConflict, "duplicate entry")
-				}
-				return
-			}
-			deps.Logger.Error("admission failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "admission failed")
-			return
-		}
-
-		// ── Step 13: WAL state transition pending → sequenced ─────────
-		// Bytes are durable (Step 10), Tessera assigned a seq (Step 11),
-		// Postgres has the row (Step 12). Recording the Tessera-assigned
-		// seq in the WAL meta lets the Shipper find this entry on its
-		// next scan. A failure HERE is recoverable: the inflight
-		// breadcrumb stays set, and integrity.Reasserter on next boot
-		// re-Adds (dedups to the same seq) and calls Sequence again.
-		// We surface 500 to the user so they don't think a new entry
-		// landed when in reality one is mid-recovery.
-		if err := deps.Storage.WAL.Sequence(ctx, canonicalHash, seq); err != nil {
-			deps.Logger.Error("wal Sequence", "error", err, "seq", seq)
-			writeError(w, http.StatusInternalServerError,
-				"WAL state transition failed (entry recoverable on next boot)")
-			return
-		}
-
-		// ── Step 14: Success ───────────────────────────────────────────
+		// ── Step 12 (facade): Format legacy v1 response ────────────────
+		// log_time comes from the Sequencer's entry_index INSERT, which
+		// uses entry.Header.EventTime. We could re-fetch it from the
+		// row but for the facade response shape we just echo what we
+		// admitted — same value the Sequencer is going to write.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"sequence_number": seq,
-			"canonical_hash":  hex.EncodeToString(canonicalHash[:]),
-			"log_time":        logTime.Format(time.RFC3339Nano),
+			"canonical_hash":  hex.EncodeToString(prep.canonicalHash[:]),
+			"log_time":        prep.logTime.Format(time.RFC3339Nano),
 		})
+	}
+}
+
+// pollForSequenced is the v1 facade's wait loop. Returns the
+// Sequencer-assigned seq when WAL.MetaState reports
+// StateSequenced/Shipped, or (0, false) on context cancellation or
+// timeout expiry. Polls every V1FacadePollInterval; respects both
+// r.Context().Done() (client disconnect) and a hard
+// context.WithTimeout(ctx, v1Timeout) deadline.
+func pollForSequenced(
+	parent context.Context,
+	deps *SubmissionDeps,
+	hash [32]byte,
+	v1Timeout time.Duration,
+) (uint64, bool) {
+	ctx, cancel := context.WithTimeout(parent, v1Timeout)
+	defer cancel()
+	ticker := time.NewTicker(V1FacadePollInterval)
+	defer ticker.Stop()
+
+	// Quick first probe — common case: the sequencer drained while
+	// wal.Submit was still grouping its batch, so MetaState is
+	// already StateSequenced when the v1 handler reaches here.
+	if seq, ok := readSequencedSeq(parent, deps, hash); ok {
+		return seq, true
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-ticker.C:
+			if seq, ok := readSequencedSeq(parent, deps, hash); ok {
+				return seq, true
+			}
+		}
+	}
+}
+
+// readSequencedSeq returns the entry's Sequencer-assigned seq when
+// WAL.MetaState reports StateSequenced (or any post-Sequenced
+// state). Returns (0, false) for any other state, transport error,
+// or wal.ErrNotFound (transient race between Submit and meta read).
+func readSequencedSeq(ctx context.Context, deps *SubmissionDeps, hash [32]byte) (uint64, bool) {
+	meta, err := deps.Storage.WAL.MetaState(ctx, hash)
+	if err != nil {
+		return 0, false
+	}
+	switch meta.State {
+	case wal.StateSequenced, wal.StateShipped:
+		return meta.Sequence, true
+	default:
+		return 0, false
 	}
 }
 

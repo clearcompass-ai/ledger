@@ -845,13 +845,16 @@ func main() {
 		logger,
 	)
 
-	// ── Submission handler (WAL-first 14-step pipeline) ───────────────
-	submitHandler := api.NewSubmissionHandler(&api.SubmissionDeps{
+	// ── Submission handlers (v1 facade + v2 SCT) ──────────────────────
+	// SubmissionDeps is shared between both endpoints: same fast-path
+	// validation via prepareSubmission. v1 polls WAL for the
+	// Sequencer to advance; v2 returns an SCT immediately.
+	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
 			DB:         pool,
 			EntryStore: entryStore,
 			WAL:        walc,
-			Tessera:    embeddedAppender,
+			Tessera:    embeddedAppender, // unused by facade; kept for API symmetry
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,
@@ -860,17 +863,20 @@ func main() {
 		},
 		Identity: api.IdentityDeps{
 			CreditStore: creditStore,
-			// did:key resolver — content-addressed, no network.
-			// Operators that need richer methods (did:web, did:pkh)
-			// compose a multi-method resolver here; this stays as
-			// the secp256k1 / P-256 leaf.
 			DIDResolver: admission.NewDIDKeyResolver(),
 		},
 		LogDID:             cfg.LogDID,
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
-		FreshnessTolerance: policy.FreshnessInteractive, // 5-min window.
+		FreshnessTolerance: policy.FreshnessInteractive,
+		V1Timeout:          cfg.V1Timeout,
+	}
+	submitHandler := api.NewSubmissionHandler(submissionDeps)
+	submitV2Handler := api.NewSubmissionV2Handler(&api.SubmissionV2Deps{
+		SubmissionDeps:     submissionDeps,
+		OperatorSignerPriv: operatorSignerPriv,
 	})
+	mmdHandler := api.NewMMDHandler(cfg.MMD)
 
 	// ── Shared stores for read handlers ───────────────────────────────
 	// Query API also reads through the composite (WAL → bytestore
@@ -884,6 +890,10 @@ func main() {
 		QueryAPI:       queryAPI,
 		DiffController: diffController,
 		Logger:         logger,
+		// WAL probe for the hash-lookup endpoint: returns
+		// {state:pending} for entries durable in WAL but not yet
+		// in entry_index (the SCT/MMD inflight window).
+		WAL: walc,
 	}
 	treeDeps := &api.TreeDeps{
 		TreeHeadStore: treeHeadStore,
@@ -939,6 +949,9 @@ func main() {
 		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
+		SubmissionV2:    submitV2Handler,
+		MMD:             mmdHandler,
+		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
