@@ -175,8 +175,12 @@ func SignSCT(
 		LogDID:        logDID,
 		CanonicalHash: hex.EncodeToString(canonicalHash[:]),
 		LogTimeMicros: logTimeMicros,
-		LogTime:       logTime.UTC().Format(time.RFC3339Nano),
-		Signature:     hex.EncodeToString(sig),
+		// LogTime is derived from LogTimeMicros (the signed-over
+		// value) so VerifySCT's reconstruction matches byte-for-byte.
+		// Sourcing it from the original logTime would leak
+		// sub-microsecond precision and break the round-trip.
+		LogTime:   time.UnixMicro(logTimeMicros).UTC().Format(time.RFC3339Nano),
+		Signature: hex.EncodeToString(sig),
 	}, nil
 }
 
