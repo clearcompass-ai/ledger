@@ -45,9 +45,10 @@ ALTERNATIVES CONSIDERED:
     TileBackend interface would require parsing the c2sp.org
     path back into the (level, index, p) tuple — a detour that
     adds no value while POSIX is the only Tessera backend. Once
-    GCP/MinIO Tessera is wired (Phase 2-extension, out of scope
-    for now), the operator can switch to a LogReader-backed
-    TileBackend without touching proof_adapter.go's call sites.
+    a remote Tessera storage driver (GCS / S3) is wired
+    (Phase 2-extension, out of scope for now), the operator can
+    switch to a LogReader-backed TileBackend without touching
+    proof_adapter.go's call sites.
 */
 package tessera
 

@@ -76,9 +76,22 @@ export OPERATOR_LOG_DID="did:ortholog:operator:001"
 export OPERATOR_WAL_PATH="/var/lib/ortholog/wal"
 export OPERATOR_TESSERA_STORAGE_DIR="/var/lib/ortholog/tessera"
 export OPERATOR_TESSERA_ANTISPAM_PATH="/var/lib/ortholog/tessera-antispam"
+
+# 2a. GCS — pick this OR the S3 block below.
 export OPERATOR_BYTE_STORE_BACKEND="gcs"
 export OPERATOR_BYTE_STORE_GCS_BUCKET="my-ortholog-bucket"
 # GOOGLE_APPLICATION_CREDENTIALS or workload identity for GCS auth.
+
+# 2b. S3 / RustFS / R2 / AWS S3 (alternative to GCS).
+# export OPERATOR_BYTE_STORE_BACKEND="s3"
+# export OPERATOR_BYTE_STORE_S3_BUCKET="my-ortholog-bucket"
+# # AWS production: leave creds empty so the default credential chain
+# # (IAM role / IRSA / AWS_* / ~/.aws) is used.
+# # RustFS / on-prem:
+# # export OPERATOR_BYTE_STORE_S3_ENDPOINT="http://rustfs:9000"
+# # export OPERATOR_BYTE_STORE_S3_ACCESS_KEY="..."
+# # export OPERATOR_BYTE_STORE_S3_SECRET_KEY="..."
+# # export OPERATOR_BYTE_STORE_S3_PATH_STYLE="true"
 
 # 3. Build
 go mod tidy

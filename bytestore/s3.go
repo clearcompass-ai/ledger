@@ -5,8 +5,7 @@ S3 — bytestore.Backend implementation backed by any S3-compatible
 object store. Validated against:
 
   - AWS S3 (production)
-  - RustFS (local dev / on-prem)
-  - MinIO (CI / local dev)
+  - RustFS (local dev / on-prem / CI)
   - Cloudflare R2, Backblaze B2, etc. (S3-compatible)
 
 The wire is identical across these so one adapter covers them all.
@@ -14,7 +13,7 @@ Switching providers is a config change, not a code change.
 
 CREDENTIALS:
   Default credential chain (config.LoadDefaultConfig). Picks up:
-    - explicit AccessKey/SecretKey passed via S3Config (RustFS / MinIO)
+    - explicit AccessKey/SecretKey passed via S3Config (RustFS)
     - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
     - ~/.aws/credentials profile
     - IRSA / ECS task role / EC2 instance role
@@ -22,8 +21,8 @@ CREDENTIALS:
 
 PATH-STYLE vs VIRTUAL-HOST URLS:
   AWS S3 uses virtual-host style (bucket.s3.region.amazonaws.com).
-  RustFS / MinIO use path-style (host:port/bucket/key). The
-  PathStyle config field selects between them.
+  RustFS uses path-style (host:port/bucket/key). The PathStyle
+  config field selects between them.
 
 OBJECT LAYOUT:
   Same layoutKey as GCS: <prefix>/<seq:016x>/<hash_hex>. A bucket
@@ -64,23 +63,21 @@ type S3Config struct {
 	Bucket string
 
 	// Endpoint overrides the default S3 endpoint. Set this for
-	// RustFS / MinIO (e.g., "http://localhost:9000"). Leave empty
-	// for AWS S3.
+	// RustFS (e.g., "http://localhost:9000"). Leave empty for AWS S3.
 	Endpoint string
 
 	// Region is the AWS region. Defaults to "us-east-1" if empty.
-	// RustFS / MinIO accept any region; AWS S3 requires a real one.
+	// RustFS accepts any region; AWS S3 requires a real one.
 	Region string
 
 	// AccessKey + SecretKey are static credentials — set these for
-	// RustFS / MinIO. For AWS S3, prefer leaving them empty so the
-	// default credential chain (IAM role, AWS_* env, ~/.aws) takes
-	// over.
+	// RustFS. For AWS S3, prefer leaving them empty so the default
+	// credential chain (IAM role, AWS_* env, ~/.aws) takes over.
 	AccessKey string
 	SecretKey string
 
 	// PathStyle selects path-style vs virtual-host URLs:
-	//   - true  → host/bucket/key   (RustFS, MinIO)
+	//   - true  → host/bucket/key   (RustFS)
 	//   - false → bucket.host/key   (AWS S3 default)
 	PathStyle bool
 

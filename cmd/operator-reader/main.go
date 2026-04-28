@@ -104,38 +104,37 @@ func run(logger *slog.Logger) error {
 	// ── Entry byte store ──────────────────────────────────────────────
 	// Reader points at the same backend + prefix the writer operator
 	// uses, so byte hydration on GET requests returns the same bytes
-	// the writer admitted. OPERATOR_BYTE_STORE_BACKEND is required;
-	// only "gcs" is supported today.
-	if cfg.ByteStoreBackend == "" {
-		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (only valid value: gcs)")
+	// the writer admitted. Backend selected via OPERATOR_BYTE_STORE_BACKEND
+	// (gcs|s3); the factory enforces per-backend required fields.
+	switch cfg.ByteStoreBackend {
+	case "":
+		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (gcs|s3)")
+	case "gcs":
+		if cfg.ByteStoreGCSBucket == "" {
+			return fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+		}
+	case "s3":
+		if cfg.ByteStoreS3Bucket == "" {
+			return fmt.Errorf("OPERATOR_BYTE_STORE_S3_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=s3")
+		}
+	default:
+		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
 	}
-	if cfg.ByteStoreBackend != "gcs" {
-		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (only valid value: gcs)", cfg.ByteStoreBackend)
-	}
-	if cfg.ByteStoreGCSBucket == "" {
-		return fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
-	}
-	gcsStore, gerr := bytestore.NewGCS(ctx, bytestore.GCSConfig{
-		Bucket:       cfg.ByteStoreGCSBucket,
-		Endpoint:     cfg.ByteStoreGCSEndpoint,
-		Anonymous:    cfg.ByteStoreGCSAnon,
-		ObjectPrefix: cfg.ByteStoreGCSPrefix,
-		CacheSize:    cfg.ByteStoreCacheSize,
-	})
+	entryBytes, gerr := bytestore.NewFromConfig(ctx, cfg.toBytestoreConfig())
 	if gerr != nil {
-		return fmt.Errorf("byte store GCS: %w", gerr)
+		return fmt.Errorf("byte store init: %w", gerr)
 	}
 	defer func() {
-		if err := gcsStore.Close(); err != nil {
-			logger.Warn("gcs byte store close", "error", err)
+		if closer, ok := entryBytes.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("byte store close", "error", err)
+			}
 		}
 	}()
-	var entryBytes bytestore.Store = gcsStore
-	logger.Info("operator-reader byte store is bytestore.GCS",
-		"bucket", cfg.ByteStoreGCSBucket,
-		"prefix", cfg.ByteStoreGCSPrefix,
-		"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
-		"anonymous", cfg.ByteStoreGCSAnon,
+	logger.Info("operator-reader byte store ready",
+		"backend", cfg.ByteStoreBackend,
+		"prefix", cfg.ByteStorePrefix,
+		"cache_size", cfg.ByteStoreCacheSize,
 	)
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
@@ -184,7 +183,7 @@ func run(logger *slog.Logger) error {
 		// to "always 302 to byte store". Un-shipped entries surface
 		// as bytestore 404; consumers retry against the writer.
 		WAL:       nil,
-		Presigner: gcsStore,
+		Presigner: entryBytes,
 		LogDID:    cfg.LogDID,
 		Logger:    logger,
 	}
@@ -264,15 +263,24 @@ type readerConfig struct {
 	MaxDifficulty     int
 	HashFunction      string
 
-	// Byte store (Phase 2). Reader and writer must agree on
+	// Byte store (Phase 2 + 3+4). Reader and writer must agree on
 	// backend + bucket + prefix so reads return the same bytes
-	// the writer admitted.
+	// the writer admitted. Backend selection mirrors the writer
+	// operator: "gcs" or "s3" via OPERATOR_BYTE_STORE_BACKEND.
 	ByteStoreBackend     string
+	ByteStorePrefix      string
+	ByteStoreCacheSize   int
+	// GCS-specific.
 	ByteStoreGCSBucket   string
 	ByteStoreGCSEndpoint string
 	ByteStoreGCSAnon     bool
-	ByteStoreGCSPrefix   string
-	ByteStoreCacheSize   int
+	// S3-specific.
+	ByteStoreS3Bucket    string
+	ByteStoreS3Endpoint  string
+	ByteStoreS3Region    string
+	ByteStoreS3AccessKey string
+	ByteStoreS3SecretKey string
+	ByteStoreS3PathStyle bool
 }
 
 func loadConfig() readerConfig {
@@ -293,12 +301,45 @@ func loadConfig() readerConfig {
 		HashFunction:      "sha256",
 
 		ByteStoreBackend:     os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
+		ByteStorePrefix:      envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
+		ByteStoreCacheSize:   4096,
+		// GCS family.
 		ByteStoreGCSBucket:   os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
 		ByteStoreGCSEndpoint: os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
 		ByteStoreGCSAnon:     os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
-		ByteStoreGCSPrefix:   envOr("OPERATOR_BYTE_STORE_GCS_PREFIX", "entries"),
-		ByteStoreCacheSize:   4096,
+		// S3 family.
+		ByteStoreS3Bucket:    os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
+		ByteStoreS3Endpoint:  os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
+		ByteStoreS3Region:    os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
+		ByteStoreS3AccessKey: os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
+		ByteStoreS3SecretKey: os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
+		ByteStoreS3PathStyle: os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
 	}
+}
+
+// toBytestoreConfig flattens the reader config into the bytestore
+// factory's Config. Mirrors cmd/operator/main.go's helper so the
+// reader and writer pick identical backends from identical env vars.
+func (c readerConfig) toBytestoreConfig() bytestore.Config {
+	bc := bytestore.Config{
+		Backend:   c.ByteStoreBackend,
+		Prefix:    c.ByteStorePrefix,
+		CacheSize: c.ByteStoreCacheSize,
+	}
+	switch c.ByteStoreBackend {
+	case "gcs":
+		bc.Bucket = c.ByteStoreGCSBucket
+		bc.GCSEndpoint = c.ByteStoreGCSEndpoint
+		bc.GCSAnonymous = c.ByteStoreGCSAnon
+	case "s3":
+		bc.Bucket = c.ByteStoreS3Bucket
+		bc.S3Endpoint = c.ByteStoreS3Endpoint
+		bc.S3Region = c.ByteStoreS3Region
+		bc.S3AccessKey = c.ByteStoreS3AccessKey
+		bc.S3SecretKey = c.ByteStoreS3SecretKey
+		bc.S3PathStyle = c.ByteStoreS3PathStyle
+	}
+	return bc
 }
 
 func envOr(key, fallback string) string {

@@ -14,7 +14,7 @@ HEXAGONAL DESIGN:
   Why both GCS and S3:
     - GCS native: workload identity / ADC on GCE/GKE; integrates
       with Google's IAM signed-URL primitive natively.
-    - S3 (AWS SDK v2): same wire as RustFS / MinIO / Cloudflare R2 /
+    - S3 (AWS SDK v2): same wire as RustFS / Cloudflare R2 /
       AWS S3. Local-dev gets a paved path via a RustFS container;
       future cloud migrations don't require a code change.
 

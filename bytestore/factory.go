@@ -31,7 +31,7 @@ import (
 type Config struct {
 	// Backend selects the implementation. Required.
 	//   - "gcs" → GCS adapter (production on GCP)
-	//   - "s3"  → S3 adapter (production on AWS / RustFS / MinIO / R2)
+	//   - "s3"  → S3 adapter (production on AWS / RustFS / R2)
 	Backend string
 
 	// Bucket is the bucket name. Required for gcs and s3.
@@ -58,16 +58,16 @@ type Config struct {
 	GCSAnonymous bool
 
 	// ── S3-specific ───────────────────────────────────────────────
-	// Endpoint overrides the default S3 endpoint (set for RustFS / MinIO).
+	// Endpoint overrides the default S3 endpoint (set for RustFS).
 	S3Endpoint string
 	// Region defaults to us-east-1.
 	S3Region string
-	// AccessKey + SecretKey for static creds (RustFS / MinIO). Leave
+	// AccessKey + SecretKey for static creds (RustFS). Leave
 	// empty on AWS to use the default credential chain (IAM role,
 	// AWS_* env vars, ~/.aws).
 	S3AccessKey string
 	S3SecretKey string
-	// PathStyle: true for RustFS / MinIO; false for AWS S3.
+	// PathStyle: true for RustFS; false for AWS S3.
 	S3PathStyle bool
 }
 

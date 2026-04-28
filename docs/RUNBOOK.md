@@ -132,6 +132,7 @@ seeing backpressure. Check:
 | `scripts/run-soak.sh`                     | `soak`    | minutes + cloud | scripted soak with summary report                          |
 | `scripts/run-gcs-tests-real.sh`           | default   | seconds         | bytestore conformance against real GCS                     |
 | `scripts/run-bytestore-tests-real-s3.sh`  | default   | seconds         | bytestore conformance against real S3                      |
+| `scripts/run-bytestore-tests-rustfs.sh`   | default   | seconds         | bytestore conformance against the local RustFS container   |
 
 ## Graceful shutdown
 

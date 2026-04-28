@@ -16,9 +16,14 @@ bucket. All four MUST be provisioned before the v0.4 binary boots:
   admission of the same content.
 - **`OPERATOR_TESSERA_STORAGE_DIR`** — Tessera tile + checkpoint
   storage. Existed in earlier phases.
-- **`OPERATOR_BYTE_STORE_GCS_BUCKET`** — production GCS bucket.
-  The WAL → bytestore migration is asynchronous; the bucket
-  receives every entry's wire bytes shortly after sequencing.
+- **`OPERATOR_BYTE_STORE_BACKEND`** — `gcs` or `s3`. Selects the
+  production bytestore adapter; the factory enforces per-backend
+  required fields.
+- **`OPERATOR_BYTE_STORE_GCS_BUCKET`** / **`_S3_BUCKET`** —
+  production bucket name (one or the other, matching the
+  selected backend). The WAL → bytestore migration is
+  asynchronous; the bucket receives every entry's wire bytes
+  shortly after sequencing.
 
 See `docs/CONFIG.md` for the full env-var matrix and
 `docs/RUNBOOK.md` for per-volume failure semantics.
@@ -54,8 +59,12 @@ See `docs/CONFIG.md` for the full env-var matrix and
   hash-suffix shape is the static-verifiability invariant the 302
   redirect path relies on: a consumer can verify that a presigned
   URL points at the bytes the operator promised before fetching.
-- Production must use `OPERATOR_BYTE_STORE_BACKEND=gcs` (the
-  factory rejects anything else).
+- Production selects between two adapters via
+  `OPERATOR_BYTE_STORE_BACKEND={gcs,s3}`. The composition root
+  passes the config through `bytestore.NewFromConfig`, which
+  enforces per-backend required fields and rejects anything else.
+  RustFS / R2 / AWS S3 / any S3-compatible target is reachable
+  via `s3`.
 - `Memory` is test-only and does not satisfy `Backend` (no
   Presigner).
 
@@ -86,14 +95,18 @@ See `docs/CONFIG.md` for the full env-var matrix and
 
 1. Provision the WAL + antispam volumes alongside the existing
    Tessera storage volume.
-2. Provision a GCS bucket; grant the operator's identity
-   `storage.objects.{create,get,list}` (and `delete` for soak +
-   conformance test paths).
+2. Provision a bucket on the chosen backend:
+   - GCS: grant `storage.objects.{create,get,list}` (+ `delete`
+     for soak / conformance) to the operator's ADC identity.
+   - S3 / RustFS / R2: `s3:PutObject`, `s3:GetObject`,
+     `s3:ListBucket` (+ `s3:DeleteObject` for soak /
+     conformance). Prefer IAM roles on AWS; static creds for
+     RustFS / on-prem.
 3. Drain the v0.3 operator (let `builder_queue` empty and Tessera
    integrate the last entries).
 4. Update the manifests to set `OPERATOR_WAL_PATH`,
-   `OPERATOR_TESSERA_ANTISPAM_PATH`, `OPERATOR_BYTE_STORE_BACKEND=gcs`,
-   `OPERATOR_BYTE_STORE_GCS_BUCKET=...`.
+   `OPERATOR_TESSERA_ANTISPAM_PATH`, `OPERATOR_BYTE_STORE_BACKEND`
+   (`gcs` or `s3`), and the matching bucket / S3 family vars.
 5. Boot the v0.4 binary. Migrations run automatically; the
    `builder_queue` table is left in place but unused — drop it in
    a follow-up maintenance window.
