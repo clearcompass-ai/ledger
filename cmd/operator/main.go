@@ -167,19 +167,37 @@ type Config struct {
 	// recovery story differs.
 	TesseraAntispamPath string
 
-	// Byte store backend (Phase 2). Selects where the
-	// operator's entry bytes live.
-	//   - "memory" (default) — InMemoryEntryStore. Lost on
-	//     restart. Local dev only.
-	//   - "gcs" — GCSEntryStore. Production target. ADC
-	//     credentials by default; fake-gcs-server via
-	//     ByteStoreGCSEndpoint + ByteStoreGCSAnonymous.
+	// Byte store backend (Phase 2 + 3+4). Selects where the
+	// operator's entry bytes live. The composition root passes
+	// these directly to bytestore.NewFromConfig; per-backend
+	// validation lives in the factory.
+	//
+	//   - "gcs" — GCS adapter. ADC credentials by default;
+	//     fake-gcs-server via ByteStoreGCSEndpoint +
+	//     ByteStoreGCSAnonymous.
+	//   - "s3"  — S3 adapter. Default credential chain on AWS;
+	//     static creds + endpoint + path-style for RustFS / R2 /
+	//     other S3-compatible servers.
+	//
+	// "memory" is intentionally rejected at the composition root —
+	// production must select a real backend. Tests that need a
+	// Store-only impl call bytestore.NewMemory directly.
 	ByteStoreBackend     string
+	ByteStorePrefix      string // empty = "entries"
+	ByteStoreCacheSize   int
+
+	// GCS-specific.
 	ByteStoreGCSBucket   string
 	ByteStoreGCSEndpoint string // empty = default GCS endpoint
 	ByteStoreGCSAnon     bool   // true = no auth (fake-gcs-server)
-	ByteStoreGCSPrefix   string // empty = "entries"
-	ByteStoreCacheSize   int
+
+	// S3-specific.
+	ByteStoreS3Bucket    string
+	ByteStoreS3Endpoint  string // empty = default AWS S3 endpoint
+	ByteStoreS3Region    string // empty = us-east-1 in factory
+	ByteStoreS3AccessKey string // empty = default credential chain
+	ByteStoreS3SecretKey string // empty = default credential chain
+	ByteStoreS3PathStyle bool   // true for RustFS; false for AWS S3
 	TileCacheSize         int
 	SMTNodeCacheSize      int
 	DeltaWindow           int
@@ -210,11 +228,19 @@ func loadConfig() (*Config, error) {
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
 		ByteStoreBackend:      os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
+		ByteStorePrefix:       envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
+		ByteStoreCacheSize:    4096,
+		// GCS family.
 		ByteStoreGCSBucket:    os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
 		ByteStoreGCSEndpoint:  os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
 		ByteStoreGCSAnon:      os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
-		ByteStoreGCSPrefix:    envOr("OPERATOR_BYTE_STORE_GCS_PREFIX", "entries"),
-		ByteStoreCacheSize:    4096,
+		// S3 family.
+		ByteStoreS3Bucket:     os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
+		ByteStoreS3Endpoint:   os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
+		ByteStoreS3Region:     os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
+		ByteStoreS3AccessKey:  os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
+		ByteStoreS3SecretKey:  os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
+		ByteStoreS3PathStyle:  os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
 		TileCacheSize:         10_000,
 		SMTNodeCacheSize:      100_000,
 		DeltaWindow:           10,
@@ -231,16 +257,47 @@ func loadConfig() (*Config, error) {
 	if cfg.OperatorDID == "" {
 		cfg.OperatorDID = cfg.LogDID
 	}
-	if cfg.ByteStoreBackend == "" {
-		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (only valid value: gcs)")
-	}
-	if cfg.ByteStoreBackend != "gcs" {
-		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (only valid value: gcs)", cfg.ByteStoreBackend)
-	}
-	if cfg.ByteStoreGCSBucket == "" {
-		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+	switch cfg.ByteStoreBackend {
+	case "":
+		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (gcs|s3)")
+	case "gcs":
+		if cfg.ByteStoreGCSBucket == "" {
+			return nil, fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+		}
+	case "s3":
+		if cfg.ByteStoreS3Bucket == "" {
+			return nil, fmt.Errorf("OPERATOR_BYTE_STORE_S3_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=s3")
+		}
+	default:
+		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
 	}
 	return cfg, nil
+}
+
+// toBytestoreConfig flattens the operator config's bytestore-related
+// fields into the bytestore.Config the factory expects. Per-backend
+// required-field validation already happened in loadConfig; the factory
+// applies the remaining defaults (prefix=entries, cache_size, region).
+func (cfg *Config) toBytestoreConfig() bytestore.Config {
+	bc := bytestore.Config{
+		Backend:   cfg.ByteStoreBackend,
+		Prefix:    cfg.ByteStorePrefix,
+		CacheSize: cfg.ByteStoreCacheSize,
+	}
+	switch cfg.ByteStoreBackend {
+	case "gcs":
+		bc.Bucket = cfg.ByteStoreGCSBucket
+		bc.GCSEndpoint = cfg.ByteStoreGCSEndpoint
+		bc.GCSAnonymous = cfg.ByteStoreGCSAnon
+	case "s3":
+		bc.Bucket = cfg.ByteStoreS3Bucket
+		bc.S3Endpoint = cfg.ByteStoreS3Endpoint
+		bc.S3Region = cfg.ByteStoreS3Region
+		bc.S3AccessKey = cfg.ByteStoreS3AccessKey
+		bc.S3SecretKey = cfg.ByteStoreS3SecretKey
+		bc.S3PathStyle = cfg.ByteStoreS3PathStyle
+	}
+	return bc
 }
 
 func envOr(key, fallback string) string {
@@ -328,33 +385,27 @@ func main() {
 
 	// ── Byte store ────────────────────────────────────────────────────
 	//
-	// OPERATOR_BYTE_STORE_BACKEND is required; only "gcs" is supported
-	// today. Validation already happened in loadConfig — boot would
-	// have failed before this point with a missing or unsupported
-	// backend. The `bytestore.Memory` impl is test-only and is not
-	// available as a production backend.
-	gcsStore, err := bytestore.NewGCS(ctx, bytestore.GCSConfig{
-		Bucket:       cfg.ByteStoreGCSBucket,
-		Endpoint:     cfg.ByteStoreGCSEndpoint,
-		Anonymous:    cfg.ByteStoreGCSAnon,
-		ObjectPrefix: cfg.ByteStoreGCSPrefix,
-		CacheSize:    cfg.ByteStoreCacheSize,
-	})
+	// Construct the production bytestore via the hexagonal factory.
+	// OPERATOR_BYTE_STORE_BACKEND selects between "gcs" and "s3";
+	// loadConfig has already enforced the per-backend required fields.
+	// The returned bytestore.Backend is the union of Store + Presigner —
+	// composite reader, shipper, and the 302 redirect path all use it
+	// without naming the concrete adapter.
+	byteStore, err := bytestore.NewFromConfig(ctx, cfg.toBytestoreConfig())
 	if err != nil {
-		logger.Error("byte store GCS", "error", err)
+		logger.Error("byte store init", "error", err, "backend", cfg.ByteStoreBackend)
 		os.Exit(1)
 	}
 	defer func() {
-		if err := gcsStore.Close(); err != nil {
-			logger.Warn("gcs byte store close", "error", err)
+		if closer, ok := byteStore.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("byte store close", "error", err)
+			}
 		}
 	}()
-	var byteStore bytestore.Store = gcsStore
-	logger.Info("byte store is bytestore.GCS",
-		"bucket", cfg.ByteStoreGCSBucket,
-		"prefix", cfg.ByteStoreGCSPrefix,
-		"endpoint_override", cfg.ByteStoreGCSEndpoint != "",
-		"anonymous", cfg.ByteStoreGCSAnon,
+	logger.Info("byte store ready",
+		"backend", cfg.ByteStoreBackend,
+		"prefix", cfg.ByteStorePrefix,
 		"cache_size", cfg.ByteStoreCacheSize,
 	)
 
@@ -585,7 +636,7 @@ func main() {
 		QueryAPI:   queryAPI,
 		EntryStore: entryStore,
 		WAL:        walc,
-		Presigner:  gcsStore, // bytestore.GCS satisfies api.Presigner
+		Presigner:  byteStore, // bytestore.Backend satisfies api.Presigner
 		LogDID:     cfg.LogDID,
 		Logger:     logger,
 	}
@@ -651,7 +702,7 @@ func main() {
 	// marks them StateShipped, advances HWM through contiguous runs.
 	// Bytes durability is the load-bearing property: bytestore upload
 	// completes BEFORE wal.MarkShipped runs, BEFORE HWM advances.
-	ship := shipper.NewShipper(walc, gcsStore, shipper.Config{Logger: logger})
+	ship := shipper.NewShipper(walc, byteStore, shipper.Config{Logger: logger})
 
 	// ── HTTP server ───────────────────────────────────────────────────
 	serverCfg := api.DefaultServerConfig()

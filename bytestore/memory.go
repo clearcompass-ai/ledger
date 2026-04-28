@@ -10,7 +10,7 @@ Backend="memory" outside of test contexts.
 
 Memory does NOT satisfy Presigner — there's nothing to sign URLs
 against. Tests that need to exercise the presign path use the GCS
-or S3 adapter against fake-gcs-server / RustFS / MinIO.
+or S3 adapter against fake-gcs-server / RustFS.
 
 Storage layout:
   Keyed by (seq, hash). Two writes with the same seq but different

@@ -2,8 +2,7 @@
 FILE PATH: bytestore/s3_test.go
 
 Tests for bytestore.S3. Run against any S3-compatible backend:
-  - MinIO (default in integration/docker-compose.yml)
-  - RustFS (drop-in for MinIO)
+  - RustFS (default in integration/docker-compose.yml)
   - real AWS S3 (set ORTHOLOG_TEST_S3_REAL=1 + AWS creds)
 
 Coverage mirrors gcs_test.go so the two adapters stay at parity:
@@ -25,10 +24,10 @@ Env vars:
 
   ORTHOLOG_TEST_S3_ENDPOINT     e.g. http://localhost:9000
   ORTHOLOG_TEST_S3_BUCKET       e.g. ortholog-test-bytes
-  ORTHOLOG_TEST_S3_ACCESS_KEY   e.g. minioadmin
-  ORTHOLOG_TEST_S3_SECRET_KEY   e.g. minioadmin
+  ORTHOLOG_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
+  ORTHOLOG_TEST_S3_SECRET_KEY   e.g. rustfsadmin
   ORTHOLOG_TEST_S3_REGION       e.g. us-east-1 (default)
-  ORTHOLOG_TEST_S3_PATH_STYLE   "true" for MinIO/RustFS, unset for AWS S3
+  ORTHOLOG_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
   ORTHOLOG_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
                                  credential chain, virtual-host style,
                                  no endpoint override)
@@ -57,7 +56,7 @@ import (
 )
 
 // requireS3 opens a bytestore.S3 configured for either a local
-// container (MinIO/RustFS via env vars) or real AWS S3
+// container (RustFS via env vars) or real AWS S3
 // (ORTHOLOG_TEST_S3_REAL=1 + standard AWS_* creds + bucket name).
 //
 // Real-S3 mode requires an AWS credential chain in scope (env vars,
@@ -99,11 +98,11 @@ func requireS3(t *testing.T) *S3 {
 		}
 		t.Logf("S3 test mode: real AWS S3 (bucket=%s, prefix=%s)", bucket, prefix)
 	} else {
-		// Container mode (MinIO/RustFS): explicit endpoint, static
-		// creds, path-style URLs.
+		// Container mode (RustFS): explicit endpoint, static creds,
+		// path-style URLs.
 		cfg.Endpoint = endpoint
-		cfg.AccessKey = envOrDefault("ORTHOLOG_TEST_S3_ACCESS_KEY", "minioadmin")
-		cfg.SecretKey = envOrDefault("ORTHOLOG_TEST_S3_SECRET_KEY", "minioadmin")
+		cfg.AccessKey = envOrDefault("ORTHOLOG_TEST_S3_ACCESS_KEY", "rustfsadmin")
+		cfg.SecretKey = envOrDefault("ORTHOLOG_TEST_S3_SECRET_KEY", "rustfsadmin")
 		cfg.Region = envOrDefault("ORTHOLOG_TEST_S3_REGION", "us-east-1")
 		cfg.PathStyle = os.Getenv("ORTHOLOG_TEST_S3_PATH_STYLE") != "false"
 		t.Logf("S3 test mode: container (endpoint=%s, bucket=%s)", endpoint, bucket)
@@ -293,7 +292,7 @@ func TestS3_Cache_EvictsOldestAtCapacity(t *testing.T) {
 		t.Errorf("cache size %d exceeds maxSize 16", cacheSize)
 	}
 
-	// Re-read seq=0 hits the network. MinIO is strongly consistent;
+	// Re-read seq=0 hits the network. RustFS is strongly consistent;
 	// no retry needed.
 	got, err := store.ReadEntry(ctx, 0, hashes[0])
 	if err != nil {
@@ -430,8 +429,8 @@ func TestS3_ConcurrentWriters(t *testing.T) {
 
 // TestS3_PresignGet_FetchesBytes proves the 302-redirect path: the
 // URL returned by PresignGet is fetchable via plain HTTP GET and
-// returns the same bytes WriteEntry stored. Works against MinIO,
-// RustFS, AND real AWS S3 — SigV4 is byte-identical across them.
+// returns the same bytes WriteEntry stored. Works against RustFS
+// AND real AWS S3 — SigV4 is byte-identical across them.
 func TestS3_PresignGet_FetchesBytes(t *testing.T) {
 	ctx := context.Background()
 	store := requireS3(t)

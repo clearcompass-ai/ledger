@@ -43,7 +43,7 @@ Tessera-aligned vocabulary) see `MIGRATION.md`.
         ▼
   ┌──────────────────┐
   │  bytestore       │   GCS (production) or S3-compatible
-  │  Backend         │   (RustFS / MinIO / R2 / AWS S3)
+  │  Backend         │   (RustFS / R2 / AWS S3)
   └──────────────────┘
         │
         │ GET /v1/entries/{seq}/raw
@@ -78,7 +78,7 @@ State machine for each entry:
 ### Bytestore (`bytestore/`)
 Hexagonal `Backend = Reader + Writer + Presigner`. Two production
 adapters: `GCS` (workload identity / ADC, V4 signing) and `S3` (AWS
-SDK v2; the same wire fits RustFS / MinIO / R2 / AWS S3). Object
+SDK v2; the same wire fits RustFS / R2 / AWS S3). Object
 keys use a hash-suffixed layout — `<prefix>/<seq:016x>/<hash_hex>`
 — so a presigned URL can be statically verified to point at the
 promised bytes before the consumer fetches.

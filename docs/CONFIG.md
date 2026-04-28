@@ -11,8 +11,9 @@ load-bearing inputs.
 |-------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `OPERATOR_DATABASE_URL`             | Postgres DSN. Migrations are applied at startup.                                                                                                                                       |
 | `OPERATOR_LOG_DID`                  | This operator's log identity. All entries the operator admits MUST have `Header.Destination == OPERATOR_LOG_DID` (destination binding). Validated via `envelope.ValidateDestination`.  |
-| `OPERATOR_BYTE_STORE_BACKEND`       | Production-grade bytestore selector. The only currently supported value is `gcs`. The factory rejects anything else with a fail-closed error.                                          |
+| `OPERATOR_BYTE_STORE_BACKEND`       | Production-grade bytestore selector. `gcs` (Google Cloud Storage) or `s3` (any S3-compatible: AWS S3, RustFS, R2, …). The factory rejects anything else with a fail-closed error.      |
 | `OPERATOR_BYTE_STORE_GCS_BUCKET`    | GCS bucket name. Required when `OPERATOR_BYTE_STORE_BACKEND=gcs`.                                                                                                                      |
+| `OPERATOR_BYTE_STORE_S3_BUCKET`     | S3 bucket name. Required when `OPERATOR_BYTE_STORE_BACKEND=s3`.                                                                                                                        |
 
 ## Optional with defaults
 
@@ -25,9 +26,14 @@ load-bearing inputs.
 | `OPERATOR_TESSERA_STORAGE_DIR`      | `/var/lib/ortholog/tessera`            | Tessera tile + checkpoint storage. **Required volume in production**.                                                                                                                  |
 | `OPERATOR_TESSERA_SIGNER_KEY_FILE`  | (unset)                                | Path to the Tessera-personality signer key. Required for production tree-head signing.                                                                                                 |
 | `OPERATOR_TESSERA_ORIGIN`           | `OPERATOR_LOG_DID`                     | Tessera-personality origin string.                                                                                                                                                     |
+| `OPERATOR_BYTE_STORE_PREFIX`        | `entries`                              | Bucket prefix for object keys. Useful for sharing a bucket across multiple operator instances. Applies to both backends.                                                               |
 | `OPERATOR_BYTE_STORE_GCS_ENDPOINT`  | (unset → real GCS)                     | Override for the GCS endpoint. Set to a fake-gcs-server URL for local dev. Production must leave this empty.                                                                           |
 | `OPERATOR_BYTE_STORE_GCS_ANONYMOUS` | `false`                                | When `true`, bypass ADC. Local-dev / fake-gcs-server only.                                                                                                                             |
-| `OPERATOR_BYTE_STORE_GCS_PREFIX`    | `entries`                              | Bucket prefix for object keys. Useful for sharing a bucket across multiple operator instances.                                                                                         |
+| `OPERATOR_BYTE_STORE_S3_ENDPOINT`   | (unset → real AWS S3)                  | Override for the S3 endpoint. Set to a RustFS URL for local dev. Production on AWS must leave this empty.                                                                              |
+| `OPERATOR_BYTE_STORE_S3_REGION`     | `us-east-1` (factory default)          | AWS region. RustFS accepts any string; AWS S3 requires the bucket's actual region.                                                                                                     |
+| `OPERATOR_BYTE_STORE_S3_ACCESS_KEY` | (unset → default credential chain)     | Static access key. Set for RustFS / non-AWS endpoints. AWS production should leave empty and rely on IAM role / IRSA / `~/.aws`.                                                       |
+| `OPERATOR_BYTE_STORE_S3_SECRET_KEY` | (unset → default credential chain)     | Static secret key — pairs with `_S3_ACCESS_KEY`.                                                                                                                                       |
+| `OPERATOR_BYTE_STORE_S3_PATH_STYLE` | `false`                                | When `true`, use path-style URLs (`host/bucket/key`). Required for RustFS. AWS S3 leaves it `false` for virtual-host URLs.                                                             |
 
 ## Test-only environment
 
@@ -38,7 +44,7 @@ These variables are read by tests, never by the operator itself.
 | `ORTHOLOG_TEST_DSN`            | Gates HTTP integration + e2e + soak tests. Skip cleanly if unset.                                                                        |
 | `ORTHOLOG_TEST_GCS_BUCKET`     | Gates real-GCS conformance + soak tests. Bucket must grant `storage.objects.{create,get,list,delete}` to the test identity.              |
 | `ORTHOLOG_TEST_GCS_ENDPOINT`   | Routes real-GCS-shaped tests at fake-gcs-server. Set with `_BUCKET` and the test runs in container mode.                                 |
-| `ORTHOLOG_TEST_S3_*`           | S3 conformance equivalents (RustFS / MinIO / real S3). See `bytestore/conformance_test.go`.                                              |
+| `ORTHOLOG_TEST_S3_*`           | S3 conformance equivalents (RustFS / real S3). See `bytestore/conformance_test.go`.                                                      |
 | `ORTHOLOG_SOAK_*`              | Soak-test knobs (entry count, concurrency, sample size, p99 bound). See `tests/soak_test.go`.                                            |
 
 ## Volume layout in production

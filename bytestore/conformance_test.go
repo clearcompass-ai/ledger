@@ -38,8 +38,8 @@ skips):
   TestConformance_GCS_Real        (ORTHOLOG_TEST_GCS_BUCKET, no
                                    endpoint) Backend
   TestConformance_S3_Container    (ORTHOLOG_TEST_S3_ENDPOINT)   Backend
-                                  (MinIO/RustFS issue valid SigV4
-                                  URLs that local SigV4 verifies)
+                                  (RustFS issues valid SigV4 URLs
+                                  that local SigV4 verifies)
   TestConformance_S3_Real         (ORTHOLOG_TEST_S3_REAL=1 +
                                    ORTHOLOG_TEST_S3_BUCKET)     Backend
 
@@ -317,9 +317,9 @@ func TestConformance_GCS_Real(t *testing.T) {
 }
 
 func TestConformance_S3_Container(t *testing.T) {
-	// MinIO/RustFS: full Backend coverage. SigV4 is validated by
-	// the container, and the local SigV4 signer in the SDK
-	// produces verifiable URLs.
+	// RustFS: full Backend coverage. SigV4 is validated by the
+	// container, and the local SigV4 signer in the SDK produces
+	// verifiable URLs.
 	if os.Getenv("ORTHOLOG_TEST_S3_ENDPOINT") == "" {
 		t.Skip("ORTHOLOG_TEST_S3_ENDPOINT unset; skipping S3 container conformance")
 	}
