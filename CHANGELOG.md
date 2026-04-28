@@ -1,5 +1,110 @@
 # Changelog
 
+## v0.6 — Unified /v1/entries (SCT-only); /v2 burned
+
+The dual /v1-facade + /v2 architecture introduced in v0.5 is
+collapsed: POST /v1/entries is now the sole admission endpoint and
+returns a SignedCertificateTimestamp directly. The polling facade
+that emulated the legacy synchronous shape is gone, the /v2 route
+is unmounted, and the v2 handler + deps + tests are deleted.
+
+### Wire-protocol changes
+
+- **POST /v1/entries** returns 202 + SCT directly. The legacy
+  `{sequence_number, canonical_hash, log_time}` JSON shape is
+  retired. Clients confirm sequencing via
+  GET /v1/entries/hash/{canonical_hash} once the Sequencer drains.
+- **POST /v2/entries** is unmounted — returns 404. Use /v1/entries.
+
+### Breaking change for HTTP clients
+
+Any client that depended on `sequence_number` being present in the
+POST /v1/entries response body needs to update. Two recipes:
+
+1. Decode the SCT, then poll GET /v1/entries/hash/{canonical_hash}
+   until the response contains `sequence_number`. The hash is on
+   the SCT itself.
+2. Trust the SCT as the admission receipt and only look up the
+   sequence number when needed (e.g. for Merkle inclusion proof
+   construction).
+
+Both recipes preserve the v0.5 invariant that an SCT is the
+operator's binding promise to sequence within MMD.
+
+### Removed env vars
+
+- **`OPERATOR_V1_TIMEOUT`** — gone with the polling facade.
+
+### Architectural changes
+
+- `api/submission.go` — the polling facade (`pollForSequenced`,
+  `readSequencedSeq`, `V1Timeout`) is deleted. `NewSubmissionHandler`
+  now signs and returns an SCT after WAL.Submit, mirroring the
+  retired v2 handler's body. Mode A credit deduction stays
+  synchronous in the fast path: 402 returns before WAL.Submit.
+- **DELETED: `api/submission_v2.go`** + `SubmissionV2Deps` +
+  `NewSubmissionV2Handler`. The unified v1 handler covers the
+  same SCT/MMD contract; v2 was redundant.
+- **DELETED: `dispatchCommitmentSchema` from `api/submission.go`
+  and `api/batch.go`.** The Sequencer is now the sole owner of
+  commitment_split_id population; admission no longer parses
+  domain payloads inline.
+- **`api/server.go`** drops the `SubmissionV2` Handlers field and
+  the `/v2/entries` route registration.
+- **`cmd/operator/main.go`** drops the `SubmissionV2Deps`
+  construction; `submissionDeps.OperatorSignerPriv` and
+  `OperatorDID` are set directly.
+
+### CLI updates
+
+- **`cmd/submit-stamp`** drops the `-v2` flag. The binary always
+  POSTs to /v1/entries and decodes the SCT response.
+
+### Bug fix included
+
+- `api/sct.go` `SignSCT` previously formatted `LogTime` from the
+  caller's nanosecond-precision `time.Time` while
+  `LogTimeMicros` (the signed-over value) was truncated to
+  microseconds. `VerifySCT` reconstructs `LogTime` from
+  `LogTimeMicros`, so any caller passing `time.Now()` failed
+  verification with a spurious log_time mismatch. `SignSCT` now
+  derives `LogTime` from `LogTimeMicros`, locking the round-trip.
+  Pinned by `TestSignSCT_LogTimeDerivedFromMicros`.
+
+### Test surface additions
+
+- **`api/server_test.go`** — locks the route table:
+  POST /v2/entries → 404, POST /v1/entries reaches the submission
+  handler, GET /v1/admission/mmd reaches the MMD handler,
+  /healthz + /readyz wired.
+- **`api/submission_test.go`** (10 tests) — constructor guards,
+  happy-path SCT round-trip, bad preamble, WAL queue full, WAL
+  internal error, unauthenticated skip-credit,
+  deductCreditModeA contracts.
+- **`api/mmd_test.go`** (4 tests) — MMD round-trip across
+  range of durations, sub-second precision, zero-duration,
+  method-agnostic.
+- **`tests/e2e_v1_sct_test.go`** (renamed from `e2e_v2_sct_test.go`,
+  6 tests) — full HTTP round-trip on the unified /v1 path plus
+  a live-server assertion that /v2/entries returns 404.
+
+### Test surface deletions
+
+- **`api/submission_facade_test.go`** — covered the polling
+  helpers that are gone.
+- **`api/submission_v2_test.go`** — covered the deleted v2
+  handler. MMD coverage moved into `api/mmd_test.go`.
+
+### Migration steps from v0.5
+
+1. Update HTTP clients per the breaking-change recipes above.
+2. Remove `OPERATOR_V1_TIMEOUT` from your operator deployment env
+   if it was set; the variable no longer exists.
+3. If any tooling still hits POST /v2/entries, switch to /v1/entries
+   (same SCT response shape).
+
+---
+
 ## v0.5 — SCT/MMD architecture (CT-log-aligned admission)
 
 POST /v1/entries used to block on Tessera AppendLeaf + Postgres

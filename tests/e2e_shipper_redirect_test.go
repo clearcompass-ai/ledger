@@ -227,6 +227,17 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
+	// Operator signer key — secp256k1 ECDSA, used to sign SCTs.
+	// Tests get a fresh ephemeral key per operator boot.
+	opSignerPriv, err := signatures.GenerateKey()
+	if err != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("operator signer key: %v", err)
+	}
+
 	// ── HTTP handlers ───────────────────────────────────────────────
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
@@ -244,9 +255,11 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 			CreditStore: creditStore,
 			DIDResolver: nil,
 		},
-		LogDID:       testLogDID,
-		MaxEntrySize: 1 << 20,
-		Logger:       logger,
+		LogDID:             testLogDID,
+		OperatorDID:        testOperatorDID,
+		OperatorSignerPriv: opSignerPriv,
+		MaxEntrySize:       1 << 20,
+		Logger:             logger,
 	}
 	queryDeps := &api.QueryDeps{
 		QueryAPI:       queryAPI,
@@ -265,24 +278,9 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		Logger:     logger,
 	}
 
-	// Operator signer key — secp256k1 ECDSA, used to sign v2 SCTs.
-	// Tests get a fresh ephemeral key per operator boot.
-	opSignerPriv, err := signatures.GenerateKey()
-	if err != nil {
-		_ = walc.Close()
-		_ = walDB.Close()
-		pool.Close()
-		cancel()
-		t.Fatalf("operator signer key: %v", err)
-	}
-
 	const testMMD = 24 * time.Hour
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
-		SubmissionV2: api.NewSubmissionV2Handler(&api.SubmissionV2Deps{
-			SubmissionDeps:     submissionDeps,
-			OperatorSignerPriv: opSignerPriv,
-		}),
 		MMD:             api.NewMMDHandler(testMMD),
 		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),

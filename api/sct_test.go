@@ -2,7 +2,7 @@
 FILE PATH: api/sct_test.go
 
 Round-trip + tamper-reject coverage for api/sct.go. The SCT is
-the operator's binding promise on POST /v2/entries — every field
+the operator's binding promise on POST /v1/entries — every field
 that's signed-over MUST invalidate the signature when mutated, and
 the JSON-only LogTime field MUST NOT (it's derived).
 
@@ -246,5 +246,28 @@ func TestVerifySCT_WrongHashLengthErrors(t *testing.T) {
 	sct.CanonicalHash = hex.EncodeToString(hash[:16])
 	if err := VerifySCT(&priv.PublicKey, sct); err == nil {
 		t.Error("expected length error for 16-byte hash")
+	}
+}
+
+// SignSCT must derive LogTime from the truncated micro value (not
+// from the original logTime). Otherwise sub-microsecond precision
+// from time.Now() leaks into LogTime, the JSON round-trip drifts,
+// and VerifySCT's reconstruction fails. Locks in the fix.
+func TestSignSCT_LogTimeDerivedFromMicros(t *testing.T) {
+	priv, _ := signatures.GenerateKey()
+	hash := sha256.Sum256([]byte("derived"))
+	// Construct a time with deliberate nanosecond residue.
+	logTime := time.Date(2026, 4, 28, 12, 0, 0, 123456789, time.UTC)
+	sct, err := SignSCT(priv, "did:test:operator", "did:test:log", hash, logTime)
+	if err != nil {
+		t.Fatalf("SignSCT: %v", err)
+	}
+	if sct.LogTime != time.UnixMicro(sct.LogTimeMicros).UTC().Format(time.RFC3339Nano) {
+		t.Errorf("LogTime not derived from LogTimeMicros: got %q micros=%d",
+			sct.LogTime, sct.LogTimeMicros)
+	}
+	// And the round-trip must verify cleanly.
+	if err := VerifySCT(&priv.PublicKey, sct); err != nil {
+		t.Errorf("VerifySCT: %v", err)
 	}
 }

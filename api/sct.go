@@ -2,7 +2,7 @@
 FILE PATH: api/sct.go
 
 SignedCertificateTimestamp (SCT) — the operator's cryptographic
-promise on admission. Returned by POST /v2/entries instead of a
+promise on admission. Returned by POST /v1/entries instead of a
 sequence number; signed with the operator's secp256k1 ECDSA key
 (the same OPERATOR_SIGNER_KEY_FILE that signs anchor and
 commitment commentary entries).
@@ -82,7 +82,7 @@ const (
 )
 
 // SignedCertificateTimestamp is the JSON shape returned by
-// POST /v2/entries on successful admission. Consumers verify the
+// POST /v1/entries on successful admission. Consumers verify the
 // signature against the operator's public key (reachable via
 // cfg.OperatorDID) before treating the SCT as a binding promise.
 //
@@ -175,8 +175,12 @@ func SignSCT(
 		LogDID:        logDID,
 		CanonicalHash: hex.EncodeToString(canonicalHash[:]),
 		LogTimeMicros: logTimeMicros,
-		LogTime:       logTime.UTC().Format(time.RFC3339Nano),
-		Signature:     hex.EncodeToString(sig),
+		// LogTime is derived from LogTimeMicros (the signed-over
+		// value) so VerifySCT's reconstruction matches byte-for-byte.
+		// Sourcing it from the original logTime would leak
+		// sub-microsecond precision and break the round-trip.
+		LogTime:   time.UnixMicro(logTimeMicros).UTC().Format(time.RFC3339Nano),
+		Signature: hex.EncodeToString(sig),
 	}, nil
 }
 

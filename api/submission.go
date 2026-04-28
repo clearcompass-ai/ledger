@@ -1,63 +1,62 @@
 /*
 FILE PATH: api/submission.go
 
-Entry submission endpoint — the complete admission pipeline.
+POST /v1/entries — the unified asynchronous SCT/MMD entry point.
 Fail-fast: first failure terminates with appropriate HTTP status.
 
-KEY ARCHITECTURAL DECISIONS:
-  - Sequential pipeline: order matters (sig before size, size before enqueue).
-  - SDK-D5 contract established HERE: signature verified before persistence.
-  - Decision 50: Log_Time assigned at step 9, never in canonical bytes.
-  - Decision 51: Evidence_Pointers cap checked at step 7.
-  - Atomic persist+enqueue: single Postgres tx prevents orphaned entries.
-  - Live difficulty: reads from DifficultyController per-request, not snapshot.
-  - Protocol version validated at step 1 (preamble check).
-  - Canonical hash via envelope.EntryIdentity (SDK v0.3.0 single source of truth).
-  - Duplicate hash mapped to HTTP 409 (not generic 500).
+CONTRACT:
 
-SDK v0.3.0 HARDENING:
-  - Step 3a: entry.Validate() re-applies NewEntry's write-time invariants.
-  - Step 3b: destination binding enforcement.
-  - Step 3c: late-replay freshness via exchange/policy.CheckFreshness.
-  - Step 5/8: envelope.EntryIdentity for the canonical hash primitive.
+	On success, returns 202 Accepted with a SignedCertificateTimestamp.
+	The SCT is the operator's binding promise to sequence the entry
+	into the log within Maximum Merge Delay (OPERATOR_MMD). It is
+	signed by the operator's secp256k1 ECDSA identity key and is
+	offline-verifiable against the operator's published public key.
 
-v7.75 WAVE 1 ADMISSION PACKAGE:
+	The handler never blocks on Tessera or Postgres. Sequence-number
+	assignment, entry_index INSERT, and commitment_split_id extraction
+	all happen asynchronously in the background Sequencer.
 
-  - Step 3a-NFC: admission.CheckNFC asserts NFC normalization on every
-    DID-shaped header field. Defensive only — no normalization on the
-    caller's behalf (SDK Decision 52 caller-normalizes contract).
+	Consumers waiting for sequencing confirmation poll
+	GET /v1/entries/hash/{canonical_hash} — the same endpoint used by
+	monitors, audit jobs, and the SDK's HTTP entry fetcher.
 
-  - Step 4: admission.VerifyEntrySignature wraps SDK signatures.VerifyEntry
-    and preserves the Phase 2 nil-resolver passthrough internally.
+FAST-PATH SHAPE (admission steps run inline):
 
-  - Step 4-Schema (NEW, Wave 1 v3 §C2): commitment-schema dispatch.
-    Peeks the entry's payload schema_id and routes recognized
-    cryptographic-commitment payloads through the SDK Parse* validators
-    to extract the SplitID for index population at Step 11. Unrecognized
-    payloads pass through untouched (load-bearing invariant — see the
-    "Passthrough invariant" docblock at the dispatch site).
-    NOTE: parsing here exposes the SplitID for Step 11 indexing only;
-    the operator does not interpret payload semantics for coupling,
-    contestability, or governance. Domain-payload semantics remain
-    opaque to the operator per the Domain/Protocol Separation Principle.
+	1. Read & validate preamble                  (prepareSubmission step 1)
+	2. Deserialize wire bytes                    (step 2)
+	3. NFC normalization check                   (step 3a)
+	4. Destination binding                       (step 3b)
+	5. Late-replay freshness                     (step 3c)
+	6. Signature verification                    (step 4)
+	7. Entry size + Evidence_Pointers cap        (steps 5, 6)
+	8. Mode A auth probe / Mode B PoW verify     (step 7)
+	9. Canonical hash + early duplicate probe    (steps 8, 8a)
+	10. Mode A credit deduction                  (its own pg tx; pre-WAL)
+	11. WAL.Submit (durable)                     (step 10)
+	12. Sign + return SCT                        (step 11)
 
-  - Step 11 (UPDATED): admission tx now also INSERTs into
-    commitment_split_id when a SplitID was extracted at Step 4-Schema.
-    Population is in the same Postgres transaction as the entry_index
-    insert so the index never references a non-existent sequence.
-
-  - DIDResolver: nil = Phase 2 wire format trust model.
-    set = Phase 4 full DID→pubkey→VerifyEntry. Future migration can
-    replace this with did.DefaultVerifierRegistry.VerifyEntry.
+	Mode A credit deduction stays synchronous in the fast path so a
+	credit-exhausted caller receives 402 before the WAL is touched —
+	an SCT is never issued without payment authorization.
 
 INVARIANTS:
+
   - Past step 3a-NFC: all entries have NFC-normalized DID-shaped fields.
   - Past step 3b: all entries are bound to THIS log's LogDID.
   - Past step 4: all entries have verified signatures (SDK-D5).
-  - Past step 4-Schema: any pre-grant or escrow-split commitment entry
-    has a structurally valid payload and an extracted SplitID.
-  - Log_Time is monotonically non-decreasing within single-operator deployment.
-  - Sequence numbers are gapless (Postgres sequence).
+  - Past step 11 (WAL.Submit): bytes are durably persisted; the
+    Sequencer will assign a sequence number and write entry_index
+    + commitment_split_id atomically in its own pg transaction.
+  - Sequence numbers are gapless (Postgres sequence; assigned by
+    sequencer/loop.go, not this handler).
+
+COMMITMENT SCHEMA DISPATCH:
+
+	The Sequencer is the sole owner of dispatchCommitmentSchema —
+	commitment_split_id population happens in the same pg transaction
+	as the entry_index INSERT. Admission does not parse domain
+	payloads here, in keeping with the Domain/Protocol Separation
+	Principle.
 */
 package api
 
@@ -65,7 +64,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,10 +77,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
-	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
@@ -186,100 +181,6 @@ type SubmissionDeps struct {
 	// FreshnessTolerance configures the late-replay rejection window
 	// at admission time. Zero defaults to policy.FreshnessInteractive.
 	FreshnessTolerance time.Duration
-
-	// V1Timeout caps how long the v1 facade polls WAL.MetaState for
-	// the Sequencer to advance the entry to StateSequenced. Zero
-	// defaults to DefaultV1Timeout. On expiry the handler returns
-	// HTTP 504 with a structured payload pointing the client at
-	// GET /v1/entries/hash/{hash} for a follow-up.
-	V1Timeout time.Duration
-}
-
-// V1 facade timing constants. The facade pattern preserves the
-// historical /v1/entries synchronous contract under the SCT/MMD
-// architecture: wal.Submit completes synchronously, then the
-// handler polls WAL.MetaState until the background Sequencer
-// transitions the entry to StateSequenced (or the timeout
-// elapses).
-const (
-	DefaultV1Timeout     = 30 * time.Second
-	V1FacadePollInterval = 50 * time.Millisecond
-)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3) Schema dispatch (C2 — commitment SplitID extraction)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// commitmentPayloadPeek mirrors the leading "schema_id" field shared
-// by both pre-grant-commitment-v1 and escrow-split-commitment-v1
-// payload envelopes. Any other field in the payload is ignored at
-// the peek stage; full validation lives in the SDK's Parse*
-// functions which are only invoked when the schema_id matches a
-// recognized commitment schema.
-type commitmentPayloadPeek struct {
-	SchemaID string `json:"schema_id"`
-}
-
-// dispatchCommitmentSchema inspects the entry's DomainPayload for a
-// recognized commitment schema_id and, when matched, routes the entry
-// through the appropriate SDK Parse* validator to extract the
-// 32-byte SplitID for downstream index population.
-//
-// Return contract:
-//
-//   - (nil, "", nil): no commitment schema matched. The entry is not
-//     a v7.75 cryptographic-commitment entry; admission proceeds
-//     unchanged. This is the Passthrough invariant case (see below).
-//   - (&splitID, schemaID, nil): a recognized commitment schema
-//     parsed cleanly; the SplitID will be inserted into
-//     commitment_split_id at Step 11.
-//   - (nil, "", err): a recognized commitment schema_id was present
-//     but the payload failed structural validation. Admission MUST
-//     reject the entry — a malformed commitment entry would surface
-//     to verifiers as missing or unparseable on lookup.
-//
-// Passthrough invariant (Wave 1 v3 §C2). An entry whose payload has
-// no schema_id field, an unrecognized schema_id, or no DomainPayload
-// at all MUST flow through this stage unchanged. The dispatch is a
-// switch on KNOWN cryptographic-commitment schema_ids; the default
-// branch is a no-op return. This is what allows the F4 bootstrap
-// script to flow schema-definition entries through admission before
-// any commitment entry has ever been admitted, and it preserves the
-// Domain/Protocol Separation Principle: the operator never inspects
-// payload semantics it does not own.
-func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) {
-	if entry == nil || len(entry.DomainPayload) == 0 {
-		return nil, "", nil
-	}
-	var peek commitmentPayloadPeek
-	// json.Unmarshal failure on the peek is treated as passthrough,
-	// not as rejection: domain payloads are not required to be JSON,
-	// and malformed payloads in unrelated schemas should not be
-	// policed here. The recognized-schema branches below re-decode
-	// and surface their own structural errors via the SDK Parse*
-	// functions.
-	if err := json.Unmarshal(entry.DomainPayload, &peek); err != nil {
-		return nil, "", nil
-	}
-	switch peek.SchemaID {
-	case artifact.PREGrantCommitmentSchemaID:
-		commitment, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
-		if err != nil {
-			return nil, "", err
-		}
-		sid := commitment.SplitID
-		return &sid, artifact.PREGrantCommitmentSchemaID, nil
-	case escrow.EscrowSplitCommitmentSchemaID:
-		commitment, err := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
-		if err != nil {
-			return nil, "", err
-		}
-		sid := commitment.SplitID
-		return &sid, escrow.EscrowSplitCommitmentSchemaID, nil
-	default:
-		// Passthrough — see invariant docblock above.
-		return nil, "", nil
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,18 +188,15 @@ func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) 
 // ─────────────────────────────────────────────────────────────────────────────
 
 // preparedSubmission is the result of running steps 1-9 of the
-// admission fast path. v1 (facade) and v2 (SCT) handlers both call
-// prepareSubmission and then diverge at step 10+ — v1 polls WAL,
-// v2 returns an SCT.
+// admission fast path. The handler diverges at step 10+ to deduct
+// credits, persist to the WAL, and sign the SCT.
 type preparedSubmission struct {
-	raw               []byte
-	entry             *envelope.Entry
-	canonicalHash     [32]byte
-	logTime           time.Time
-	authenticated     bool
-	exchangeDID       string
-	extractedSplitID  *[32]byte
-	extractedSchemaID string
+	raw           []byte
+	entry         *envelope.Entry
+	canonicalHash [32]byte
+	logTime       time.Time
+	authenticated bool
+	exchangeDID   string
 }
 
 // submissionError carries the HTTP status + message a fast-path
@@ -313,13 +211,10 @@ type submissionError struct {
 
 // prepareSubmission runs admission steps 1-9: read body, validate
 // preamble, deserialize, NFC, destination binding, freshness,
-// signature, schema dispatch, size, evidence cap, mode dispatch,
-// canonical hash, early-dup check, log_time. Returns either a
-// fully-populated preparedSubmission ready for wal.Submit, or
-// a submissionError to be written to the client.
-//
-// Identical for v1 and v2 — the SCT/MMD architecture only changes
-// what happens AFTER wal.Submit (steps 10+).
+// signature, size, evidence cap, mode dispatch, canonical hash,
+// early-dup check, log_time. Returns either a fully-populated
+// preparedSubmission ready for wal.Submit, or a submissionError
+// to be written to the client.
 func prepareSubmission(
 	ctx context.Context,
 	deps *SubmissionDeps,
@@ -393,13 +288,6 @@ func prepareSubmission(
 		}
 	}
 
-	// ── Step 4-Schema: Commitment dispatch ─────────────────────────
-	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
-	if dispatchErr != nil {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("commitment schema: %s", dispatchErr)}
-	}
-
 	// ── Step 5: Entry size ─────────────────────────────────────────
 	if int64(len(raw)) > deps.MaxEntrySize {
 		return nil, &submissionError{http.StatusRequestEntityTooLarge,
@@ -463,14 +351,12 @@ func prepareSubmission(
 	logTime := time.Now().UTC()
 
 	return &preparedSubmission{
-		raw:               raw,
-		entry:             entry,
-		canonicalHash:     canonicalHash,
-		logTime:           logTime,
-		authenticated:     authenticated,
-		exchangeDID:       exchangeDID,
-		extractedSplitID:  extractedSplitID,
-		extractedSchemaID: extractedSchemaID,
+		raw:           raw,
+		entry:         entry,
+		canonicalHash: canonicalHash,
+		logTime:       logTime,
+		authenticated: authenticated,
+		exchangeDID:   exchangeDID,
 	}, nil
 }
 
@@ -502,35 +388,40 @@ func deductCreditModeA(
 
 // NewSubmissionHandler creates the POST /v1/entries handler.
 //
-// Panics if AdmissionConfig.EpochWindowSeconds is non-positive — without
-// a valid epoch window, the handler cannot validate Mode B admission proofs
-// and the operator should refuse to start.
+// Panics if any of these are missing — without them the handler
+// cannot honor its contract and the operator should refuse to start:
+//   - AdmissionConfig.EpochWindowSeconds (Mode B stamp verification)
+//   - LogDID                              (destination-binding)
+//   - OperatorDID                         (SCT signer identity)
+//   - OperatorSignerPriv                  (SCT signing key)
 //
-// Under the SCT/MMD architecture, this handler is now a polling
-// FACADE over the asynchronous Sequencer. Steps 1-10 run inline
-// (durable wal.Submit), then the handler polls WAL.MetaState
-// until the background Sequencer transitions the entry to
-// StateSequenced. The legacy {sequence_number, canonical_hash,
-// log_time} JSON shape is preserved for backwards compatibility.
+// Returns 202 + SignedCertificateTimestamp on success. The SCT is
+// signed by OperatorSignerPriv against the operator-published
+// public key reachable via OperatorDID.
 //
-// Clients that want an immediate non-blocking response should
-// migrate to POST /v2/entries which returns an SCT after wal.Submit
-// without polling.
+// Mode A credit deduction stays synchronous in the fast path: the
+// handler returns 402 before WAL.Submit if the caller is out of
+// credits, so an SCT is never issued without payment authorization.
 func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
+	if deps == nil {
+		panic("api: SubmissionDeps must be non-nil")
+	}
 	if deps.Admission.EpochWindowSeconds <= 0 {
 		panic("api: SubmissionDeps.Admission.EpochWindowSeconds must be positive")
 	}
 	if deps.LogDID == "" {
 		panic("api: SubmissionDeps.LogDID must be non-empty (destination-binding enforcement)")
 	}
+	if deps.OperatorDID == "" {
+		panic("api: SubmissionDeps.OperatorDID must be non-empty — SCT signer identity")
+	}
+	if deps.OperatorSignerPriv == nil {
+		panic("api: SubmissionDeps.OperatorSignerPriv must be non-nil — SCT signing")
+	}
 
 	freshness := deps.FreshnessTolerance
 	if freshness <= 0 {
 		freshness = policy.FreshnessInteractive
-	}
-	v1Timeout := deps.V1Timeout
-	if v1Timeout <= 0 {
-		v1Timeout = DefaultV1Timeout
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -543,12 +434,11 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
-		// ── Step 7-credit: Mode A credit deduction ─────────────────────
-		// Moved out of the original step-12 entry_index transaction so
-		// the SCT/MMD architecture has a single writer to entry_index
-		// (the Sequencer). Failure modes preserved:
+		// ── Step 10-credit: Mode A credit deduction ────────────────────
+		// Pre-WAL so a credit-exhausted caller never gets an SCT.
+		// Failure modes:
 		//   - insufficient credits → 402
-		//   - transient DB error  → 500
+		//   - transient DB error   → 500
 		if err := deductCreditModeA(ctx, deps, prep.authenticated, prep.exchangeDID); err != nil {
 			if errors.Is(err, store.ErrInsufficientCredits) {
 				writeError(w, http.StatusPaymentRequired, "insufficient write credits")
@@ -559,7 +449,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
-		// ── Step 10: WAL durability ────────────────────────────────────
+		// ── Step 11: WAL durability ────────────────────────────────────
 		if err := deps.Storage.WAL.Submit(ctx, prep.canonicalHash, prep.raw); err != nil {
 			if errors.Is(err, wal.ErrQueueFull) {
 				w.Header().Set("Retry-After", "5")
@@ -572,96 +462,19 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
-		// ── Step 11 (facade): Poll WAL for the Sequencer to advance ────
-		//
-		// The background Sequencer drains StatePending entries in its
-		// own pollInterval cadence (default 1s; tunable to ~10ms in
-		// tests). The v1 facade pattern: tick every
-		// V1FacadePollInterval (50ms) on WAL.MetaState; return on
-		// StateSequenced; bail on r.Context().Done() (client
-		// disconnect) OR after V1Timeout (sequencer wedged).
-		seq, ok := pollForSequenced(ctx, deps, prep.canonicalHash, v1Timeout)
-		if !ok {
-			// 504 with a structured payload pointing at the
-			// follow-up endpoint — clients can ask hash-side at
-			// their leisure to confirm sequencing eventually
-			// completed.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusGatewayTimeout)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":           "sequencer_lag",
-				"hash":            hex.EncodeToString(prep.canonicalHash[:]),
-				"wal_state":       "pending",
-				"follow_up":       "/v1/entries/hash/" + hex.EncodeToString(prep.canonicalHash[:]),
-				"timeout_seconds": v1Timeout.Seconds(),
-			})
+		// ── Step 12: Sign + return SCT ─────────────────────────────────
+		// log_time was assigned at step 9 (prepareSubmission) and is
+		// signed-over via LogTimeMicros in the SCT canonical packing.
+		sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
+		if err != nil {
+			deps.Logger.Error("SignSCT", "error", err)
+			writeError(w, http.StatusInternalServerError, "SCT signing failed")
 			return
 		}
 
-		// ── Step 12 (facade): Format legacy v1 response ────────────────
-		// log_time comes from the Sequencer's entry_index INSERT, which
-		// uses entry.Header.EventTime. We could re-fetch it from the
-		// row but for the facade response shape we just echo what we
-		// admitted — same value the Sequencer is going to write.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"sequence_number": seq,
-			"canonical_hash":  hex.EncodeToString(prep.canonicalHash[:]),
-			"log_time":        prep.logTime.Format(time.RFC3339Nano),
-		})
-	}
-}
-
-// pollForSequenced is the v1 facade's wait loop. Returns the
-// Sequencer-assigned seq when WAL.MetaState reports
-// StateSequenced/Shipped, or (0, false) on context cancellation or
-// timeout expiry. Polls every V1FacadePollInterval; respects both
-// r.Context().Done() (client disconnect) and a hard
-// context.WithTimeout(ctx, v1Timeout) deadline.
-func pollForSequenced(
-	parent context.Context,
-	deps *SubmissionDeps,
-	hash [32]byte,
-	v1Timeout time.Duration,
-) (uint64, bool) {
-	ctx, cancel := context.WithTimeout(parent, v1Timeout)
-	defer cancel()
-	ticker := time.NewTicker(V1FacadePollInterval)
-	defer ticker.Stop()
-
-	// Quick first probe — common case: the sequencer drained while
-	// wal.Submit was still grouping its batch, so MetaState is
-	// already StateSequenced when the v1 handler reaches here.
-	if seq, ok := readSequencedSeq(parent, deps, hash); ok {
-		return seq, true
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return 0, false
-		case <-ticker.C:
-			if seq, ok := readSequencedSeq(parent, deps, hash); ok {
-				return seq, true
-			}
-		}
-	}
-}
-
-// readSequencedSeq returns the entry's Sequencer-assigned seq when
-// WAL.MetaState reports StateSequenced (or any post-Sequenced
-// state). Returns (0, false) for any other state, transport error,
-// or wal.ErrNotFound (transient race between Submit and meta read).
-func readSequencedSeq(ctx context.Context, deps *SubmissionDeps, hash [32]byte) (uint64, bool) {
-	meta, err := deps.Storage.WAL.MetaState(ctx, hash)
-	if err != nil {
-		return 0, false
-	}
-	switch meta.State {
-	case wal.StateSequenced, wal.StateShipped:
-		return meta.Sequence, true
-	default:
-		return 0, false
+		_ = json.NewEncoder(w).Encode(sct)
 	}
 }
 

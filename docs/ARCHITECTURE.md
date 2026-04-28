@@ -7,34 +7,32 @@ Detector, and 302-redirect read path.
 
 ## Admission contract: SCT/MMD
 
-POST /v1/entries and POST /v2/entries differ only in their return
-shape — both run identical fast-path validation (preamble +
-deserialize + Validate + NFC + destination binding + freshness +
-signature verification + schema dispatch + size + evidence cap +
-mode dispatch + canonical hash + early-dup check + log_time
-assignment + Mode A credit deduction + WAL.Submit). What happens
-afterwards is the only difference:
+**POST /v1/entries** is the sole admission endpoint. It runs the
+fast-path validation (preamble + deserialize + Validate + NFC +
+destination binding + freshness + signature verification + size +
+evidence cap + mode dispatch + canonical hash + early-dup check +
+log_time assignment + Mode A credit deduction + WAL.Submit) and
+returns 202 + a `SignedCertificateTimestamp`.
 
-- **POST /v2/entries** returns a `SignedCertificateTimestamp`
-  (SCT) immediately after WAL fsync. The SCT is a cryptographic
-  promise: "I have your bytes, durable, and I will sequence them
-  within MMD." Signed with the operator's secp256k1 ECDSA key
-  (the same key whose did:key:z… is `cfg.OperatorDID`).
-  RFC-6962-aligned semantics, deterministic length-prefixed
-  binary signing payload (see `api/sct.go` for the wire format).
+The SCT is a cryptographic promise: "I have your bytes, durable,
+and I will sequence them within MMD." Signed with the operator's
+secp256k1 ECDSA key (the same key whose did:key:z… is
+`cfg.OperatorDID`). RFC-6962-aligned semantics, deterministic
+length-prefixed binary signing payload (see `api/sct.go` for the
+wire format).
 
-- **POST /v1/entries** is a polling facade. The handler waits on
-  WAL.MetaState until the background Sequencer transitions the
-  entry to StateSequenced or `OPERATOR_V1_TIMEOUT` (default 30s)
-  elapses. On success: legacy `{sequence_number, canonical_hash,
-  log_time}` JSON. On timeout: HTTP 504 with structured
-  `sequencer_lag` payload pointing at GET /v1/entries/hash/{hash}
-  for follow-up. Strictly bound to `r.Context().Done()` so client
-  TCP disconnect exits within one poll tick.
+The handler never blocks on Tessera or Postgres — sequence-number
+assignment, entry_index INSERT, and commitment_split_id population
+all happen asynchronously in the background Sequencer. Consumers
+that need the assigned sequence number poll
+GET /v1/entries/hash/{canonical_hash} once the Sequencer drains.
 
 The Maximum Merge Delay (`OPERATOR_MMD`, default 24h) is the SLA
 on Sequencer drain latency. Consumers verify it programmatically
 via GET /v1/admission/mmd before trusting an SCT.
+
+POST /v2/entries was an interim endpoint during the v0.5 SCT/MMD
+migration; it is unmounted as of v0.6 and returns 404.
 
 ### Defenses preserved in the fast path
 
@@ -146,10 +144,12 @@ start subsumes boot recovery, replacing the deleted
 `integrity.Reasserter`. Per-entry retry counter; after
 `MaxAttempts` (default 10) the entry transitions to `Manual`.
 
-The Sequencer is the SOLE writer to `entry_index` — under SCT/MMD
-the v1 facade and v2 SCT handlers both stop INSERTing inline.
-This eliminates the `UNIQUE(canonical_hash)` race that two
-synchronous writers would have created.
+The Sequencer is the SOLE writer to `entry_index`. The unified
+/v1/entries handler signs and returns an SCT after WAL.Submit
+without touching Postgres; commitment_split_id population happens
+in the same Sequencer transaction as the entry_index INSERT.
+A single writer eliminates the `UNIQUE(canonical_hash)` race
+that two synchronous writers would have created.
 
 ### Shipper (`shipper/`)
 Async migrator: WAL `Sequenced` → bytestore upload → WAL `Shipped`

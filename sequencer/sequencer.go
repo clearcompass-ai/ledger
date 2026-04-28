@@ -14,7 +14,7 @@ HTTP admission path.
 
 ROLE IN THE SCT/MMD ARCHITECTURE:
 
-  POST /v2/entries returns a SignedCertificateTimestamp (SCT)
+  POST /v1/entries returns a SignedCertificateTimestamp (SCT)
   immediately after wal.Submit fsync. The Sequencer is what
   redeems that promise — it pulls each pending entry, calls
   tessera.AppendLeaf (antispam-idempotent), INSERTs the

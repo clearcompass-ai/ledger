@@ -1,14 +1,14 @@
 /*
-FILE PATH: tests/e2e_v2_sct_test.go
+FILE PATH: tests/e2e_v1_sct_test.go
 
 End-to-end coverage of the SCT/MMD architecture: real Postgres,
 real WAL, real Sequencer drain, real HTTP server. Reuses
 startE2EOperator from e2e_shipper_redirect_test.go (which already
-wires the Sequencer + v2 handlers + MMD endpoint).
+wires the Sequencer + unified /v1 handler + MMD endpoint).
 
 WHAT'S COVERED:
 
-  POST /v2/entries happy path:
+  POST /v1/entries happy path:
     - Returns 202 + SCT.
     - SCT signature verifies against the operator's public key
       (cfg.OperatorSignerPriv.PublicKey from the test harness).
@@ -20,14 +20,14 @@ WHAT'S COVERED:
       lands in Postgres.
 
   GET /v1/entries/hash/{hash} during the inflight window:
-    - Returns 200 {state:"pending"} immediately after v2 POST.
+    - Returns 200 {state:"pending"} immediately after the POST.
     - After Sequencer drain, returns full metadata (sequence_number).
 
   GET /v1/admission/mmd:
     - Returns the configured MMD as both seconds and human form.
 
   Multi-entry drain:
-    - 5 v2 submissions all get distinct SCTs, all sequence within
+    - 5 submissions all get distinct SCTs, all sequence within
       the test budget, entry_index has 5 rows post-drain.
 
   Tamper resistance (sanity, alongside api/sct_test.go):
@@ -57,16 +57,16 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────
-// Test 1: v2 happy path — returns SCT that verifies; WAL goes Pending.
+// Test 1: happy path — returns SCT that verifies; WAL goes Pending.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestE2E_V2_HappyPath_ReturnsValidSCT(t *testing.T) {
+func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 	op := startE2EOperator(t)
 
-	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:v2-happy"}, []byte("v2-happy-payload"))
+	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:happy"}, []byte("happy-payload"))
 	canonicalHash := sha256.Sum256(wire)
 
-	body, status := postV2(t, op, wire)
+	body, status := postV1(t, op, wire)
 	if status != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202\nbody: %s", status, body)
 	}
@@ -89,16 +89,16 @@ func TestE2E_V2_HappyPath_ReturnsValidSCT(t *testing.T) {
 // Test 2: GET /v1/entries/hash/{hash} returns pending then sequenced.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestE2E_V2_HashLookup_PendingThenSequenced(t *testing.T) {
+func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
 	op := startE2EOperator(t)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:hash-lookup"}, []byte("hash-lookup-payload"))
 	canonicalHash := sha256.Sum256(wire)
 	hashHex := hex.EncodeToString(canonicalHash[:])
 
-	body, status := postV2(t, op, wire)
+	body, status := postV1(t, op, wire)
 	if status != http.StatusAccepted {
-		t.Fatalf("v2 submit: %d\n%s", status, body)
+		t.Fatalf("submit: %d\n%s", status, body)
 	}
 
 	// Probe immediately. With a 10ms sequencer interval, we may
@@ -127,7 +127,7 @@ func TestE2E_V2_HashLookup_PendingThenSequenced(t *testing.T) {
 // Test 3: GET /v1/admission/mmd returns configured MMD.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestE2E_V2_MMDEndpoint_ReturnsConfigured(t *testing.T) {
+func TestE2E_V1_MMDEndpoint_ReturnsConfigured(t *testing.T) {
 	op := startE2EOperator(t)
 
 	resp, err := http.Get(op.BaseURL + "/v1/admission/mmd")
@@ -154,10 +154,10 @@ func TestE2E_V2_MMDEndpoint_ReturnsConfigured(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Test 4: 5 v2 submissions all sequence; entry_index has 5 rows.
+// Test 4: 5 submissions all sequence; entry_index has 5 rows.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestE2E_V2_MultiSubmit_AllSequence(t *testing.T) {
+func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
 	op := startE2EOperator(t)
 	const N = 5
 
@@ -168,7 +168,7 @@ func TestE2E_V2_MultiSubmit_AllSequence(t *testing.T) {
 			[]byte(fmt.Sprintf("multi-payload-%d", i)),
 		)
 		hashes[i] = sha256.Sum256(wire)
-		body, status := postV2(t, op, wire)
+		body, status := postV1(t, op, wire)
 		if status != http.StatusAccepted {
 			t.Fatalf("submit %d: status=%d body=%s", i, status, body)
 		}
@@ -210,11 +210,11 @@ func TestE2E_V2_MultiSubmit_AllSequence(t *testing.T) {
 // Test 5: SCT tamper resistance (e2e shape check).
 // ─────────────────────────────────────────────────────────────────────
 
-func TestE2E_V2_SCTTamperResistance(t *testing.T) {
+func TestE2E_V1_SCTTamperResistance(t *testing.T) {
 	op := startE2EOperator(t)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:tamper"}, []byte("tamper"))
-	body, status := postV2(t, op, wire)
+	body, status := postV1(t, op, wire)
 	if status != http.StatusAccepted {
 		t.Fatalf("submit: %d %s", status, body)
 	}
@@ -235,19 +235,40 @@ func TestE2E_V2_SCTTamperResistance(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Test 6: /v2/entries returns 404 over the live HTTP listener.
+// ─────────────────────────────────────────────────────────────────────
+
+// Belt-and-suspenders companion to the unit-level api/server_test.go
+// route assertion: prove the production server (with all middleware)
+// also returns 404 for the retired /v2 endpoint, not just the bare mux.
+func TestE2E_V1_V2RouteRetired(t *testing.T) {
+	op := startE2EOperator(t)
+
+	resp, err := http.Post(op.BaseURL+"/v2/entries", "application/octet-stream", bytes.NewReader([]byte("anything")))
+	if err != nil {
+		t.Fatalf("POST /v2/entries: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		t.Errorf("status = %d, want 404\nbody: %s", resp.StatusCode, body)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-func postV2(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
+func postV1(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, op.BaseURL+"/v2/entries", bytes.NewReader(wire))
+	req, err := http.NewRequest(http.MethodPost, op.BaseURL+"/v1/entries", bytes.NewReader(wire))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /v2/entries: %v", err)
+		t.Fatalf("POST /v1/entries: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))

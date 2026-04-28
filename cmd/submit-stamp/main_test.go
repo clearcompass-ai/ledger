@@ -4,7 +4,7 @@ FILE PATH: cmd/submit-stamp/main_test.go
 Unit tests for the SCT decode + verify helpers in main.go.
 
 End-to-end coverage (real operator + Sequencer + admission) lives
-in tests/e2e_v2_sct_test.go. This file targets the bits the CLI
+in tests/e2e_v1_sct_test.go. This file targets the bits the CLI
 binary owns directly:
 
 	apiSCT JSON decoding round-trips with the api package's
