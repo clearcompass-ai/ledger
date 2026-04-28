@@ -264,7 +264,6 @@ type Config struct {
 	SequencerInterval    time.Duration // default 1s; OPERATOR_SEQUENCER_INTERVAL
 	SequencerMaxInFlight int           // default 4; OPERATOR_SEQUENCER_MAX_INFLIGHT
 	MMD                  time.Duration // default 24h; OPERATOR_MMD
-	V1Timeout            time.Duration // default 30s; OPERATOR_V1_TIMEOUT (facade)
 	// Tessera embedding — Phase 1B replaces the standalone
 	// tessera-personality binary with in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
@@ -409,7 +408,6 @@ func loadConfig() (*Config, error) {
 		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
 		MMD:                  envDurationOr("OPERATOR_MMD", 24*time.Hour),
-		V1Timeout:            envDurationOr("OPERATOR_V1_TIMEOUT", 30*time.Second),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -871,7 +869,6 @@ func main() {
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
-		V1Timeout:          cfg.V1Timeout,
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
 	submitV2Handler := api.NewSubmissionV2Handler(&api.SubmissionV2Deps{

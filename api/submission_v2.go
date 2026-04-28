@@ -6,19 +6,17 @@ Certificate Timestamp immediately after WAL fsync, deferring
 Tessera sequencing and entry_index INSERT to the background
 Sequencer (sequencer/).
 
-CONTRACT VS V1:
+CONTRACT:
 
-	v1 (legacy, facade): synchronous {sequence_number, canonical_hash,
-	    log_time}. Caller blocks until the Sequencer advances the
-	    entry to StateSequenced; on V1Timeout expiry caller gets
-	    HTTP 504 with a follow-up pointer to GET /v1/entries/hash/{hash}.
+	Returns a SignedCertificateTimestamp. Caller never blocks on
+	Tessera or Postgres. The SCT is the operator's binding promise
+	to sequence within MMD (OPERATOR_MMD, default 24h). Consumers
+	verify the SCT signature against the operator's public key
+	(reachable via cfg.OperatorDID, a did:key:z...).
 
-	v2 (this handler): asynchronous SignedCertificateTimestamp.
-	    Caller never blocks on Tessera or Postgres. The SCT is the
-	    operator's binding promise to sequence within MMD
-	    (OPERATOR_MMD, default 24h). Consumers verify the SCT
-	    signature against the operator's public key (reachable via
-	    cfg.OperatorDID, a did:key:z...).
+	Identical contract to POST /v1/entries — the v1 unified handler
+	is the canonical entry point and this v2 endpoint is being
+	retired; both routes are kept wired during the transition.
 
 FAST-PATH SHAPE (matches the user's locked design):
 

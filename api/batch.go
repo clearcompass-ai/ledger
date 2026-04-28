@@ -41,12 +41,10 @@ type BatchSubmissionResponse struct {
 }
 
 type preparedEntry struct {
-	entry             *envelope.Entry
-	canonical         []byte
-	canonicalHash     [32]byte
-	logTime           time.Time
-	extractedSplitID  *[32]byte
-	extractedSchemaID string
+	entry         *envelope.Entry
+	canonical     []byte
+	canonicalHash [32]byte
+	logTime       time.Time
 }
 
 type preflightError struct {
@@ -199,10 +197,6 @@ func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, f
 			return nil, preflightFail(http.StatusInternalServerError, "signature verification path failed")
 		}
 	}
-	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
-	if dispatchErr != nil {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "commitment schema: %s", dispatchErr)
-	}
 	if int64(len(canonical)) > deps.MaxEntrySize {
 		return nil, preflightFail(http.StatusRequestEntityTooLarge, "canonical bytes %d exceed max %d", len(canonical), deps.MaxEntrySize)
 	}
@@ -232,5 +226,5 @@ func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, f
 		}
 	}
 	logTime := time.Now().UTC()
-	return &preparedEntry{entry: entry, canonical: canonical, canonicalHash: canonicalHash, logTime: logTime, extractedSplitID: extractedSplitID, extractedSchemaID: extractedSchemaID}, nil
+	return &preparedEntry{entry: entry, canonical: canonical, canonicalHash: canonicalHash, logTime: logTime}, nil
 }
