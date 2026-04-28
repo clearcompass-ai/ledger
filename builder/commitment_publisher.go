@@ -176,7 +176,12 @@ func (cp *CommitmentPublisher) publish(
 	entry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
 		SignerDID:   cp.operatorDID,
 		Destination: cp.logDID,
-		EventTime:   time.Now().UTC().Unix(),
+		// EventTime in microseconds — matches what SDK
+		// exchange/policy.CheckFreshness actually reads
+		// (time.UnixMicro), not what the SDK docstring claims
+		// (Unix seconds). Same fix as cmd/submit-stamp and
+		// anchor/publisher.
+		EventTime: time.Now().UTC().UnixMicro(),
 	}, payload)
 	if err != nil {
 		cp.logger.Error("commitment entry creation failed", "error", err)

@@ -88,7 +88,14 @@ func main() {
 	header := envelope.ControlHeader{
 		SignerDID:   kp.DID,
 		Destination: *logDID,
-		EventTime:   time.Now().UTC().Unix(),
+		// EventTime: SDK's exchange/policy.CheckFreshness reads
+		// this via time.UnixMicro despite the field's doc comment
+		// claiming Unix seconds. Until the SDK is reconciled, we
+		// follow the actually-implemented unit so freshness
+		// (default 5min interactive tolerance) accepts the
+		// submission instead of stale-rejecting it as 56 years
+		// old.
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}
 
 	var wire []byte

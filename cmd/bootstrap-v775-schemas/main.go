@@ -262,7 +262,12 @@ func buildAndSign(cfg config, priv *ecdsa.PrivateKey, schemaID string) ([]byte, 
 		Destination: cfg.LogDID,
 		SignerDID:   cfg.SignerDID,
 		Payload:     payload,
-		EventTime:   time.Now().UTC().Unix(),
+		// EventTime in microseconds — matches what the SDK's
+		// freshness check (exchange/policy.CheckFreshness) reads
+		// via time.UnixMicro, not what the docstring claims.
+		// Same fix as cmd/submit-stamp, anchor/publisher,
+		// builder/commitment_publisher.
+		EventTime: time.Now().UTC().UnixMicro(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildCommentary: %w", err)

@@ -1,22 +1,11 @@
 /*
 FILE PATH: integrity/detector.go
 
-Detector — the periodic and boot-time agreement check between the
-operator's WAL and the embedded Tessera log. Two surfaces:
+Detector — the periodic agreement check between the operator's
+WAL and the embedded Tessera log. Read-only verifier; does not
+mutate either side.
 
-  Reconcile (boot, one-shot):
-    Iterate WAL inflight breadcrumbs. For each, re-Add to Tessera
-    via the Reasserter. The dedup makes this idempotent. Push the
-    resulting seq back into the WAL via WALReassertSink.Sequence.
-
-    Tolerates partial-failure: a single re-Add error logs and
-    continues so a transient failure on one entry doesn't block
-    reconciliation of the rest. The composition root MAY run
-    Reconcile on a failed return path, but is NOT required to —
-    inflight entries that didn't reconcile this boot will retry
-    on the next boot.
-
-  Loop (running, periodic):
+  Loop (periodic):
     Sample N random sequences below HWM. For each, compare:
       WAL.HashAt(seq)        ← what admission recorded
       Tessera.HashAt(seq)    ← what the Merkle tree commits to
@@ -26,8 +15,12 @@ operator's WAL and the embedded Tessera log. Two surfaces:
     Production defaults: 3 samples per minute. With a uniform
     distribution over [1, HWM], divergence detection latency at
     HWM=10B is roughly HWM / (samples_per_cycle * cycles_per_day).
-    Combine with the boot-time full reconciliation for tight
-    guarantees.
+
+BOOT RECOVERY:
+  No longer this package's concern. The Sequencer drains
+  StatePending entries on Run start (sequencer/sequencer.go),
+  which subsumes the old Reasserter/Reconcile path with the
+  added benefit of also INSERTing entry_index rows.
 
 PANIC SEMANTICS:
   Detector itself never panics. It returns ErrDiverged. The
@@ -66,34 +59,27 @@ type DetectorConfig struct {
 	Logger *slog.Logger
 }
 
-// Detector orchestrates Reconcile + Loop against a WAL and a
-// Tessera-backed Verifier+Reasserter pair.
+// Detector runs the periodic Loop against a WAL and a
+// Tessera-backed Verifier. Read-only — never mutates either side.
 type Detector struct {
-	wal        WALReader
-	inflight   InflightIterator
-	sink       WALReassertSink
-	verifier   Verifier
-	reasserter Reasserter
-	cfg        DetectorConfig
-	logger     *slog.Logger
+	wal      WALReader
+	verifier Verifier
+	cfg      DetectorConfig
+	logger   *slog.Logger
 
 	rngMu sync.Mutex // guards rng — math/rand.Rand is not goroutine-safe
 }
 
 // NewDetector returns a Detector wired to the supplied surfaces.
-// All five arguments are required; nil checks happen at first use
+// Both arguments are required; nil checks happen at first use
 // for clear panic messages.
 //
-// The Verifier and Reasserter typically come from a single
-// *TesseraAdapter (NewTesseraAdapter). The WAL and Sink are
-// typically the same *wal.Committer; the InflightIterator is a thin
-// closure over the committer's IterateInflight method.
+// The Verifier typically comes from a *TesseraAdapter
+// (NewTesseraAdapter). The WAL is typically the operator's
+// *wal.Committer.
 func NewDetector(
 	wal WALReader,
-	inflight InflightIterator,
-	sink WALReassertSink,
 	verifier Verifier,
-	reasserter Reasserter,
 	cfg DetectorConfig,
 ) *Detector {
 	if cfg.SampleInterval <= 0 {
@@ -109,73 +95,11 @@ func NewDetector(
 		cfg.Logger = slog.Default()
 	}
 	return &Detector{
-		wal:        wal,
-		inflight:   inflight,
-		sink:       sink,
-		verifier:   verifier,
-		reasserter: reasserter,
-		cfg:        cfg,
-		logger:     cfg.Logger,
+		wal:      wal,
+		verifier: verifier,
+		cfg:      cfg,
+		logger:   cfg.Logger,
 	}
-}
-
-// Reconcile runs the boot-time reconciliation. Iterates WAL
-// inflight entries; for each, re-Asserts against Tessera and
-// transitions the WAL state.
-//
-// Returns nil even when individual entries fail — partial failure
-// is logged and reconciliation continues. Returns a hard error only
-// when the iteration itself fails (e.g., Badger transport error).
-//
-// On exit, the WAL's inflight set has been emptied for any entry
-// Tessera accepted. Entries Tessera refused (ErrPhantom-like)
-// remain in inflight for the next boot to re-attempt.
-func (d *Detector) Reconcile(ctx context.Context) error {
-	if d.inflight == nil || d.sink == nil || d.reasserter == nil {
-		return errors.New("integrity/detector: Reconcile requires inflight iterator, sink, reasserter")
-	}
-
-	var (
-		recovered int
-		failed    int
-		startTime = time.Now()
-	)
-
-	err := d.inflight(ctx, func(hash [32]byte) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		seq, err := d.reasserter.Reassert(ctx, hash)
-		if err != nil {
-			d.logger.Error("integrity/detector: reassert failed",
-				"hash", fmt.Sprintf("%x", hash[:8]),
-				"err", err,
-			)
-			failed++
-			return nil // skip this one, keep iterating
-		}
-		if err := d.sink.Sequence(ctx, hash, seq); err != nil {
-			d.logger.Error("integrity/detector: WAL sequence failed",
-				"hash", fmt.Sprintf("%x", hash[:8]),
-				"seq", seq,
-				"err", err,
-			)
-			failed++
-			return nil
-		}
-		recovered++
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("integrity/detector: iterate inflight: %w", err)
-	}
-
-	d.logger.Info("integrity/detector: reconciliation complete",
-		"recovered", recovered,
-		"failed", failed,
-		"duration", time.Since(startTime),
-	)
-	return nil
 }
 
 // SampleVerify runs ONE sampling cycle: pick SamplesPerCycle random
