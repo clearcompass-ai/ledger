@@ -27,13 +27,18 @@ WHAT THE SCT DOES NOT GUARANTEE:
 
 CANONICAL SIGNING PAYLOAD (RFC-6962-style binary packing):
 
+	domain_sep       (16 bytes; "ORTHOLOG_SCT_V1\x00")
 	version          (u8)
+	signerDID_len    (u16, big-endian)
+	signerDID_bytes  (variable; 0..65535)
+	sigAlgoID_len    (u16, big-endian)
+	sigAlgoID_bytes  (variable; 0..65535)
 	logDID_len       (u16, big-endian)
 	logDID_bytes     (variable; 0..65535)
 	canonical_hash   (32 bytes)
 	log_time_micros  (i64, big-endian; microseconds since Unix epoch)
 
-	Total size: 43 + len(logDID) bytes.
+	Total size: 65 + len(signerDID) + len(sigAlgoID) + len(logDID) bytes.
 
 Length-prefixed encoding makes the parse unambiguous — concatenated
 fields cannot drift across boundaries (the classic
