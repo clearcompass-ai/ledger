@@ -227,7 +227,7 @@ func pollQueryResults(t *testing.T, baseURL, signerDID string, expectedCount int
 
 // submitEntry POSTs a wire entry with auth, waits for sequencing,
 // and returns a map with the SCT fields plus sequence_number,
-// canonical_hash, and log_time pulled from /v1/entries/hash/{hash}
+// canonical_hash, and log_time pulled from /v1/entries-hash/{hash}
 // once the Sequencer has drained.
 //
 // Returning the merged shape preserves the legacy
@@ -261,7 +261,7 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 	// Poll the hash-lookup endpoint until Sequencer drains.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		lookup, err := http.Get(baseURL + "/v1/entries/hash/" + hashHex)
+		lookup, err := http.Get(baseURL + "/v1/entries-hash/" + hashHex)
 		if err == nil && lookup.StatusCode == http.StatusOK {
 			var rec map[string]any
 			if decErr := json.NewDecoder(lookup.Body).Decode(&rec); decErr == nil {

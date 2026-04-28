@@ -13,7 +13,7 @@ is unmounted, and the v2 handler + deps + tests are deleted.
 - **POST /v1/entries** returns 202 + SCT directly. The legacy
   `{sequence_number, canonical_hash, log_time}` JSON shape is
   retired. Clients confirm sequencing via
-  GET /v1/entries/hash/{canonical_hash} once the Sequencer drains.
+  GET /v1/entries-hash/{canonical_hash} once the Sequencer drains.
 - **POST /v2/entries** is unmounted — returns 404. Use /v1/entries.
 
 ### Breaking change for HTTP clients
@@ -21,7 +21,7 @@ is unmounted, and the v2 handler + deps + tests are deleted.
 Any client that depended on `sequence_number` being present in the
 POST /v1/entries response body needs to update. Two recipes:
 
-1. Decode the SCT, then poll GET /v1/entries/hash/{canonical_hash}
+1. Decode the SCT, then poll GET /v1/entries-hash/{canonical_hash}
    until the response contains `sequence_number`. The hash is on
    the SCT itself.
 2. Trust the SCT as the admission receipt and only look up the
@@ -130,13 +130,13 @@ entry_index INSERT are deferred to a background Sequencer worker.
   `OPERATOR_V1_TIMEOUT` elapses (default 30s). On timeout the
   caller gets HTTP 504 with `{error:"sequencer_lag", hash,
   wal_state, follow_up, timeout_seconds}` pointing at
-  GET /v1/entries/hash/{hash} for follow-up. The handler is
+  GET /v1/entries-hash/{hash} for follow-up. The handler is
   strictly bound to `r.Context().Done()` so a client TCP
   disconnect exits the poll loop within one tick.
 - **NEW: GET /v1/admission/mmd.** Publishes the operator's
   promised maximum merge delay (`OPERATOR_MMD`, default 24h) so
   consumers can verify the SLA before trusting an SCT.
-- **GET /v1/entries/hash/{hashHex}** is now WAL-aware. Returns
+- **GET /v1/entries-hash/{hashHex}** is now WAL-aware. Returns
   `{state:"pending"}` for entries durable in WAL but not yet in
   entry_index (the SCT/MMD inflight window) and
   `{state:"manual"}` for entries the Sequencer gave up on. Falls

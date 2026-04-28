@@ -27,7 +27,7 @@ ROUTE TABLE (read side, no middleware):
   - GET  /v1/entries/{seq}/raw        — wire bytes (200 inline /
                                         302 redirect to bytestore)
   - GET  /v1/entries/batch?...        — JSON list of metadata
-  - GET  /v1/entries/hash/{hashHex}   — hash-keyed lookup; surfaces
+  - GET  /v1/entries-hash/{hashHex}   — hash-keyed lookup; surfaces
                                         the SCT inflight state
   - GET  /v1/admission/mmd            — operator's promised MMD
   - GET  /v1/admission/difficulty     — Mode B PoW difficulty
@@ -134,7 +134,7 @@ type Handlers struct {
 	// ── Read endpoints (entry fetch + SMT leaf + commitments) ───────
 	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
 	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
-	EntryByHash     http.HandlerFunc // GET /v1/entries/hash/{hashHex}  (WAL-aware metadata; surfaces SCT pending state)
+	EntryByHash     http.HandlerFunc // GET /v1/entries-hash/{hashHex}  (WAL-aware metadata; surfaces SCT pending state)
 	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw  (wire bytes; 200 inline OR 302 redirect)
 
 	// SMT leaf data — blocks origin_evaluator.
@@ -201,24 +201,48 @@ func NewServer(
 	}
 
 	// ── Tree head + proofs (read-only) ─────────────────────────────────
-	mux.HandleFunc("GET /v1/tree/head", handlers.TreeHead)
-	mux.HandleFunc("GET /v1/tree/inclusion/{seq}", handlers.TreeInclusion)
-	mux.HandleFunc("GET /v1/tree/consistency/{old}/{new}", handlers.TreeConsistency)
+	if handlers.TreeHead != nil {
+		mux.HandleFunc("GET /v1/tree/head", handlers.TreeHead)
+	}
+	if handlers.TreeInclusion != nil {
+		mux.HandleFunc("GET /v1/tree/inclusion/{seq}", handlers.TreeInclusion)
+	}
+	if handlers.TreeConsistency != nil {
+		mux.HandleFunc("GET /v1/tree/consistency/{old}/{new}", handlers.TreeConsistency)
+	}
 
 	// ── SMT proofs (read-only) ─────────────────────────────────────────
-	mux.HandleFunc("GET /v1/smt/proof/{key}", handlers.SMTProof)
-	mux.HandleFunc("POST /v1/smt/batch_proof", handlers.SMTBatchProof)
-	mux.HandleFunc("GET /v1/smt/root", handlers.SMTRoot)
+	if handlers.SMTProof != nil {
+		mux.HandleFunc("GET /v1/smt/proof/{key}", handlers.SMTProof)
+	}
+	if handlers.SMTBatchProof != nil {
+		mux.HandleFunc("POST /v1/smt/batch_proof", handlers.SMTBatchProof)
+	}
+	if handlers.SMTRoot != nil {
+		mux.HandleFunc("GET /v1/smt/root", handlers.SMTRoot)
+	}
 
 	// ── Query endpoints (read-only) ────────────────────────────────────
-	mux.HandleFunc("GET /v1/query/cosignature_of/{pos}", handlers.CosignatureOf)
-	mux.HandleFunc("GET /v1/query/target_root/{pos}", handlers.TargetRoot)
-	mux.HandleFunc("GET /v1/query/signer_did/{did}", handlers.SignerDID)
-	mux.HandleFunc("GET /v1/query/schema_ref/{pos}", handlers.SchemaRef)
-	mux.HandleFunc("GET /v1/query/scan", handlers.Scan)
+	if handlers.CosignatureOf != nil {
+		mux.HandleFunc("GET /v1/query/cosignature_of/{pos}", handlers.CosignatureOf)
+	}
+	if handlers.TargetRoot != nil {
+		mux.HandleFunc("GET /v1/query/target_root/{pos}", handlers.TargetRoot)
+	}
+	if handlers.SignerDID != nil {
+		mux.HandleFunc("GET /v1/query/signer_did/{did}", handlers.SignerDID)
+	}
+	if handlers.SchemaRef != nil {
+		mux.HandleFunc("GET /v1/query/schema_ref/{pos}", handlers.SchemaRef)
+	}
+	if handlers.Scan != nil {
+		mux.HandleFunc("GET /v1/query/scan", handlers.Scan)
+	}
 
 	// ── Admission info (read-only) ─────────────────────────────────────
-	mux.HandleFunc("GET /v1/admission/difficulty", handlers.Difficulty)
+	if handlers.Difficulty != nil {
+		mux.HandleFunc("GET /v1/admission/difficulty", handlers.Difficulty)
+	}
 
 	// ── Witness cosign endpoint (optional) ─────────────────────────────
 	if handlers.WitnessCosign != nil {
@@ -243,7 +267,12 @@ func NewServer(
 		// recipients poll this endpoint to confirm sequencing
 		// (state transitions pending → sequenced as the background
 		// Sequencer drains the WAL).
-		mux.HandleFunc("GET /v1/entries/hash/{hashHex}", handlers.EntryByHash)
+		//
+		// URL is /v1/entries-hash/{hashHex} (NOT /v1/entries-hash/...)
+		// to avoid a Go 1.22+ mux pattern conflict with
+		// /v1/entries/{sequence}/raw — both would otherwise match
+		// /v1/entries-hash/raw and neither is strictly more specific.
+		mux.HandleFunc("GET /v1/entries-hash/{hashHex}", handlers.EntryByHash)
 	}
 	if handlers.EntryRaw != nil {
 		// /raw subroute: wire bytes via WAL inline OR bytestore 302 redirect.

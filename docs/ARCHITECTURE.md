@@ -25,7 +25,7 @@ The handler never blocks on Tessera or Postgres — sequence-number
 assignment, entry_index INSERT, and commitment_split_id population
 all happen asynchronously in the background Sequencer. Consumers
 that need the assigned sequence number poll
-GET /v1/entries/hash/{canonical_hash} once the Sequencer drains.
+GET /v1/entries-hash/{canonical_hash} once the Sequencer drains.
 
 The Maximum Merge Delay (`OPERATOR_MMD`, default 24h) is the SLA
 on Sequencer drain latency. Consumers verify it programmatically

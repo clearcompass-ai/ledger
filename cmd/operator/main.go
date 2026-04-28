@@ -989,7 +989,12 @@ func main() {
 	// active — keeping things simple, we treat the file as the
 	// gate). Peers POSTing to /v1/cosign get a signed tree head
 	// back; api/server.go skips the route if WitnessCosign is nil.
-	var witnessHandler http.HandlerFunc
+	//
+	// Type is http.Handler (interface) — NOT http.HandlerFunc.
+	// A nil HandlerFunc assigned into a non-nil interface field
+	// would survive the nil-guard in api/server.go (typed-nil
+	// interface) and panic at mux.Handle("nil handler") at boot.
+	var witnessHandler http.Handler
 	if cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0 {
 		witnessKey, err := loadOrGenerateWitnessSigner(cfg.WitnessKeyFile, logger)
 		if err != nil {
@@ -1000,7 +1005,7 @@ func main() {
 			WitnessKey: witnessKey,
 			Logger:     logger,
 		})
-		witnessHandler = cosignH.ServeHTTP
+		witnessHandler = http.HandlerFunc(cosignH.ServeHTTP)
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 

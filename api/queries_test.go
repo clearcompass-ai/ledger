@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/queries_test.go
 
-Handler-level tests for the WAL-aware GET /v1/entries/hash/{hash}
+Handler-level tests for the WAL-aware GET /v1/entries-hash/{hash}
 endpoint added in the SCT/MMD architecture. The pending-state and
 manual-state branches short-circuit before touching EntryStore /
 QueryAPI, so they can be exercised against pure WAL fakes; the
@@ -64,9 +64,9 @@ func (h *hashLookupWAL) MetaState(ctx context.Context, hash [32]byte) (wal.Meta,
 // makeHashLookupRequest builds a GET request hitting the
 // {hashHex}-templated route. We bypass the real ServeMux by
 // setting the path directly — NewHashLookupHandler reads the
-// path via r.URL.Path[len("/v1/entries/hash/"):].
+// path via r.URL.Path[len("/v1/entries-hash/"):].
 func makeHashLookupRequest(hash [32]byte) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, "/v1/entries/hash/"+hex.EncodeToString(hash[:]), nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/entries-hash/"+hex.EncodeToString(hash[:]), nil)
 	return r
 }
 
@@ -128,7 +128,7 @@ func TestHashLookup_BadHex_Returns400(t *testing.T) {
 	deps := &QueryDeps{Logger: discardLogger()}
 	h := NewHashLookupHandler(deps)
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/v1/entries/hash/not-hex", nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/entries-hash/not-hex", nil)
 	h.ServeHTTP(rr, r)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
