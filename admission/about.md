@@ -12,7 +12,7 @@ specific HTTP status.
 2. **NFC check** — `nfc_check.go` (this package)
 3. **Signature verify** — `entry_signature_verifier.go` (this package)
 4. Schema dispatch — `api/submission.go` calls into `schema/`
-5. Witness quorum verify — `bls_quorum_verifier.go` (future)
+5. Witness quorum verify — `bls_quorum_verifier.go` (not yet wired)
 6. Index population — `store/`
 7. Tessera enqueue — `tessera/` adapter
 

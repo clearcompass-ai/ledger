@@ -1,7 +1,7 @@
 # Operator architecture
 
-This document is the orientation map for the operator's runtime —
-the WAL-first admission model, hexagonal bytestore, asynchronous
+Orientation map for the operator's runtime architecture: the
+WAL-first admission model, hexagonal bytestore, asynchronous
 Shipper, integrity Detector, and 302-redirect read path.
 
 ## End-to-end flow
@@ -147,6 +147,10 @@ SEQUENCE backing entry numbers. Admission flow: WAL Submit →
 Tessera AppendLeaf (assigns seq, dedup via antispam) → Postgres
 `entry_index` INSERT with the assigned seq → WAL Sequence
 transition. A failure between any two of these stages is
+sequence allocator. Admission flow:
+WAL Submit → Tessera AppendLeaf (assigns seq, dedup via antispam)
+→ Postgres `entry_index` INSERT with the assigned seq → WAL
+Sequence transition. A failure between any two of these stages is
 recoverable via the integrity Reasserter at next boot.
 
 ## What's intentionally NOT in this architecture

@@ -123,3 +123,5 @@ See `docs/CONFIG.md` for the full env-var matrix and
   `ErrDiverged → fatal channel → panic` contract.
 - `bytestore/conformance_test.go` — shared Backend conformance
   suite covering Memory + GCS + S3 in container + real modes.
+Pre-release. No tagged versions yet — see `git log` for the full
+history. This file will start tracking releases at `v1.0.0`.
