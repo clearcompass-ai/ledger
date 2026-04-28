@@ -1,20 +1,52 @@
 /*
 FILE PATH: api/server.go
 
-HTTP server initialization and route registration. All Ortholog operator
-endpoints under /v1/. Health checks at /healthz and /readyz.
+HTTP server initialization and route registration. All Ortholog
+operator endpoints live under /v1/. Health checks at /healthz and
+/readyz.
 
 KEY ARCHITECTURAL DECISIONS:
   - net/http standard library: no framework dependency.
-  - Middleware chain: size_limit → auth → handler (for submission).
+  - Middleware chain: SizeLimit → Auth → handler for submission paths.
   - All handlers receive dependencies via closure (no globals).
   - Readiness flag is atomic for thread-safe shutdown signaling.
-  - Optional endpoints (WitnessCosign, read endpoints) nil-guarded.
+  - Optional endpoints (WitnessCosign, read endpoints, batch
+    submission) are nil-guarded so binaries that don't serve them
+    (cmd/operator-reader, lightweight test harnesses) can omit
+    the wiring without producing a 500 or panicking through a
+    nil HandlerFunc.
 
-CHANGES FROM PHASE 4 PREP:
-  - 5 new handler fields: EntryBySequence, EntryBatch, SMTLeaf, SMTLeafBatch, CommitmentQuery
-  - 5 new routes registered with nil guards
-  - Both cmd/operator/main.go and cmd/operator-reader/main.go wire these
+ROUTE TABLE (write side, with middleware):
+  - POST /v1/entries          — single-entry SCT/MMD admission.
+  - POST /v1/entries/batch    — async batch admission; returns SCT
+                                array. Bounded at
+                                AbsoluteMaxBatchPayloadBytes.
+
+ROUTE TABLE (read side, no middleware):
+  - GET  /v1/entries/{seq}            — JSON metadata
+  - GET  /v1/entries/{seq}/raw        — wire bytes (200 inline /
+                                        302 redirect to bytestore)
+  - GET  /v1/entries/batch?...        — JSON list of metadata
+  - GET  /v1/entries/hash/{hashHex}   — hash-keyed lookup; surfaces
+                                        the SCT inflight state
+  - GET  /v1/admission/mmd            — operator's promised MMD
+  - GET  /v1/admission/difficulty     — Mode B PoW difficulty
+  - GET  /v1/tree/head[?size=N]       — cosigned tree head
+  - GET  /v1/tree/inclusion/{seq}     — Merkle inclusion proof
+  - GET  /v1/tree/consistency/{old}/{new}
+  - GET  /v1/smt/proof/{key}          — SMT membership/non-mem proof
+  - POST /v1/smt/batch_proof          — batch SMT proof
+  - GET  /v1/smt/root                 — current SMT root
+  - GET  /v1/smt/leaf/{key}           — SMT leaf data
+  - POST /v1/smt/leaves               — batch leaf data
+  - GET  /v1/query/cosignature_of/{pos}
+  - GET  /v1/query/target_root/{pos}
+  - GET  /v1/query/signer_did/{did}
+  - GET  /v1/query/schema_ref/{pos}
+  - GET  /v1/query/scan?start&count
+  - GET  /v1/commitments?seq=N        — derivation commitment lookup
+  - POST /v1/cosign                   — witness cosign endpoint
+                                        (only when WitnessCosign set)
 */
 package api
 
@@ -67,36 +99,42 @@ type Server struct {
 	logger     *slog.Logger
 }
 
-// Handlers holds all registered handler functions.
+// Handlers holds all registered handler functions. Nil fields
+// suppress route registration — fine for read-only operators
+// (cmd/operator-reader) and trimmed-down test harnesses.
 type Handlers struct {
-	// ── Core endpoints (Phase 2) ────────────────────────────────────
-	Submission      http.HandlerFunc
-	BatchSubmission http.HandlerFunc // POST /v1/entries/batch — async; returns array of SCTs
+	// ── Admission (write) ───────────────────────────────────────────
+	Submission      http.HandlerFunc // POST /v1/entries        — single-entry SCT
+	BatchSubmission http.HandlerFunc // POST /v1/entries/batch  — async batch SCT array
+
+	// ── Tree heads + Merkle proofs ──────────────────────────────────
 	TreeHead        http.HandlerFunc
 	TreeInclusion   http.HandlerFunc
 	TreeConsistency http.HandlerFunc
-	SMTProof        http.HandlerFunc
-	SMTBatchProof   http.HandlerFunc
-	SMTRoot         http.HandlerFunc
-	CosignatureOf   http.HandlerFunc
-	TargetRoot      http.HandlerFunc
-	SignerDID       http.HandlerFunc
-	SchemaRef       http.HandlerFunc
-	Scan            http.HandlerFunc
-	Difficulty      http.HandlerFunc
 
-	// ── SCT/MMD architecture ────────────────────────────────────────
-	MMD http.HandlerFunc // GET /v1/admission/mmd — operator's
-	// promised maximum merge delay
+	// ── SMT proofs ──────────────────────────────────────────────────
+	SMTProof      http.HandlerFunc
+	SMTBatchProof http.HandlerFunc
+	SMTRoot       http.HandlerFunc
 
-	// ── Phase 4 prep: witness cosign (optional) ─────────────────────
-	WitnessCosign http.Handler // nil if not serving as witness
+	// ── Index queries ───────────────────────────────────────────────
+	CosignatureOf http.HandlerFunc
+	TargetRoot    http.HandlerFunc
+	SignerDID     http.HandlerFunc
+	SchemaRef     http.HandlerFunc
+	Scan          http.HandlerFunc
 
-	// ── Full buildout: read endpoints for remote consumers ──────────
-	// Entry fetch by position — blocks Phase 5 verifiers.
+	// ── Admission info ──────────────────────────────────────────────
+	Difficulty http.HandlerFunc // GET /v1/admission/difficulty — Mode B PoW difficulty
+	MMD        http.HandlerFunc // GET /v1/admission/mmd        — Maximum Merge Delay
+
+	// ── Witness cosign (optional) ───────────────────────────────────
+	WitnessCosign http.Handler // nil unless serving as a witness
+
+	// ── Read endpoints (entry fetch + SMT leaf + commitments) ───────
 	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
 	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
-	EntryByHash     http.HandlerFunc // GET /v1/entries/hash/{hashHex}  (WAL-aware metadata; pending-state surface for SCTs)
+	EntryByHash     http.HandlerFunc // GET /v1/entries/hash/{hashHex}  (WAL-aware metadata; surfaces SCT pending state)
 	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw  (wire bytes; 200 inline OR 302 redirect)
 
 	// SMT leaf data — blocks origin_evaluator.
@@ -155,7 +193,9 @@ func NewServer(
 		mux.Handle("POST /v1/entries/batch", batchChain)
 	}
 
-	// ── SCT/MMD: MMD info (POST /v1/entries returns the SCT itself) ──
+	// ── SCT/MMD: MMD info ───────────────────────────────────────────
+	// Consumers verify the operator's promised redemption window
+	// against this endpoint before trusting an SCT.
 	if handlers.MMD != nil {
 		mux.HandleFunc("GET /v1/admission/mmd", handlers.MMD)
 	}
@@ -185,11 +225,12 @@ func NewServer(
 		mux.Handle("POST /v1/cosign", handlers.WitnessCosign)
 	}
 
-	// ── Entry read endpoints (nil-guarded for backward compat) ─────────
+	// ── Entry read endpoints (nil-guarded for read-only operators) ─────
 	// GET /v1/entries/{sequence} — single entry by position.
-	// GET /v1/entries/batch — batch read for fraud proof replay.
-	// Note: GET /v1/entries/{sequence} doesn't conflict with
-	// POST /v1/entries — different HTTP methods + path structure.
+	// GET /v1/entries/batch — batch read for fraud-proof replay.
+	// Method+path routing guarantees these don't collide with
+	// POST /v1/entries (admission) or POST /v1/entries/batch (async
+	// batch admission) registered above.
 	if handlers.EntryBySequence != nil {
 		mux.HandleFunc("GET /v1/entries/{sequence}", handlers.EntryBySequence)
 	}
@@ -197,10 +238,11 @@ func NewServer(
 		mux.HandleFunc("GET /v1/entries/batch", handlers.EntryBatch)
 	}
 	if handlers.EntryByHash != nil {
-		// Hash-keyed lookup. The v1 facade's 504 timeout response
-		// points clients here for follow-up; v2 SCT-receivers
-		// poll this to learn whether their SCT has been
-		// redeemed (state transitions pending → sequenced).
+		// Hash-keyed lookup. POST /v1/entries returns a
+		// SignedCertificateTimestamp without a sequence number; SCT
+		// recipients poll this endpoint to confirm sequencing
+		// (state transitions pending → sequenced as the background
+		// Sequencer drains the WAL).
 		mux.HandleFunc("GET /v1/entries/hash/{hashHex}", handlers.EntryByHash)
 	}
 	if handlers.EntryRaw != nil {
