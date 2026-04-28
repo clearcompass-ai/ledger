@@ -123,6 +123,22 @@ type AppenderOptions struct {
 	// file in production or generates an ephemeral one for
 	// local dev (with a logged warning).
 	Signer note.Signer
+
+	// Antispam is the upstream Tessera Antispam (dedup) adapter.
+	// nil = no dedup (every Add allocates a fresh seq, even for
+	// duplicates). Production operators MUST wire one — without
+	// it, integrity.Reasserter on boot would re-Add inflight
+	// entries and get NEW seqs instead of the original ones,
+	// polluting the log. See README.md "Antispam" for the
+	// upstream library's design.
+	Antispam uptessera.Antispam
+
+	// AntispamInMemEntries sizes the in-memory dedup cache that
+	// fronts the persistent antispam adapter. The recommended
+	// floor is the persistent layer's PushbackThreshold × number
+	// of admission front-ends. Defaults to
+	// uptessera.DefaultAntispamInMemorySize when zero.
+	AntispamInMemEntries uint
 }
 
 // applyDefaults fills zero-valued fields with safe defaults so
@@ -190,6 +206,13 @@ func NewEmbeddedAppender(
 		WithCheckpointSigner(opts.Signer).
 		WithCheckpointInterval(opts.CheckpointInterval).
 		WithBatching(uint(opts.BatchSize), opts.BatchMaxAge)
+	if opts.Antispam != nil {
+		inMem := opts.AntispamInMemEntries
+		if inMem == 0 {
+			inMem = uptessera.DefaultAntispamInMemorySize
+		}
+		appendOpts = appendOpts.WithAntispam(inMem, opts.Antispam)
+	}
 
 	appender, shutdown, reader, err := uptessera.NewAppender(ctx, driver, appendOpts)
 	if err != nil {
