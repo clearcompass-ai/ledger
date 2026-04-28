@@ -89,6 +89,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/integrity"
+	"github.com/clearcompass-ai/ortholog-operator/sequencer"
 	"github.com/clearcompass-ai/ortholog-operator/shipper"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
@@ -255,6 +256,15 @@ type Config struct {
 	EpochAcceptanceWindow int
 	AnchorInterval        time.Duration
 	AnchorSources         []anchor.AnchorSource
+
+	// Sequencer settings (SCT/MMD architecture). The Sequencer
+	// drains StatePending entries asynchronously; v2 admission
+	// returns an SCT immediately after WAL fsync and the
+	// Sequencer redeems the promise within MMD.
+	SequencerInterval   time.Duration // default 1s; OPERATOR_SEQUENCER_INTERVAL
+	SequencerMaxInFlight int           // default 4; OPERATOR_SEQUENCER_MAX_INFLIGHT
+	MMD                 time.Duration // default 24h; OPERATOR_MMD
+	V1Timeout           time.Duration // default 30s; OPERATOR_V1_TIMEOUT (facade)
 	// Tessera embedding — Phase 1B replaces the standalone
 	// tessera-personality binary with in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
@@ -395,6 +405,11 @@ func loadConfig() (*Config, error) {
 		WitnessKeyFile:        os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
 		WALPath:               envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:   envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
+
+		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
+		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
+		MMD:                  envDurationOr("OPERATOR_MMD", 24*time.Hour),
+		V1Timeout:            envDurationOr("OPERATOR_V1_TIMEOUT", 30*time.Second),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
@@ -467,6 +482,21 @@ func envIntOr(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// envDurationOr reads an env var as a Go time.Duration string
+// (e.g. "1s", "500ms", "24h"); returns fallback on unset or parse
+// failure.
+func envDurationOr(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
 
 // parseCSV splits a comma-separated env value into a slice of
@@ -942,13 +972,28 @@ func main() {
 		integrity.DetectorConfig{Logger: logger},
 	)
 
-	// Boot reconciliation: re-Add inflight entries to Tessera.
-	// Idempotent via antispam dedup. Hard fail on transport error
-	// (process exit triggers orchestrator restart, which retries).
-	if err := detector.Reconcile(ctx); err != nil {
-		logger.Error("integrity boot reconcile", "error", err)
-		os.Exit(1)
-	}
+	// Boot reconciliation note: the deleted-in-commit-6 Reasserter
+	// no longer exists. Boot recovery is now the Sequencer's
+	// responsibility — its Run() drains StatePending immediately
+	// before the first ticker tick, which catches every entry left
+	// from a crashed previous boot.
+
+	// ── Sequencer ────────────────────────────────────────────────────
+	// Asynchronous WAL → Tessera → entry_index pipeline. Drains
+	// StatePending entries continuously: AppendLeaf (antispam-
+	// idempotent) → entry_index INSERT → wal.Sequence. Supports
+	// the SCT/MMD architecture: v2 admission returns an SCT after
+	// WAL fsync; the Sequencer redeems within MMD.
+	seq := sequencer.NewSequencer(walc, embeddedAppender, pool, entryStore, sequencer.Config{
+		PollInterval: cfg.SequencerInterval,
+		MaxInFlight:  cfg.SequencerMaxInFlight,
+		Logger:       logger,
+	})
+	logger.Info("sequencer ready",
+		"poll_interval", cfg.SequencerInterval,
+		"max_in_flight", cfg.SequencerMaxInFlight,
+		"mmd", cfg.MMD,
+	)
 
 	// ── Shipper ──────────────────────────────────────────────────────
 	// Migrates StateSequenced entries from the WAL to the byte store,
@@ -1014,6 +1059,17 @@ func main() {
 		defer wg.Done()
 		if err := ship.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			fatal <- fmt.Errorf("shipper: %w", err)
+		}
+	}()
+
+	// Sequencer: drains WAL StatePending → entry_index. Returns
+	// ctx.Err() on shutdown; any other return is fatal — without
+	// the Sequencer running, v2 SCTs become unredeemable promises.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := seq.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			fatal <- fmt.Errorf("sequencer: %w", err)
 		}
 	}()
 
