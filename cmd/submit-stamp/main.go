@@ -71,8 +71,7 @@ func main() {
 		epochSec    = flag.Int("epoch-window", 3600, "epoch window seconds (must match OPERATOR_EPOCH_WINDOW_SECONDS)")
 		payload     = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
 		dryRun      = flag.Bool("dry-run", false, "build and print the entry without POSTing")
-		useV2       = flag.Bool("v2", true, "use POST /v2/entries (returns SCT). Set -v2=false for the legacy /v1/entries facade.")
-		operatorDID = flag.String("operator-did", "", "operator's did:key:z... — when set, the v2 SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
+		operatorDID = flag.String("operator-did", "", "operator's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
 	)
 	flag.Parse()
 
@@ -127,11 +126,7 @@ func main() {
 		return
 	}
 
-	endpoint := *operatorURL + "/v1/entries"
-	if *useV2 {
-		endpoint = *operatorURL + "/v2/entries"
-	}
-	body, status, err := postAndRead(endpoint, *token, wire)
+	body, status, err := postAndRead(*operatorURL+"/v1/entries", *token, wire)
 	if err != nil {
 		log.Fatalf("submit-stamp: %v", err)
 	}
@@ -140,31 +135,10 @@ func main() {
 		fmt.Printf("body: %s\n", body)
 		os.Exit(1)
 	}
-	if *useV2 {
-		printSCTResponse(body, *operatorDID)
-	} else {
-		printV1Response(body)
-	}
+	printSCTResponse(body, *operatorDID)
 }
 
-// printV1Response decodes and pretty-prints the legacy v1
-// {sequence_number, canonical_hash, log_time} payload.
-func printV1Response(body []byte) {
-	var v1 struct {
-		SequenceNumber uint64 `json:"sequence_number"`
-		CanonicalHash  string `json:"canonical_hash"`
-		LogTime        string `json:"log_time"`
-	}
-	if err := json.Unmarshal(body, &v1); err != nil {
-		fmt.Printf("could not parse v1 response: %v\nraw: %s\n", err, body)
-		return
-	}
-	fmt.Printf("seq            = %d\n", v1.SequenceNumber)
-	fmt.Printf("canonical_hash = %s\n", v1.CanonicalHash)
-	fmt.Printf("log_time       = %s\n", v1.LogTime)
-}
-
-// printSCTResponse decodes the v2 SCT and (when operatorDID is
+// printSCTResponse decodes the SCT and (when operatorDID is
 // supplied) verifies the signature against the resolved public
 // key. The exit code stays 0 even on verification failure — the
 // SCT was decoded; the operator's DID may not be configured.
