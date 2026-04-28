@@ -88,6 +88,34 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	return nil
 }
 
+// FetchHashBySeq returns the canonical_hash for a given sequence number.
+// Returns (hash, true, nil) on hit, ([32]byte{}, false, nil) when no
+// row at that seq, ([32]byte{}, false, err) on transport failure.
+//
+// Used by the /v1/entries/{seq}/raw byte-fetch handler to decide
+// between inline (WAL) serve and 302 redirect (bytestore) — both
+// require the (seq, hash) tuple as the key into the byte source.
+func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, bool, error) {
+	var hashCol []byte
+	err := s.db.QueryRow(ctx,
+		"SELECT canonical_hash FROM entry_index WHERE sequence_number = $1", seq,
+	).Scan(&hashCol)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return [32]byte{}, false, nil
+	}
+	if err != nil {
+		return [32]byte{}, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
+	}
+	if len(hashCol) != 32 {
+		return [32]byte{}, false, fmt.Errorf(
+			"store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", seq, len(hashCol))
+	}
+	var hash [32]byte
+	copy(hash[:], hashCol)
+	return hash, true, nil
+}
+
 // FetchByHash checks if an entry with the given canonical hash exists.
 func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bool, error) {
 	var seq uint64

@@ -162,6 +162,9 @@ func run(logger *slog.Logger) error {
 		}, logger,
 	)
 
+	// ── Stores (read-only) ─────────────────────────────────────────────
+	entryStore := store.NewEntryStore(pool.DB)
+
 	// ── Query API ──────────────────────────────────────────────────────
 	queryAPI := indexes.NewPostgresQueryAPI(pool.DB, entryBytes, cfg.LogDID)
 
@@ -176,7 +179,14 @@ func run(logger *slog.Logger) error {
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
-		LogDID: cfg.LogDID, Logger: logger,
+		EntryStore: entryStore,
+		// Read-only operator has no WAL — the /raw handler degrades
+		// to "always 302 to byte store". Un-shipped entries surface
+		// as bytestore 404; consumers retry against the writer.
+		WAL:       nil,
+		Presigner: gcsStore,
+		LogDID:    cfg.LogDID,
+		Logger:    logger,
 	}
 	commitDeps := &api.CommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
@@ -199,6 +209,7 @@ func run(logger *slog.Logger) error {
 		WitnessCosign:   nil,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),

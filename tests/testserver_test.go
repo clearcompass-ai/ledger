@@ -202,7 +202,16 @@ func startTestOperator(t *testing.T) *testOperator {
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
-		LogDID: testLogDID, Logger: logger,
+		EntryStore: entryStore,
+		WAL:        walc,
+		// Tests don't exercise the 302 redirect path; the in-memory
+		// bytestore is reachable but doesn't presign. Setting
+		// Presigner to nil makes the handler return 500 if it hits
+		// the redirect branch — desirable for tests, since any
+		// redirect attempt indicates an unexpected state transition.
+		Presigner: nil,
+		LogDID:    testLogDID,
+		Logger:    logger,
 	}
 	commitDeps := &api.CommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
@@ -225,6 +234,7 @@ func startTestOperator(t *testing.T) *testOperator {
 		WitnessCosign:   nil,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),

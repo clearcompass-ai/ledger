@@ -528,10 +528,13 @@ func main() {
 	}
 	smtDeps := &api.SMTDeps{Tree: tree, LeafStore: leafStore, Logger: logger}
 	entryReadDeps := &api.EntryReadDeps{
-		Fetcher:  fetcher,
-		QueryAPI: queryAPI,
-		LogDID:   cfg.LogDID,
-		Logger:   logger,
+		Fetcher:    fetcher,
+		QueryAPI:   queryAPI,
+		EntryStore: entryStore,
+		WAL:        walc,
+		Presigner:  gcsStore, // bytestore.GCS satisfies api.Presigner
+		LogDID:     cfg.LogDID,
+		Logger:     logger,
 	}
 	commitDeps := &api.CommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
@@ -552,6 +555,7 @@ func main() {
 		WitnessCosign:   nil, // TODO: wire witness.NewCosignServer when this operator is also a witness.
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery: api.NewCommitmentQueryHandler(commitDeps),

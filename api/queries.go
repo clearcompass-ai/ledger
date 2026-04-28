@@ -223,46 +223,11 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// GET /v1/entries/{seq}/raw — raw wire bytes
-// ─────────────────────────────────────────────────────────────────────
-
-// NewRawEntryHandler returns the entry's full wire bytes as a single
-// byte stream. Under v7.75 the wire bytes ARE the canonical bytes —
-// the multi-sig section is appended INSIDE the canonical form by
-// envelope.Serialize, so EntryWithMetadata.CanonicalBytes already
-// carries the signatures. Consumers feed this directly into
-// envelope.Deserialize then envelope.EntryIdentity to verify.
-func NewRawEntryHandler(deps *QueryDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		seqStr := r.URL.Path[len("/v1/entries/"):]
-		if i := len(seqStr) - len("/raw"); i > 0 && seqStr[i:] == "/raw" {
-			seqStr = seqStr[:i]
-		}
-		seq, err := strconv.ParseUint(seqStr, 10, 64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid sequence")
-			return
-		}
-
-		entries, err := deps.QueryAPI.ScanFromPosition(seq, 1)
-		if err != nil {
-			deps.Logger.Error("raw entry fetch", "seq", seq, "error", err)
-			writeError(w, http.StatusInternalServerError, "fetch failed")
-			return
-		}
-		if len(entries) == 0 || entries[0].Position.Sequence != seq {
-			writeError(w, http.StatusNotFound, "entry not found")
-			return
-		}
-		ewm := entries[0]
-
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("X-Sequence", strconv.FormatUint(seq, 10))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(ewm.CanonicalBytes)
-	}
-}
+// The raw-bytes endpoint (GET /v1/entries/{seq}/raw) lives in
+// api/entries_read.go (NewRawEntryHandler). It does WAL-aware
+// routing: 200 OK + inline body for un-shipped entries, 302
+// Found + presigned URL for shipped entries past WAL retention.
+// See entries_read.go's docblock for the full state machine.
 
 // ─────────────────────────────────────────────────────────────────────
 // Index-backed query handlers (ControlHeader field lookups)

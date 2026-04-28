@@ -89,8 +89,9 @@ type Handlers struct {
 
 	// ── Full buildout: read endpoints for remote consumers ──────────
 	// Entry fetch by position — blocks Phase 5 verifiers.
-	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}
-	EntryBatch      http.HandlerFunc // GET /v1/entries/batch?start=N&count=M
+	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}     (JSON metadata)
+	EntryBatch      http.HandlerFunc // GET /v1/entries/batch          (JSON list)
+	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw (wire bytes; 200 inline OR 302 redirect)
 
 	// SMT leaf data — blocks origin_evaluator.
 	SMTLeaf      http.HandlerFunc // GET /v1/smt/leaf/{key}
@@ -171,6 +172,12 @@ func NewServer(
 	}
 	if handlers.EntryBatch != nil {
 		mux.HandleFunc("GET /v1/entries/batch", handlers.EntryBatch)
+	}
+	if handlers.EntryRaw != nil {
+		// /raw subroute: wire bytes via WAL inline OR bytestore 302 redirect.
+		// Registered with explicit /{sequence}/raw path so the {sequence}
+		// pattern above doesn't shadow it.
+		mux.HandleFunc("GET /v1/entries/{sequence}/raw", handlers.EntryRaw)
 	}
 
 	// ── SMT leaf read endpoints ────────────────────────────────────────
