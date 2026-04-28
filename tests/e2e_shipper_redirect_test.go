@@ -281,6 +281,7 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	const testMMD = 24 * time.Hour
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
+		BatchSubmission: api.NewBatchSubmissionHandler(submissionDeps),
 		MMD:             api.NewMMDHandler(testMMD),
 		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),

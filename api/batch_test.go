@@ -79,6 +79,110 @@ func TestBatchHandler_HappyPath_ReturnsSCTArray(t *testing.T) {
 	}
 }
 
+// Intra-batch duplicate detection: a batch containing the same
+// canonical bytes twice must reject the second occurrence with 409
+// BEFORE any credit deduction or WAL.Submit. Pinned because the
+// fix at commit 15 restored a guard that had been silently lost.
+func TestBatchHandler_IntraBatchDuplicate_Returns409(t *testing.T) {
+	opSignerPriv, _ := signatures.GenerateKey()
+	signerPriv, _ := signatures.GenerateKey()
+	// Same wire bytes twice → identical canonical hash.
+	wire, _ := signedEntryModeBWithKey(t, signerPriv, "did:test:log", []byte("dup-payload"), 1, 3600)
+
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	h := NewBatchSubmissionHandler(deps)
+
+	body, _ := json.Marshal(BatchSubmissionRequest{
+		Entries: []BatchEntry{
+			{WireBytesHex: hex.EncodeToString(wire)},
+			{WireBytesHex: hex.EncodeToString(wire)},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries/batch", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409\nbody: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "duplicates entry 0") {
+		t.Errorf("expected 'duplicates entry 0' in error: %s", rr.Body.String())
+	}
+	// Critical invariant: dedup must reject BEFORE WAL.Submit so the
+	// caller is not charged a credit nor does the WAL receive a
+	// state-regressing write for an already-Shipped entry.
+	if len(walFake.submitted) != 0 {
+		t.Errorf("WAL.Submit calls = %d, want 0 (dedup must precede admission)",
+			len(walFake.submitted))
+	}
+}
+
+// First valid entry, second is a duplicate — the first must NOT be
+// admitted either, because the batch handler treats the request
+// atomically: any error fails the whole batch (no partial admission).
+func TestBatchHandler_IntraBatchDuplicate_RejectsEntireBatch(t *testing.T) {
+	opSignerPriv, _ := signatures.GenerateKey()
+	signerPriv, _ := signatures.GenerateKey()
+	// Distinct first entry, then a duplicate of it.
+	wireA, _ := signedEntryModeBWithKey(t, signerPriv, "did:test:log", []byte("first"), 1, 3600)
+
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	h := NewBatchSubmissionHandler(deps)
+
+	body, _ := json.Marshal(BatchSubmissionRequest{
+		Entries: []BatchEntry{
+			{WireBytesHex: hex.EncodeToString(wireA)},
+			{WireBytesHex: hex.EncodeToString(wireA)}, // duplicate of index 0
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries/batch", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rr.Code)
+	}
+	if len(walFake.submitted) != 0 {
+		t.Errorf("partial admission detected: WAL.Submit calls = %d, want 0",
+			len(walFake.submitted))
+	}
+}
+
+// Three distinct entries pass through; only the explicit dup is
+// rejected. Locks the seen-map's positive case alongside the
+// negative test above.
+func TestBatchHandler_DistinctEntries_NoFalseDedup(t *testing.T) {
+	opSignerPriv, _ := signatures.GenerateKey()
+	signerPriv, _ := signatures.GenerateKey()
+	wire1, _ := signedEntryModeBWithKey(t, signerPriv, "did:test:log", []byte("dist-1"), 1, 3600)
+	wire2, _ := signedEntryModeBWithKey(t, signerPriv, "did:test:log", []byte("dist-2"), 1, 3600)
+	wire3, _ := signedEntryModeBWithKey(t, signerPriv, "did:test:log", []byte("dist-3"), 1, 3600)
+
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	h := NewBatchSubmissionHandler(deps)
+
+	body, _ := json.Marshal(BatchSubmissionRequest{
+		Entries: []BatchEntry{
+			{WireBytesHex: hex.EncodeToString(wire1)},
+			{WireBytesHex: hex.EncodeToString(wire2)},
+			{WireBytesHex: hex.EncodeToString(wire3)},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries/batch", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202\nbody: %s", rr.Code, rr.Body.String())
+	}
+	if len(walFake.submitted) != 3 {
+		t.Errorf("WAL.Submit calls = %d, want 3", len(walFake.submitted))
+	}
+}
+
 func TestBatchHandler_EmptyBatch_400(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
 	signerPriv, _ := signatures.GenerateKey()

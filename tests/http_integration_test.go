@@ -27,11 +27,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -671,6 +673,77 @@ func TestHTTP_Duplicate_409(t *testing.T) {
 		t.Fatal("409 should have error message")
 	}
 	t.Logf("duplicate rejected: %s", errResp["error"])
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6b. Batch admission — duplicate detection (intra-batch + historical)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Two identical entries in the same batch must be rejected with
+// 409 BEFORE either is admitted — atomic batch semantics, no
+// partial credit deduction.
+func TestHTTP_BatchSubmission_IntraBatchDuplicate_409(t *testing.T) {
+	op := startTestOperator(t)
+	op.seedSession(t, "tok-batch-dup", "did:example:batch-dup", 100)
+
+	wire := buildWireEntry(t, envelope.ControlHeader{
+		SignerDID: "did:example:batch-intra-dup",
+	}, []byte("batch-intra-dup-payload"))
+
+	body := map[string]any{
+		"entries": []map[string]any{
+			{"wire_bytes_hex": hex.EncodeToString(wire)},
+			{"wire_bytes_hex": hex.EncodeToString(wire)}, // dup of index 0
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries/batch", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer tok-batch-dup")
+	resp := doRequest(t, req)
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("intra-batch duplicate: expected 409, got %d: %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(string(respBody), "duplicates entry 0") {
+		t.Errorf("expected 'duplicates entry 0' in error: %s", respBody)
+	}
+}
+
+// A hash already admitted in a prior request must be rejected
+// with 409 when re-submitted via the batch endpoint. Mirrors
+// TestHTTP_Duplicate_409 (single-entry path) but for batch.
+func TestHTTP_BatchSubmission_HistoricalDuplicate_409(t *testing.T) {
+	op := startTestOperator(t)
+	op.seedSession(t, "tok-batch-hist-dup", "did:example:batch-hist-dup", 100)
+
+	wire := buildWireEntry(t, envelope.ControlHeader{
+		SignerDID: "did:example:batch-hist-dup-test",
+	}, []byte("batch-hist-dup-payload"))
+
+	// First single-entry submission seeds entry_index.
+	submitEntry(t, op.BaseURL, "tok-batch-hist-dup", wire)
+
+	// Now POST a one-entry batch with the same canonical hash —
+	// must hit FetchByHash and 409 before any credit deduction.
+	body := map[string]any{
+		"entries": []map[string]any{
+			{"wire_bytes_hex": hex.EncodeToString(wire)},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries/batch", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer tok-batch-hist-dup")
+	resp := doRequest(t, req)
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("historical batch duplicate: expected 409, got %d: %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(string(respBody), "existing sequence") {
+		t.Errorf("expected 'existing sequence' in error: %s", respBody)
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
