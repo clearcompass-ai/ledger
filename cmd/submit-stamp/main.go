@@ -44,6 +44,7 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -70,6 +71,8 @@ func main() {
 		epochSec    = flag.Int("epoch-window", 3600, "epoch window seconds (must match OPERATOR_EPOCH_WINDOW_SECONDS)")
 		payload     = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
 		dryRun      = flag.Bool("dry-run", false, "build and print the entry without POSTing")
+		useV2       = flag.Bool("v2", true, "use POST /v2/entries (returns SCT). Set -v2=false for the legacy /v1/entries facade.")
+		operatorDID = flag.String("operator-did", "", "operator's did:key:z... — when set, the v2 SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
 	)
 	flag.Parse()
 
@@ -124,9 +127,130 @@ func main() {
 		return
 	}
 
-	if err := postEntry(*operatorURL+"/v1/entries", *token, wire); err != nil {
+	endpoint := *operatorURL + "/v1/entries"
+	if *useV2 {
+		endpoint = *operatorURL + "/v2/entries"
+	}
+	body, status, err := postAndRead(endpoint, *token, wire)
+	if err != nil {
 		log.Fatalf("submit-stamp: %v", err)
 	}
+	fmt.Printf("HTTP %d %s\n", status, http.StatusText(status))
+	if status != http.StatusAccepted {
+		fmt.Printf("body: %s\n", body)
+		os.Exit(1)
+	}
+	if *useV2 {
+		printSCTResponse(body, *operatorDID)
+	} else {
+		printV1Response(body)
+	}
+}
+
+// printV1Response decodes and pretty-prints the legacy v1
+// {sequence_number, canonical_hash, log_time} payload.
+func printV1Response(body []byte) {
+	var v1 struct {
+		SequenceNumber uint64 `json:"sequence_number"`
+		CanonicalHash  string `json:"canonical_hash"`
+		LogTime        string `json:"log_time"`
+	}
+	if err := json.Unmarshal(body, &v1); err != nil {
+		fmt.Printf("could not parse v1 response: %v\nraw: %s\n", err, body)
+		return
+	}
+	fmt.Printf("seq            = %d\n", v1.SequenceNumber)
+	fmt.Printf("canonical_hash = %s\n", v1.CanonicalHash)
+	fmt.Printf("log_time       = %s\n", v1.LogTime)
+}
+
+// printSCTResponse decodes the v2 SCT and (when operatorDID is
+// supplied) verifies the signature against the resolved public
+// key. The exit code stays 0 even on verification failure — the
+// SCT was decoded; the operator's DID may not be configured.
+func printSCTResponse(body []byte, operatorDID string) {
+	var sct apiSCT
+	if err := json.Unmarshal(body, &sct); err != nil {
+		fmt.Printf("could not parse SCT: %v\nraw: %s\n", err, body)
+		return
+	}
+	fmt.Printf("SCT.version            = %d\n", sct.Version)
+	fmt.Printf("SCT.log_did            = %s\n", sct.LogDID)
+	fmt.Printf("SCT.canonical_hash     = %s\n", sct.CanonicalHash)
+	fmt.Printf("SCT.log_time           = %s\n", sct.LogTime)
+	fmt.Printf("SCT.log_time_micros    = %d\n", sct.LogTimeMicros)
+	fmt.Printf("SCT.signature[:32]     = %.32s...\n", sct.Signature)
+
+	if operatorDID == "" {
+		fmt.Println("(SCT signature NOT verified — pass -operator-did did:key:z... to verify)")
+		return
+	}
+	pub, _, err := sdkdid.ParseDIDKey(operatorDID)
+	if err != nil {
+		fmt.Printf("(SCT signature NOT verified — could not parse -operator-did: %v)\n", err)
+		return
+	}
+	pk, err := sdksigs.ParsePubKey(pub)
+	if err != nil {
+		fmt.Printf("(SCT signature NOT verified — non-secp256k1 operator key: %v)\n", err)
+		return
+	}
+	if err := verifyClientSCT(pk, &sct); err != nil {
+		fmt.Printf("SCT signature DOES NOT VERIFY: %v\n", err)
+		return
+	}
+	fmt.Println("SCT signature VERIFIED against operator did:key")
+}
+
+// apiSCT mirrors api.SignedCertificateTimestamp's JSON shape so
+// this CLI doesn't need to import the api package (avoids a
+// reverse dep from cmd to api).
+type apiSCT struct {
+	Version       uint8  `json:"version"`
+	LogDID        string `json:"log_did"`
+	CanonicalHash string `json:"canonical_hash"`
+	LogTimeMicros int64  `json:"log_time_micros"`
+	LogTime       string `json:"log_time"`
+	Signature     string `json:"signature"`
+}
+
+// verifyClientSCT recomputes the canonical signing payload from
+// the SCT's JSON fields and verifies the signature. Mirrors
+// api.VerifySCT byte-for-byte; kept here so this binary stays
+// self-contained.
+func verifyClientSCT(pub *ecdsa.PublicKey, sct *apiSCT) error {
+	if sct.Version != 1 {
+		return fmt.Errorf("unsupported SCT version %d", sct.Version)
+	}
+	canonicalHashBytes, err := hex.DecodeString(sct.CanonicalHash)
+	if err != nil {
+		return fmt.Errorf("canonical_hash decode: %w", err)
+	}
+	if len(canonicalHashBytes) != 32 {
+		return fmt.Errorf("canonical_hash length %d (want 32)", len(canonicalHashBytes))
+	}
+	sigBytes, err := hex.DecodeString(sct.Signature)
+	if err != nil {
+		return fmt.Errorf("signature decode: %w", err)
+	}
+	// Match the packing in api/sct.go::SCTSigningPayload exactly.
+	if len(sct.LogDID) > 0xFFFF {
+		return fmt.Errorf("logDID too long")
+	}
+	buf := make([]byte, 0, 1+2+len(sct.LogDID)+32+8)
+	buf = append(buf, sct.Version)
+	buf = append(buf,
+		byte(len(sct.LogDID)>>8), byte(len(sct.LogDID)),
+	)
+	buf = append(buf, []byte(sct.LogDID)...)
+	buf = append(buf, canonicalHashBytes...)
+	micros := uint64(sct.LogTimeMicros)
+	buf = append(buf,
+		byte(micros>>56), byte(micros>>48), byte(micros>>40), byte(micros>>32),
+		byte(micros>>24), byte(micros>>16), byte(micros>>8), byte(micros),
+	)
+	hash := sha256.Sum256(buf)
+	return sdksigs.VerifyEntry(hash, sigBytes, pub)
 }
 
 // readPayload returns the raw payload bytes. A leading '@' treats the
@@ -247,12 +371,13 @@ func buildModeBWire(
 	return nil, fmt.Errorf("submit-stamp: nonce exhausted at %d iterations (difficulty=%d too high?)", maxIter, difficulty)
 }
 
-// postEntry POSTs wire bytes to /v1/entries and prints the response.
-// Returns an error iff the HTTP status is not 202 Accepted.
-func postEntry(url, token string, wire []byte) error {
+// postAndRead POSTs wire bytes and returns the response body and
+// status. Returns a transport error only on actual transport failure;
+// the caller decides what to do with non-2xx statuses.
+func postAndRead(url, token string, wire []byte) ([]byte, int, error) {
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(wire))
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	if token != "" {
@@ -260,13 +385,9 @@ func postEntry(url, token string, wire []byte) error {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	fmt.Printf("HTTP %d %s\n%s\n", resp.StatusCode, resp.Status, body)
-	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("not accepted")
-	}
-	return nil
+	return body, resp.StatusCode, nil
 }

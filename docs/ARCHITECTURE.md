@@ -1,8 +1,52 @@
 # Operator architecture
 
 Orientation map for the operator's runtime architecture: the
-WAL-first admission model, hexagonal bytestore, asynchronous
-Shipper, integrity Detector, and 302-redirect read path.
+WAL-first admission model with SCT/MMD return shape, asynchronous
+Sequencer + Shipper pipeline, hexagonal bytestore, integrity
+Detector, and 302-redirect read path.
+
+## Admission contract: SCT/MMD
+
+POST /v1/entries and POST /v2/entries differ only in their return
+shape — both run identical fast-path validation (preamble +
+deserialize + Validate + NFC + destination binding + freshness +
+signature verification + schema dispatch + size + evidence cap +
+mode dispatch + canonical hash + early-dup check + log_time
+assignment + Mode A credit deduction + WAL.Submit). What happens
+afterwards is the only difference:
+
+- **POST /v2/entries** returns a `SignedCertificateTimestamp`
+  (SCT) immediately after WAL fsync. The SCT is a cryptographic
+  promise: "I have your bytes, durable, and I will sequence them
+  within MMD." Signed with the operator's secp256k1 ECDSA key
+  (the same key whose did:key:z… is `cfg.OperatorDID`).
+  RFC-6962-aligned semantics, deterministic length-prefixed
+  binary signing payload (see `api/sct.go` for the wire format).
+
+- **POST /v1/entries** is a polling facade. The handler waits on
+  WAL.MetaState until the background Sequencer transitions the
+  entry to StateSequenced or `OPERATOR_V1_TIMEOUT` (default 30s)
+  elapses. On success: legacy `{sequence_number, canonical_hash,
+  log_time}` JSON. On timeout: HTTP 504 with structured
+  `sequencer_lag` payload pointing at GET /v1/entries/hash/{hash}
+  for follow-up. Strictly bound to `r.Context().Done()` so client
+  TCP disconnect exits within one poll tick.
+
+The Maximum Merge Delay (`OPERATOR_MMD`, default 24h) is the SLA
+on Sequencer drain latency. Consumers verify it programmatically
+via GET /v1/admission/mmd before trusting an SCT.
+
+### Defenses preserved in the fast path
+
+The asynchronous architecture does NOT weaken replay defenses:
+
+- **Step 3c freshness check** (wall-clock window vs the entry's
+  EventTime) is the late-replay defense. A stamp held for weeks
+  before submission gets rejected at admission with HTTP 422
+  BEFORE WAL fsync — the attacker never gets an SCT.
+- **Step 8a early-duplicate check** is the immediate-replay
+  defense. Spamming the same canonical bytes returns HTTP 409
+  on the second-and-later request without burning WAL slots.
 
 ## End-to-end flow
 
@@ -93,6 +137,20 @@ fetchers (`PostgresEntryFetcher`, `PostgresQueryAPI`,
 `PostgresCommitmentFetcher`) take a `bytestore.Reader` and need no
 change when the composite is wired in at the composition root.
 
+### Sequencer (`sequencer/`)
+Async pipeline worker: WAL `Pending` → tessera.AppendLeaf
+(antispam-idempotent) → Postgres `entry_index` INSERT inside
+`WithReadCommittedTx` → WAL `Sequenced`. Drains every
+`OPERATOR_SEQUENCER_INTERVAL` (default 1s); first drain on Run
+start subsumes boot recovery, replacing the deleted
+`integrity.Reasserter`. Per-entry retry counter; after
+`MaxAttempts` (default 10) the entry transitions to `Manual`.
+
+The Sequencer is the SOLE writer to `entry_index` — under SCT/MMD
+the v1 facade and v2 SCT handlers both stop INSERTing inline.
+This eliminates the `UNIQUE(canonical_hash)` race that two
+synchronous writers would have created.
+
 ### Shipper (`shipper/`)
 Async migrator: WAL `Sequenced` → bytestore upload → WAL `Shipped`
 → HWM advance through contiguous runs. Single hwmAdvancer goroutine
@@ -101,11 +159,11 @@ their predecessor lands. Failed uploads enter exponential backoff
 and, after `MaxAttempts`, transition to `Manual`.
 
 ### Integrity (`integrity/`)
-- `Reasserter` — boot-time idempotent re-Add of WAL inflight entries
-  to Tessera. Antispam dedup makes this safe.
-- `Verifier` — point-in-time `WAL.HashAt` vs `Tessera.HashAt` check.
-- `Detector.Reconcile(ctx)` — boot reconciliation. Permissive: per-
-  entry failures are logged and reconciliation continues.
+Read-only verifier surface (post-SCT/MMD cleanup; the Reasserter
+package was deleted because the Sequencer now owns boot recovery):
+
+- `Verifier` — point-in-time `WAL.HashAt` vs `Tessera.HashAt`
+  check.
 - `Detector.Loop(ctx)` — periodic sample-verify. Returns
   `ErrDiverged` on first mismatch.
 

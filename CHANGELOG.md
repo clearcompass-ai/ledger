@@ -1,5 +1,141 @@
 # Changelog
 
+## v0.5 — SCT/MMD architecture (CT-log-aligned admission)
+
+POST /v1/entries used to block on Tessera AppendLeaf + Postgres
+INSERT before returning. Throughput was bounded by Tessera's
+batching cadence (currently 1s default BatchMaxAge). Under v0.5
+the admission boundary moves to WAL fsync only — Tessera and
+entry_index INSERT are deferred to a background Sequencer worker.
+
+### Wire-protocol changes
+
+- **NEW: POST /v2/entries.** Returns a `SignedCertificateTimestamp`
+  (SCT) — a cryptographic promise that the operator has the
+  bytes durably (WAL fsync) and will sequence them within the
+  Maximum Merge Delay. RFC-6962-aligned. The SCT is signed with
+  the operator's secp256k1 ECDSA key
+  (`OPERATOR_SIGNER_KEY_FILE`) and verifiable against the
+  operator's public key (reachable via `cfg.OperatorDID`, a
+  did:key:z…).
+- **POST /v1/entries** keeps its synchronous `{sequence_number,
+  canonical_hash, log_time}` JSON contract via a polling facade.
+  The handler waits on WAL.MetaState until the background
+  Sequencer transitions the entry to StateSequenced or
+  `OPERATOR_V1_TIMEOUT` elapses (default 30s). On timeout the
+  caller gets HTTP 504 with `{error:"sequencer_lag", hash,
+  wal_state, follow_up, timeout_seconds}` pointing at
+  GET /v1/entries/hash/{hash} for follow-up. The handler is
+  strictly bound to `r.Context().Done()` so a client TCP
+  disconnect exits the poll loop within one tick.
+- **NEW: GET /v1/admission/mmd.** Publishes the operator's
+  promised maximum merge delay (`OPERATOR_MMD`, default 24h) so
+  consumers can verify the SLA before trusting an SCT.
+- **GET /v1/entries/hash/{hashHex}** is now WAL-aware. Returns
+  `{state:"pending"}` for entries durable in WAL but not yet in
+  entry_index (the SCT/MMD inflight window) and
+  `{state:"manual"}` for entries the Sequencer gave up on. Falls
+  through to the existing entry_index lookup for sequenced/shipped
+  entries.
+
+### New env vars
+
+- **`OPERATOR_MMD`** — Maximum merge delay published via
+  GET /v1/admission/mmd. Default `24h`. The Sequencer must
+  drain entries within this window or the SCT promise is
+  broken; alert on `sequencer_lag > 0.8 * MMD`.
+- **`OPERATOR_V1_TIMEOUT`** — Per-request cap on the v1 facade's
+  poll loop. Default `30s`. Set lower for low-latency clients;
+  set higher for clients that prefer waiting over the 504+
+  follow-up dance.
+- **`OPERATOR_SEQUENCER_INTERVAL`** — Background drain cadence.
+  Default `1s` in production; tests override to `10ms`.
+- **`OPERATOR_SEQUENCER_MAX_INFLIGHT`** — Bounded concurrency in
+  the Sequencer. Default 4.
+
+### Architectural changes
+
+- **NEW: `sequencer/` package.** Single writer to entry_index.
+  Drains WAL StatePending → tessera.AppendLeaf →
+  WithReadCommittedTx{ store.EntryStore.Insert } → wal.Sequence.
+  Symmetric to `shipper/` (sequenced→shipped). The sequencer's
+  drain on Run start subsumes boot recovery; `integrity/Reasserter`
+  is deleted.
+- **DELETED: `integrity/reasserter.go`** + `Detector.Reconcile()`
+  + `InflightIterator` + `WALReassertSink`. The integrity package
+  is now a read-only verifier — it samples random sequences below
+  HWM and compares WAL.HashAt to Tessera.HashAt; ErrDiverged still
+  panics at the supervisor.
+- **REFACTORED: `api/submission.go`.** Steps 1-9 extracted into a
+  `prepareSubmission` helper; both v1 (facade) and v2 (SCT) handlers
+  share it. Mode A credit deduction moved out of the original
+  step-12 entry_index transaction (the Sequencer is now the only
+  writer to entry_index) and into its own pre-WAL transaction
+  via `deductCreditModeA`. Eager deduction means an SCT is only
+  issued to entitled callers; the SCT promise is preserved if
+  WAL.Submit succeeds.
+
+### Defenses preserved (per the user's locked design)
+
+- **Step 3c freshness check** stays in the fast path — it's the
+  late-replay defense. An attacker sitting on a 3-week-old payload
+  can't get an SCT for it; admission rejects with 422 before WAL
+  fsync.
+- **Step 8a early duplicate check** stays in the fast path — it's
+  the immediate-replay defense. Re-submitting the same canonical
+  hash returns 409 without burning a WAL fsync slot.
+
+### CLI updates
+
+- **`cmd/submit-stamp`** gains `-v2` (default `true`) and
+  `-operator-did`. v2 mode parses the SCT response and, when
+  `-operator-did` is supplied, cryptographically verifies the
+  signature against the resolved public key. The CLI mirrors
+  api.SignedCertificateTimestamp's JSON shape and re-implements
+  the canonical packing locally so the binary stays free of an
+  api/ import — drift caught by tests.
+
+### Test surface additions
+
+- **`api/sct_test.go`** (13 tests): SCT round-trip + tamper-reject
+  on every signed-over field; canonical packing pinned bytewise.
+- **`api/submission_v2_test.go`** (9 tests): v2 handler happy
+  path, constructor guards, WAL queue full → 503, WAL transport
+  error → 500, MMD endpoint.
+- **`api/submission_facade_test.go`** (8 tests): pollForSequenced
+  unit tests + integration through httptest with a transitioning
+  WAL fake; timeout + structured 504 payload + ctx-cancel
+  promptness.
+- **`api/queries_test.go`** (5 tests): WAL-aware hash lookup —
+  pending, manual, bad-hex, transport error, nil-WAL fall-through.
+- **`sequencer/sequencer_test.go`** (16 subtests): drain
+  semantics, retry/manual transitions, Tessera dedup
+  idempotency, isUniqueViolation matcher.
+- **`tests/e2e_v2_sct_test.go`** (5 tests): full HTTP round-trip
+  through a real harness — SCT verification, hash-lookup
+  pending→sequenced, MMD endpoint, multi-entry drain,
+  end-to-end tamper resistance.
+- **`cmd/submit-stamp/main_test.go`** (8 tests): CLI's apiSCT
+  shape vs api.SignedCertificateTimestamp; verifyClientSCT
+  matches api.VerifySCT byte-for-byte; tamper rejections.
+
+### Migration steps from v0.4
+
+1. Provision two new env vars with defaults: set
+   `OPERATOR_MMD` if the default 24h doesn't fit your SLA;
+   `OPERATOR_V1_TIMEOUT` if 30s is too generous or too tight.
+2. Update v1 clients that depend on `sequence_number` being
+   immediately available — under load + sequencer lag the v1
+   path can return 504 sequencer_lag instead. Either retry on
+   504 (the WAL is durable; the entry will eventually sequence)
+   or migrate to v2 + SCT verification.
+3. Migrate latency-sensitive clients to POST /v2/entries.
+   Verify SCT signatures against the operator's public key (the
+   did:key:z… in cfg.OperatorDID, parsed via did.ParseDIDKey
+   from the SDK).
+
+---
+
 ## v0.4 — WAL-first admission, hexagonal bytestore, async Shipper
 
 ### Required infra additions before deploy
