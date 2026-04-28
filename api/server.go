@@ -85,9 +85,8 @@ type Handlers struct {
 	Difficulty      http.HandlerFunc
 
 	// ── SCT/MMD architecture ────────────────────────────────────────
-	SubmissionV2 http.HandlerFunc // POST /v2/entries — returns SCT
-	MMD          http.HandlerFunc // GET /v1/admission/mmd — operator's
-	                              // promised maximum merge delay
+	MMD http.HandlerFunc // GET /v1/admission/mmd — operator's
+	// promised maximum merge delay
 
 	// ── Phase 4 prep: witness cosign (optional) ─────────────────────
 	WitnessCosign http.Handler // nil if not serving as witness
@@ -143,14 +142,7 @@ func NewServer(
 		mux.Handle("POST /v1/entries", submissionChain)
 	}
 
-	// ── SCT/MMD: v2 submission + MMD info ──────────────────────────────
-	if handlers.SubmissionV2 != nil {
-		v2Chain := middleware.SizeLimit(
-			cfg.MaxEntrySize+1024,
-			middleware.Auth(db, handlers.SubmissionV2),
-		)
-		mux.Handle("POST /v2/entries", v2Chain)
-	}
+	// ── SCT/MMD: MMD info (POST /v1/entries returns the SCT itself) ──
 	if handlers.MMD != nil {
 		mux.HandleFunc("GET /v1/admission/mmd", handlers.MMD)
 	}

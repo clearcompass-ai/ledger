@@ -871,10 +871,6 @@ func main() {
 		FreshnessTolerance: policy.FreshnessInteractive,
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
-	submitV2Handler := api.NewSubmissionV2Handler(&api.SubmissionV2Deps{
-		SubmissionDeps:     submissionDeps,
-		OperatorSignerPriv: operatorSignerPriv,
-	})
 	mmdHandler := api.NewMMDHandler(cfg.MMD)
 
 	// ── Shared stores for read handlers ───────────────────────────────
@@ -948,7 +944,6 @@ func main() {
 		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		SubmissionV2:    submitV2Handler,
 		MMD:             mmdHandler,
 		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
