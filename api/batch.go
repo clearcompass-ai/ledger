@@ -139,6 +139,12 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		}
 
 		prepared := make([]*preparedEntry, 0, len(req.Entries))
+		// Intra-batch dedup: rejecting a same-batch duplicate before
+		// credit deduction prevents the caller from paying twice for
+		// the same canonical hash. Historical dedup (entry_index)
+		// happens immediately after — both return 409 Conflict so the
+		// caller can fix the batch and retry without partial state.
+		seen := make(map[[32]byte]int, len(req.Entries))
 		for i, be := range req.Entries {
 			rawWire, decodeErr := hex.DecodeString(be.WireBytesHex)
 			if decodeErr != nil {
@@ -150,6 +156,23 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				writeError(w, perr.status, fmt.Sprintf("entry %d: %s", i, perr.msg))
 				return
 			}
+			// In-batch dedup.
+			if firstIdx, dup := seen[pe.canonicalHash]; dup {
+				writeError(w, http.StatusConflict,
+					fmt.Sprintf("entry %d duplicates entry %d in same batch", i, firstIdx))
+				return
+			}
+			// Historical dedup against entry_index. Skipped when
+			// EntryStore is nil (unit-test path); production wiring
+			// always provides one. Mirrors api/submission.go step 8a.
+			if deps.Storage.EntryStore != nil {
+				if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, pe.canonicalHash); fetchErr == nil && found {
+					writeError(w, http.StatusConflict,
+						fmt.Sprintf("entry %d duplicate entry: existing sequence %d", i, existingSeq))
+					return
+				}
+			}
+			seen[pe.canonicalHash] = i
 			prepared = append(prepared, pe)
 		}
 

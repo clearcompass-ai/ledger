@@ -226,6 +226,7 @@ func startTestOperator(t *testing.T) *testOperator {
 
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
+		BatchSubmission: api.NewBatchSubmissionHandler(submissionDeps),
 		TreeHead:        api.NewTreeHeadHandler(treeDeps),
 		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
 		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
