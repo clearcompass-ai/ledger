@@ -43,6 +43,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
@@ -154,6 +155,36 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 // Handler — error paths
 // ─────────────────────────────────────────────────────────────────────
+
+// Tier-2 BUG #3 alignment: oversize bodies must surface as 413 with
+// a typed *http.MaxBytesError, not silently truncate to a downstream
+// 422 deserialize error. This test bypasses the SizeLimit middleware
+// chain and hits the handler directly so the handler-side defensive
+// MaxBytesReader is what fires.
+func TestV1Handler_OversizeBody_Returns413(t *testing.T) {
+	opSignerPriv, _ := signatures.GenerateKey()
+	signerPriv, _ := signatures.GenerateKey()
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, &stubSubmissionWAL{})
+	h := NewSubmissionHandler(deps)
+
+	// Body larger than MaxEntrySize+sigOverhead. makeSubmissionDeps
+	// sets MaxEntrySize = 1<<20 and sigOverhead is 512 in
+	// prepareSubmission, so 1<<20 + 4096 is comfortably oversize.
+	oversized := make([]byte, (1<<20)+4096)
+	oversized[0] = 0x00
+	oversized[1] = 0x05 // valid v5 preamble
+	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(oversized))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize body: got %d (%s), want 413\nbody: %s",
+			rr.Code, http.StatusText(rr.Code), rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "exceeds") {
+		t.Errorf("response should mention size cap: %q", rr.Body.String())
+	}
+}
 
 func TestV1Handler_BadPreamble_Rejects422(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
