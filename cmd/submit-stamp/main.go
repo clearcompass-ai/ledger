@@ -15,7 +15,7 @@ entry to the operator. Handles both admission modes:
 
 A fresh did:key:z... keypair is generated per invocation and used
 both as the SignerDID and as the signing key. With the operator
-wired to admission.NewDIDKeyResolver, the signature verifies
+wired to did.NewECDSAKeyResolver (SDK), the signature verifies
 cryptographically — no test-mode shortcuts.
 
 Usage:

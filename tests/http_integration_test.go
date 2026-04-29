@@ -68,7 +68,7 @@ import (
 // verified end-to-end; we just need it to be structurally well-formed
 // so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
 // gives us exactly that. The operator now wires
-// admission.NewDIDKeyResolver, so signatures are verified
+// did.NewECDSAKeyResolver (SDK), so signatures are verified
 // cryptographically against the resolved public key — we route
 // through makeAdmissibleEntry which translates synthetic
 // 'did:example:alice' labels to deterministic did:key:z...
