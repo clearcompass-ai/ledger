@@ -44,16 +44,20 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type fakeSeqHashLookup struct {
-	hashesBySeq map[uint64][32]byte
-	err         error
+	hashesBySeq  map[uint64][32]byte
+	logTimeBySeq map[uint64]time.Time
+	err          error
 }
 
-func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, bool, error) {
+func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
 	if f.err != nil {
-		return [32]byte{}, false, f.err
+		return [32]byte{}, time.Time{}, false, f.err
 	}
 	h, ok := f.hashesBySeq[seq]
-	return h, ok, nil
+	if !ok {
+		return [32]byte{}, time.Time{}, false, nil
+	}
+	return h, f.logTimeBySeq[seq], true, nil
 }
 
 type fakeWAL struct {
@@ -139,7 +143,10 @@ func makeRequest(seq uint64) *http.Request {
 
 func newDeps(t *testing.T) (*EntryReadDeps, *fakeSeqHashLookup, *fakeWAL, *fakePresigner) {
 	t.Helper()
-	store := &fakeSeqHashLookup{hashesBySeq: map[uint64][32]byte{}}
+	store := &fakeSeqHashLookup{
+		hashesBySeq:  map[uint64][32]byte{},
+		logTimeBySeq: map[uint64]time.Time{},
+	}
 	w := newFakeWAL()
 	p := &fakePresigner{urlByPair: map[uint64]string{}}
 	deps := &EntryReadDeps{
@@ -393,5 +400,94 @@ func TestRawEntry_ConcurrentGC_NoPresigner_Returns500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want 500", rec.Code)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// X-Log-Time + X-Sequence header pin (Tier-2 alignment)
+// ─────────────────────────────────────────────────────────────────────
+//
+// SDK's log.HTTPEntryFetcher reads X-Sequence and X-Log-Time from
+// /raw responses (both 200-inline and post-302). Tests pin both
+// values so a future refactor that drops X-Log-Time fails here
+// rather than silently making the SDK fetcher round-trip to the
+// JSON metadata endpoint for LogTime.
+
+func TestRawEntry_Inline_StampsXSequenceAndXLogTime(t *testing.T) {
+	deps, store, w, _ := newDeps(t)
+
+	hash := hashFor("inline-headers")
+	wire := []byte("inline bytes")
+	logTime := time.Date(2026, 4, 29, 21, 30, 0, 0, time.UTC)
+	store.hashesBySeq[42] = hash
+	store.logTimeBySeq[42] = logTime
+	w.wires[hash] = wire
+	w.metas[hash] = wal.Meta{State: wal.StateSequenced, Sequence: 42}
+
+	rec := httptest.NewRecorder()
+	NewRawEntryHandler(deps)(rec, makeRequest(42))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Sequence"); got != "42" {
+		t.Errorf("X-Sequence: got %q, want %q", got, "42")
+	}
+	wantLT := logTime.Format(time.RFC3339Nano)
+	if got := rec.Header().Get("X-Log-Time"); got != wantLT {
+		t.Errorf("X-Log-Time: got %q, want %q", got, wantLT)
+	}
+}
+
+func TestRawEntry_Redirect_StampsXSequenceAndXLogTime(t *testing.T) {
+	deps, store, w, _ := newDeps(t)
+
+	hash := hashFor("redirect-headers")
+	logTime := time.Date(2026, 4, 29, 22, 0, 0, 0, time.UTC)
+	store.hashesBySeq[7] = hash
+	store.logTimeBySeq[7] = logTime
+	w.metas[hash] = wal.Meta{State: wal.StateShipped, Sequence: 7}
+
+	rec := httptest.NewRecorder()
+	NewRawEntryHandler(deps)(rec, makeRequest(7))
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status: got %d, want 302", rec.Code)
+	}
+	if got := rec.Header().Get("X-Sequence"); got != "7" {
+		t.Errorf("X-Sequence: got %q, want %q", got, "7")
+	}
+	wantLT := logTime.Format(time.RFC3339Nano)
+	if got := rec.Header().Get("X-Log-Time"); got != wantLT {
+		t.Errorf("X-Log-Time: got %q, want %q", got, wantLT)
+	}
+}
+
+// X-Log-Time is omitted (not stamped as zero-valued string) when
+// the operator does not have a log_time on file. The SDK fetcher
+// tolerates absence with a zero LogTime; the worst possible
+// regression would be stamping "0001-01-01T00:00:00Z" which the
+// fetcher would parse as a valid (but bogus) timestamp.
+func TestRawEntry_OmitsXLogTime_WhenNotPersisted(t *testing.T) {
+	deps, store, w, _ := newDeps(t)
+
+	hash := hashFor("no-log-time")
+	wire := []byte("legacy")
+	store.hashesBySeq[1] = hash
+	// Deliberately leave logTimeBySeq[1] unset → zero time.
+	w.wires[hash] = wire
+	w.metas[hash] = wal.Meta{State: wal.StateSequenced, Sequence: 1}
+
+	rec := httptest.NewRecorder()
+	NewRawEntryHandler(deps)(rec, makeRequest(1))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Sequence"); got != "1" {
+		t.Errorf("X-Sequence: got %q, want %q", got, "1")
+	}
+	if got := rec.Header().Get("X-Log-Time"); got != "" {
+		t.Errorf("X-Log-Time should be absent for zero log_time, got %q", got)
 	}
 }

@@ -88,32 +88,37 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	return nil
 }
 
-// FetchHashBySeq returns the canonical_hash for a given sequence number.
-// Returns (hash, true, nil) on hit, ([32]byte{}, false, nil) when no
-// row at that seq, ([32]byte{}, false, err) on transport failure.
+// FetchHashBySeq returns the canonical_hash and admission log_time
+// for a given sequence number. Returns (hash, logTime, true, nil) on
+// hit, ([32]byte{}, zero-time, false, nil) when no row at that seq,
+// (..., false, err) on transport failure.
 //
-// Used by the /v1/entries/{seq}/raw byte-fetch handler to decide
-// between inline (WAL) serve and 302 redirect (bytestore) — both
-// require the (seq, hash) tuple as the key into the byte source.
-func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, bool, error) {
-	var hashCol []byte
+// Used by the /v1/entries/{seq}/raw byte-fetch handler to:
+//   - decide between inline (WAL) serve and 302 redirect (bytestore)
+//   - stamp X-Sequence + X-Log-Time response headers per the SDK
+//     fetcher's contract (Tier-2 alignment).
+func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
+	var (
+		hashCol []byte
+		logTime time.Time
+	)
 	err := s.db.QueryRow(ctx,
-		"SELECT canonical_hash FROM entry_index WHERE sequence_number = $1", seq,
-	).Scan(&hashCol)
+		"SELECT canonical_hash, log_time FROM entry_index WHERE sequence_number = $1", seq,
+	).Scan(&hashCol, &logTime)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return [32]byte{}, false, nil
+		return [32]byte{}, time.Time{}, false, nil
 	}
 	if err != nil {
-		return [32]byte{}, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
+		return [32]byte{}, time.Time{}, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
 	}
 	if len(hashCol) != 32 {
-		return [32]byte{}, false, fmt.Errorf(
+		return [32]byte{}, time.Time{}, false, fmt.Errorf(
 			"store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", seq, len(hashCol))
 	}
 	var hash [32]byte
 	copy(hash[:], hashCol)
-	return hash, true, nil
+	return hash, logTime, true, nil
 }
 
 // FetchByHash checks if an entry with the given canonical hash exists.
