@@ -44,6 +44,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 )
 
@@ -92,8 +93,14 @@ func NewPublisher(
 		cfg:      cfg,
 		merkle:   merkle,
 		submitFn: submitFn,
-		client:   &http.Client{Timeout: 30 * time.Second},
-		logger:   logger,
+		// Tier-3 alignment: SDK's DefaultClient supplies the same
+		// MaxIdleConnsPerHost=100 connection pool and 503-Retry-After
+		// backpressure middleware that the SDK's submitter uses.
+		// Stdlib's bare http.Client gives MaxIdleConnsPerHost=2 and
+		// no 503 honoring — both biting under sustained operator
+		// load.
+		client: sdklog.DefaultClient(30 * time.Second),
+		logger: logger,
 	}
 }
 
@@ -198,7 +205,12 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 // SignAndSubmit at the composition root to get a signed-and-submit
 // pipeline.
 func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Tier-3 alignment: see Publisher constructor comment for rationale.
+	// Re-using the SDK's DefaultClient gives self-submit traffic the
+	// same 503-Retry-After honoring the SDK's own submitter uses, so
+	// the WAL-pressure 503 → wait → retry loop closes locally without
+	// reinventing the policy.
+	client := sdklog.DefaultClient(30 * time.Second)
 	return func(entry *envelope.Entry) error {
 		canonical := envelope.Serialize(entry)
 		resp, err := client.Post(targetURL+"/v1/entries", "application/octet-stream",
