@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/store"
@@ -48,8 +49,12 @@ type HeadSync struct {
 // NewHeadSync creates a head sync manager.
 func NewHeadSync(cfg HeadSyncConfig, treeStore *store.TreeHeadStore, logger *slog.Logger) *HeadSync {
 	return &HeadSync{
-		cfg:    cfg,
-		client: &http.Client{Timeout: cfg.PerWitnessTimeout},
+		cfg: cfg,
+		// Tier-3 alignment: SDK's DefaultClient supplies connection
+		// pooling and 503-Retry-After honoring. Witness endpoints
+		// under cosignature-collection burst surface 503; honoring
+		// it preserves quorum during transient pressure.
+		client: sdklog.DefaultClient(cfg.PerWitnessTimeout),
 		store:  treeStore,
 		logger: logger,
 	}

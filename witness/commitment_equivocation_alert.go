@@ -53,6 +53,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -171,8 +173,15 @@ func NewCommitmentEquivocationAlertPublisher(
 		cfg:     cfg,
 		db:      db,
 		fetcher: fetcher,
-		client:  &http.Client{Timeout: cfg.HTTPTimeout},
-		logger:  logger,
+		// Tier-3 alignment: SDK's DefaultClient gives connection
+		// pooling and 503-Retry-After honoring. Webhook receivers
+		// are typically governance endpoints fronted by load
+		// balancers that surface 503 + Retry-After under burst
+		// load; honoring it locally avoids dropping equivocation
+		// alerts during exactly the windows when they're most
+		// urgent to deliver.
+		client: sdklog.DefaultClient(cfg.HTTPTimeout),
+		logger: logger,
 	}
 }
 
