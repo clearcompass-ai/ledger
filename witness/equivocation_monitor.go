@@ -25,6 +25,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
+
 	"github.com/clearcompass-ai/ortholog-operator/store"
 )
 
@@ -64,8 +66,13 @@ func NewEquivocationMonitor(
 		cfg:       cfg,
 		db:        db,
 		headStore: headStore,
-		client:    &http.Client{Timeout: 30 * time.Second},
-		logger:    logger,
+		// Tier-3 alignment: SDK's DefaultClient supplies connection
+		// pooling and 503-Retry-After honoring. Peers under load
+		// surface 503 + Retry-After; absorbing locally beats hard
+		// fork-detection failures during the very intervals when
+		// equivocation monitoring matters most.
+		client: sdklog.DefaultClient(30 * time.Second),
+		logger: logger,
 	}
 }
 
