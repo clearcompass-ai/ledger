@@ -60,6 +60,7 @@ import (
 	"sync"
 	"time"
 
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/tessera"
@@ -101,7 +102,13 @@ func NewArchiveReader(shards []ShardMeta) *ArchiveReader {
 	}
 	return &ArchiveReader{
 		shards: index,
-		client: &http.Client{Timeout: 30 * time.Second},
+		// Tier-3 alignment: sdklog.DefaultClient gives connection
+		// pooling (100 idle conns/host vs stdlib 2) + 503-Retry-After
+		// honoring. Archive endpoints are typically S3-fronted CDNs
+		// that surface 503 + Retry-After under burst load; honoring
+		// it locally beats the alternative of every reader inventing
+		// its own backoff.
+		client: sdklog.DefaultClient(30 * time.Second),
 	}
 }
 
@@ -295,6 +302,17 @@ func (r *ArchiveReader) fetchBytes(url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
 	}
 
-	// Cap at 2MB (1MB max entry + overhead).
-	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	// Cap at 2 MiB (1 MiB max entry + overhead). Tier-2 BUG #3
+	// alignment: read cap+1 to detect oversize bodies and surface
+	// them as a typed error instead of silently truncating to a
+	// downstream parse failure.
+	const archiveBodyCap = 2 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, archiveBodyCap+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > archiveBodyCap {
+		return nil, fmt.Errorf("archive body for %s exceeds %d bytes", url, archiveBodyCap)
+	}
+	return body, nil
 }
