@@ -68,7 +68,7 @@ import (
 // verified end-to-end; we just need it to be structurally well-formed
 // so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
 // gives us exactly that. The operator now wires
-// admission.NewDIDKeyResolver, so signatures are verified
+// did.NewECDSAKeyResolver (SDK), so signatures are verified
 // cryptographically against the resolved public key — we route
 // through makeAdmissibleEntry which translates synthetic
 // 'did:example:alice' labels to deterministic did:key:z...
@@ -442,10 +442,13 @@ func TestHTTP_Middleware_OversizeBody_413(t *testing.T) {
 	op := startTestOperator(t)
 	op.seedSession(t, "tok-big", "did:example:exchange-big", 100)
 
-	// Build a body that exceeds MaxEntrySize. The SizeLimit middleware wraps
-	// r.Body with MaxBytesReader. When io.ReadAll hits the limit, the next
-	// Read returns an error and the handler reads truncated bytes.
-	// Then deserialization fails → 422.
+	// Build a body that exceeds MaxEntrySize. Tier-2 BUG #3 alignment:
+	// the handler now propagates *http.MaxBytesError as a typed 413
+	// instead of silently truncating and producing a downstream 422
+	// "deserialize" error with no attribution. The SizeLimit
+	// middleware fires first at MaxEntrySize+1024 and writes 413; the
+	// handler-side MaxBytesReader at MaxEntrySize+512 is the
+	// defense-in-depth fallback for direct (test) calls.
 	oversized := make([]byte, (1<<20)+2048)
 	oversized[0] = 0x00
 	oversized[1] = 0x05 // valid v5 preamble (Wave 1.5)
@@ -455,11 +458,9 @@ func TestHTTP_Middleware_OversizeBody_413(t *testing.T) {
 	resp := doRequest(t, req)
 	defer resp.Body.Close()
 
-	// MaxBytesReader silently truncates the read. The handler then tries to
-	// deserialize the truncated bytes → fails at Deserialize → 422.
-	if resp.StatusCode != http.StatusUnprocessableEntity {
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("oversize body: expected 422, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("oversize body: expected 413, got %d: %s", resp.StatusCode, body)
 	}
 }
 

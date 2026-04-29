@@ -90,10 +90,10 @@ type EntryWALReader interface {
 	MetaState(ctx context.Context, hash [32]byte) (wal.Meta, error)
 }
 
-// SeqHashLookup resolves seq → canonical_hash via Postgres entry_index.
+// SeqHashLookup resolves seq → canonical_hash + log_time via Postgres entry_index.
 // *store.EntryStore satisfies it.
 type SeqHashLookup interface {
-	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, bool, error)
+	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error)
 }
 
 // Presigner issues a time-bounded GET URL for a (seq, hash) tuple.
@@ -227,8 +227,8 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			return
 		}
 
-		// Step 1: seq → canonical_hash via Postgres entry_index.
-		hash, found, err := deps.EntryStore.FetchHashBySeq(ctx, seq)
+		// Step 1: seq → canonical_hash + log_time via Postgres entry_index.
+		hash, logTime, found, err := deps.EntryStore.FetchHashBySeq(ctx, seq)
 		if err != nil {
 			deps.Logger.Error("raw entry: seq lookup", "seq", seq, "error", err)
 			writeError(w, http.StatusInternalServerError, "lookup failed")
@@ -246,7 +246,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		// retry against the writer or wait for the Shipper to
 		// migrate them.
 		if deps.WAL == nil {
-			deps.serveBytestoreRedirect(w, r, seq, hash, ttl)
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
 			return
 		}
 
@@ -255,7 +255,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			if errors.Is(metaErr, wal.ErrNotFound) {
 				// Post-GC: WAL has dropped the entry. The byte store
 				// is the only source of truth.
-				deps.serveBytestoreRedirect(w, r, seq, hash, ttl)
+				deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
 				return
 			}
 			deps.Logger.Error("raw entry: WAL meta probe",
@@ -267,10 +267,10 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		switch meta.State {
 		case wal.StateSequenced, wal.StateManual, wal.StatePending:
 			// Bytes still in the WAL — serve inline.
-			deps.serveWALInline(w, r, seq, hash)
+			deps.serveWALInline(w, r, seq, hash, logTime)
 		case wal.StateShipped:
 			// Bytes have migrated to the byte store. Redirect.
-			deps.serveBytestoreRedirect(w, r, seq, hash, ttl)
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
 		default:
 			deps.Logger.Error("raw entry: unknown WAL state",
 				"seq", seq, "state", meta.State)
@@ -279,16 +279,33 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 	}
 }
 
+// setRawHeaders writes the SDK-canonical /raw response headers:
+// X-Sequence (uint64 decimal) and X-Log-Time (RFC-3339Nano UTC). The
+// SDK's log.HTTPEntryFetcher reads both; pre-this-fix the operator
+// only stamped X-Sequence, so consumers that needed LogTime had to
+// round-trip to the JSON metadata endpoint (Tier-2 alignment).
+//
+// X-Log-Time is omitted (rather than stamping a zero-time string)
+// when the operator does not have a log_time on file — older
+// entry_index rows pre-dating the column population may exist; the
+// SDK fetcher tolerates absence with a zero-valued LogTime.
+func setRawHeaders(w http.ResponseWriter, seq uint64, logTime time.Time) {
+	w.Header().Set("X-Sequence", strconv.FormatUint(seq, 10))
+	if !logTime.IsZero() {
+		w.Header().Set("X-Log-Time", logTime.UTC().Format(time.RFC3339Nano))
+	}
+}
+
 // serveWALInline writes the WAL's wire bytes directly to the response.
 // 200 OK with Content-Type: application/octet-stream.
-func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request, seq uint64, hash [32]byte) {
+func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request, seq uint64, hash [32]byte, logTime time.Time) {
 	wire, err := deps.WAL.Read(r.Context(), hash)
 	if err != nil {
 		// WAL had meta but lost the entry between probe and read —
 		// concurrent GC, in principle. Fall through to bytestore
 		// redirect if available; otherwise 500.
 		if errors.Is(err, wal.ErrNotFound) && deps.Presigner != nil {
-			deps.serveBytestoreRedirect(w, r, seq, hash, deps.PresignTTL)
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, deps.PresignTTL)
 			return
 		}
 		deps.Logger.Error("raw entry: WAL read", "seq", seq, "error", err)
@@ -296,7 +313,7 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Sequence", strconv.FormatUint(seq, 10))
+	setRawHeaders(w, seq, logTime)
 	w.Header().Set("X-Source", "wal")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(wire)
@@ -308,7 +325,7 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 // reduction purpose of the redirect.
 func (deps *EntryReadDeps) serveBytestoreRedirect(
 	w http.ResponseWriter, r *http.Request,
-	seq uint64, hash [32]byte, ttl time.Duration,
+	seq uint64, hash [32]byte, logTime time.Time, ttl time.Duration,
 ) {
 	if deps.Presigner == nil {
 		deps.Logger.Error("raw entry: shipped entry but no Presigner configured",
@@ -325,7 +342,7 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 		return
 	}
 	w.Header().Set("Location", url)
-	w.Header().Set("X-Sequence", strconv.FormatUint(seq, 10))
+	setRawHeaders(w, seq, logTime)
 	w.Header().Set("X-Source", "bytestore")
 	// Cache-Control: private,max-age=<ttl-30s> would let the
 	// consumer's HTTP cache hold the URL for almost its lifetime

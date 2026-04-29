@@ -80,7 +80,6 @@ import (
 	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
-	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
@@ -140,7 +139,7 @@ func loadOrGenerateTesseraSigner(keyFile, origin, logDID string, logger *slog.Lo
 // signing key. The operator signs its own entries (anchor
 // commentary, commitment commentary) before submitting them to
 // admission, which then verifies the signature via
-// admission.NewDIDKeyResolver. Returns the private key plus the
+// did.NewECDSAKeyResolver (SDK). Returns the private key plus the
 // computed did:key:z... identifier — that string becomes
 // cfg.OperatorDID at the composition root.
 //
@@ -286,7 +285,7 @@ type Config struct {
 	// is computed from the public key and used as
 	// cfg.OperatorDID; OPERATOR_DID is ignored if it doesn't
 	// match. The same key is what admission's
-	// admission.NewDIDKeyResolver verifies signatures against, so
+	// did.NewECDSAKeyResolver verifies signatures against, so
 	// the operator's self-published anchors and commitments
 	// satisfy the sig-verification path.
 	OperatorSignerKeyFile string
@@ -720,7 +719,7 @@ func main() {
 	// ── Operator entry-signing key + DID ──────────────────────────────
 	// The operator self-publishes anchor commentary and commitment
 	// commentary. Both go through admission, which now verifies
-	// signatures via admission.NewDIDKeyResolver. Load (or generate)
+	// signatures via did.NewECDSAKeyResolver (SDK). Load (or generate)
 	// the secp256k1 signing key, compute its did:key, and override
 	// cfg.OperatorDID so the resolver can find the matching public
 	// key for the entries we ourselves submit.
@@ -823,7 +822,7 @@ func main() {
 	// ── Self-submit pipeline ──────────────────────────────────────────
 	// The anchor and commitment publishers self-publish commentary
 	// entries to this operator's own admission endpoint. Both must be
-	// signed before submit so admission's DIDKeyResolver returns the
+	// signed before submit so admission's ECDSAKeyResolver returns the
 	// matching public key. SignAndSubmit closes that gap by wrapping
 	// the transport-only SubmitViaHTTP with the per-entry ECDSA
 	// signing step.
@@ -934,7 +933,7 @@ func main() {
 		},
 		Identity: api.IdentityDeps{
 			CreditStore: creditStore,
-			DIDResolver: admission.NewDIDKeyResolver(),
+			DIDResolver: sdkdid.NewECDSAKeyResolver(),
 		},
 		OperatorDID:        cfg.OperatorDID,
 		LogDID:             cfg.LogDID,

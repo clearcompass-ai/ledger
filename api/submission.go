@@ -215,16 +215,35 @@ type submissionError struct {
 // early-dup check, log_time. Returns either a fully-populated
 // preparedSubmission ready for wal.Submit, or a submissionError
 // to be written to the client.
+//
+// Body size handling (Tier-2 BUG #3 alignment): the request is
+// expected to arrive through the SizeLimit middleware (server.go),
+// which wraps r.Body with http.MaxBytesReader at MaxEntrySize+1024.
+// As defense-in-depth — and so direct callers (handler tests that
+// bypass the middleware chain) get the same behavior — we wrap a
+// second MaxBytesReader at the slightly tighter handler-local cap
+// MaxEntrySize+sigOverhead. Either trigger surfaces as
+// *http.MaxBytesError on Read, which we map to 413 instead of the
+// legacy 400 "failed to read request body" + silent truncation.
 func prepareSubmission(
 	ctx context.Context,
 	deps *SubmissionDeps,
+	w http.ResponseWriter,
 	r *http.Request,
 	freshness time.Duration,
 ) (*preparedSubmission, *submissionError) {
 	// ── Step 1: Read raw bytes + validate preamble ─────────────────
 	sigOverhead := int64(512)
-	raw, err := io.ReadAll(io.LimitReader(r.Body, deps.MaxEntrySize+sigOverhead))
+	r.Body = http.MaxBytesReader(w, r.Body, deps.MaxEntrySize+sigOverhead)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, &submissionError{
+				http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("entry exceeds %d bytes", maxErr.Limit),
+			}
+		}
 		return nil, &submissionError{http.StatusBadRequest, "failed to read request body"}
 	}
 	if len(raw) < 6 {
@@ -428,7 +447,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		ctx := r.Context()
 
 		// ── Steps 1-9 (validation + early-dup + log_time) ──────────────
-		prep, errResp := prepareSubmission(ctx, deps, r, freshness)
+		prep, errResp := prepareSubmission(ctx, deps, w, r, freshness)
 		if errResp != nil {
 			writeError(w, errResp.Status, errResp.Message)
 			return

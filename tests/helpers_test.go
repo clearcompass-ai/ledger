@@ -113,7 +113,7 @@ type synSigner struct {
 // 'alice' that distinguishes them from other labels — fanout
 // queries continue to work — and the matching private key is used
 // to sign so the signature verifies under the operator's
-// admission.NewDIDKeyResolver.
+// did.NewECDSAKeyResolver (SDK).
 //
 // The label is used as the cache key verbatim. Tests don't need to
 // know whether a label has been seen before; idempotency is
@@ -224,7 +224,7 @@ func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope
 //     deterministically maps the label to a did:key:z... and a
 //     matching keypair. h.SignerDID is rewritten and the signature
 //     is produced with the matching key, so admission's
-//     DIDKeyResolver returns the verifying public key.
+//     ECDSAKeyResolver (from SDK did/) returns the verifying public key.
 //   - Tests that distinguish 'alice' from 'bob' continue to do so
 //     — different labels yield different did:keys.
 func makeAdmissibleEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope.Entry {
