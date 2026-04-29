@@ -63,7 +63,7 @@ import (
 func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 	op := startE2EOperator(t)
 
-	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:happy"}, []byte("happy-payload"))
+	wire := buildAdmissibleWire(t, op, "did:example:happy", []byte("happy-payload"))
 	canonicalHash := sha256.Sum256(wire)
 
 	body, status := postV1(t, op, wire)
@@ -92,7 +92,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
 	op := startE2EOperator(t)
 
-	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:hash-lookup"}, []byte("hash-lookup-payload"))
+	wire := buildAdmissibleWire(t, op, "did:example:hash-lookup", []byte("hash-lookup-payload"))
 	canonicalHash := sha256.Sum256(wire)
 	hashHex := hex.EncodeToString(canonicalHash[:])
 
@@ -115,7 +115,11 @@ func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
 		return hasSeq
 	}, 5*time.Second)
 
-	if seq, ok := got["sequence_number"].(float64); !ok || seq <= 0 {
+	// Tessera assigns 0-indexed leaf sequences; the first
+	// admitted entry in a fresh test DB lands at seq 0. Assert
+	// presence + non-negative — not seq > 0 (off-by-one bug in
+	// the prior assertion).
+	if seq, ok := got["sequence_number"].(float64); !ok || seq < 0 {
 		t.Fatalf("expected sequenced state with sequence_number, got %#v", got)
 	}
 	if hashFromResp, ok := got["canonical_hash"].(string); ok && hashFromResp != hashHex {
@@ -160,12 +164,20 @@ func TestE2E_V1_MMDEndpoint_ReturnsConfigured(t *testing.T) {
 func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
 	op := startE2EOperator(t)
 	const N = 5
+	// Resolve difficulty once outside the loop — every submission
+	// in this test stamps against the same operator state.
+	difficulty := liveDifficulty(t, op)
 
 	hashes := make([][32]byte, N)
 	for i := 0; i < N; i++ {
-		wire := buildWireEntry(t,
-			envelope.ControlHeader{SignerDID: fmt.Sprintf("did:example:multi-%d", i)},
+		header := envelope.ControlHeader{
+			SignerDID:   fmt.Sprintf("did:example:multi-%d", i),
+			Destination: op.LogDID,
+			EventTime:   time.Now().UTC().UnixMicro(),
+		}
+		wire := buildModeBWireEntry(t, header,
 			[]byte(fmt.Sprintf("multi-payload-%d", i)),
+			op.LogDID, difficulty,
 		)
 		hashes[i] = sha256.Sum256(wire)
 		body, status := postV1(t, op, wire)
@@ -213,7 +225,7 @@ func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
 func TestE2E_V1_SCTTamperResistance(t *testing.T) {
 	op := startE2EOperator(t)
 
-	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:tamper"}, []byte("tamper"))
+	wire := buildAdmissibleWire(t, op, "did:example:tamper", []byte("tamper"))
 	body, status := postV1(t, op, wire)
 	if status != http.StatusAccepted {
 		t.Fatalf("submit: %d %s", status, body)
@@ -273,6 +285,60 @@ func postV1(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	return body, resp.StatusCode
+}
+
+// liveDifficulty queries the operator's GET /v1/admission/difficulty
+// endpoint and returns the difficulty the operator is currently
+// advertising. Stamping at exactly that difficulty is the most
+// realistic and robust way to admit Mode B entries — the same
+// pattern cmd/submit-stamp/main.go uses for live submissions.
+//
+// Mirrors what a production client would do: ask the operator
+// what work is required and produce exactly that, rather than
+// hard-coding a value that might drift from the operator's
+// dynamic DiffController.
+func liveDifficulty(t *testing.T, op *e2eOperator) uint32 {
+	t.Helper()
+	resp, err := http.Get(op.BaseURL + "/v1/admission/difficulty")
+	if err != nil {
+		t.Fatalf("GET /v1/admission/difficulty: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		t.Fatalf("difficulty endpoint: status=%d body=%s", resp.StatusCode, body)
+	}
+	var body struct {
+		Difficulty   uint32 `json:"difficulty"`
+		HashFunction string `json:"hash_function"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("difficulty endpoint decode: %v", err)
+	}
+	if body.Difficulty == 0 {
+		t.Fatal("difficulty endpoint returned 0")
+	}
+	return body.Difficulty
+}
+
+// buildAdmissibleWire produces a Mode B-stamped wire entry whose
+// stamp matches the operator's currently-advertised difficulty.
+// Use this in lieu of buildWireEntry when the test path is
+// unauthenticated — postV1 doesn't include a Bearer token, so the
+// admission middleware demands a valid PoW stamp.
+//
+// Sets the Destination + EventTime fields the operator's freshness
+// + binding checks require; buildModeBWireEntry doesn't fill these
+// in for the caller.
+func buildAdmissibleWire(t *testing.T, op *e2eOperator, signerDID string, payload []byte) []byte {
+	t.Helper()
+	difficulty := liveDifficulty(t, op)
+	header := envelope.ControlHeader{
+		SignerDID:   signerDID,
+		Destination: op.LogDID,
+		EventTime:   time.Now().UTC().UnixMicro(),
+	}
+	return buildModeBWireEntry(t, header, payload, op.LogDID, difficulty)
 }
 
 // pollHashLookup hits the URL until the supplied predicate accepts
