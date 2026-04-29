@@ -31,12 +31,17 @@ WHAT'S COVERED:
 package api
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 )
 
@@ -144,6 +149,69 @@ func TestSignSCT_NilPrivErrors(t *testing.T) {
 	hash := sha256.Sum256([]byte("nil-priv"))
 	if _, err := SignSCT(nil, "did:test:operator", "did:test:log", hash, time.Now()); err == nil {
 		t.Error("expected error for nil priv")
+	}
+}
+
+// Empty signerDID is a programmer error; SignSCT must reject it
+// before reaching the SDK packer so the operator never produces an
+// SCT whose JSON shows the empty SignerDID field. Pinned in the
+// shim because the SDK's SigningPayload accepts an empty signerDID
+// (a zero-length length-prefixed field is well-formed wire-bytes);
+// the operator's stronger gate is intentional.
+func TestSignSCT_EmptySignerDIDErrors(t *testing.T) {
+	priv, _ := signatures.GenerateKey()
+	hash := sha256.Sum256([]byte("empty-signer"))
+	_, err := SignSCT(priv, "", "did:test:log", hash, time.Now())
+	if err == nil {
+		t.Fatal("expected error for empty signerDID")
+	}
+	if !strings.Contains(err.Error(), "signerDID") {
+		t.Errorf("error should mention signerDID: %v", err)
+	}
+}
+
+// BUG #5 inheritance: passing a logTime that yields a negative
+// UnixMicro pushes the shim's call to sdksct.SigningPayload onto
+// the negative-timestamp rejection path, which propagates the
+// SDK's ErrNegativeLogTime out of SignSCT. This pins the
+// "SDK-packer error covers the SignSCT error path" branch and
+// confirms the operator never produces an SCT with a negative
+// LogTimeMicros that would silently render as 1969 in the
+// JSON's LogTime field.
+func TestSignSCT_NegativeLogTimeErrors(t *testing.T) {
+	priv, _ := signatures.GenerateKey()
+	hash := sha256.Sum256([]byte("neg-time"))
+	negativeTime := time.UnixMicro(-1).UTC()
+	_, err := SignSCT(priv, "did:test:operator", "did:test:log", hash, negativeTime)
+	if err == nil {
+		t.Fatal("expected error for negative LogTimeMicros")
+	}
+	if !errors.Is(err, sdksct.ErrNegativeLogTime) {
+		t.Errorf("error should wrap sdksct.ErrNegativeLogTime: %v", err)
+	}
+}
+
+// SignEntry-error branch: signatures.SignEntry fails when the
+// curve produces scalars wider than 32 bytes. We construct a P-521
+// private key (66-byte scalars) to deliberately trip that guard
+// and confirm the error propagates out of SignSCT. This is the
+// "future SignEntry contract change" defensive branch — the only
+// realistic way for SignEntry to fail with a non-nil private key.
+func TestSignSCT_SignEntryErrorPropagates(t *testing.T) {
+	// crypto/elliptic.P521 gives scalars up to 66 bytes — wider than
+	// the SDK's 32-byte serialization budget. signatures.SignEntry
+	// must surface that as an error rather than silently truncate.
+	priv, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa.GenerateKey(P521): %v", err)
+	}
+	hash := sha256.Sum256([]byte("p521-scalar-overflow"))
+	_, err = SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	if err == nil {
+		t.Fatal("expected SignEntry error for P-521 scalars")
+	}
+	if !strings.Contains(err.Error(), "scalar") && !strings.Contains(err.Error(), "32") {
+		t.Errorf("error should mention scalar/32-byte budget: %v", err)
 	}
 }
 
