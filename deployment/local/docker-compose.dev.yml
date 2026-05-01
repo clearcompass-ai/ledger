@@ -27,13 +27,12 @@
 #   curl -fsS http://localhost:8080/healthz   # davidson
 #   curl -fsS http://localhost:8081/healthz   # coa
 #
-# Why fake-gcs-server (not a real S3-compatible like MinIO):
+# Why fake-gcs-server:
 #   The production operator deployment uses Google Cloud Storage.
 #   fake-gcs-server speaks the GCS HTTP API verbatim — anonymous-mode
 #   buckets, multipart uploads, conditional headers, the full
 #   surface — so the operator's GCS adapter exercises the same code
-#   path locally and in production. MinIO would have forced the
-#   "production" code path to be S3, which adds drift risk.
+#   path locally and in production. No drift between dev and prod.
 #
 # Why two databases (not one):
 #   Each operator owns its own entry_index / commitment / antispam

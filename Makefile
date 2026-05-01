@@ -82,7 +82,7 @@ audit-v775: ## Wave 1 §CI1 — fail if SDK ships any muEnable*=false
 # ─── Dev topology (deployment/local/docker-compose.dev.yml) ─────────────
 #
 # Two operators (Davidson trial on :8080, COA on :8081) backed by a
-# shared Postgres and MinIO. Powers the judicial-network walkthrough.
+# shared Postgres and fake-gcs-server. Powers the judicial-network walkthrough.
 
 dev-up: ## Boot two-operator dev topology (Davidson :8080 + COA :8081)
 	$(DEV_COMPOSE) up -d --build
