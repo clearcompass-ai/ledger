@@ -1,0 +1,170 @@
+# deployment/local/docker-compose.dev.yml
+#
+# Local-laptop developer topology for the Ortholog operator. Stands
+# up two operator instances on different ports, each with its own
+# LogDID — exactly the shape the judicial-network walkthrough's
+# cross-exchange story (Davidson trial → TN COA appeal) requires.
+#
+# Services:
+#   postgres         shared Postgres 18 with two databases
+#   minio            S3-compatible object storage (replaces real GCS/S3)
+#   minio-init       one-shot job that creates the required buckets
+#   operator-davidson  port 8080, LogDID = did:web:state:tn:davidson
+#   operator-coa       port 8081, LogDID = did:web:state:tn:coa
+#
+# Bring up:
+#   docker compose -f deployment/local/docker-compose.dev.yml up -d
+#
+# Tear down:
+#   docker compose -f deployment/local/docker-compose.dev.yml down -v
+#
+# Health checks (after both operators report healthy):
+#   curl -fsS http://localhost:8080/healthz   # davidson
+#   curl -fsS http://localhost:8081/healthz   # coa
+#
+# Why two databases (not one):
+#   Each operator owns its own entry_index / commitment / antispam
+#   tables. A shared schema would conflate sequence-number namespaces
+#   across exchanges. Postgres' multi-database support is a clean
+#   isolation boundary with no resource overhead.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: ortholog-dev-postgres
+    environment:
+      POSTGRES_USER: ortholog
+      POSTGRES_PASSWORD: orthologpassword
+      POSTGRES_DB: ortholog_davidson
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ortholog -d ortholog_davidson"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    container_name: ortholog-dev-minio
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot bucket creator. Exits after creating the two buckets.
+  minio-init:
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    container_name: ortholog-dev-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/davidson-entries &&
+      mc mb -p local/coa-entries &&
+      echo 'minio buckets ready: davidson-entries, coa-entries'
+      "
+
+  operator-davidson:
+    build:
+      context: ../../
+      dockerfile: deployment/local/Dockerfile
+    image: ortholog-operator:dev
+    container_name: ortholog-dev-operator-davidson
+    environment:
+      OPERATOR_ADDR: ":8080"
+      OPERATOR_LOG_DID: "did:web:state:tn:davidson"
+      OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_davidson?sslmode=disable"
+      OPERATOR_BYTE_STORE_BACKEND: "s3"
+      OPERATOR_BYTE_STORE_S3_BUCKET: "davidson-entries"
+      OPERATOR_BYTE_STORE_S3_ENDPOINT: "http://minio:9000"
+      OPERATOR_BYTE_STORE_S3_REGION: "us-east-1"
+      OPERATOR_BYTE_STORE_S3_ACCESS_KEY: "minioadmin"
+      OPERATOR_BYTE_STORE_S3_SECRET_KEY: "minioadmin"
+      OPERATOR_BYTE_STORE_S3_PATH_STYLE: "true"
+      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
+      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
+      OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
+      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:davidson"
+      OPERATOR_SEQUENCER_INTERVAL: "500ms"
+    ports:
+      - "8080:8080"
+    volumes:
+      - davidson_tessera:/var/lib/ortholog/tessera
+      - davidson_wal:/var/lib/ortholog/wal
+      - davidson_antispam:/var/lib/ortholog/antispam
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  operator-coa:
+    image: ortholog-operator:dev
+    container_name: ortholog-dev-operator-coa
+    environment:
+      OPERATOR_ADDR: ":8080"
+      OPERATOR_LOG_DID: "did:web:state:tn:coa"
+      OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_coa?sslmode=disable"
+      OPERATOR_BYTE_STORE_BACKEND: "s3"
+      OPERATOR_BYTE_STORE_S3_BUCKET: "coa-entries"
+      OPERATOR_BYTE_STORE_S3_ENDPOINT: "http://minio:9000"
+      OPERATOR_BYTE_STORE_S3_REGION: "us-east-1"
+      OPERATOR_BYTE_STORE_S3_ACCESS_KEY: "minioadmin"
+      OPERATOR_BYTE_STORE_S3_SECRET_KEY: "minioadmin"
+      OPERATOR_BYTE_STORE_S3_PATH_STYLE: "true"
+      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
+      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
+      OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
+      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:coa"
+      OPERATOR_SEQUENCER_INTERVAL: "500ms"
+    ports:
+      - "8081:8080"     # host:container — operator listens on 8080 inside the container
+    volumes:
+      - coa_tessera:/var/lib/ortholog/tessera
+      - coa_wal:/var/lib/ortholog/wal
+      - coa_antispam:/var/lib/ortholog/antispam
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      operator-davidson:
+        condition: service_started     # build the image once via davidson; coa reuses it
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  minio_data:
+  davidson_tessera:
+  davidson_wal:
+  davidson_antispam:
+  coa_tessera:
+  coa_wal:
+  coa_antispam:
