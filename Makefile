@@ -12,9 +12,11 @@ GO          ?= go
 SDK_MODULE  := github.com/clearcompass-ai/ortholog-sdk
 
 .PHONY: build test test-short audit-v775 vet tidy clean help \
-        dev-up dev-down dev-logs dev-status dev-rebuild
+        dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
+        integration-up integration-down integration-logs integration-status
 
 DEV_COMPOSE := docker compose -f deployment/local/docker-compose.dev.yml
+INT_COMPOSE := docker compose -f deployment/local/docker-compose.integration.yml
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -79,24 +81,49 @@ audit-v775: ## Wave 1 §CI1 — fail if SDK ships any muEnable*=false
 	fi; \
 	echo "audit-v775: PASS — no disabled mutation gates"
 
-# ─── Dev topology (deployment/local/docker-compose.dev.yml) ─────────────
+# ─── Dev topology (REAL GCS) ────────────────────────────────────────────
 #
 # Two operators (Davidson trial on :8080, COA on :8081) backed by a
-# shared Postgres and fake-gcs-server. Powers the judicial-network walkthrough.
+# shared Postgres and REAL Google Cloud Storage (the developer's own
+# GCS buckets). Powers the judicial-network walkthrough.
+#
+# Required developer setup BEFORE `make dev-up`:
+#   gcloud auth application-default login
+#   export OPERATOR_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
+#   export OPERATOR_DEV_BUCKET_COA=<your-coa-bucket>
+# See deployment/local/README.dev.md for full prerequisites.
 
-dev-up: ## Boot two-operator dev topology (Davidson :8080 + COA :8081)
+dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
+	@if [ ! -f "$$HOME/.config/gcloud/application_default_credentials.json" ]; then \
+	  echo "FAIL: missing $$HOME/.config/gcloud/application_default_credentials.json"; \
+	  echo "      run: gcloud auth application-default login"; \
+	  exit 1; \
+	fi
+	@if [ -z "$$OPERATOR_DEV_BUCKET_DAVIDSON" ]; then \
+	  echo "FAIL: OPERATOR_DEV_BUCKET_DAVIDSON is unset"; \
+	  echo "      see deployment/local/README.dev.md"; \
+	  exit 1; \
+	fi
+	@if [ -z "$$OPERATOR_DEV_BUCKET_COA" ]; then \
+	  echo "FAIL: OPERATOR_DEV_BUCKET_COA is unset"; \
+	  echo "      see deployment/local/README.dev.md"; \
+	  exit 1; \
+	fi
+	@echo "preflight ok: ADC found, bucket env vars set"
+
+dev-up: dev-preflight ## Boot dev topology against REAL GCS (Davidson :8080 + COA :8081)
 	$(DEV_COMPOSE) up -d --build
 	@echo "waiting for both operators to report healthy..."
 	@for i in $$(seq 1 60); do \
 	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
 	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
 	  [ "$$d" = "ok" ] && [ "$$c" = "ok" ] && \
-	    echo "ready: davidson=:8080  coa=:8081  gcs=:4443" && exit 0; \
+	    echo "ready: davidson=:8080  coa=:8081  gcs=storage.googleapis.com" && exit 0; \
 	  sleep 2; \
 	done; \
 	echo "operators did not report healthy in time; run 'make dev-logs'"; exit 1
 
-dev-down: ## Tear down dev topology AND delete volumes (full reset)
+dev-down: ## Tear down dev topology AND delete volumes (full reset; GCS buckets unchanged)
 	$(DEV_COMPOSE) down -v
 
 dev-logs: ## Tail logs from both operators
@@ -108,3 +135,31 @@ dev-status: ## Show service status
 dev-rebuild: ## Rebuild operator image and restart both services
 	$(DEV_COMPOSE) build operator-davidson
 	$(DEV_COMPOSE) up -d operator-davidson operator-coa
+
+# ─── Integration topology (fake-gcs-server, offline) ────────────────────
+#
+# Same operator + database shape but the GCS dependency is satisfied
+# by fake-gcs-server (in-process, anonymous, deterministic). Used for
+# CI integration tests + offline / air-gapped local runs. Use the
+# real-GCS topology (above) for daily development.
+
+integration-up: ## Boot integration topology (fake-gcs-server, offline)
+	$(INT_COMPOSE) up -d --build
+	@echo "waiting for both operators to report healthy..."
+	@for i in $$(seq 1 60); do \
+	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
+	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
+	  [ "$$d" = "ok" ] && [ "$$c" = "ok" ] && \
+	    echo "ready: davidson=:8080  coa=:8081  fake-gcs=:4443" && exit 0; \
+	  sleep 2; \
+	done; \
+	echo "operators did not report healthy in time; run 'make integration-logs'"; exit 1
+
+integration-down: ## Tear down integration topology AND delete volumes
+	$(INT_COMPOSE) down -v
+
+integration-logs: ## Tail logs from both operators (integration topology)
+	$(INT_COMPOSE) logs -f operator-davidson operator-coa
+
+integration-status: ## Show service status (integration topology)
+	$(INT_COMPOSE) ps

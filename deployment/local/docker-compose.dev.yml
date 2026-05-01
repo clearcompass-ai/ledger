@@ -1,44 +1,35 @@
 # deployment/local/docker-compose.dev.yml
 #
-# Local-laptop developer topology for the Ortholog operator. Stands
-# up two operator instances on different ports, each with its own
-# LogDID — exactly the shape the judicial-network walkthrough's
-# cross-exchange story (Davidson trial → TN COA appeal) requires.
+# Developer-laptop topology that hits REAL Google Cloud Storage.
+# Same shape as production: the operator's GCS adapter calls
+# storage.googleapis.com directly with the developer's
+# Application Default Credentials.
 #
-# Backed by Postgres (two databases) and fake-gcs-server (an
-# anonymous-mode GCS API emulator) so production code paths run
-# unchanged: the operator's BYTE_STORE_BACKEND=gcs path with a
-# custom endpoint and anonymous access (no credentials needed).
+# For an air-gapped / no-cloud topology (integration tests), see
+# docker-compose.integration.yml — that file uses fake-gcs-server.
 #
-# Services:
-#   postgres          shared Postgres 18 with two databases
-#   gcs               fake-gcs-server: GCS API on :4443
-#   gcs-init          one-shot job that creates the required buckets
-#   operator-davidson  port 8080, LogDID = did:web:state:tn:davidson
-#   operator-coa       port 8081, LogDID = did:web:state:tn:coa
+# Required developer setup BEFORE `make dev-up`:
 #
-# Bring up:
-#   docker compose -f deployment/local/docker-compose.dev.yml up -d
+#   1. gcloud auth application-default login
+#        Writes ADC to ~/.config/gcloud/application_default_credentials.json
+#        which this compose mounts into both operator containers.
 #
-# Tear down:
-#   docker compose -f deployment/local/docker-compose.dev.yml down -v
+#   2. gcloud storage buckets create gs://$OPERATOR_DEV_BUCKET_DAVIDSON \
+#        --location=US --project=$GOOGLE_PROJECT
+#      gcloud storage buckets create gs://$OPERATOR_DEV_BUCKET_COA \
+#        --location=US --project=$GOOGLE_PROJECT
 #
-# Health checks (after both operators report healthy):
-#   curl -fsS http://localhost:8080/healthz   # davidson
-#   curl -fsS http://localhost:8081/healthz   # coa
+#   3. export OPERATOR_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
+#      export OPERATOR_DEV_BUCKET_COA=<your-coa-bucket>
 #
-# Why fake-gcs-server:
-#   The production operator deployment uses Google Cloud Storage.
-#   fake-gcs-server speaks the GCS HTTP API verbatim — anonymous-mode
-#   buckets, multipart uploads, conditional headers, the full
-#   surface — so the operator's GCS adapter exercises the same code
-#   path locally and in production. No drift between dev and prod.
-#
-# Why two databases (not one):
-#   Each operator owns its own entry_index / commitment / antispam
-#   tables. A shared schema would conflate sequence-number namespaces
-#   across exchanges. Postgres' multi-database support is a clean
-#   isolation boundary with no resource overhead.
+# Why real GCS for dev (not fake-gcs-server):
+#   At-scale tests, latency profiles, IAM behaviour, multipart upload
+#   thresholds, and ListObjects pagination all behave differently
+#   against the real service. The dev path matters most for
+#   discovering GCS-related bugs during development; fake-gcs-server
+#   masks those. fake-gcs-server lives in the integration-test
+#   topology where deterministic offline runs matter more than
+#   GCS realism.
 
 services:
   postgres:
@@ -59,48 +50,6 @@ services:
       timeout: 3s
       retries: 20
 
-  gcs:
-    image: fsouza/fake-gcs-server:1.50.2
-    container_name: ortholog-dev-gcs
-    # -public-host: what URL the server advertises in object-listing
-    #   responses. Must match what the operator uses to reach it
-    #   (the docker-internal hostname `gcs`).
-    # -scheme http: dev mode; no TLS.
-    # -port 4443: GCS API port (the upstream default).
-    command: >
-      -scheme http -port 4443 -public-host gcs:4443
-    ports:
-      - "4443:4443"
-    volumes:
-      - gcs_data:/storage
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - "wget -q -O- http://localhost:4443/storage/v1/b 2>&1 | grep -q '^{' || exit 1"
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
-  # One-shot bucket creator. fake-gcs-server's REST API supports
-  # bucket creation via POST /storage/v1/b; we hit it twice via curl.
-  gcs-init:
-    image: curlimages/curl:8.11.0
-    container_name: ortholog-dev-gcs-init
-    depends_on:
-      gcs:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      set -e;
-      for b in davidson-entries coa-entries; do
-        curl -fsS -X POST 'http://gcs:4443/storage/v1/b?project=ortholog-dev' \
-             -H 'Content-Type: application/json' \
-             -d \"{\\\"name\\\":\\\"$$b\\\"}\" || \
-        curl -fsS 'http://gcs:4443/storage/v1/b/'$$b > /dev/null;
-        echo \"bucket ready: $$b\";
-      done
-      "
-
   operator-davidson:
     build:
       context: ../../
@@ -112,9 +61,16 @@ services:
       OPERATOR_LOG_DID: "did:web:state:tn:davidson"
       OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_davidson?sslmode=disable"
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "davidson-entries"
-      OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
-      OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
+      # Required: developer-supplied bucket name (not anonymized).
+      # Compose fails to start if unset.
+      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_DAVIDSON:?must export OPERATOR_DEV_BUCKET_DAVIDSON; see deployment/local/README.dev.md}"
+      # Real GCS = real auth via ADC. The Google Go SDK reads from
+      # GOOGLE_APPLICATION_CREDENTIALS, falling back to
+      # ~/.config/gcloud/application_default_credentials.json.
+      GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/application_default_credentials.json"
+      # Optional: project ID is sometimes required for billing
+      # attribution on object operations.
+      GOOGLE_CLOUD_PROJECT: "${GOOGLE_PROJECT:-}"
       OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
       OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
       OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
@@ -123,14 +79,15 @@ services:
     ports:
       - "8080:8080"
     volumes:
+      # Mount the developer's gcloud ADC into the container,
+      # read-only. Never written to.
+      - "${HOME}/.config/gcloud/application_default_credentials.json:/etc/gcp/application_default_credentials.json:ro"
       - davidson_tessera:/var/lib/ortholog/tessera
       - davidson_wal:/var/lib/ortholog/wal
       - davidson_antispam:/var/lib/ortholog/antispam
     depends_on:
       postgres:
         condition: service_healthy
-      gcs-init:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
@@ -146,9 +103,9 @@ services:
       OPERATOR_LOG_DID: "did:web:state:tn:coa"
       OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_coa?sslmode=disable"
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "coa-entries"
-      OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
-      OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
+      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_COA:?must export OPERATOR_DEV_BUCKET_COA; see deployment/local/README.dev.md}"
+      GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/application_default_credentials.json"
+      GOOGLE_CLOUD_PROJECT: "${GOOGLE_PROJECT:-}"
       OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
       OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
       OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
@@ -157,14 +114,13 @@ services:
     ports:
       - "8081:8080"
     volumes:
+      - "${HOME}/.config/gcloud/application_default_credentials.json:/etc/gcp/application_default_credentials.json:ro"
       - coa_tessera:/var/lib/ortholog/tessera
       - coa_wal:/var/lib/ortholog/wal
       - coa_antispam:/var/lib/ortholog/antispam
     depends_on:
       postgres:
         condition: service_healthy
-      gcs-init:
-        condition: service_completed_successfully
       operator-davidson:
         condition: service_started     # build the image once via davidson; coa reuses it
     healthcheck:
@@ -176,7 +132,6 @@ services:
 
 volumes:
   postgres_data:
-  gcs_data:
   davidson_tessera:
   davidson_wal:
   davidson_antispam:

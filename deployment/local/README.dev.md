@@ -1,119 +1,189 @@
 # Local dev topology
 
-`docker-compose.dev.yml` boots a two-exchange laptop topology:
+Two compose files live here, for two different audiences:
+
+| File | When to use | GCS backend |
+|---|---|---|
+| `docker-compose.dev.yml` | **Daily development.** What `make dev-up` runs. | **Real GCS** — your own buckets in your own GCP project. Same path as production. |
+| `docker-compose.integration.yml` | CI integration tests, offline / air-gapped runs. What `make integration-up` runs. | `fake-gcs-server` — in-process, anonymous, deterministic. |
+
+This document covers the dev topology (real GCS). For the
+integration-tests topology, jump to [§ Integration topology](#integration-topology) below.
+
+---
+
+## Dev topology — real GCS
 
 | Service | Port (host) | Purpose |
 |---|---|---|
 | `operator-davidson` | `:8080` | Trial-court operator, `LogDID = did:web:state:tn:davidson` |
 | `operator-coa` | `:8081` | Appellate-court operator, `LogDID = did:web:state:tn:coa` |
 | `postgres` | `:5432` | Shared Postgres 18 with two databases (`ortholog_davidson`, `ortholog_coa`) |
-| `gcs` | `:4443` | `fake-gcs-server` — anonymous-mode GCS API emulator. Production code path runs unchanged. |
-| `gcs-init` | (one-shot) | Creates the two buckets (`davidson-entries`, `coa-entries`) via REST |
+| (no GCS service) | — | Each operator hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
 
-This is the runtime the **judicial-network walkthrough** relies on for
-its cross-exchange demonstration (Davidson trial → TN COA appeal).
+This is the runtime the **judicial-network walkthrough** runs
+against. It mirrors production: same GCS adapter code path, same
+IAM behaviour, same multipart upload thresholds, same
+ListObjects pagination.
 
-## Quick start
+### One-time developer setup
+
+You need three things on your laptop **before** `make dev-up`:
+
+1. A Google Cloud project where you can create buckets.
+2. `gcloud auth application-default login` completed (writes
+   `~/.config/gcloud/application_default_credentials.json`,
+   which the compose mounts read-only into both operator
+   containers).
+3. Two GCS buckets created:
+
+   ```bash
+   export GOOGLE_PROJECT=your-gcp-project-id
+   gcloud storage buckets create gs://yourname-davidson-entries \
+     --location=US --project=$GOOGLE_PROJECT
+   gcloud storage buckets create gs://yourname-coa-entries \
+     --location=US --project=$GOOGLE_PROJECT
+   ```
+
+   Bucket names are global; pick something unlikely to collide.
+   `gcloud storage buckets list --project=$GOOGLE_PROJECT`
+   confirms they exist.
+
+4. Two env vars exported in the shell from which you run
+   `make dev-up`:
+
+   ```bash
+   export OPERATOR_DEV_BUCKET_DAVIDSON=yourname-davidson-entries
+   export OPERATOR_DEV_BUCKET_COA=yourname-coa-entries
+   ```
+
+Persist them in your shell rc if you'll be doing this often.
+
+### Quick start
 
 ```bash
-# from the operator repo root
 make dev-up
-
-# wait ~15 sec; the target polls /healthz on both operators and
-# exits 0 when both report "ok".
 ```
 
-Then verify:
+Behind the scenes, `dev-up` first runs `dev-preflight`, which
+verifies that ADC exists and that both bucket env vars are set.
+On any preflight failure the target exits non-zero with a clear
+message — no half-built containers.
+
+After ~15 seconds:
 
 ```bash
-curl -fsS http://localhost:8080/healthz   # → ok
-curl -fsS http://localhost:8081/healthz   # → ok
-curl -fsS http://localhost:8080/v1/admission/mmd    # → JSON
-curl -fsS http://localhost:8080/v1/tree/head        # → JSON
+$ curl -fsS http://localhost:8080/healthz   # → ok
+$ curl -fsS http://localhost:8081/healthz   # → ok
 ```
 
-Inspect the GCS buckets:
+Inspect your real GCS buckets with `gcloud` or `gsutil`:
 
 ```bash
-# List buckets
-curl -fsS http://localhost:4443/storage/v1/b | jq '.items[].name'
-"davidson-entries"
-"coa-entries"
-
-# List objects in a bucket (will be empty until walkthrough runs)
-curl -fsS 'http://localhost:4443/storage/v1/b/davidson-entries/o' | jq '.items // []'
+gcloud storage ls gs://$OPERATOR_DEV_BUCKET_DAVIDSON
+gcloud storage cat gs://$OPERATOR_DEV_BUCKET_DAVIDSON/<object>
 ```
 
-`fake-gcs-server` has no web console, but its REST surface is the
-same GCS HTTP API the production operator hits — so any tool that
-speaks GCS (e.g., `gsutil` configured for the local endpoint, or
-the Google Cloud SDK with `STORAGE_EMULATOR_HOST=localhost:4443`)
-works against this dev topology.
+(Empty until walkthrough or your own client submits entries.)
 
-## Tear down
+### Tear down
 
 ```bash
-make dev-down       # removes containers AND volumes (full reset)
+make dev-down
 ```
 
-`dev-down` is destructive on purpose — it wipes Postgres data, GCS
-bucket data, Tessera state, WAL, and antispam DBs. Re-running
-`dev-up` gives you a fresh log starting at sequence 1 on both
-exchanges.
-
-## Logs and status
+`dev-down` removes containers and the **local** volumes (Postgres
+data, Tessera state, WAL, antispam DBs). It does **NOT** delete
+your GCS buckets or the objects in them. To clear bucket state:
 
 ```bash
-make dev-status     # `docker compose ps` shape
+gcloud storage rm 'gs://yourname-davidson-entries/**'
+gcloud storage rm 'gs://yourname-coa-entries/**'
+```
+
+Re-running `make dev-up` after `dev-down` gives you a fresh log
+starting at sequence 1 on both exchanges (Postgres-side state was
+wiped); orphaned objects in GCS get rewritten by sequence number.
+
+### Logs and status
+
+```bash
+make dev-status     # `docker compose ps`
 make dev-logs       # tail both operators (Ctrl-C to stop)
 ```
 
-## Design notes
+### Why real GCS for dev (not fake-gcs-server)
 
-- **GCS, not S3.** The production deployment runs on Google Cloud
-  Storage; `fake-gcs-server` (`fsouza/fake-gcs-server`) speaks the
-  GCS HTTP API verbatim, so the operator's GCS adapter exercises
-  the same code path locally and in production. The operator
-  reaches it via `OPERATOR_BYTE_STORE_GCS_ENDPOINT=http://gcs:4443`
-  and `OPERATOR_BYTE_STORE_GCS_ANONYMOUS=true` — anonymous mode is
-  a config-time switch in the operator (`cmd/operator/main.go`,
-  the `ByteStoreGCSAnon` field).
-- **Two databases, not one.** Each operator owns its own
-  `entry_index`, `commitments`, `antispam` tables. A shared schema
-  would conflate sequence-number namespaces across exchanges.
-  Postgres' multi-database support is a clean isolation boundary
-  with no resource overhead. The init script (`postgres-init.sh`)
-  is mounted at `/docker-entrypoint-initdb.d/00-init.sh` and runs
-  once per fresh volume to `CREATE DATABASE ortholog_coa`.
-- **One image, two services.** `operator-coa` reuses the image
-  `ortholog-operator:dev` built once via `operator-davidson`. Saves
-  ~30 seconds per cold boot.
-- **No witness cosignatures.** The dev topology omits
-  `OPERATOR_WITNESS_KEY_FILE`, so each operator self-signs
-  checkpoints unwitnessed. Adding a witness is a follow-up.
-- **No anchor publisher.** The walkthrough doesn't exercise the
-  anchor-commentary path. `OPERATOR_ANCHOR_INTERVAL` is left at its
-  default (1h); on a 30-second walkthrough run, no anchor entries
-  fire.
-- **Sequencer interval is 500ms.** Faster than the production
-  default (1s) so SCT → entry-sequenced delay is barely noticeable
-  in the walkthrough's `judicial-cli wait` step.
+At-scale tests, latency profiles, IAM behaviour, multipart upload
+thresholds, and ListObjects pagination all behave differently
+against real GCS than against `fake-gcs-server`. The dev path is
+where GCS-related bugs need to surface; faking the backend masks
+them. `fake-gcs-server` lives in the integration-tests topology
+where deterministic offline runs matter more than GCS realism.
 
-## Troubleshooting
+### Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `dev-up` hangs after "waiting for both operators to report healthy" | Postgres init still running | `make dev-logs` to inspect; usually resolves in 20–30 sec on first boot |
-| `/healthz` returns 503 from `operator-coa` | `ortholog_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; the init script only runs on fresh volumes) |
-| Operator startup logs show `bytestore init: ...` | `gcs` not yet ready | The compose has a `service_completed_successfully` dep on `gcs-init`; if you skipped it, restart with `dev-up` |
-| `gcs-init` exits with HTTP 4xx | Bucket already exists from a prior boot but volume kept | The init script's curl falls back to a GET to confirm existence; idempotent. If it really fails, `make dev-down && make dev-up` |
-| `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2 (the `docker compose` plugin) |
-| `failed to connect to the docker API` | Docker daemon not running | `sudo systemctl start docker` (Linux) or open Docker Desktop |
+| `dev-preflight` fails: missing ADC | Never ran `gcloud auth application-default login` | Run it; ADC lands at `~/.config/gcloud/application_default_credentials.json`. |
+| `dev-preflight` fails: bucket env unset | Forgot to `export OPERATOR_DEV_BUCKET_*` | Export both, then re-run `make dev-up`. |
+| Operator startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
+| Operator startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
+| `dev-up` hangs at "waiting for both operators" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
+| `/healthz` returns 503 from `operator-coa` | `ortholog_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
+| `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2. |
+
+---
+
+## Integration topology
+
+For tests that must run offline, deterministically, or in CI
+without GCS credentials. Uses `fake-gcs-server`
+(`fsouza/fake-gcs-server`) on port `:4443` instead of real GCS.
+
+### Quick start
+
+```bash
+make integration-up
+
+# Once both operators are healthy:
+curl -fsS http://localhost:8080/healthz   # → ok
+curl -fsS http://localhost:8081/healthz   # → ok
+curl -fsS http://localhost:4443/storage/v1/b   # GCS-shape JSON
+```
+
+No `gcloud` setup required. No real cloud cost. No flaky network.
+
+### Tear down
+
+```bash
+make integration-down       # also wipes fake-gcs-server bucket data
+```
+
+### Limits
+
+`fake-gcs-server` is great for correctness and shape testing; it's
+NOT a replacement for the real-GCS path during development. It
+diverges from real GCS in:
+- Latency profile (synchronous local vs. ~50 ms global)
+- IAM model (anonymous; no policy enforcement)
+- Multipart upload thresholds
+- ListObjects pagination behaviour
+- Conditional headers (matches the spec but not always verbatim
+  with Google's implementation)
+
+If a feature works against `fake-gcs-server` and breaks against
+real GCS, that's not a bug in your code — it's a bug in the
+emulator's coverage of the spec. Always validate against
+`make dev-up` before merging.
+
+---
 
 ## What's next
 
 The walkthrough at
 `/home/user/judicial-network/docs/walkthrough/` (in the
-judicial-network repo) uses this topology to demonstrate two
-real-world Tennessee judicial cases plus web3 (did:pkh) DIDs.
-Run `make dev-up` here, then follow the walkthrough there.
+judicial-network repo) uses **`make dev-up` (real GCS)** to
+demonstrate two real-world Tennessee judicial cases plus web3
+(`did:pkh`) DIDs. Run `make dev-up` here, then follow the
+walkthrough there.
