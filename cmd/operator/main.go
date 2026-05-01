@@ -597,6 +597,34 @@ func main() {
 		"tessera_storage_dir", cfg.TesseraStorageDir,
 	)
 
+	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
+	// v0.8.0 wiring. When OPERATOR_ETH_RPC_ENABLED=true the operator
+	// constructs an HTTPEthereumRPC client and is ready to pass it
+	// into did.DefaultVerifierRegistryWithRPC at the Phase 4 verifier-
+	// registry seam. When disabled (the default) the operator runs
+	// EOA-only and pulls zero network surface — same behavior as
+	// pre-v0.8.0. Endpoint URL is NEVER logged (typically embeds an
+	// API key); the audit channel is secret-management.
+	ethRPCCfg, err := LoadEthereumRPCConfig()
+	if err != nil {
+		logger.Error("ethereum rpc config", "error", err)
+		os.Exit(1)
+	}
+	ethRPC, err := BuildEthereumRPCClient(ethRPCCfg)
+	if err != nil {
+		logger.Error("ethereum rpc client", "error", err)
+		os.Exit(1)
+	}
+	if ethRPC == nil {
+		logger.Info("eip-1271 verification disabled (OPERATOR_ETH_RPC_ENABLED unset)")
+	} else {
+		logger.Info("eip-1271 verification enabled",
+			"timeout_ms", ethRPCCfg.Timeout.Milliseconds(),
+			"insecure_http", ethRPCCfg.AllowInsecureHTTP,
+		)
+	}
+	_ = ethRPC // wired into did.DefaultVerifierRegistryWithRPC at Phase 4.
+
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
