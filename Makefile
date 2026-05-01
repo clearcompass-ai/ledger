@@ -91,7 +91,7 @@ dev-up: ## Boot two-operator dev topology (Davidson :8080 + COA :8081)
 	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
 	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
 	  [ "$$d" = "ok" ] && [ "$$c" = "ok" ] && \
-	    echo "ready: davidson=:8080  coa=:8081  minio-console=:9001" && exit 0; \
+	    echo "ready: davidson=:8080  coa=:8081  gcs=:4443" && exit 0; \
 	  sleep 2; \
 	done; \
 	echo "operators did not report healthy in time; run 'make dev-logs'"; exit 1
