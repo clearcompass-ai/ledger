@@ -11,12 +11,22 @@ checkpoint skip this stage entirely; the v7.75 commitment-entry
 surface (pre-grant-commitment-v1, escrow-split-commitment-v1) does
 not embed tree heads and therefore never triggers S1.
 
-The verifier wraps the SDK's witness.VerifyTreeHead primitive, which
-in turn invokes signatures.VerifyWitnessCosignatures. SDK mutation
-gates muEnableWitnessQuorumCount, muEnableUniqueSigners, and
-muEnableWitnessKeyMembership fire inside the SDK call; the operator's
-job is purely to invoke the primitive and map its errors to the
-admission-layer's ErrWitnessQuorumInsufficient.
+The verifier routes through cosign.Verify against the SDK's universal
+cosignature surface. cosign.Verify enforces, in one path:
+
+  - Per-signature scheme dispatch (rejects SchemeTag==0 with
+    cosign.ErrSchemeUnspecified; rejects unknown schemes with
+    cosign.ErrSchemeUnsupported).
+  - Per-signature pubkey membership in the supplied witness set
+    (rejects unknown PubKeyID with per-signature
+    cosign.ErrUnknownPublicKey).
+  - K-of-N quorum across ECDSA + BLS signatures (rejects below-
+    threshold counts with top-level cosign.ErrQuorumNotReached).
+
+All three are mandatory in cosign.Verify; they are not gated mutation
+switches. The operator's job is to invoke the primitive and map its
+quorum-class errors to the admission-layer's
+ErrWitnessQuorumInsufficient.
 
 Detection vs. verification (separation of concerns):
 
@@ -50,9 +60,8 @@ import (
 	"fmt"
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
-	sdkwitness "github.com/clearcompass-ai/ortholog-sdk/witness"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -63,10 +72,10 @@ import (
 // an embedded cosigned tree head fails to meet the active witness
 // set's quorum threshold. The HTTP layer maps this to 401.
 //
-// Wraps the SDK's witness.ErrInsufficientWitnesses,
-// witness.ErrNoSignatures, and witness.ErrEmptyWitnessSet via the
-// %w verb so callers can errors.Is on either the operator-side
-// sentinel or the underlying SDK cause.
+// Wraps the SDK's cosign.ErrQuorumNotReached and
+// cosign.ErrEmptySignatures via the %w verb so callers can
+// errors.Is on either the operator-side sentinel or the underlying
+// SDK cause.
 var ErrWitnessQuorumInsufficient = errors.New(
 	"admission: witness quorum insufficient")
 
@@ -114,38 +123,46 @@ type WitnessKeySet interface {
 // implementation is.
 type BLSQuorumVerifier struct {
 	keySet      WitnessKeySet
-	blsVerifier signatures.BLSVerifier
+	blsVerifier cosign.BLSAggregateVerifier
+	networkID   cosign.NetworkID
 }
 
 // NewBLSQuorumVerifier constructs a verifier with the supplied
-// witness key set provider and BLS verifier. blsVerifier may be
-// nil if the deployment expects only ECDSA cosignatures —
-// signatures.VerifyWitnessCosignatures dispatches on the head's
-// SchemeTag and only invokes blsVerifier for BLS-tagged heads.
+// witness key set provider, BLS aggregate verifier, and the
+// deployment's NetworkID.
+//
+// blsVerifier MAY be nil if the deployment expects only ECDSA
+// cosignatures — cosign.Verify dispatches on each signature's
+// SchemeTag and only invokes blsVerifier when at least one
+// SchemeBLS signature is present. Production deployments inject
+// cosign.NewProductionBLSVerifier(); tests pass nil or a fake.
+//
+// networkID binds every verification to a specific network/fork.
+// Signatures produced under a different NetworkID never satisfy
+// the quorum, even if the underlying key material matches.
 func NewBLSQuorumVerifier(
 	keySet WitnessKeySet,
-	blsVerifier signatures.BLSVerifier,
+	blsVerifier cosign.BLSAggregateVerifier,
+	networkID cosign.NetworkID,
 ) *BLSQuorumVerifier {
 	return &BLSQuorumVerifier{
 		keySet:      keySet,
 		blsVerifier: blsVerifier,
+		networkID:   networkID,
 	}
 }
 
 // VerifyEmbeddedTreeHead is the cryptographic check: load the
-// active witness set and invoke the SDK's witness.VerifyTreeHead.
-// Maps any quorum-related SDK error to ErrWitnessQuorumInsufficient
-// so the admission layer can route a single status code without
-// branching on the SDK error vocabulary.
+// active witness set and invoke cosign.Verify against a
+// PurposeTreeHead payload. Maps cosign.Verify's quorum-class
+// errors (ErrQuorumNotReached, ErrEmptySignatures) to
+// ErrWitnessQuorumInsufficient so the admission layer can route
+// a single status code without branching on the SDK error
+// vocabulary.
 //
-// Mutation gates honored via the SDK call:
-//
-//   - muEnableWitnessQuorumCount  (witness/verify_mutation_switches.go)
-//   - muEnableUniqueSigners       (signatures/witness_verify.go)
-//   - muEnableWitnessKeyMembership (signatures/witness_verify.go)
-//
-// Wave 1 v3 §S1 does NOT require the operator to honor these
-// directly — the SDK call is the binding layer.
+// All structural checks (scheme dispatch, pubkey membership,
+// signature length) are enforced inside cosign.Verify; this
+// wrapper does not duplicate them.
 func (v *BLSQuorumVerifier) VerifyEmbeddedTreeHead(
 	head types.CosignedTreeHead,
 ) error {
@@ -162,19 +179,22 @@ func (v *BLSQuorumVerifier) VerifyEmbeddedTreeHead(
 		return fmt.Errorf("%w: %v", ErrWitnessKeySetUnavailable, err)
 	}
 
-	_, verifyErr := sdkwitness.VerifyTreeHead(head, keys, quorumK, v.blsVerifier)
+	payload := cosign.NewTreeHeadPayload(head.TreeHead)
+	_, verifyErr := cosign.Verify(
+		payload, v.networkID, cosign.HashAlgoSHA256,
+		head.Signatures, keys, quorumK, v.blsVerifier,
+	)
 	if verifyErr == nil {
 		return nil
 	}
 
-	// Map every quorum-class SDK error to a single admission-layer
+	// Map quorum-class SDK errors to a single admission-layer
 	// sentinel. The HTTP layer renders this as 401; operators
 	// inspecting the wrapped chain via errors.Unwrap can still
 	// see the specific SDK cause for diagnostics.
 	switch {
-	case errors.Is(verifyErr, sdkwitness.ErrInsufficientWitnesses),
-		errors.Is(verifyErr, sdkwitness.ErrNoSignatures),
-		errors.Is(verifyErr, sdkwitness.ErrEmptyWitnessSet):
+	case errors.Is(verifyErr, cosign.ErrQuorumNotReached),
+		errors.Is(verifyErr, cosign.ErrEmptySignatures):
 		return fmt.Errorf("%w: %v", ErrWitnessQuorumInsufficient, verifyErr)
 	default:
 		// A non-quorum SDK failure (config bug, malformed head,

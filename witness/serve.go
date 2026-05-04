@@ -8,12 +8,14 @@ Deployed when this operator acts as a witness for another log.
 The signing key is the witness private key (not the operator's log key).
 
 KEY ARCHITECTURAL DECISIONS:
-  - Signs WitnessCosignMessage(head) with the witness ECDSA key.
+  - Signs the cosign-canonical tree-head message via cosign.SignECDSA
+    (universal signing surface; binds the signature to the deployment's
+    NetworkID and the PurposeTreeHead domain).
   - Validates tree head is monotonically non-decreasing (no rollback).
   - Rate limited per-peer (not implemented here — middleware concern).
   - Key injected via config, never hardcoded.
-  - Returns types.WitnessSignature JSON — same shape that HeadSync
-    expects from witnesses in head_sync.go requestSingle.
+  - Returns types.WitnessSignature JSON with SchemeTag=SchemeECDSA —
+    the cosign verifier rejects SchemeTag==0.
 */
 package witness
 
@@ -27,6 +29,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 )
@@ -36,16 +39,25 @@ type ServeConfig struct {
 	// WitnessKey is the private key used to sign tree heads.
 	// Injected from HSM/config. Never persisted in plaintext.
 	WitnessKey *ecdsa.PrivateKey
-	Logger     *slog.Logger
+
+	// NetworkID is the deployment's 32-byte cosign-domain identifier,
+	// derived at boot from the operator's network bootstrap document
+	// via network.MustNetworkID. Witnesses for the same network share
+	// the same value; signatures produced under one NetworkID never
+	// verify under another.
+	NetworkID cosign.NetworkID
+
+	Logger *slog.Logger
 }
 
 // CosignHandler handles POST /v1/cosign requests from peer operators.
 // Implements http.Handler. Registered in api/server.go when witness
 // mode is enabled (Handlers.WitnessCosign != nil).
 type CosignHandler struct {
-	key    *ecdsa.PrivateKey
-	pubID  [32]byte // SHA-256 of uncompressed public key bytes
-	logger *slog.Logger
+	key       *ecdsa.PrivateKey
+	pubID     [32]byte // SHA-256 of uncompressed public key bytes
+	networkID cosign.NetworkID
+	logger    *slog.Logger
 
 	mu             sync.Mutex
 	lastSignedSize uint64 // monotonicity guard: never sign a smaller tree
@@ -56,9 +68,10 @@ func NewCosignHandler(cfg ServeConfig) *CosignHandler {
 	pubBytes := signatures.PubKeyBytes(&cfg.WitnessKey.PublicKey)
 	pubID := sha256.Sum256(pubBytes)
 	return &CosignHandler{
-		key:    cfg.WitnessKey,
-		pubID:  pubID,
-		logger: cfg.Logger,
+		key:       cfg.WitnessKey,
+		pubID:     pubID,
+		networkID: cfg.NetworkID,
+		logger:    cfg.Logger,
 	}
 }
 
@@ -126,25 +139,27 @@ func (h *CosignHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.lastSignedSize = req.TreeSize
 	h.mu.Unlock()
 
-	// Sign WitnessCosignMessage(head).
-	// This is the same message format that VerifyWitnessCosignatures expects:
-	// [32 bytes root_hash][8 bytes tree_size big-endian] = 40 bytes.
+	// Sign the cosign-canonical tree-head message via cosign.SignECDSA.
+	// The canonical bytes are [purpose-prefix][NUL][NetworkID][HashAlgo]
+	// [RootHash][TreeSize-BE]; cosign hashes them with SHA-256 and
+	// signs the digest with secp256k1 ECDSA. Binding to NetworkID +
+	// PurposeTreeHead is what makes the signature non-replayable
+	// across networks or against a rotation message.
 	head := types.TreeHead{TreeSize: req.TreeSize, RootHash: rootHash}
-	msg := types.WitnessCosignMessage(head)
-	msgHash := sha256.Sum256(msg[:])
-
-	sigBytes, err := signatures.SignEntry(msgHash, h.key)
+	payload := cosign.NewTreeHeadPayload(head)
+	sigBytes, err := cosign.SignECDSA(payload, h.networkID, cosign.HashAlgoSHA256, h.key)
 	if err != nil {
 		h.logger.Error("cosign: signing failed", "error", err)
 		http.Error(w, `{"error":"signing failed"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Return WitnessSignature as JSON — same shape that head_sync.go
-	// requestSingle expects when unmarshaling the witness response.
+	// Return WitnessSignature as JSON. SchemeTag is mandatory: the
+	// cosign verifier rejects SchemeTag==0 with ErrSchemeUnspecified.
 	resp := types.WitnessSignature{
-		PubKeyID: h.pubID,
-		SigBytes: sigBytes,
+		PubKeyID:  h.pubID,
+		SchemeTag: signatures.SchemeECDSA,
+		SigBytes:  sigBytes,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

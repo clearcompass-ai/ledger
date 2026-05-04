@@ -55,6 +55,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -76,9 +77,11 @@ import (
 	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
 	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
+	"github.com/clearcompass-ai/ortholog-sdk/network"
 
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
@@ -356,6 +359,24 @@ type Config struct {
 	// own admitted entries; this key signs cosign responses.
 	WitnessKeyFile string
 
+	// NetworkBootstrapFile is the path to a JSON file containing
+	// the network's bootstrap document (network.BootstrapDocument).
+	// Required when witness mode is active (WitnessKeyFile or
+	// WitnessEndpoints set) — the cosign canonical-message preamble
+	// rejects a zero NetworkID, so a witness signing or verifying
+	// without one fails at runtime. The same document MUST be
+	// loaded by every component participating in the network
+	// (other operators, JN composer, peer witnesses); cross-
+	// component signature verification depends on byte-identical
+	// bootstrap inputs.
+	NetworkBootstrapFile string
+
+	// NetworkID is derived from the bootstrap document at config
+	// load and threaded through to witness.NewCosignHandler and
+	// any other primitive that calls cosign.Sign/Verify. Zero
+	// (and unused) when witness mode is inactive.
+	NetworkID cosign.NetworkID
+
 	// WALPath is the BadgerDB directory the WAL Committer opens.
 	// Required for WAL-first admission (commit 10). The Shipper
 	// migrates entries from this path into the byte store; the
@@ -400,6 +421,7 @@ func loadConfig() (*Config, error) {
 		WitnessEndpoints:     parseCSV(os.Getenv("OPERATOR_WITNESS_ENDPOINTS")),
 		WitnessQuorumK:       envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
 		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
+		NetworkBootstrapFile: os.Getenv("OPERATOR_NETWORK_BOOTSTRAP_FILE"),
 		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 
@@ -440,6 +462,37 @@ func loadConfig() (*Config, error) {
 	if err := validatePgPoolSizing(cfg.PgMaxConns, cfg.SequencerMaxInFlight); err != nil {
 		return nil, err
 	}
+
+	// Witness mode requires a network bootstrap document. The cosign
+	// canonical-message preamble rejects a zero NetworkID; a witness
+	// signing or verifying without one fails at runtime. Load + derive
+	// at config-load so any error surfaces with a clear cause before
+	// the operator advances any further.
+	witnessActive := cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0
+	if witnessActive {
+		if cfg.NetworkBootstrapFile == "" {
+			return nil, fmt.Errorf(
+				"OPERATOR_NETWORK_BOOTSTRAP_FILE required when witness mode is active " +
+					"(OPERATOR_WITNESS_KEY_FILE or OPERATOR_WITNESS_ENDPOINTS set)")
+		}
+		raw, err := os.ReadFile(cfg.NetworkBootstrapFile)
+		if err != nil {
+			return nil, fmt.Errorf("read network bootstrap %s: %w",
+				cfg.NetworkBootstrapFile, err)
+		}
+		var doc network.BootstrapDocument
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, fmt.Errorf("parse network bootstrap %s: %w",
+				cfg.NetworkBootstrapFile, err)
+		}
+		ids, err := doc.IDs()
+		if err != nil {
+			return nil, fmt.Errorf("network bootstrap %s: %w",
+				cfg.NetworkBootstrapFile, err)
+		}
+		cfg.NetworkID = ids.NetworkID
+	}
+
 	return cfg, nil
 }
 
@@ -1030,6 +1083,7 @@ func main() {
 		}
 		cosignH := witness.NewCosignHandler(witness.ServeConfig{
 			WitnessKey: witnessKey,
+			NetworkID:  cfg.NetworkID,
 			Logger:     logger,
 		})
 		witnessHandler = http.HandlerFunc(cosignH.ServeHTTP)
