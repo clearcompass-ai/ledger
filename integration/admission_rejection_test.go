@@ -49,6 +49,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
+	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
@@ -296,20 +297,20 @@ func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
 
 // TestAdmission_RejectsInsufficientWitnessQuorum confirms that
 // admission/bls_quorum_verifier.go's VerifyEmbeddedTreeHead wraps
-// SDK quorum failures in ErrWitnessQuorumInsufficient.
+// cosign quorum failures in ErrWitnessQuorumInsufficient.
 //
-// We construct an empty witness key set, which the SDK's
-// witness.VerifyTreeHead rejects with ErrEmptyWitnessSet. The
-// operator wrapper catches this and any other quorum-class error
-// and remaps to the operator-side typed sentinel.
+// We pass a zero CosignedTreeHead with no signatures; cosign.Verify
+// rejects with cosign.ErrEmptySignatures before it touches the
+// witness key set. The operator wrapper catches this (and any other
+// quorum-class error) and remaps to the operator-side typed sentinel.
 func TestAdmission_RejectsInsufficientWitnessQuorum(t *testing.T) {
 	v := admission.NewBLSQuorumVerifier(
 		emptyKeySet{},
-		nil, // BLS verifier not needed; ECDSA path handles empty set
+		nil,                  // BLS verifier not needed; ECDSA path handles empty sigs
+		cosign.NetworkID{1},  // any non-zero NetworkID; unreached here but required by the API
 	)
-	// A zero CosignedTreeHead is fine — the verifier rejects on
-	// the empty witness set before it even looks at the head's
-	// signatures.
+	// A zero CosignedTreeHead has no signatures — cosign.Verify
+	// rejects with ErrEmptySignatures before any cryptographic work.
 	err := v.VerifyEmbeddedTreeHead(types.CosignedTreeHead{})
 	if err == nil {
 		t.Fatal("expected ErrWitnessQuorumInsufficient, got nil")
