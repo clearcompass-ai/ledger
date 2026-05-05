@@ -81,7 +81,11 @@ import (
 	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
+	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
 	"github.com/clearcompass-ai/ortholog-sdk/network"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
@@ -412,6 +416,25 @@ type Config struct {
 	// and publisher wiring. Useful for read-only operators or
 	// trimmed-down test rigs.
 	GossipDisable bool
+
+	// MetricsEnable, when true, constructs an OpenTelemetry
+	// MeterProvider at boot, mounts /metrics with Prometheus
+	// scrape format, and threads gossip.Instruments into the
+	// gossip handler/sink for received_total, published_total,
+	// verify_duration_seconds, queue_depth, and drops_total
+	// observability. Off by default (zero overhead) — enable
+	// per-deployment via OPERATOR_METRICS_ENABLE=true.
+	MetricsEnable bool
+
+	// MetricsEnvironment is the deployment-context tag used by
+	// the OTel resource attributes. Required when MetricsEnable
+	// is true. Convention: "production" / "staging" / "dev".
+	MetricsEnvironment string
+
+	// ServiceVersion is the binary's git tag or build hash,
+	// surfaced as the OTel resource service.version attribute.
+	// Defaults to "dev" when unset.
+	ServiceVersion string
 }
 
 func loadConfig() (*Config, error) {
@@ -454,6 +477,9 @@ func loadConfig() (*Config, error) {
 		GossipPeerEndpoints:  parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_ENDPOINTS")),
 		GossipPeerDIDs:       parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_DIDS")),
 		GossipDisable:        os.Getenv("OPERATOR_GOSSIP_DISABLE") == "true",
+		MetricsEnable:        os.Getenv("OPERATOR_METRICS_ENABLE") == "true",
+		MetricsEnvironment:   envOr("OPERATOR_METRICS_ENVIRONMENT", "dev"),
+		ServiceVersion:       envOr("OPERATOR_SERVICE_VERSION", "dev"),
 		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 
@@ -983,6 +1009,53 @@ func main() {
 	// OPERATOR_WITNESS_QUORUM_K=1 + OPERATOR_WITNESS_KEY_FILE — the
 	// operator becomes its own witness, exercising the same code
 	// paths as production K=N deployments.
+	// ── OpenTelemetry MeterProvider (optional) ─────────────────────
+	//
+	// Constructed BEFORE gossip wiring so the MeterProvider's
+	// metric.Meter can be threaded into gossipnet.Build for
+	// gossip.Instruments. /metrics is mounted on the api Handlers
+	// struct downstream (Handlers.Metrics).
+	//
+	// Off by default (zero overhead). Opt-in via
+	// OPERATOR_METRICS_ENABLE=true. Production deployments scrape
+	// /metrics from the same port as the data-plane endpoints —
+	// no second listener.
+	var (
+		meterShutdown    func(ctx context.Context) error
+		gossipMeter      metric.Meter
+		metricsHandler   http.Handler
+	)
+	if cfg.MetricsEnable {
+		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
+			ServiceName:    "ortholog-operator",
+			ServiceVersion: cfg.ServiceVersion,
+			Environment:    cfg.MetricsEnvironment,
+			Exporters:      []sdklog.ExporterKind{sdklog.PrometheusExporter},
+		})
+		if mErr != nil {
+			logger.Error("metrics: NewMeterProvider failed", "error", mErr)
+			os.Exit(1)
+		}
+		otel.SetMeterProvider(mpResult.Provider)
+		gossipMeter = mpResult.Provider.Meter("github.com/clearcompass-ai/ortholog-operator/gossip")
+		metricsHandler = mpResult.PrometheusHandler
+		meterShutdown = mpResult.Shutdown
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := meterShutdown(ctx); err != nil {
+				logger.Warn("metrics: shutdown", "error", err)
+			}
+		}()
+		logger.Info("metrics: enabled",
+			"endpoint", "/metrics",
+			"environment", cfg.MetricsEnvironment,
+			"service_version", cfg.ServiceVersion,
+		)
+	} else {
+		logger.Info("metrics: disabled (OPERATOR_METRICS_ENABLE=false)")
+	}
+
 	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
 	//
 	// Co-tenants the WAL's Badger handle under a distinct keyspace
@@ -1013,6 +1086,7 @@ func main() {
 			Store:         gossipBStore,
 			NetworkID:     cfg.NetworkID,
 			PeerEndpoints: cfg.GossipPeerEndpoints,
+			Meter:         gossipMeter,
 			Logger:        logger,
 		})
 		if err != nil {
@@ -1206,6 +1280,36 @@ func main() {
 		logger.Info("witness cosigner: disabled (OPERATOR_WITNESS_ENDPOINTS unset)")
 	}
 
+	// ── Escrow override service (optional) ──────────────────────────
+	//
+	// Wired iff the witness cosigner is enabled (so we have a
+	// K-of-N collector to share) AND gossip is enabled (so we can
+	// publish the cosigned authorization). Either prerequisite
+	// missing → no /v1/escrow-override endpoint mounted.
+	var escrowOverrideHandler http.HandlerFunc
+	if cosigner != nil && gossipBundle != nil && gossipPublisher != nil {
+		hs, ok := cosigner.(*witness.HeadSync)
+		if !ok || hs.Collector() == nil {
+			logger.Warn("escrow override: skipped (cosigner has no Collector exposure)")
+		} else {
+			escrowSvc, eerr := gossipnet.NewEscrowOverrideService(gossipnet.EscrowOverrideServiceConfig{
+				Collector:  hs.Collector(),
+				Store:      gossipBStore,
+				Sink:       gossipBundle.Sink,
+				Signer:     cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+				NetworkID:  cfg.NetworkID,
+				Originator: cfg.OperatorDID,
+				Logger:     logger,
+			})
+			if eerr != nil {
+				logger.Error("escrow override service", "error", eerr)
+				os.Exit(1)
+			}
+			escrowOverrideHandler = api.EscrowOverrideHandler(escrowSvc, logger)
+			logger.Info("escrow override endpoint mounted at POST /v1/escrow-override")
+		}
+	}
+
 	// ── Builder loop ──────────────────────────────────────────────────
 	loopCfg := builder.DefaultLoopConfig(cfg.LogDID)
 	loopCfg.BatchSize = cfg.BatchSize
@@ -1361,6 +1465,8 @@ func main() {
 		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
 		GossipPost:      gossipPostH,    // nil unless gossip enabled + NetworkID set
 		GossipFeed:      gossipFeedH,
+		EscrowOverride:  escrowOverrideHandler, // nil unless witness mode + gossip both wired
+		Metrics:         metricsHandler,        // nil unless OPERATOR_METRICS_ENABLE=true
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),

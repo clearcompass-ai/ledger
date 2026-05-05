@@ -29,12 +29,14 @@ restart, run concurrently across replicas (one will win the
 upsert, the others' INSERT becomes a no-op via ON CONFLICT), and
 re-scan the historical index from boot.
 
-Alert dispatch. The monitor records evidence; the S3 webhook
-publisher (witness/commitment_equivocation_alert.go) is responsible
-for escalating to governance. Decoupling them means a webhook
-endpoint outage does not block evidence persistence — the
-unalerted-incidents partial index in store/postgres.go gives the
-publisher an O(unalerted) backlog scan when it comes back online.
+Alert dispatch. The monitor records evidence; the AlertCallback
+is invoked synchronously per new incident. The previous
+HTTP-webhook publisher (witness/commitment_equivocation_alert.go)
+was retired: equivocation transparency now flows through the
+gossip layer (KindEquivocationFinding events broadcast via
+gossipnet.EquivocationPublisher), making per-deployment webhooks
+redundant. Operators wishing to bridge to a governance webhook
+implement AlertCallback themselves.
 */
 package witness
 
@@ -65,10 +67,10 @@ type CommitmentEquivocationMonitorConfig struct {
 
 	// AlertCallback fires once per incident when a NEW equivocation
 	// is first detected (the upsert observed alert_dispatched_at IS
-	// NULL prior to update). May be nil. The webhook publisher in
-	// witness/commitment_equivocation_alert.go is the canonical
-	// implementation; in-process tests can supply a channel-backed
-	// callback.
+	// NULL prior to update). May be nil. Operators wire this to a
+	// gossip publisher (KindEquivocationFinding broadcast) or a
+	// custom escalation channel; in-process tests can supply a
+	// channel-backed callback.
 	AlertCallback func(evidence CommitmentEquivocationEvidence)
 }
 
