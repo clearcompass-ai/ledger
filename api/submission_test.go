@@ -49,6 +49,7 @@ import (
 	"time"
 
 	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
@@ -136,7 +137,7 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d (%s), want 202\nbody: %s", rr.Code, http.StatusText(rr.Code), rr.Body.String())
 	}
-	var sct SignedCertificateTimestamp
+	var sct sdksct.SignedCertificateTimestamp
 	if err := json.NewDecoder(rr.Body).Decode(&sct); err != nil {
 		t.Fatalf("decode SCT: %v", err)
 	}
@@ -146,10 +147,10 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if sct.SignerDID != deps.OperatorDID {
 		t.Errorf("SCT.SignerDID = %q, want %q", sct.SignerDID, deps.OperatorDID)
 	}
-	if sct.Version != SCTVersion {
-		t.Errorf("SCT.Version = %d, want %d", sct.Version, SCTVersion)
+	if sct.Version != sdksct.Version {
+		t.Errorf("SCT.Version = %d, want %d", sct.Version, sdksct.Version)
 	}
-	if err := VerifySCT(&opSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct); err != nil {
 		t.Errorf("SCT signature does not verify: %v", err)
 	}
 	if len(walFake.submitted) != 1 {
@@ -176,7 +177,7 @@ func TestV1Handler_Idempotent_ReturnsSameSCT(t *testing.T) {
 		t.Fatalf("first submission: status = %d, want 202\nbody: %s", rr1.Code, rr1.Body.String())
 	}
 	body1 := rr1.Body.Bytes()
-	var sct1 SignedCertificateTimestamp
+	var sct1 sdksct.SignedCertificateTimestamp
 	if err := json.Unmarshal(body1, &sct1); err != nil {
 		t.Fatalf("decode sct1: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestV1Handler_Idempotent_ReturnsSameSCT(t *testing.T) {
 		t.Fatalf("second submission: status = %d, want 202\nbody: %s", rr2.Code, rr2.Body.String())
 	}
 	body2 := rr2.Body.Bytes()
-	var sct2 SignedCertificateTimestamp
+	var sct2 sdksct.SignedCertificateTimestamp
 	if err := json.Unmarshal(body2, &sct2); err != nil {
 		t.Fatalf("decode sct2: %v", err)
 	}
@@ -215,10 +216,10 @@ func TestV1Handler_Idempotent_ReturnsSameSCT(t *testing.T) {
 	}
 
 	// P5 invariant 3 — both SCTs verify under the operator's key.
-	if err := VerifySCT(&opSignerPriv.PublicKey, &sct1); err != nil {
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct1); err != nil {
 		t.Errorf("first SCT verify: %v", err)
 	}
-	if err := VerifySCT(&opSignerPriv.PublicKey, &sct2); err != nil {
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct2); err != nil {
 		t.Errorf("replay SCT verify: %v", err)
 	}
 

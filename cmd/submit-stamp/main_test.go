@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 	sdksigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 
 	"github.com/clearcompass-ai/ortholog-operator/api"
@@ -173,7 +174,7 @@ func TestVerifyClientSCT_BadHexErrors(t *testing.T) {
 	client := apiSCT{
 		Version:       1,
 		SignerDID:     "did:test:operator",
-		SigAlgoID:     api.SCTSigAlgoECDSASecp256k1SHA256,
+		SigAlgoID:     sdksct.SigAlgoECDSASecp256k1SHA256,
 		CanonicalHash: "not-hex",
 	}
 	if err := verifyClientSCT(&priv.PublicKey, &client); err == nil {
@@ -186,7 +187,7 @@ func TestVerifyClientSCT_WrongHashLengthErrors(t *testing.T) {
 	client := apiSCT{
 		Version:       1,
 		SignerDID:     "did:test:operator",
-		SigAlgoID:     api.SCTSigAlgoECDSASecp256k1SHA256,
+		SigAlgoID:     sdksct.SigAlgoECDSASecp256k1SHA256,
 		CanonicalHash: hex.EncodeToString([]byte("only-eleven")),
 	}
 	if err := verifyClientSCT(&priv.PublicKey, &client); err == nil {
