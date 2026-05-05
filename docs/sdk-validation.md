@@ -1,4 +1,4 @@
-# SDK v0.9.6 contract validation
+# SDK v1.0.0 contract validation
 
 Code-level audit of every operator package against the SDK contract.
 Evidence is gathered from `go list`, `go vet`, `go build`, and
@@ -6,7 +6,7 @@ compile-time interface assertions — never grep alone.
 
 ```
 $ go list -m all | grep attesta
-github.com/clearcompass-ai/attesta v0.9.6
+github.com/clearcompass-ai/attesta v1.0.0
 
 $ go vet ./...
 (clean)
