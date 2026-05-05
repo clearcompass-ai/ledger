@@ -662,7 +662,7 @@ func TestTreeHead_Assembly(t *testing.T) {
 }
 
 func TestTreeHead_QuorumK(t *testing.T) {
-	cfg := witness.HeadSyncConfig{WitnessEndpoints: []string{"a", "b", "c"}, QuorumK: 2, PerWitnessTimeout: 30 * time.Second, SchemeTag: 1}
+	cfg := witness.HeadSyncConfig{WitnessEndpoints: []string{"a", "b", "c"}, QuorumK: 2, PerWitnessTimeout: 30 * time.Second}
 	if len(cfg.WitnessEndpoints) < cfg.QuorumK {
 		t.Fatal("insufficient")
 	}

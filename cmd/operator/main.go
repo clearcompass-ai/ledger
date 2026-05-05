@@ -952,12 +952,17 @@ func main() {
 	// paths as production K=N deployments.
 	var cosigner builder.WitnessCosigner
 	if len(cfg.WitnessEndpoints) > 0 {
-		cosigner = witness.NewHeadSync(witness.HeadSyncConfig{
+		hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
 			WitnessEndpoints:  cfg.WitnessEndpoints,
 			QuorumK:           cfg.WitnessQuorumK,
 			PerWitnessTimeout: 30 * time.Second,
-			SchemeTag:         1, // single-byte version tag for the witness scheme
+			NetworkID:         cfg.NetworkID,
 		}, treeHeadStore, logger)
+		if err != nil {
+			logger.Error("witness cosigner construction failed", "error", err)
+			os.Exit(1)
+		}
+		cosigner = hs
 		logger.Info("witness cosigner: HeadSync requester enabled",
 			"endpoints", cfg.WitnessEndpoints,
 			"quorum_k", cfg.WitnessQuorumK,
