@@ -393,6 +393,14 @@ type Config struct {
 	// the read-side feed.
 	GossipPeerEndpoints []string
 
+	// GossipPeerDIDs is parallel to GossipPeerEndpoints — the DID
+	// at index i is the peer operator's originator DID for the
+	// endpoint at index i. Required (non-empty) for the
+	// anti-entropy loop to know who to ask for events from. If
+	// empty, anti-entropy is disabled (the publish + feed paths
+	// still work).
+	GossipPeerDIDs []string
+
 	// GossipDisable, when true, disables gossip endpoint mounting
 	// and publisher wiring. Useful for read-only operators or
 	// trimmed-down test rigs.
@@ -437,6 +445,7 @@ func loadConfig() (*Config, error) {
 		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
 		NetworkBootstrapFile: os.Getenv("OPERATOR_NETWORK_BOOTSTRAP_FILE"),
 		GossipPeerEndpoints:  parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_ENDPOINTS")),
+		GossipPeerDIDs:       parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_DIDS")),
 		GossipDisable:        os.Getenv("OPERATOR_GOSSIP_DISABLE") == "true",
 		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
@@ -1040,6 +1049,42 @@ func main() {
 			"feed_path_prefix", "/v1/gossip/",
 			"peers", len(cfg.GossipPeerEndpoints),
 		)
+
+		// ── Anti-entropy catchup loop (optional) ─────────────────────
+		//
+		// Pulls peer events we missed via the read-side feed.
+		// Disabled when OPERATOR_GOSSIP_PEER_DIDS is empty or
+		// length-mismatched against OPERATOR_GOSSIP_PEER_ENDPOINTS.
+		if len(cfg.GossipPeerDIDs) > 0 && len(cfg.GossipPeerDIDs) == len(cfg.GossipPeerEndpoints) {
+			peers := make([]gossipnet.AntiEntropyPeer, 0, len(cfg.GossipPeerDIDs))
+			for i, did := range cfg.GossipPeerDIDs {
+				peers = append(peers, gossipnet.AntiEntropyPeer{
+					DID:     did,
+					BaseURL: cfg.GossipPeerEndpoints[i],
+				})
+			}
+			ae, aerr := gossipnet.NewAntiEntropy(gossipnet.AntiEntropyConfig{
+				Store:  gossipBStore,
+				Peers:  peers,
+				Logger: logger,
+			})
+			if aerr != nil {
+				logger.Error("anti-entropy construction", "error", aerr)
+				os.Exit(1)
+			}
+			aeCtx, aeCancel := context.WithCancel(ctx)
+			go func() {
+				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+					logger.Warn("anti-entropy: exited with error", "error", rerr)
+				}
+			}()
+			defer aeCancel()
+			logger.Info("anti-entropy: enabled", "peers", len(peers))
+		} else if len(cfg.GossipPeerDIDs) > 0 {
+			logger.Warn("anti-entropy: disabled (peer DID/endpoint length mismatch)",
+				"dids", len(cfg.GossipPeerDIDs),
+				"endpoints", len(cfg.GossipPeerEndpoints))
+		}
 	} else if cfg.GossipDisable {
 		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
 	} else {
