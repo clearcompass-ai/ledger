@@ -88,6 +88,8 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	"github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ortholog-operator/gossipnet"
+	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
 	"github.com/clearcompass-ai/ortholog-operator/integrity"
 	"github.com/clearcompass-ai/ortholog-operator/sequencer"
 	"github.com/clearcompass-ai/ortholog-operator/shipper"
@@ -383,6 +385,18 @@ type Config struct {
 	// integrity Detector reconciles inflight entries against
 	// Tessera at boot.
 	WALPath string
+
+	// GossipPeerEndpoints is the comma-separated list of peer
+	// operator base URLs whose /v1/gossip endpoints this operator
+	// fans out to. Empty (default) → no fan-out (NopSink); the
+	// gossip handler still accepts inbound publishes and serves
+	// the read-side feed.
+	GossipPeerEndpoints []string
+
+	// GossipDisable, when true, disables gossip endpoint mounting
+	// and publisher wiring. Useful for read-only operators or
+	// trimmed-down test rigs.
+	GossipDisable bool
 }
 
 func loadConfig() (*Config, error) {
@@ -422,6 +436,8 @@ func loadConfig() (*Config, error) {
 		WitnessQuorumK:       envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
 		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
 		NetworkBootstrapFile: os.Getenv("OPERATOR_NETWORK_BOOTSTRAP_FILE"),
+		GossipPeerEndpoints:  parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_ENDPOINTS")),
+		GossipDisable:        os.Getenv("OPERATOR_GOSSIP_DISABLE") == "true",
 		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 
@@ -1106,6 +1122,67 @@ func main() {
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 
+	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
+	//
+	// Co-tenants the WAL's Badger handle under a distinct keyspace
+	// prefix (gossipstore/keyspace.go uses 0x07 vs WAL's 0x01..0x06).
+	// Mounted iff:
+	//   - OPERATOR_GOSSIP_DISABLE != "true", and
+	//   - NetworkID is non-zero (witness mode active OR the operator
+	//     has loaded a network bootstrap document).
+	//
+	// Gossip is a peer-network primitive; an operator that doesn't
+	// know its NetworkID can't verify inbound events and shouldn't
+	// publish outbound either, so we gate on bootstrap presence.
+	var (
+		gossipBundle  *gossipnet.Bundle
+		gossipBStore  *gossipstore.BadgerStore
+		gossipPostH   http.Handler
+		gossipFeedH   http.Handler
+	)
+	var zeroNetID cosign.NetworkID
+	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
+		gossipBStore, err = gossipstore.New(gossipstore.Config{DB: walDB})
+		if err != nil {
+			logger.Error("gossipstore open", "error", err)
+			os.Exit(1)
+		}
+		gossipBundle, err = gossipnet.Build(gossipnet.Config{
+			Store:         gossipBStore,
+			NetworkID:     cfg.NetworkID,
+			PeerEndpoints: cfg.GossipPeerEndpoints,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Error("gossipnet build", "error", err)
+			os.Exit(1)
+		}
+		gossipPostH = gossipBundle.PostHandler
+		gossipFeedH = gossipBundle.FeedHandler
+
+		// Shutdown ordering: drain sink → close handlers → close
+		// store. The underlying *badger.DB is owned by wal.Open
+		// (the existing defer above closes it last).
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, c := range gossipBundle.Closeables {
+				_ = c.Close(ctx)
+			}
+			_ = gossipBStore.Close(ctx)
+		}()
+
+		logger.Info("gossip endpoints mounted",
+			"post_path", "/v1/gossip",
+			"feed_path_prefix", "/v1/gossip/",
+			"peers", len(cfg.GossipPeerEndpoints),
+		)
+	} else if cfg.GossipDisable {
+		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
+	} else {
+		logger.Info("gossip disabled (NetworkID unset; load network bootstrap)")
+	}
+
 	handlers := api.Handlers{
 		Submission:      submitHandler,
 		BatchSubmission: batchSubmitHandler,
@@ -1124,6 +1201,8 @@ func main() {
 		MMD:             mmdHandler,
 		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
+		GossipPost:      gossipPostH,    // nil unless gossip enabled + NetworkID set
+		GossipFeed:      gossipFeedH,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
