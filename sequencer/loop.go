@@ -290,6 +290,27 @@ func (s *Sequencer) insertEntryIndex(
 				"error", werr)
 		}
 	}
+
+	// 0x0C entry-lookup projection (Pure CQRS — P8). Same write
+	// discipline as 0x0A: AFTER the Postgres commit, best-effort,
+	// non-blocking. The full canonical wire bytes are captured
+	// here so the read endpoint serves /v1/commitments/by-split-id
+	// without re-loading from Postgres or Tessera.
+	if extractedSplitID != nil && s.entryLookup != nil {
+		canonical := envelope.Serialize(entry)
+		lookupEntry := EntryLookupIndexEntry{
+			CanonicalBytes: canonical,
+			LogTimeMicros:  entry.Header.EventTime,
+			LogDID:         s.logDID,
+		}
+		if werr := s.entryLookup.WriteEntryLookupEntry(
+			ctx, extractedSchemaID, *extractedSplitID, seq, lookupEntry,
+		); werr != nil {
+			s.logger.Warn("sequencer: entry lookup projection write failed",
+				"seq", seq, "schema_id", extractedSchemaID,
+				"error", werr)
+		}
+	}
 	return nil
 }
 

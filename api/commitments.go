@@ -61,8 +61,6 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
-
-	"github.com/clearcompass-ai/ortholog-operator/store"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -122,8 +120,16 @@ type CommitmentLookupResponse struct {
 // Distinct from DerivationCommitmentDeps (which serves the
 // fraud-proof lookup endpoint over SMT batch commitments) per the
 // C1 naming-disambiguation pass.
+//
+// CQRS DISCIPLINE (P8): Fetcher is the SDK's types.CommitmentFetcher
+// interface — NOT the concrete *store.PostgresCommitmentFetcher.
+// Production wiring uses gossipstore.BadgerCommitmentFetcher, which
+// reads from the 0x0C entry-lookup projection populated by the
+// sequencer. The api/ package therefore takes no transitive
+// dependency on github.com/jackc/pgx/v5 for this endpoint —
+// verifiable via go list -deps ./api/.
 type CryptographicCommitmentDeps struct {
-	Fetcher *store.PostgresCommitmentFetcher
+	Fetcher types.CommitmentFetcher
 	Logger  *slog.Logger
 }
 

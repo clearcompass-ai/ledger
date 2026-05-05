@@ -174,6 +174,40 @@ type SplitIDIndexEntry struct {
 	SigBytes       []byte
 }
 
+// EntryLookupWriter is the operator-internal hook the Sequencer
+// invokes after a successful Phase 2 commit to populate the
+// entry-lookup projection (Badger prefix 0x0C) that backs
+// /v1/commitments/by-split-id under the Pure CQRS principle (P8).
+//
+// CQRS DISCIPLINE: the sequencer is the ONLY writer of 0x0C.
+// The api/ read-path consumes it via types.CommitmentFetcher (a
+// pure SDK interface) — api/'s transitive imports do not include
+// pgx. Verifiable: go list -deps ./api/ | grep pgx == 0.
+//
+// nil receiver is allowed: when no writer is wired (test mode
+// + the transitional state before gossip is enabled), the
+// sequencer skips the lookup write entirely. Postgres entry_index
+// + commitment_split_id INSERTs are unaffected; only the Badger
+// projection write is gated.
+type EntryLookupWriter interface {
+	WriteEntryLookupEntry(
+		ctx context.Context,
+		schemaID string,
+		splitID [32]byte,
+		seq uint64,
+		entry EntryLookupIndexEntry,
+	) error
+}
+
+// EntryLookupIndexEntry mirrors gossipstore.EntryLookupIndexEntry —
+// the value side of one 0x0C row. Defined here for the same reason
+// SplitIDIndexEntry is: the sequencer does not import gossipstore.
+type EntryLookupIndexEntry struct {
+	CanonicalBytes []byte
+	LogTimeMicros  int64
+	LogDID         string
+}
+
 // Sequencer is the WAL → Tessera → entry_index pipeline worker.
 type Sequencer struct {
 	wal          WAL
@@ -181,6 +215,8 @@ type Sequencer struct {
 	db           *pgxpool.Pool
 	store        *store.EntryStore
 	splitIDIndex SplitIDIndexWriter
+	entryLookup  EntryLookupWriter
+	logDID       string
 	cfg          Config
 	logger       *slog.Logger
 
@@ -243,6 +279,19 @@ func NewSequencer(
 // before Run starts; the v0.9.6 wiring respects that.
 func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
 	s.splitIDIndex = w
+	return s
+}
+
+// WithEntryLookup wires the gossipstore-backed entry-lookup
+// projection writer (Badger prefix 0x0C). The operator's log DID
+// is captured at wiring time and stamped into every 0x0C row so
+// the read endpoint can return it verbatim.
+//
+// Optional; nil writer is a no-op. Race-free against drain cycles
+// only when called before Run starts.
+func (s *Sequencer) WithEntryLookup(w EntryLookupWriter, logDID string) *Sequencer {
+	s.entryLookup = w
+	s.logDID = logDID
 	return s
 }
 

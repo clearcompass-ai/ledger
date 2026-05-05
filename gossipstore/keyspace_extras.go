@@ -194,3 +194,112 @@ func equivProjKey(binding [32]byte) []byte {
 	copy(k[2:], binding[:])
 	return k
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 0x0C — entry lookup projection (CQRS read-side for /by-split-id)
+// ─────────────────────────────────────────────────────────────────────
+
+// EntryLookupIndexEntry is the value stored under 0x0C. Carries
+// every field the /v1/commitments/by-split-id JSON response needs
+// to construct one CommitmentLookupEntry without touching Postgres.
+//
+// CanonicalBytes is the full canonical wire encoding of the entry
+// (the SDK consumer feeds this back into envelope.ParseEntry to
+// reconstruct domain payloads). LogTimeMicros is unix-micros so
+// the read handler reconstructs the time.Time deterministically;
+// LogDID is the operator's log DID (constant per operator binary
+// but stored per-row so a future multi-tenant operator can serve
+// rows from multiple log DIDs without ambiguity).
+type EntryLookupIndexEntry struct {
+	CanonicalBytes []byte `json:"canonical_bytes"`
+	LogTimeMicros  int64  `json:"log_time_micros"`
+	LogDID         string `json:"log_did"`
+}
+
+// entryLookupKey builds a key under 0x0C. Sort order is
+// (schema_id, split_id, seq ASC). The 8-byte big-endian seq suffix
+// ensures a prefix scan returns admissions in chronological order
+// at the same (schema, split_id) tuple — the JSON response
+// preserves that order verbatim.
+func entryLookupKey(schemaID string, splitID [32]byte, seq uint64) []byte {
+	if len(schemaID) > MaxSchemaIDLen {
+		schemaID = schemaID[:MaxSchemaIDLen]
+	}
+	k := make([]byte, 2+2+len(schemaID)+32+8)
+	k[0] = prefixGossipRoot
+	k[1] = subEntryLookup
+	binary.BigEndian.PutUint16(k[2:4], uint16(len(schemaID)))
+	off := 4 + len(schemaID)
+	copy(k[4:off], schemaID)
+	copy(k[off:off+32], splitID[:])
+	off += 32
+	binary.BigEndian.PutUint64(k[off:off+8], seq)
+	return k
+}
+
+// entryLookupPrefix returns the prefix matching every entry at one
+// (schema_id, split_id) tuple under 0x0C. Used by the read handler
+// to scan all rows for the lookup; the CommitmentFetcher
+// implementation iterates this prefix once per request.
+func entryLookupPrefix(schemaID string, splitID [32]byte) []byte {
+	if len(schemaID) > MaxSchemaIDLen {
+		schemaID = schemaID[:MaxSchemaIDLen]
+	}
+	k := make([]byte, 2+2+len(schemaID)+32)
+	k[0] = prefixGossipRoot
+	k[1] = subEntryLookup
+	binary.BigEndian.PutUint16(k[2:4], uint16(len(schemaID)))
+	off := 4 + len(schemaID)
+	copy(k[4:off], schemaID)
+	copy(k[off:off+32], splitID[:])
+	return k
+}
+
+// entryLookupKeyParts decodes the (schema_id, split_id, seq) tuple
+// from an 0x0C key. Symmetric with entryLookupKey — the read
+// handler relies on this to surface seq in the lookup response.
+func entryLookupKeyParts(k []byte) (schemaID string, splitID [32]byte, seq uint64, err error) {
+	if len(k) < 4 || k[0] != prefixGossipRoot || k[1] != subEntryLookup {
+		err = fmt.Errorf("gossipstore: not an entry lookup key")
+		return
+	}
+	slen := int(binary.BigEndian.Uint16(k[2:4]))
+	if len(k) != 4+slen+32+8 {
+		err = fmt.Errorf("gossipstore: entry lookup key length mismatch")
+		return
+	}
+	schemaID = string(k[4 : 4+slen])
+	copy(splitID[:], k[4+slen:4+slen+32])
+	seq = binary.BigEndian.Uint64(k[4+slen+32:])
+	return
+}
+
+// EncodeEntryLookupIndexEntry serializes the value side. Empty
+// CanonicalBytes is rejected — admission stage 1 already enforces
+// non-empty canonical bytes; an empty value here would be a
+// sequencer bug worth catching at write time.
+func EncodeEntryLookupIndexEntry(e EntryLookupIndexEntry) ([]byte, error) {
+	if len(e.CanonicalBytes) == 0 {
+		return nil, fmt.Errorf("gossipstore: EntryLookupIndexEntry: empty CanonicalBytes")
+	}
+	if e.LogDID == "" {
+		return nil, fmt.Errorf("gossipstore: EntryLookupIndexEntry: empty LogDID")
+	}
+	return json.Marshal(e)
+}
+
+// DecodeEntryLookupIndexEntry parses a 0x0C value back. Used by
+// the BadgerCommitmentFetcher.
+func DecodeEntryLookupIndexEntry(raw []byte) (EntryLookupIndexEntry, error) {
+	var out EntryLookupIndexEntry
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("gossipstore: decode entry lookup entry: %w", err)
+	}
+	if len(out.CanonicalBytes) == 0 {
+		return out, fmt.Errorf("gossipstore: decoded entry lookup entry has empty CanonicalBytes")
+	}
+	if out.LogDID == "" {
+		return out, fmt.Errorf("gossipstore: decoded entry lookup entry has empty LogDID")
+	}
+	return out, nil
+}

@@ -206,3 +206,95 @@ func (s *BadgerStore) GetEquivProjection(
 	})
 	return out, err
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 0x0C — entry lookup projection (CQRS read-side)
+// ─────────────────────────────────────────────────────────────────────
+
+// EntryLookupHit pairs a key's seq with its decoded value for
+// /by-split-id consumers. The fetcher converts these into
+// types.EntryWithMetadata at the boundary.
+type EntryLookupHit struct {
+	EntrySeq uint64
+	Entry    EntryLookupIndexEntry
+}
+
+// WriteEntryLookupEntry persists a (schema_id, split_id, seq) →
+// EntryLookupIndexEntry mapping under prefix 0x0C. Called by the
+// sequencer at Phase 2 commit-time, AFTER the Postgres entry_index
+// + commitment_split_id INSERT, in the same code path as
+// WriteSplitIDIndexEntry. Idempotent on identical inputs.
+//
+// CQRS DISCIPLINE: write-only from the sequencer goroutine. The
+// HTTP admission goroutine never reaches this code path; the
+// commit hot-path remains a pure WAL fsync.
+func (s *BadgerStore) WriteEntryLookupEntry(
+	ctx context.Context, schemaID string, splitID [32]byte, seq uint64,
+	entry EntryLookupIndexEntry,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if schemaID == "" {
+		return fmt.Errorf("gossipstore: WriteEntryLookupEntry: empty schemaID")
+	}
+	value, err := EncodeEntryLookupIndexEntry(entry)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(entryLookupKey(schemaID, splitID, seq), value)
+	})
+}
+
+// ListEntryLookupEntriesAt scans 0x0C for the supplied
+// (schema_id, split_id) tuple and returns every hit in seq-
+// ascending order. Powers /v1/commitments/by-split-id without
+// touching Postgres.
+//
+// Length contract:
+//   - len = 0 → handler emits 404
+//   - len = 1 → normal admission (one entry on log)
+//   - len ≥ 2 → cryptographic equivocation (Decision 4 — admit
+//     both, surface as evidence)
+//
+// Empty schemaID is rejected. A zero splitID is allowed
+// (defensive — the read endpoint validates input upstream;
+// returns empty here).
+func (s *BadgerStore) ListEntryLookupEntriesAt(
+	ctx context.Context, schemaID string, splitID [32]byte,
+) ([]EntryLookupHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if schemaID == "" {
+		return nil, fmt.Errorf("gossipstore: ListEntryLookupEntriesAt: empty schemaID")
+	}
+	var out []EntryLookupHit
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		opts.Prefix = entryLookupPrefix(schemaID, splitID)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			_, _, seq, kerr := entryLookupKeyParts(item.KeyCopy(nil))
+			if kerr != nil {
+				return kerr
+			}
+			var entry EntryLookupIndexEntry
+			verr := item.Value(func(raw []byte) error {
+				var perr error
+				entry, perr = DecodeEntryLookupIndexEntry(raw)
+				return perr
+			})
+			if verr != nil {
+				return verr
+			}
+			out = append(out, EntryLookupHit{EntrySeq: seq, Entry: entry})
+		}
+		return nil
+	})
+	return out, err
+}

@@ -17,6 +17,10 @@ co-tenants gossip data with the existing WAL keyspace (prefixes
   0x07 0x05 <olen:2><orig><lamport:8>                 → eventID:32
   0x07 0x06                                           → statsCounter (16 bytes)
   0x07 0x07 <olen:2><orig>                            → empty (existence marker)
+  0x07 0x09 <binding:32><eventID:32>                  → empty (binding inverted index)
+  0x07 0x0A <slen:2><schema><spid:32><seq:8>          → SplitIDIndexEntry JSON
+  0x07 0x0B <binding:32>                              → SignedEvent JSON (equiv projection)
+  0x07 0x0C <slen:2><schema><spid:32><seq:8>          → EntryLookupIndexEntry JSON
 
 # SCALE NOTES
 
@@ -125,6 +129,35 @@ const (
 	//     too, and our own /by-split-id endpoint surfaces the
 	//     full network's view, not just our own observations.
 	subEquivProj byte = 0x0B
+
+	// subEntryLookup is the read-side projection that backs the
+	// /v1/commitments/by-split-id/{schema_id}/{hex} normal
+	// (non-equivocated) path. Populated by the sequencer at
+	// Phase 2 commit-time, in the same code path as the splitid
+	// detection index (0x0A) and immediately after the Postgres
+	// entry_index INSERT, so a Postgres rollback never leaves a
+	// stale Badger projection row.
+	//
+	//   Key:   0x07 0x0C <slen:2><schema><spid:32><seq:8>
+	//   Value: EntryLookupIndexEntry JSON
+	//          (canonical_bytes + log_time_micros + log_did)
+	//
+	// The 8-byte big-endian seq suffix orders multiple admissions
+	// at the same (schema_id, split_id) in admission order. A
+	// prefix scan returns every entry the operator has admitted
+	// at that tuple — len 0 → 404, len 1 → normal, len ≥ 2 →
+	// surfaces as cryptographic equivocation evidence per
+	// Decision 4. The detection trigger (0x0A) and the
+	// equivocation projection (0x0B) handle the gossip-event
+	// emission separately; the 0x0C projection is the stateless
+	// data source that the read endpoint serves verbatim.
+	//
+	// CQRS DISCIPLINE: this projection makes the read-path
+	// (api/commitments.go) Postgres-free. The sequencer is the
+	// only writer; the API package consumes it via
+	// types.CommitmentFetcher (a pure interface) so api/'s
+	// transitive imports do not include pgx.
+	subEntryLookup byte = 0x0C
 )
 
 // MaxOriginatorLen mirrors gossip.MaxOriginatorLen. Lengths are

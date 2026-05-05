@@ -1,15 +1,18 @@
 /*
 FILE PATH: gossipnet/sequencer_adapter.go
 
-SequencerSplitIDAdapter — satisfies sequencer.SplitIDIndexWriter
-on top of gossipstore.BadgerStore.
+Adapters that let the sequencer publish into the gossipstore-backed
+projections without importing gossipstore directly:
+
+  - SequencerSplitIDAdapter   — sequencer.SplitIDIndexWriter (0x0A)
+  - SequencerEntryLookupAdapter — sequencer.EntryLookupWriter (0x0C)
 
 # WHY THIS THIN ADAPTER EXISTS
 
-The Sequencer package declares its own SplitIDIndexWriter
-interface + matching SplitIDIndexEntry type so it doesn't import
-gossipstore directly. The adapter bridges the two type names —
-mechanical translation, no business logic.
+The Sequencer package declares its own SplitIDIndexWriter +
+EntryLookupWriter interfaces with matching value types so it
+doesn't import gossipstore directly. The adapter bridges the two
+type names — mechanical translation, no business logic.
 
 Lives in gossipnet/ (not sequencer/) so the import direction is
 gossipnet → sequencer + gossipstore (gossipnet is the highest-
@@ -60,5 +63,43 @@ func (a *SequencerSplitIDAdapter) WriteSplitIDIndexEntry(
 		})
 }
 
-// Static interface check.
+// SequencerEntryLookupAdapter wraps a *gossipstore.BadgerStore so
+// it satisfies sequencer.EntryLookupWriter. Construct once at
+// startup and pass to sequencer.Sequencer.WithEntryLookup along
+// with the operator's log DID.
+type SequencerEntryLookupAdapter struct {
+	store *gossipstore.BadgerStore
+}
+
+// NewSequencerEntryLookupAdapter constructs the adapter. nil store
+// returns nil — the sequencer's nil-tolerant code path handles
+// that case (no entry lookup projection population).
+func NewSequencerEntryLookupAdapter(store *gossipstore.BadgerStore) *SequencerEntryLookupAdapter {
+	if store == nil {
+		return nil
+	}
+	return &SequencerEntryLookupAdapter{store: store}
+}
+
+// WriteEntryLookupEntry implements sequencer.EntryLookupWriter.
+func (a *SequencerEntryLookupAdapter) WriteEntryLookupEntry(
+	ctx context.Context,
+	schemaID string,
+	splitID [32]byte,
+	seq uint64,
+	entry sequencer.EntryLookupIndexEntry,
+) error {
+	if a == nil || a.store == nil {
+		return nil
+	}
+	return a.store.WriteEntryLookupEntry(ctx, schemaID, splitID, seq,
+		gossipstore.EntryLookupIndexEntry{
+			CanonicalBytes: entry.CanonicalBytes,
+			LogTimeMicros:  entry.LogTimeMicros,
+			LogDID:         entry.LogDID,
+		})
+}
+
+// Static interface checks.
 var _ sequencer.SplitIDIndexWriter = (*SequencerSplitIDAdapter)(nil)
+var _ sequencer.EntryLookupWriter = (*SequencerEntryLookupAdapter)(nil)

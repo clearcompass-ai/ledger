@@ -255,6 +255,80 @@ func newTestSequencer(t *testing.T, w WAL, ts Tessera, cfg Config) *Sequencer {
 // Lifecycle tests
 // ─────────────────────────────────────────────────────────────────────
 
+// fakeEntryLookupWriter records calls so wiring tests can assert
+// the sequencer captures the writer correctly via WithEntryLookup.
+type fakeEntryLookupWriter struct {
+	calls []fakeLookupCall
+}
+
+type fakeLookupCall struct {
+	schemaID string
+	splitID  [32]byte
+	seq      uint64
+	entry    EntryLookupIndexEntry
+}
+
+func (f *fakeEntryLookupWriter) WriteEntryLookupEntry(
+	_ context.Context, schemaID string, splitID [32]byte, seq uint64,
+	entry EntryLookupIndexEntry,
+) error {
+	f.calls = append(f.calls, fakeLookupCall{schemaID, splitID, seq, entry})
+	return nil
+}
+
+// TestSequencer_WithEntryLookup_CapturesWriterAndDID asserts the
+// fluent setter records both the writer and the operator's log
+// DID into the Sequencer's struct, so the loop's 0x0C write call
+// has both at hand.
+func TestSequencer_WithEntryLookup_CapturesWriterAndDID(t *testing.T) {
+	s := NewSequencer(newFakeWAL(), newFakeTessera(), nil, nil, Config{})
+	w := &fakeEntryLookupWriter{}
+	ret := s.WithEntryLookup(w, "did:web:operator.example")
+	if ret != s {
+		t.Error("WithEntryLookup should return receiver for fluent chaining")
+	}
+	if s.entryLookup == nil {
+		t.Fatal("entryLookup not captured")
+	}
+	if s.logDID != "did:web:operator.example" {
+		t.Errorf("logDID = %q, want did:web:operator.example", s.logDID)
+	}
+	// Compile-time interface check.
+	var _ EntryLookupWriter = w
+}
+
+// TestSequencer_WithEntryLookup_NilWriter_NoOp confirms a nil
+// writer is captured without panic — the loop's nil-tolerant
+// branch then skips the 0x0C write.
+func TestSequencer_WithEntryLookup_NilWriter_NoOp(t *testing.T) {
+	s := NewSequencer(newFakeWAL(), newFakeTessera(), nil, nil, Config{})
+	s.WithEntryLookup(nil, "did:web:op")
+	if s.entryLookup != nil {
+		t.Error("nil writer should be captured as nil")
+	}
+	// logDID is still recorded — harmless when writer is nil.
+}
+
+// TestEntryLookupIndexEntry_StructHasExpectedFields pins the
+// sequencer-side type's field set so the gossipstore-side type
+// can't drift out of sync with the adapter.
+func TestEntryLookupIndexEntry_StructHasExpectedFields(t *testing.T) {
+	e := EntryLookupIndexEntry{
+		CanonicalBytes: []byte("x"),
+		LogTimeMicros:  1,
+		LogDID:         "did:web:op",
+	}
+	if len(e.CanonicalBytes) == 0 {
+		t.Error("CanonicalBytes lost")
+	}
+	if e.LogTimeMicros != 1 {
+		t.Error("LogTimeMicros lost")
+	}
+	if e.LogDID == "" {
+		t.Error("LogDID lost")
+	}
+}
+
 func TestSequencer_NewSequencer_ConfigDefaults(t *testing.T) {
 	w := newFakeWAL()
 	ts := newFakeTessera()

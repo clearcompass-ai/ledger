@@ -45,6 +45,9 @@ ROUTE TABLE (read side, no middleware):
   - GET  /v1/query/schema_ref/{pos}
   - GET  /v1/query/scan?start&count
   - GET  /v1/commitments?seq=N        — derivation commitment lookup
+  - GET  /v1/commitments/by-split-id/{schema_id}/{hex}
+                                      — v7.75 cryptographic commitment
+                                        lookup (Pure CQRS — Badger 0x0C)
   - POST /v1/cosign                   — witness cosign endpoint
                                         (only when WitnessCosign set)
 */
@@ -171,6 +174,13 @@ type Handlers struct {
 
 	// Commitment query — blocks fraud_proofs.
 	CommitmentQuery http.HandlerFunc // GET /v1/commitments?seq=N
+
+	// CommitmentLookup serves
+	//   GET /v1/commitments/by-split-id/{schema_id}/{hex}
+	// the v7.75 cryptographic-commitment lookup endpoint backed
+	// by the Pure CQRS read-side projection (Badger 0x0C). nil
+	// disables the route; the server returns 404 for the path.
+	CommitmentLookup http.HandlerFunc
 }
 
 // NewServer creates the HTTP server with all routes and middleware applied.
@@ -352,6 +362,19 @@ func NewServer(
 	// ── Commitment query ───────────────────────────────────────────────
 	if handlers.CommitmentQuery != nil {
 		mux.HandleFunc("GET /v1/commitments", handlers.CommitmentQuery)
+	}
+
+	// ── Cryptographic commitment lookup (Pure CQRS — Badger 0x0C) ─────
+	// Pinned by api/server_test.go::
+	//   TestServer_CommitmentLookupRoute_*
+	// Served from the 0x0C entry-lookup projection populated by
+	// the sequencer at Phase 2 commit-time; the read-path holds
+	// no Postgres dependency.
+	if handlers.CommitmentLookup != nil {
+		mux.HandleFunc(
+			"GET /v1/commitments/by-split-id/{schema_id}/{hex}",
+			handlers.CommitmentLookup,
+		)
 	}
 
 	s.httpServer = &http.Server{

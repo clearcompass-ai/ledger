@@ -1494,6 +1494,26 @@ func main() {
 	}
 	commitDeps := &api.DerivationCommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
+	// ── Cryptographic commitment lookup (Pure CQRS — Badger 0x0C) ─────
+	//
+	// /v1/commitments/by-split-id is served from the 0x0C entry-lookup
+	// projection populated by the sequencer at Phase 2 commit-time.
+	// The handler takes a types.CommitmentFetcher interface, NOT the
+	// concrete Postgres-backed fetcher — so the api package's
+	// transitive imports avoid pgx for this read path.
+	//
+	// Disabled when gossip storage is unavailable; the route returns
+	// 404 in that case (api/server.go gates the mount on non-nil
+	// CommitmentLookup).
+	var commitmentLookupHandler http.HandlerFunc
+	if gossipBStore != nil {
+		commitmentLookupHandler = api.NewCommitmentLookupHandler(
+			&api.CryptographicCommitmentDeps{
+				Fetcher: gossipstore.NewBadgerCommitmentFetcher(gossipBStore),
+				Logger:  logger,
+			})
+	}
+
 	// ── Witness cosign endpoint (optional) ────────────────────────────
 	//
 	// Mounted only when OPERATOR_WITNESS_KEY_FILE is set (or for local-
@@ -1560,7 +1580,8 @@ func main() {
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
 		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
+		CommitmentQuery:  api.NewDerivationCommitmentQueryHandler(commitDeps),
+		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────
@@ -1603,17 +1624,25 @@ func main() {
 		// continues to write Postgres commitment_split_id
 		// (existing read-path consumers); ALSO writes the
 		// Badger 0x0A index that the EquivocationScanner
-		// subscribes to. Migration of the read path to
-		// gossipstore.GetEquivProjection (0x0B) is a
-		// separate cleanup commit on this branch.
+		// subscribes to.
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(gossipBStore))
+
+		// Wire the entry-lookup projection writer (Pure CQRS —
+		// P8). Every commitment-schema admission also writes a
+		// 0x0C row carrying canonical_bytes + log_time_micros +
+		// log_did so /v1/commitments/by-split-id serves O(1)
+		// reads without touching Postgres.
+		seq = seq.WithEntryLookup(
+			gossipnet.NewSequencerEntryLookupAdapter(gossipBStore),
+			cfg.LogDID)
 	}
 	logger.Info("sequencer ready",
 		"poll_interval", cfg.SequencerInterval,
 		"max_in_flight", cfg.SequencerMaxInFlight,
 		"mmd", cfg.MMD,
 		"splitid_index", gossipBStore != nil,
+		"entry_lookup_projection", gossipBStore != nil,
 	)
 
 	// ── Shipper ──────────────────────────────────────────────────────
