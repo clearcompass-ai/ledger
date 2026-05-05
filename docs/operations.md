@@ -92,12 +92,11 @@ witness/                Witness-mode cosign endpoint
 anchor/                 External anchor publisher
 builder/                Commitment publisher loop
 
-config/                 operator.yaml example
-deployment/             Local dev orchestration
 docs/                   This documentation
 integration/            Postgres-backed integration tests (gated by ORTHOLOG_TEST_DSN)
 tests/                  End-to-end test harness
-script/, scripts/       Misc developer scripts
+scripts/                Runnable developer utilities (run-local, run-gcs-tests, run-soak, ...)
+scripts/local/          Docker Compose stacks (local single-op, dev multi-op, integration two-op, test harness)
 ```
 
 ## Test suite

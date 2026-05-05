@@ -5,7 +5,7 @@
 # RustFS container. Mirrors run-gcs-tests.sh for the GCS adapter.
 #
 # Usage:
-#   docker compose -f integration/docker-compose.yml up -d rustfs rustfs-init
+#   docker compose -f scripts/local/docker-compose.testharness.yml up -d rustfs rustfs-init
 #   ./scripts/run-bytestore-tests-rustfs.sh
 
 set -euo pipefail
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-COMPOSE_FILE="${REPO_ROOT}/integration/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
 
 # Wait for RustFS ready.
 echo "== ensuring rustfs is up =="
@@ -56,4 +56,4 @@ go test -v -count=1 -timeout=120s -run 'TestS3_|TestConformance_S3_' ./bytestore
 
 echo
 echo "== done =="
-echo "to tear down:  docker compose -f integration/docker-compose.yml down -v"
+echo "to tear down:  docker compose -f scripts/local/docker-compose.testharness.yml down -v"

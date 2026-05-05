@@ -1,4 +1,4 @@
-# deployment/local/docker-compose.dev.yml
+# scripts/local/docker-compose.dev.yml
 #
 # Developer-laptop topology that hits REAL Google Cloud Storage.
 # Same shape as production: the operator's GCS adapter calls
@@ -53,7 +53,7 @@ services:
   operator-davidson:
     build:
       context: ../../
-      dockerfile: deployment/local/Dockerfile
+      dockerfile: scripts/local/Dockerfile
     image: ortholog-operator:dev
     container_name: ortholog-dev-operator-davidson
     environment:
@@ -63,7 +63,7 @@ services:
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
       # Required: developer-supplied bucket name (not anonymized).
       # Compose fails to start if unset.
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_DAVIDSON:?must export OPERATOR_DEV_BUCKET_DAVIDSON; see deployment/local/README.dev.md}"
+      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_DAVIDSON:?must export OPERATOR_DEV_BUCKET_DAVIDSON; see scripts/local/README.dev.md}"
       # Real GCS = real auth via ADC. The Google Go SDK reads from
       # GOOGLE_APPLICATION_CREDENTIALS, falling back to
       # ~/.config/gcloud/application_default_credentials.json.
@@ -103,7 +103,7 @@ services:
       OPERATOR_LOG_DID: "did:web:state:tn:coa"
       OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_coa?sslmode=disable"
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_COA:?must export OPERATOR_DEV_BUCKET_COA; see deployment/local/README.dev.md}"
+      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_COA:?must export OPERATOR_DEV_BUCKET_COA; see scripts/local/README.dev.md}"
       GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/application_default_credentials.json"
       GOOGLE_CLOUD_PROJECT: "${GOOGLE_PROJECT:-}"
       OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"

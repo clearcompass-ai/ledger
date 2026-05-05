@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/integration/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
 
 if [ "${1:-}" = "down" ]; then
     docker compose -f "${COMPOSE_FILE}" down -v
@@ -88,7 +88,7 @@ esac
 
 echo "== running GCS entry-store tests =="
 go test -v -count=1 -timeout=120s \
-    -run 'TestGCSEntryStore' \
+    -run 'TestGCS_' \
     ./bytestore/
 
 echo

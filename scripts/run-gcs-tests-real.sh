@@ -84,7 +84,7 @@ export ORTHOLOG_TEST_GCS_BUCKET="${ORTHOLOG_REAL_GCS_BUCKET}"
 # are network-bound and a cold-start ADC token fetch can spike
 # latency on the first request.
 go test -v -count=1 -timeout=300s \
-    -run 'TestGCSEntryStore' \
+    -run 'TestGCS_' \
     ./bytestore/
 
 echo
