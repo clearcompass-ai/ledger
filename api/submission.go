@@ -181,6 +181,18 @@ type SubmissionDeps struct {
 	// FreshnessTolerance configures the late-replay rejection window
 	// at admission time. Zero defaults to policy.FreshnessInteractive.
 	FreshnessTolerance time.Duration
+
+	// BLSQuorumVerifier validates K-of-N witness cosignatures on
+	// any tree head EMBEDDED inside an admitted entry's payload
+	// (anchor entries authored by peer operators, witness-attestation
+	// commentary, cross-log proof entries). Wave 1 v3 §S1.
+	//
+	// Optional: nil disables the check entirely (existing v7.75
+	// commitment-entry surfaces don't embed tree heads, so the
+	// detector returns false unconditionally and the verifier is
+	// dead code today). Wired by cmd/operator/main.go iff a
+	// witness key set is loaded.
+	BLSQuorumVerifier *admission.BLSQuorumVerifier
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +316,30 @@ func prepareSubmission(
 		default:
 			deps.Logger.Error("signature verification path failed", "error", err)
 			return nil, &submissionError{http.StatusInternalServerError, "signature verification failed"}
+		}
+	}
+
+	// ── Step 4b: Embedded tree head K-of-N verification ───────────
+	// For entries that carry a cosigned tree head in their payload
+	// (peer-anchor entries, witness commentary, cross-log proofs),
+	// the BLSQuorumVerifier routes through cosign.Verify against
+	// the deployment's witness key set + K-of-N quorum.
+	//
+	// EntryEmbedsTreeHead is currently a closed-set predicate that
+	// returns false for every schema, so this check is a no-op for
+	// the v7.75 entry surface. Wiring it now means the moment a
+	// schema starts embedding tree heads, the chain check fires
+	// without an additional code change.
+	if deps.BLSQuorumVerifier != nil {
+		if err := deps.BLSQuorumVerifier.VerifyEntry(entry); err != nil {
+			switch {
+			case errors.Is(err, admission.ErrWitnessQuorumInsufficient),
+				errors.Is(err, admission.ErrWitnessKeySetUnavailable):
+				return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+			default:
+				deps.Logger.Error("embedded tree head verification failed", "error", err)
+				return nil, &submissionError{http.StatusInternalServerError, "tree head verification failed"}
+			}
 		}
 	}
 

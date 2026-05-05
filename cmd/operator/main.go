@@ -87,6 +87,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
@@ -1382,6 +1383,38 @@ func main() {
 	// SubmissionDeps is shared between both endpoints: same fast-path
 	// validation via prepareSubmission. v1 polls WAL for the
 	// Sequencer to advance; v2 returns an SCT immediately.
+	// Embedded-tree-head BLS quorum verifier (Wave 1 v3 §S1).
+	// Wired iff the genesis witness set is loaded (witness mode
+	// active). Today the EntryEmbedsTreeHead detector returns
+	// false for every v7.75 schema, so this verifier is a no-op
+	// on the entry surface; wiring it now means the moment a
+	// schema starts embedding tree heads the K-of-N check fires
+	// without an additional code change.
+	var blsQuorumVerifier *admission.BLSQuorumVerifier
+	if len(cfg.GenesisWitnessSet) > 0 && cfg.NetworkID != zeroNetID {
+		witKeys, wkErr := gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+		if wkErr != nil {
+			logger.Error("admission BLS verifier: witness key resolution",
+				"error", wkErr)
+			os.Exit(1)
+		}
+		keySet, ksErr := admission.NewStaticWitnessKeySet(witKeys, cfg.WitnessQuorumK)
+		if ksErr != nil {
+			logger.Error("admission BLS verifier: build keyset",
+				"error", ksErr)
+			os.Exit(1)
+		}
+		blsQuorumVerifier = admission.NewBLSQuorumVerifier(
+			keySet,
+			cosign.NewProductionBLSVerifier(),
+			cfg.NetworkID,
+		)
+		logger.Info("admission: embedded-tree-head BLS verifier enabled",
+			"witness_set_size", len(witKeys),
+			"quorum_k", cfg.WitnessQuorumK,
+		)
+	}
+
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
 			DB:         pool,
@@ -1404,6 +1437,7 @@ func main() {
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
+		BLSQuorumVerifier:  blsQuorumVerifier, // nil ⇒ check skipped
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
 	batchSubmitHandler := api.NewBatchSubmissionHandler(submissionDeps)
