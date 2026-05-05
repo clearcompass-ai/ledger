@@ -1,7 +1,7 @@
 /*
 FILE PATH: gossipnet/escrow_override.go
 
-EscrowOverrideService — operator-side endpoint for collecting K-of-N
+EscrowOverrideService — ledger-side endpoint for collecting K-of-N
 witness cosignatures over a cosign.EscrowOverridePayload, then
 broadcasting the cosigned authorization as a
 KindEscrowOverrideAuth gossip event.
@@ -11,7 +11,7 @@ KindEscrowOverrideAuth gossip event.
 An escrow override is a quorum-attested instruction to release or
 redirect escrowed artifacts outside the normal lifecycle path —
 typically in response to legal process or a dispute resolution
-outcome. The operator runs the K-of-N collection (same witness
+outcome. The ledger runs the K-of-N collection (same witness
 peer set used for tree heads — cosign Purpose separation makes
 the signatures non-replayable across roles) and broadcasts the
 resulting authorization to the gossip network for transparency.
@@ -19,27 +19,27 @@ resulting authorization to the gossip network for transparency.
 # WHY GOSSIP-PUBLISHED, NOT JUST HTTP-RESPONDED
 
 Returning the cosigned authorization to the caller via HTTP is
-not enough — without gossip transparency, an operator could
+not enough — without gossip transparency, an ledger could
 issue an override to one party while denying its existence to
 another. Publishing as KindEscrowOverrideAuth makes the
 authorization auditable: any party with the witness key set can
 verify the authorization from the gossip event alone, without
-going through the operator.
+going through the ledger.
 
 # COMPONENT FLOW
 
-  HTTP POST /v1/escrow-override
-    │   {escrow_id, decision_hash, effective}
-    ▼
-  EscrowOverrideService.ProcessOverride
-    ├── cosign.NewEscrowOverridePayload(escrowID, decisionHash, effective)
-    ├── collector.Collect(ctx, payload) → K-of-N witness sigs
-    ├── findings.NewEscrowOverrideFinding(payload, sigs)
-    ├── gossip.Sign as KindEscrowOverrideAuth
-    ├── gossip.Store.Append (local persistence)
-    └── gossip.Sink.Broadcast (fan out)
-    ▼
-  Returns: EventID + the K signatures
+	HTTP POST /v1/escrow-override
+	  │   {escrow_id, decision_hash, effective}
+	  ▼
+	EscrowOverrideService.ProcessOverride
+	  ├── cosign.NewEscrowOverridePayload(escrowID, decisionHash, effective)
+	  ├── collector.Collect(ctx, payload) → K-of-N witness sigs
+	  ├── findings.NewEscrowOverrideFinding(payload, sigs)
+	  ├── gossip.Sign as KindEscrowOverrideAuth
+	  ├── gossip.Store.Append (local persistence)
+	  └── gossip.Sink.Broadcast (fan out)
+	  ▼
+	Returns: EventID + the K signatures
 
 # PERSISTENCE
 
@@ -67,7 +67,7 @@ import (
 // EscrowOverrideServiceConfig configures the service.
 type EscrowOverrideServiceConfig struct {
 	// Collector is the K-of-N witness cosignature collector.
-	// Required. Operators reuse witness.HeadSync.Collector() so
+	// Required. Ledgers reuse witness.HeadSync.Collector() so
 	// the same witness peer pool serves tree-head + override
 	// roles.
 	Collector *sdkcosign.WitnessCollector
@@ -79,19 +79,19 @@ type EscrowOverrideServiceConfig struct {
 	Sink sdkgossip.Sink
 
 	// Signer signs the KindEscrowOverrideAuth gossip events
-	// (the operator's own DID's signing key, same as STH).
+	// (the ledger's own DID's signing key, same as STH).
 	Signer sdkcosign.WitnessSigner
 
 	// NetworkID binds every event to the deployment's network.
 	NetworkID sdkcosign.NetworkID
 
-	// Originator is the operator's own DID.
+	// Originator is the ledger's own DID.
 	Originator string
 
 	Logger *slog.Logger
 }
 
-// EscrowOverrideService runs the operator-side override flow.
+// EscrowOverrideService runs the ledger-side override flow.
 type EscrowOverrideService struct {
 	collector  *sdkcosign.WitnessCollector
 	store      sdkgossip.Store
@@ -152,7 +152,7 @@ type ProcessOverrideResult = apitypes.EscrowOverrideResult
 //  2. Collect K-of-N witness cosignatures.
 //  3. Build a findings.EscrowOverrideFinding for the gossip
 //     transport layer.
-//  4. Sign the finding under the operator's own DID at the
+//  4. Sign the finding under the ledger's own DID at the
 //     next chain position.
 //  5. Append locally and broadcast.
 //
@@ -202,7 +202,7 @@ func (s *EscrowOverrideService) ProcessOverride(
 	}
 
 	// Fan out best-effort. The local Append is the source of
-	// truth for the operator's chain; peers catch up via
+	// truth for the ledger's chain; peers catch up via
 	// /v1/gossip/since on the next anti-entropy tick if the
 	// broadcast drops.
 	if err := s.sink.Broadcast(ctx, signed); err != nil {

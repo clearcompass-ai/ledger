@@ -5,16 +5,17 @@ SequenceCursor — Postgres-backed implementation of the CT-native
 "the log is the queue" pattern.
 
 DESIGN:
-  Admission writes only entry_index. The builder reads new
-  sequences via
-    SELECT sequence_number FROM entry_index
-    WHERE  sequence_number > $cursor
-    ORDER  BY sequence_number ASC
-    LIMIT  $batch
-  using the entry_index PRIMARY KEY index. Cursor advance is one
-  row UPDATE per batch in the builder's atomic commit, bounding
-  dead tuples on builder_cursor by batches/sec instead of
-  entries/sec — the load-bearing property at 10B+ scale.
+
+	Admission writes only entry_index. The builder reads new
+	sequences via
+	  SELECT sequence_number FROM entry_index
+	  WHERE  sequence_number > $cursor
+	  ORDER  BY sequence_number ASC
+	  LIMIT  $batch
+	using the entry_index PRIMARY KEY index. Cursor advance is one
+	row UPDATE per batch in the builder's atomic commit, bounding
+	dead tuples on builder_cursor by batches/sec instead of
+	entries/sec — the load-bearing property at 10B+ scale.
 
 CONTRACT:
   - Read returns []uint64 of next batch sequences in ASC order.
@@ -30,19 +31,21 @@ CONTRACT:
     row fails at the database layer.
 
 THREAD SAFETY:
-  Cursor reads are stateless — Read and ReadFromCursor both query
-  fresh values per call, so concurrent readers are safe. Writes
-  must be serialized through the builder's singleton goroutine
-  (the operator already enforces single-builder-per-log via
-  Postgres advisory_lock); SequenceCursor itself does not
-  serialize writes.
+
+	Cursor reads are stateless — Read and ReadFromCursor both query
+	fresh values per call, so concurrent readers are safe. Writes
+	must be serialized through the builder's singleton goroutine
+	(the ledger already enforces single-builder-per-log via
+	Postgres advisory_lock); SequenceCursor itself does not
+	serialize writes.
 
 NULL POINTERS:
-  This type is constructible without a *pgxpool.Pool to ease
-  test wiring. The Pool is only consulted at call time, so
-  passing a nil pool to NewSequenceCursor produces a value that
-  panics on first use — the caller (cmd/operator/main.go)
-  validates the pool before constructing.
+
+	This type is constructible without a *pgxpool.Pool to ease
+	test wiring. The Pool is only consulted at call time, so
+	passing a nil pool to NewSequenceCursor produces a value that
+	panics on first use — the caller (cmd/ledger/main.go)
+	validates the pool before constructing.
 */
 package store
 

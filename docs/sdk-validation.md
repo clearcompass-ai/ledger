@@ -1,6 +1,6 @@
 # SDK v1.0.0 contract validation
 
-Code-level audit of every operator package against the SDK contract.
+Code-level audit of every ledger package against the SDK contract.
 Evidence is gathered from `go list`, `go vet`, `go build`, and
 compile-time interface assertions — never grep alone.
 
@@ -17,28 +17,28 @@ ok    20 packages
 
 ## Per-package SDK surface
 
-For each operator package: which SDK packages it imports, which SDK
+For each ledger package: which SDK packages it imports, which SDK
 contracts it depends on, and the compile-time interface checks that
 catch drift.
 
 | Package | SDK imports (via `go list -f '{{.Imports}}'`) | Compile-time anchors |
 |---|---|---|
 | `admission/` | `core/envelope`, `crypto/cosign`, `crypto/signatures`, `did` | `admission/static_witness_key_set.go:78 var _ WitnessKeySet = (*StaticWitnessKeySet)(nil)` |
-| `anchor/` | `core/envelope`, `crypto`, `crypto/signatures`, `log` | (uses SDK directly; no operator-side interfaces to pin) |
+| `anchor/` | `core/envelope`, `crypto`, `crypto/signatures`, `log` | (uses SDK directly; no ledger-side interfaces to pin) |
 | `api/` | `core/envelope`, `core/smt`, `crypto`, `crypto/admission`, `crypto/sct`, `crypto/signatures`, `crypto/artifact`, `crypto/escrow`, `exchange/policy`, `types` | `api/entries_read.go:381 var _ SeqHashLookup = EntryStore(nil)` |
 | `apitypes/` | (none — leaf package, zero pgx, zero SDK) | (boundary types only) |
 | `builder/` | `builder`, `core/envelope`, `core/smt`, `types` | `builder/cursor_reader.go:173 var _ BatchReader = (*CursorReader)(nil)` |
 | `bytestore/` | (none — leaf package) | `bytestore/memory.go:109 var _ Store = (*Memory)(nil)`; `bytestore/gcs.go:299 var _ Backend = (*GCS)(nil)`; `bytestore/s3.go:340 var _ Backend = (*S3)(nil)` |
-| `cmd/operator/` | `builder`, `core/envelope`, `core/smt`, `crypto/cosign`, `did`, `gossip`, `log`, `types` | (composition root; no interface pins) |
+| `cmd/ledger/` | `builder`, `core/envelope`, `core/smt`, `crypto/cosign`, `did`, `gossip`, `log`, `types` | (composition root; no interface pins) |
 | `gossipnet/` | `crypto/cosign`, `crypto/middleware`, `did`, `gossip`, `gossip/findings` | `gossipnet/sequencer_adapter.go:145-147` (3 sequencer-side interfaces) |
 | `gossipstore/` | `gossip`, `types` | `gossipstore/badger_store.go:474-475` (`gossip.Store`, `gossip.Closeable`); `gossipstore/commitment_fetcher.go:121 var _ types.CommitmentFetcher = (*BadgerCommitmentFetcher)(nil)` |
-| `integrity/` | (none — operator-internal verifier) | `integrity/tessera_adapter.go:42 var _ Verifier = (*TesseraAdapter)(nil)` |
+| `integrity/` | (none — ledger-internal verifier) | `integrity/tessera_adapter.go:42 var _ Verifier = (*TesseraAdapter)(nil)` |
 | `lifecycle/` | `core/envelope`, `log`, `types` | (no interface pins) |
 | `sequencer/` | `core/envelope`, `crypto/artifact`, `crypto/escrow`, `schema` | (consumed via interfaces defined in this package) |
-| `shipper/` | (none — operator-internal migrator) | (no interface pins) |
+| `shipper/` | (none — ledger-internal migrator) | (no interface pins) |
 | `store/` | `crypto/artifact`, `crypto/escrow`, `types` | `store/session_lookup.go:75 var _ middleware.SessionLookup = (*PostgresSessionLookup)(nil)`; `store/commitment_fetcher.go:208 var _ types.CommitmentFetcher = (*PostgresCommitmentFetcher)(nil)`; `store/fetcher.go:169 var _ bytestore.Reader = (*CompositeByteReader)(nil)` |
 | `tessera/` | `types` | `tessera/embedded_appender.go:343,395` (`AppenderBackend`); `tessera/posix_tile_backend.go:167 var _ TileBackend = (*POSIXTileBackend)(nil)` |
-| `wal/` | (none — operator-internal storage primitive) | (no SDK contracts; isolated state machine) |
+| `wal/` | (none — ledger-internal storage primitive) | (no SDK contracts; isolated state machine) |
 | `witness/` | `crypto/cosign`, `log`, `types` | (uses SDK directly) |
 
 Total: 18 compile-time interface anchors.
@@ -80,7 +80,7 @@ Integration tests in `integration/` and `tests/` use
    Workload Identity).
 3. Constructs the bytestore via `bytestore.NewFromConfig` with
    `Backend: "gcs"` and no endpoint override — uses the same
-   production code path the operator uses at runtime.
+   production code path the ledger uses at runtime.
 
 Credential resolution (matches `bytestore.NewGCS`):
 
@@ -119,7 +119,7 @@ When the SDK ships a new version:
    exercises end-to-end against a real Postgres + real GCS bucket.
 
 Drift-detection test (`gossipnet/equivocation_binding_pin_test.go::
-TestEquivocationBinding_OperatorMatchesSDK`) catches the most
+TestEquivocationBinding_LedgerMatchesSDK`) catches the most
 common SDK-side change: a new domain separator on a content hash.
 If the SDK adds one, this test fails before any production traffic
 sees a key drift.

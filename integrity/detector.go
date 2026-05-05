@@ -1,31 +1,33 @@
 /*
 FILE PATH: integrity/detector.go
 
-Detector — the periodic agreement check between the operator's
+Detector — the periodic agreement check between the ledger's
 WAL and the embedded Tessera log. Read-only verifier; does not
 mutate either side.
 
-  Loop (periodic):
-    Sample N random sequences below HWM. For each, compare:
-      WAL.HashAt(seq)        ← what admission recorded
-      Tessera.HashAt(seq)    ← what the Merkle tree commits to
-    Mismatch → return ErrDiverged. Composition root panics.
+	Loop (periodic):
+	  Sample N random sequences below HWM. For each, compare:
+	    WAL.HashAt(seq)        ← what admission recorded
+	    Tessera.HashAt(seq)    ← what the Merkle tree commits to
+	  Mismatch → return ErrDiverged. Composition root panics.
 
-    The samples-per-cycle and tick interval are configurable.
-    Production defaults: 3 samples per minute. With a uniform
-    distribution over [1, HWM], divergence detection latency at
-    HWM=10B is roughly HWM / (samples_per_cycle * cycles_per_day).
+	  The samples-per-cycle and tick interval are configurable.
+	  Production defaults: 3 samples per minute. With a uniform
+	  distribution over [1, HWM], divergence detection latency at
+	  HWM=10B is roughly HWM / (samples_per_cycle * cycles_per_day).
 
 BOOT RECOVERY:
-  No longer this package's concern. The Sequencer drains
-  StatePending entries on Run start (sequencer/sequencer.go),
-  which subsumes the old Reasserter/Reconcile path with the
-  added benefit of also INSERTing entry_index rows.
+
+	No longer this package's concern. The Sequencer drains
+	StatePending entries on Run start (sequencer/sequencer.go),
+	which subsumes the old Reasserter/Reconcile path with the
+	added benefit of also INSERTing entry_index rows.
 
 PANIC SEMANTICS:
-  Detector itself never panics. It returns ErrDiverged. The
-  composition root in cmd/operator/main.go is responsible for
-  panic-on-fatal — that's the infra-agnostic boundary.
+
+	Detector itself never panics. It returns ErrDiverged. The
+	composition root in cmd/ledger/main.go is responsible for
+	panic-on-fatal — that's the infra-agnostic boundary.
 */
 package integrity
 
@@ -75,7 +77,7 @@ type Detector struct {
 // for clear panic messages.
 //
 // The Verifier typically comes from a *TesseraAdapter
-// (NewTesseraAdapter). The WAL is typically the operator's
+// (NewTesseraAdapter). The WAL is typically the ledger's
 // *wal.Committer.
 func NewDetector(
 	wal WALReader,

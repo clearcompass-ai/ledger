@@ -11,18 +11,18 @@ KEY ARCHITECTURAL DECISIONS:
     so Destination = LogDID. NewUnsignedEntry rejects empty destination at
     write time.
   - Domain Payload: source_log_did, tree_head_ref (SHA-256), tree_size, timestamp.
-  - Submits to the local operator's admission pipeline via submitFn.
+  - Submits to the local ledger's admission pipeline via submitFn.
   - Configurable interval: default 1 hour.
 
 SDK ALIGNMENT:
   - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
   - v7.75 split entry construction into two constructors:
-      envelope.NewEntry(header, payload, signatures)        — fully signed
-      envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
+    envelope.NewEntry(header, payload, signatures)        — fully signed
+    envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
     The publisher's flow is "construct, then submit through admission",
     so it uses NewUnsignedEntry. Whatever path actually signs the
-    commentary (operator's admission pipeline, SubmitViaHTTP, or a future
-    operator-as-dealer signing surface) is responsible for populating
+    commentary (ledger's admission pipeline, SubmitViaHTTP, or a future
+    ledger-as-dealer signing surface) is responsible for populating
     entry.Signatures before envelope.Serialize is invoked. An entry
     without signatures fails entry.Validate() at admission, which is
     the correct failure mode for a misconfigured deployment.
@@ -50,7 +50,7 @@ import (
 
 // PublisherConfig configures the anchor publisher.
 type PublisherConfig struct {
-	OperatorDID   string
+	LedgerDID     string
 	LogDID        string // NEW (v0.3.0): destination-binding for self-published anchors.
 	Interval      time.Duration
 	AnchorSources []AnchorSource
@@ -97,7 +97,7 @@ func NewPublisher(
 		// MaxIdleConnsPerHost=100 connection pool and 503-Retry-After
 		// backpressure middleware that the SDK's submitter uses.
 		// Stdlib's bare http.Client gives MaxIdleConnsPerHost=2 and
-		// no 503 honoring — both biting under sustained operator
+		// no 503 honoring — both biting under sustained ledger
 		// load.
 		client: sdklog.DefaultClient(30 * time.Second),
 		logger: logger,
@@ -164,14 +164,14 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 	})
 
 	// Build commentary entry (Decision 44: standard entry, no special handling).
-	// Destination = LogDID (the anchor lands in THIS operator's log).
+	// Destination = LogDID (the anchor lands in THIS ledger's log).
 	//
 	// NewUnsignedEntry per the v7.75 envelope API split:
 	// fully-signed callers use envelope.NewEntry(header, payload, sigs);
 	// build-then-sign callers use envelope.NewUnsignedEntry. The
 	// signing step happens in submitFn / SubmitViaHTTP downstream.
 	entry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
-		SignerDID:   p.cfg.OperatorDID,
+		SignerDID:   p.cfg.LedgerDID,
 		Destination: p.cfg.LogDID,
 		// EventTime: SDK exchange/policy.CheckFreshness reads
 		// this via time.UnixMicro despite the doc comment

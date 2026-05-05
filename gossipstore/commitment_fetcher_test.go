@@ -11,7 +11,7 @@ implementation of types.CommitmentFetcher backing
   - Single row → one EntryWithMetadata with field round-trip.
   - Multiple rows → seq-ascending order (Decision 4 equivocation).
   - LogTime reconstruction from LogTimeMicros is UTC + correct.
-  - LogDID is preserved per-row (multi-tenant operator support).
+  - LogDID is preserved per-row (multi-tenant ledger support).
   - CanonicalBytes are returned independently of the underlying
     Badger value (no aliased memory).
   - Static interface check vs. types.CommitmentFetcher.
@@ -63,7 +63,7 @@ func TestBadgerCommitmentFetcher_SingleRow_RoundTrips(t *testing.T) {
 	split := [32]byte{0xab, 0xcd}
 	wantBytes := []byte("canonical-wire-bytes-for-single-row")
 	wantMicros := int64(1714659120_000000)
-	wantDID := "did:web:operator.example"
+	wantDID := "did:web:ledger.example"
 
 	if err := st.WriteEntryLookupEntry(ctx, schema, split, 7, EntryLookupIndexEntry{
 		CanonicalBytes: wantBytes,
@@ -152,7 +152,7 @@ func TestBadgerCommitmentFetcher_PerRowLogDID(t *testing.T) {
 	split := [32]byte{0x42}
 
 	// Different LogDIDs per seq — supports a future multi-tenant
-	// operator binary serving multiple log DIDs.
+	// ledger binary serving multiple log DIDs.
 	for i, did := range []string{"did:web:op-A", "did:web:op-B"} {
 		if err := st.WriteEntryLookupEntry(ctx, schema, split, uint64(i+1),
 			EntryLookupIndexEntry{

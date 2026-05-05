@@ -18,11 +18,11 @@ they carry no behavior and don't need an interface. Examples:
 
 These value types live HERE so:
 
-  1. api/ can use them without importing store/ (which transitively
-     pulls pgx).
-  2. store/ implementations return *apitypes.X verbatim — no
-     translation layer between the database query and the api
-     handler.
+ 1. api/ can use them without importing store/ (which transitively
+    pulls pgx).
+ 2. store/ implementations return *apitypes.X verbatim — no
+    translation layer between the database query and the api
+    handler.
 
 Compliance verified by `go list -deps ./apitypes/` containing zero
 pgx packages.
@@ -154,7 +154,7 @@ var ErrInsufficientCredits = errors.New("apitypes: insufficient credits")
 // fan out into multiple ErrorClass values
 // (ErrorClassMalformedJSON, ErrorClassBadHexEncoding,
 // ErrorClassUnsupportedSchema, ...). The status alone is the
-// client-facing wire shape; ErrorClass is the operator-side
+// client-facing wire shape; ErrorClass is the ledger-side
 // telemetry shape.
 type ErrorClass uint16
 
@@ -218,7 +218,7 @@ func (c ErrorClass) String() string {
 	case ErrorClassNotFound:
 		return "not_found"
 
-	// 5xx — operator infrastructure
+	// 5xx — ledger infrastructure
 	case ErrorClassWALBackpressure:
 		return "wal_backpressure"
 	case ErrorClassWALPersistFailed:
@@ -278,7 +278,7 @@ const (
 	// 404
 	ErrorClassNotFound
 
-	// 5xx — operator infrastructure (PAGE THE OPERATOR)
+	// 5xx — ledger infrastructure (PAGE THE OPERATOR)
 	ErrorClassWALBackpressure
 	ErrorClassWALPersistFailed
 	ErrorClassSCTSigningFailed

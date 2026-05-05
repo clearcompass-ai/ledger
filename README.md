@@ -1,6 +1,6 @@
-# Attesta Operator
+# Attesta Ledger
 
-Single-binary log operator. Receives signed entries, sequences them via
+Single-binary log ledger. Receives signed entries, sequences them via
 embedded Tessera, publishes cryptographically-verified findings to a
 gossip network, serves Merkle + SMT proofs and commitment lookups.
 Postgres-backed write side; Badger-backed read projections for
@@ -45,7 +45,7 @@ zero-pgx read paths.
                 └─────────────────────────┘
 ```
 
-Single binary (`cmd/operator`). Read-only sibling (`cmd/operator-reader`)
+Single binary (`cmd/ledger`). Read-only sibling (`cmd/ledger-reader`)
 serves the read endpoints without admission. Kubernetes target — one
 replica per log DID, advisory-locked builder.
 
@@ -57,7 +57,7 @@ Every page links to the file:line that backs it.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Runtime layout, package boundaries, the WAL → Sequencer → Tessera + projections data flow, gossip pipeline |
 | [docs/api.md](docs/api.md) | Every HTTP route from `api/server.go`, request/response shapes, error semantics |
-| [docs/configuration.md](docs/configuration.md) | Every `OPERATOR_*` env var actually read in `cmd/operator/main.go` |
+| [docs/configuration.md](docs/configuration.md) | Every `LEDGER_*` env var actually read in `cmd/ledger/main.go` |
 | [docs/storage.md](docs/storage.md) | WAL state machine, gossipstore keyspace (`0x07 0x01..0x0D`), Postgres role |
 | [docs/operations.md](docs/operations.md) | Boot order, Kubernetes deployment, test suite |
 | [docs/observability.md](docs/observability.md) | OpenTelemetry wiring, the typed `error_class` taxonomy |
@@ -84,7 +84,7 @@ $ go vet ./...
 $ go test -count=1 -short ./...
 ok  ...admission       ok  ...api            ok  ...api/middleware
 ok  ...apitypes        ok  ...anchor         ok  ...builder
-ok  ...bytestore       ok  ...cmd/operator   ok  ...cmd/submit-stamp
+ok  ...bytestore       ok  ...cmd/ledger   ok  ...cmd/submit-stamp
 ok  ...gossipnet       ok  ...gossipstore    ok  ...integration
 ok  ...integrity       ok  ...lifecycle      ok  ...sequencer
 ok  ...shipper         ok  ...store          ok  ...tessera
@@ -106,16 +106,16 @@ store/commitment_fetcher.go:208
 
 ```sh
 # Build
-go build ./cmd/operator
+go build ./cmd/ledger
 
-# Required env vars (cmd/operator/main.go: loadConfig)
-export OPERATOR_DATABASE_URL="postgres://..."
-export OPERATOR_LOG_DID="did:web:operator.example"
-export OPERATOR_BYTE_STORE_BACKEND=s3       # or gcs
-export OPERATOR_BYTE_STORE_S3_BUCKET=...
+# Required env vars (cmd/ledger/main.go: loadConfig)
+export LEDGER_DATABASE_URL="postgres://..."
+export LEDGER_LOG_DID="did:web:ledger.example"
+export LEDGER_BYTE_STORE_BACKEND=s3       # or gcs
+export LEDGER_BYTE_STORE_S3_BUCKET=...
 
 # Run
-./operator
+./ledger
 ```
 
 Full env-var reference: [docs/configuration.md](docs/configuration.md).

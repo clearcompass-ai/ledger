@@ -4,7 +4,7 @@ FILE PATH: bytestore/memory.go
 Memory — in-process bytestore.Store implementation. Thread-safe.
 
 Used by tests and local dev. **Production wiring MUST NOT import
-this type**: cmd/operator/main.go fails closed when no production-
+this type**: cmd/ledger/main.go fails closed when no production-
 grade backend (gcs/s3) is configured. The factory rejects
 Backend="memory" outside of test contexts.
 
@@ -13,10 +13,11 @@ against. Tests that need to exercise the presign path use the GCS
 or S3 adapter against fake-gcs-server / RustFS.
 
 Storage layout:
-  Keyed by (seq, hash). Two writes with the same seq but different
-  hash are stored as distinct entries (last-hash-wins per seq is
-  not the model — caller is expected to compute hash deterministically
-  from canonical bytes via envelope.EntryIdentity).
+
+	Keyed by (seq, hash). Two writes with the same seq but different
+	hash are stored as distinct entries (last-hash-wins per seq is
+	not the model — caller is expected to compute hash deterministically
+	from canonical bytes via envelope.EntryIdentity).
 
 Defensive copy on both write and read: callers can mutate their
 input buffer after WriteEntry returns and their result slice from

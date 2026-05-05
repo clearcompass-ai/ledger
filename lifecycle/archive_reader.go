@@ -1,52 +1,55 @@
 /*
 FILE PATH:
-    lifecycle/archive_reader.go
+
+	lifecycle/archive_reader.go
 
 DESCRIPTION:
-    Reads entries from archived (frozen) shards. Resolves shard from sequence
-    range, fetches entry hashes from archive tile endpoints (cold storage) for
-    proof verification, and full entry bytes from the shard's byte archive.
 
-    With hash-only Tessera tiles (Conflict #1 resolution), entry tiles contain
-    32-byte SHA-256 hashes — NOT full wire bytes. Full entry bytes are stored
-    in a separate byte archive alongside the tiles. Two-step verification:
-      1. Prove hash is in the Merkle tree (tile-based inclusion proof).
-      2. Prove entry data hashes to that value (SHA-256 of fetched bytes).
+	Reads entries from archived (frozen) shards. Resolves shard from sequence
+	range, fetches entry hashes from archive tile endpoints (cold storage) for
+	proof verification, and full entry bytes from the shard's byte archive.
+
+	With hash-only Tessera tiles (Conflict #1 resolution), entry tiles contain
+	32-byte SHA-256 hashes — NOT full wire bytes. Full entry bytes are stored
+	in a separate byte archive alongside the tiles. Two-step verification:
+	  1. Prove hash is in the Merkle tree (tile-based inclusion proof).
+	  2. Prove entry data hashes to that value (SHA-256 of fetched bytes).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Hash-only entry tiles: each entry in a tile is exactly 32 bytes.
-      Full wire bytes are in the shard's byte archive (separate endpoint).
-    - ArchiveReader implements builder.EntryFetcher — same Fetch(pos) interface
-      as the live operator's PostgresEntryFetcher. The caller does not know or
-      care if an entry is live or archived.
-    - Byte archive endpoint: {archive_endpoint}/bytes/{seq} returns the full
-      wire bytes for a given sequence number. This is separate from the tile
-      read path.
-    - Shard metadata includes both tile and byte archive endpoints.
+  - Hash-only entry tiles: each entry in a tile is exactly 32 bytes.
+    Full wire bytes are in the shard's byte archive (separate endpoint).
+  - ArchiveReader implements builder.EntryFetcher — same Fetch(pos) interface
+    as the live ledger's PostgresEntryFetcher. The caller does not know or
+    care if an entry is live or archived.
+  - Byte archive endpoint: {archive_endpoint}/bytes/{seq} returns the full
+    wire bytes for a given sequence number. This is separate from the tile
+    read path.
+  - Shard metadata includes both tile and byte archive endpoints.
 
 OVERVIEW:
-    Fetch(pos)     → resolve shard → fetch wire bytes from byte archive → return.
-    FetchHash(pos) → resolve shard → fetch hash from entry tile → return.
+
+	Fetch(pos)     → resolve shard → fetch wire bytes from byte archive → return.
+	FetchHash(pos) → resolve shard → fetch hash from entry tile → return.
 
 SDK ALIGNMENT:
-    - v0.3.0-tessera: envelope.StripSignature split a wire entry into
-      (canonical, algoID, sigBytes) so EntryWithMetadata could carry the
-      sidecar fields SignatureAlgoID and SignatureBytes.
-    - v7.75: signatures live INSIDE the canonical bytes (the v6
-      multi-sig section appended by envelope.Serialize). The wire bytes
-      ARE the canonical bytes; envelope.StripSignature is removed.
-      EntryWithMetadata now exposes only CanonicalBytes, LogTime, and
-      Position. Callers that need the primary signature's algoID or raw
-      bytes call envelope.Deserialize(meta.CanonicalBytes) and read
-      entry.Signatures[0].
-    - This file is updated to match: the byte-archive bytes are
-      assigned to CanonicalBytes directly without any split call. The
-      SignatureAlgoID and SignatureBytes fields are gone from
-      EntryWithMetadata so we no longer set them.
+  - v0.3.0-tessera: envelope.StripSignature split a wire entry into
+    (canonical, algoID, sigBytes) so EntryWithMetadata could carry the
+    sidecar fields SignatureAlgoID and SignatureBytes.
+  - v7.75: signatures live INSIDE the canonical bytes (the v6
+    multi-sig section appended by envelope.Serialize). The wire bytes
+    ARE the canonical bytes; envelope.StripSignature is removed.
+    EntryWithMetadata now exposes only CanonicalBytes, LogTime, and
+    Position. Callers that need the primary signature's algoID or raw
+    bytes call envelope.Deserialize(meta.CanonicalBytes) and read
+    entry.Signatures[0].
+  - This file is updated to match: the byte-archive bytes are
+    assigned to CanonicalBytes directly without any split call. The
+    SignatureAlgoID and SignatureBytes fields are gone from
+    EntryWithMetadata so we no longer set them.
 
 KEY DEPENDENCIES:
-    - tessera/entry_reader.go: ParseEntryBundle for tile parsing.
-    - tessera/tile_reader.go: EntryTilePath for c2sp.org path encoding.
+  - tessera/entry_reader.go: ParseEntryBundle for tile parsing.
+  - tessera/tile_reader.go: EntryTilePath for c2sp.org path encoding.
 */
 package lifecycle
 
@@ -154,7 +157,7 @@ func (r *ArchiveReader) AddShard(meta ShardMeta) {
 // -------------------------------------------------------------------------------------------------
 
 // Fetch retrieves an entry's full bytes from the shard's byte archive.
-// Returns the same types.EntryWithMetadata as the live operator's Fetch.
+// Returns the same types.EntryWithMetadata as the live ledger's Fetch.
 //
 // Hash-only architecture: tiles contain hashes only. Full wire bytes
 // are in the byte archive at a separate endpoint. Under v7.75 the wire
@@ -165,7 +168,7 @@ func (r *ArchiveReader) AddShard(meta ShardMeta) {
 // entry.Signatures[0].
 //
 // LogTime is left at the zero value: the byte archive does not carry
-// admission-time metadata, and the live operator's
+// admission-time metadata, and the live ledger's
 // PostgresEntryFetcher is the authoritative source for log_time on
 // hot-path entries. Archive consumers that need log_time pair this
 // fetcher with a separate metadata index (out of scope for the

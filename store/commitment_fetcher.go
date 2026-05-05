@@ -9,18 +9,18 @@ SplitID to its on-log entries.
 
 Wave 1 v3 §C5 contract:
 
-  FindCommitmentEntries(schemaID string, splitID [32]byte)
-      ([]*types.EntryWithMetadata, error)
+	FindCommitmentEntries(schemaID string, splitID [32]byte)
+	    ([]*types.EntryWithMetadata, error)
 
-  - Returns ALL matching rows (length 1 normal case, length 2+ on
-    dealer equivocation). Multi-row preservation is the load-bearing
-    invariant; the SDK's *CommitmentEquivocationError construction
-    depends on it.
-  - Joins commitment_split_id (the secondary index) → entry_index
-    (metadata) → bytestore.Reader (canonical bytes) so the
-    EntryWithMetadata struct returned matches what
-    PostgresEntryFetcher.Fetch produces — same canonical bytes,
-    same log_time, same position.
+	- Returns ALL matching rows (length 1 normal case, length 2+ on
+	  dealer equivocation). Multi-row preservation is the load-bearing
+	  invariant; the SDK's *CommitmentEquivocationError construction
+	  depends on it.
+	- Joins commitment_split_id (the secondary index) → entry_index
+	  (metadata) → bytestore.Reader (canonical bytes) so the
+	  EntryWithMetadata struct returned matches what
+	  PostgresEntryFetcher.Fetch produces — same canonical bytes,
+	  same log_time, same position.
 
 EntryWithMetadata field set: under v6 the SDK type carries only
 CanonicalBytes, LogTime, Position. Signatures live inside
@@ -50,7 +50,7 @@ import (
 )
 
 // PostgresCommitmentFetcher resolves a (schemaID, splitID) tuple to
-// every matching entry on the operator's log. Implements the SDK's
+// every matching entry on the ledger's log. Implements the SDK's
 // types.CommitmentFetcher interface.
 //
 // Distinct from PostgresEntryFetcher: the latter is keyed by
@@ -73,7 +73,7 @@ func NewPostgresCommitmentFetcher(
 	return &PostgresCommitmentFetcher{db: db, reader: reader, logDID: logDID}
 }
 
-// FindCommitmentEntries returns every entry in the operator's log
+// FindCommitmentEntries returns every entry in the ledger's log
 // whose (schema_id, split_id) tuple matches the supplied arguments.
 //
 // Multi-row contract (Wave 1 v3 Decision 3): the slice is length 1

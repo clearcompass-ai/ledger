@@ -8,7 +8,7 @@ Mirrors store/pre_grant_commitments.go field-for-field; the only
 material difference is the schema_id constant (sourced from
 crypto/escrow rather than crypto/artifact) and the call site that
 populates it (ProvisionSingleLog / StoreMapping flows on the SDK
-side, escrow-payload schema dispatch on the operator side).
+side, escrow-payload schema dispatch on the ledger side).
 
 Domain disambiguation: this file is about CRYPTOGRAPHIC commitments
 (Pedersen commitments published by the dealer alongside escrow

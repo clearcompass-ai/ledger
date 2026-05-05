@@ -2,38 +2,38 @@
 FILE PATH: wal/wal_test.go
 
 Evidence-based tests for the WAL. Establishes the load-bearing
-invariants the rest of the operator relies on:
+invariants the rest of the ledger relies on:
 
-  Durability invariant:
-    Submit returns nil only after the wire bytes are fsync'd. We
-    can't directly observe fsync on Badger's in-memory mode (the
-    "WAL" is a virtual buffer), but we CAN verify:
-      - Submit returns the same error to every concurrent submitter
-        in the batch (group-commit fan-out)
-      - Read after Submit returns the byte-identical wire
-      - Submit returns ErrEmptyWire on nil/empty input
-      - Submit returns ErrQueueFull when the queue is saturated
+	Durability invariant:
+	  Submit returns nil only after the wire bytes are fsync'd. We
+	  can't directly observe fsync on Badger's in-memory mode (the
+	  "WAL" is a virtual buffer), but we CAN verify:
+	    - Submit returns the same error to every concurrent submitter
+	      in the batch (group-commit fan-out)
+	    - Read after Submit returns the byte-identical wire
+	    - Submit returns ErrEmptyWire on nil/empty input
+	    - Submit returns ErrQueueFull when the queue is saturated
 
-  State machine invariants:
-    pending → sequenced → shipped is a monotonic progression.
-    Re-issuing the same transition is idempotent. Out-of-order
-    transitions (e.g. MarkShipped before Sequence) are rejected.
+	State machine invariants:
+	  pending → sequenced → shipped is a monotonic progression.
+	  Re-issuing the same transition is idempotent. Out-of-order
+	  transitions (e.g. MarkShipped before Sequence) are rejected.
 
-  Hash-keyed contract:
-    Two Submits of the same hash with different content are stored
-    distinctly under (hash) — there's no aliasing across content.
+	Hash-keyed contract:
+	  Two Submits of the same hash with different content are stored
+	  distinctly under (hash) — there's no aliasing across content.
 
-  Iterator invariants:
-    IterateInflight yields the inflight set; IterateSequenced yields
-    StateSequenced entries in seq ASC starting after fromSeq.
+	Iterator invariants:
+	  IterateInflight yields the inflight set; IterateSequenced yields
+	  StateSequenced entries in seq ASC starting after fromSeq.
 
-  Group-commit semantics:
-    Concurrent Submits in flight before a flush all receive the same
-    error (success or failure). Hot path is race-free under -race.
+	Group-commit semantics:
+	  Concurrent Submits in flight before a flush all receive the same
+	  error (success or failure). Hot path is race-free under -race.
 
-  Tessera dedup contract:
-    Get(unknown) → (0, false, nil); Set + Get round-trips the index;
-    Get of an unset identity is not-found.
+	Tessera dedup contract:
+	  Get(unknown) → (0, false, nil); Set + Get round-trips the index;
+	  Get of an unset identity is not-found.
 */
 package wal
 

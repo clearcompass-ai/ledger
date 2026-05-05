@@ -1,20 +1,22 @@
 /*
 FILE PATH:
-    tessera/entry_reader.go
+
+	tessera/entry_reader.go
 
 DESCRIPTION:
-    Tessera tile-format helpers retained in the tessera package after
-    the byte store was relocated to bytestore/. Wire bytes (entry
-    payloads) are no longer this file's concern — see bytestore/ for
-    the EntryReader / EntryWriter / Memory / GCS surface.
 
-    What stays here:
-      - EntriesPerTile constant (shard lifecycle, archive reader).
-      - ParseEntryBundle (c2sp.org/tlog-tiles tile body parser, used
-        by the archive reader and proof adapter).
+	Tessera tile-format helpers retained in the tessera package after
+	the byte store was relocated to bytestore/. Wire bytes (entry
+	payloads) are no longer this file's concern — see bytestore/ for
+	the EntryReader / EntryWriter / Memory / GCS surface.
 
-    Everything else moved to bytestore/ in Phase D of the
-    WAL/Shipper alignment series.
+	What stays here:
+	  - EntriesPerTile constant (shard lifecycle, archive reader).
+	  - ParseEntryBundle (c2sp.org/tlog-tiles tile body parser, used
+	    by the archive reader and proof adapter).
+
+	Everything else moved to bytestore/ in Phase D of the
+	WAL/Shipper alignment series.
 */
 package tessera
 

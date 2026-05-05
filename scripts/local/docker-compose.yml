@@ -32,12 +32,12 @@ services:
       timeout: 3s
       retries: 10
 
-  operator:
+  ledger:
     build:
       context: ../../
       dockerfile: scripts/local/Dockerfile
     environment:
-      - ATTESTA_LOG_DID=did:attesta:operator:local:001
+      - ATTESTA_LOG_DID=did:attesta:ledger:local:001
       - ATTESTA_POSTGRES_DSN=postgres://attesta:attestapassword@postgres:5432/attesta?sslmode=disable
       - ATTESTA_TESSERA_URL=http://tessera-personality:8081
       - ATTESTA_SERVER_ADDR=:8080

@@ -106,11 +106,11 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if deps.LogDID == "" {
 		panic("api: SubmissionDeps.LogDID must be non-empty (destination-binding enforcement)")
 	}
-	if deps.OperatorDID == "" {
-		panic("api: SubmissionDeps.OperatorDID must be non-empty for batch SCT signing")
+	if deps.LedgerDID == "" {
+		panic("api: SubmissionDeps.LedgerDID must be non-empty for batch SCT signing")
 	}
-	if deps.OperatorSignerPriv == nil {
-		panic("api: SubmissionDeps.OperatorSignerPriv must be non-nil for batch SCT signing")
+	if deps.LedgerSignerPriv == nil {
+		panic("api: SubmissionDeps.LedgerSignerPriv must be non-nil for batch SCT signing")
 	}
 
 	freshness := deps.FreshnessTolerance
@@ -217,7 +217,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			sct, signErr := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, pe.canonicalHash, pe.logTime)
+			sct, signErr := SignSCT(deps.LedgerSignerPriv, deps.LedgerDID, deps.LogDID, pe.canonicalHash, pe.logTime)
 			if signErr != nil {
 				deps.Logger.Error("batch SCT signing failed", "index", i, "error", signErr)
 				writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,

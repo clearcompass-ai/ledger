@@ -43,7 +43,7 @@ type PostgresSessionLookup struct {
 }
 
 // NewPostgresSessionLookup constructs the adapter. Panics on nil
-// pool — the operator should refuse to start without sessions
+// pool — the ledger should refuse to start without sessions
 // access.
 func NewPostgresSessionLookup(db *pgxpool.Pool) *PostgresSessionLookup {
 	if db == nil {

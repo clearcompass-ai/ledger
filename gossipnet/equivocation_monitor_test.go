@@ -102,7 +102,7 @@ func stubLatestSTH(t *testing.T, sth sdkgossip.SignedEvent) *httptest.Server {
 // position). Body is gossip.WireCosignedTreeHeadBody.
 func signSTHEvent(t *testing.T, originatorSigner cosign.WitnessSigner, originatorDID string, head types.CosignedTreeHead, networkID cosign.NetworkID) sdkgossip.SignedEvent {
 	t.Helper()
-	finding, err := findings.NewCosignedTreeHeadFinding(head, "https://operator.example")
+	finding, err := findings.NewCosignedTreeHeadFinding(head, "https://ledger.example")
 	if err != nil {
 		t.Fatalf("NewCosignedTreeHeadFinding: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestEquivocationMonitor_DetectsAndPublishes(t *testing.T) {
 	srv := stubLatestSTH(t, peerSTH)
 	defer srv.Close()
 
-	// Operator's own signer (signs the published equivocation
+	// Ledger's own signer (signs the published equivocation
 	// finding).
 	opKP, _ := did.GenerateDIDKeySecp256k1()
 	opSigner := cosign.NewECDSAWitnessSigner(opKP.PrivateKey)
@@ -183,14 +183,14 @@ func TestEquivocationMonitor_DetectsAndPublishes(t *testing.T) {
 
 	// Local store should now have:
 	//   1. peer's KindCosignedTreeHead (seeded)
-	//   2. operator's KindEquivocationFinding (published)
+	//   2. ledger's KindEquivocationFinding (published)
 	stats, _ := store.Stats(context.Background())
 	if stats.EventCount != 2 {
 		t.Errorf("EventCount = %d, want 2 (1 seed + 1 published)", stats.EventCount)
 	}
-	// Confirm the new event is from the operator's originator.
+	// Confirm the new event is from the ledger's originator.
 	if stats.Heads[opKP.DID] != 1 {
-		t.Errorf("operator chain lamport = %d, want 1 (one published finding)",
+		t.Errorf("ledger chain lamport = %d, want 1 (one published finding)",
 			stats.Heads[opKP.DID])
 	}
 }
@@ -294,8 +294,8 @@ func TestEquivocationMonitor_RejectsConfig(t *testing.T) {
 		{
 			name: "empty witness keys",
 			cfg: EquivocationMonitorConfig{
-				Store:     sdkgossip.NewInMemoryStore(),
-				QuorumK:   1, NetworkID: nonZeroNetworkID(),
+				Store:   sdkgossip.NewInMemoryStore(),
+				QuorumK: 1, NetworkID: nonZeroNetworkID(),
 			},
 			want: "WitnessKeys",
 		},

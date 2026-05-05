@@ -4,31 +4,32 @@ FILE PATH: integrity/integrity_test.go
 Evidence-based unit tests for the integrity package — read-only
 verifier surface only. Establishes:
 
-  Verifier round-trip:
-    HashAt(seq) returns the hash extracted from the entry tile at
-    (seq/256, seq%256). Tile-format-compatible with the existing
-    tessera package.
+	Verifier round-trip:
+	  HashAt(seq) returns the hash extracted from the entry tile at
+	  (seq/256, seq%256). Tile-format-compatible with the existing
+	  tessera package.
 
-  TesseraAdapter Verifier surface:
-    HashAt routed correctly through the adapter to the embedded
-    TileReader.
+	TesseraAdapter Verifier surface:
+	  HashAt routed correctly through the adapter to the embedded
+	  TileReader.
 
-  Detector SampleVerify:
-    - HWM=0 → nil (no sampling).
-    - All samples agree → nil.
-    - One mismatch → ErrDiverged with seq + both hashes in message.
-    - WAL miss (GC'd entry) → skip, no divergence.
+	Detector SampleVerify:
+	  - HWM=0 → nil (no sampling).
+	  - All samples agree → nil.
+	  - One mismatch → ErrDiverged with seq + both hashes in message.
+	  - WAL miss (GC'd entry) → skip, no divergence.
 
-  Detector Loop:
-    - Returns ctx.Err() on cancellation.
-    - Returns ErrDiverged on first sample-cycle mismatch.
+	Detector Loop:
+	  - Returns ctx.Err() on cancellation.
+	  - Returns ErrDiverged on first sample-cycle mismatch.
 
 WHAT'S ABSENT (and why):
-  Reasserter and Reconcile tests: deleted alongside the Reasserter
-  package itself. The Sequencer (sequencer/) now owns boot recovery,
-  and its drainOnce-on-Run-start replaces what Reconcile used to
-  do, with the added benefit of also INSERTing entry_index rows.
-  Sequencer tests live in sequencer/sequencer_test.go.
+
+	Reasserter and Reconcile tests: deleted alongside the Reasserter
+	package itself. The Sequencer (sequencer/) now owns boot recovery,
+	and its drainOnce-on-Run-start replaces what Reconcile used to
+	do, with the added benefit of also INSERTing entry_index rows.
+	Sequencer tests live in sequencer/sequencer_test.go.
 */
 package integrity
 

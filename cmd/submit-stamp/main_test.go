@@ -3,7 +3,7 @@ FILE PATH: cmd/submit-stamp/main_test.go
 
 Unit tests for the SCT decode + verify helpers in main.go.
 
-End-to-end coverage (real operator + Sequencer + admission) lives
+End-to-end coverage (real ledger + Sequencer + admission) lives
 in tests/e2e_v1_sct_test.go. This file targets the bits the CLI
 binary owns directly:
 
@@ -43,7 +43,7 @@ import (
 func TestApiSCTJSONRoundTrips_MatchesAPIType(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	hash := sha256.Sum256([]byte("roundtrip"))
-	apiSCTValue, err := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	apiSCTValue, err := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("api.SignSCT: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestVerifyClientSCT_MatchesAPIPath(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	for _, payload := range []string{"a", "longer payload here", strings.Repeat("x", 500)} {
 		hash := sha256.Sum256([]byte(payload))
-		sct, err := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+		sct, err := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("SignSCT(%q): %v", payload, err)
 		}
@@ -115,7 +115,7 @@ func TestVerifyClientSCT_MatchesAPIPath(t *testing.T) {
 func TestVerifyClientSCT_TamperedHashRejects(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	hash := sha256.Sum256([]byte("tamper-hash"))
-	sct, _ := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	sct, _ := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 	client := apiSCT{
 		Version:       sct.Version,
 		SignerDID:     sct.SignerDID,
@@ -134,7 +134,7 @@ func TestVerifyClientSCT_TamperedHashRejects(t *testing.T) {
 func TestVerifyClientSCT_TamperedTimestampRejects(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	hash := sha256.Sum256([]byte("tamper-ts"))
-	sct, _ := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	sct, _ := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 	client := apiSCT{
 		Version:       sct.Version,
 		SignerDID:     sct.SignerDID,
@@ -153,7 +153,7 @@ func TestVerifyClientSCT_TamperedTimestampRejects(t *testing.T) {
 func TestVerifyClientSCT_TamperedLogDIDRejects(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	hash := sha256.Sum256([]byte("tamper-did"))
-	sct, _ := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	sct, _ := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 	client := apiSCT{
 		Version:       sct.Version,
 		SignerDID:     sct.SignerDID,
@@ -173,7 +173,7 @@ func TestVerifyClientSCT_BadHexErrors(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	client := apiSCT{
 		Version:       1,
-		SignerDID:     "did:test:operator",
+		SignerDID:     "did:test:ledger",
 		SigAlgoID:     sdksct.SigAlgoECDSASecp256k1SHA256,
 		CanonicalHash: "not-hex",
 	}
@@ -186,7 +186,7 @@ func TestVerifyClientSCT_WrongHashLengthErrors(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	client := apiSCT{
 		Version:       1,
-		SignerDID:     "did:test:operator",
+		SignerDID:     "did:test:ledger",
 		SigAlgoID:     sdksct.SigAlgoECDSASecp256k1SHA256,
 		CanonicalHash: hex.EncodeToString([]byte("only-eleven")),
 	}
@@ -198,7 +198,7 @@ func TestVerifyClientSCT_WrongHashLengthErrors(t *testing.T) {
 func TestVerifyClientSCT_VersionMismatchErrors(t *testing.T) {
 	priv, _ := sdksigs.GenerateKey()
 	hash := sha256.Sum256([]byte("ver"))
-	sct, _ := api.SignSCT(priv, "did:test:operator", "did:test:log", hash, time.Now().UTC())
+	sct, _ := api.SignSCT(priv, "did:test:ledger", "did:test:log", hash, time.Now().UTC())
 	client := apiSCT{
 		Version:       sct.Version + 1,
 		SignerDID:     sct.SignerDID,

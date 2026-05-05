@@ -1,19 +1,19 @@
 /*
 FILE PATH: api/sct.go
 
-SignedCertificateTimestamp (SCT) — the operator's cryptographic
+SignedCertificateTimestamp (SCT) — the ledger's cryptographic
 promise on admission. Returned by POST /v1/entries instead of a
-sequence number; signed with the operator's secp256k1 ECDSA key
-(the same OPERATOR_SIGNER_KEY_FILE that signs anchor and
+sequence number; signed with the ledger's secp256k1 ECDSA key
+(the same LEDGER_SIGNER_KEY_FILE that signs anchor and
 commitment commentary entries).
 
 # SCOPE OF THIS FILE
 
 The SCT wire layout, the SignedCertificateTimestamp JSON shape,
 the canonical signing-payload packer, and the verification
-function ALL live in attesta/crypto/sct. This operator-side
+function ALL live in attesta/crypto/sct. This ledger-side
 file ships ONE function: SignSCT — the signing path that holds
-the operator's private key. The SDK is verifier-side and does
+the ledger's private key. The SDK is verifier-side and does
 not (and should not) hold a signing function.
 
 Callers consume the SDK directly:
@@ -25,9 +25,9 @@ Callers consume the SDK directly:
 
 # WHAT THE SCT GUARANTEES
 
-  - The operator has the canonical bytes durably persisted (WAL
+  - The ledger has the canonical bytes durably persisted (WAL
     fsync) and will sequence them into the Merkle tree within
-    Maximum Merge Delay (OPERATOR_MMD, default 24h).
+    Maximum Merge Delay (LEDGER_MMD, default 24h).
   - The signature binds the (LogDID, canonical_hash, log_time)
     triple. Replaying with a different LogDID or hash invalidates
     the signature; mutating the timestamp invalidates the
@@ -55,13 +55,13 @@ import (
 )
 
 // SignSCT builds and signs an SCT for (LogDID, canonical_hash,
-// log_time). The signing key MUST be the operator's secp256k1
-// ECDSA identity key (OPERATOR_SIGNER_KEY_FILE); a single key
+// log_time). The signing key MUST be the ledger's secp256k1
+// ECDSA identity key (LEDGER_SIGNER_KEY_FILE); a single key
 // covers entry signing and SCT signing so consumers verify both
-// against the operator's published public key without ambiguity.
+// against the ledger's published public key without ambiguity.
 //
 // SDK does not (and should not) ship this function — the
-// operator's private key never leaves the operator process.
+// ledger's private key never leaves the ledger process.
 func SignSCT(
 	priv *ecdsa.PrivateKey,
 	signerDID string,

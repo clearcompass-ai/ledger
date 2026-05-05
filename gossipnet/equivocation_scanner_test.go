@@ -1,16 +1,16 @@
 /*
 End-to-end test for the EquivocationScanner. Wires:
 
-  1. In-memory BadgerDB-backed gossipstore
-  2. EquivocationScanner subscribed to splitid index (0x0A)
-  3. Two splitid entries at the same (schema, split_id) signed
-     by the same DID — a real cryptographic equivocation
-  4. NopSink as the gossip output (we read the local gossip
-     Store + projection directly)
-  5. Verifies: scanner detects, signs the gossip event, appends
-     locally, projects into 0x0B, AND a fresh
-     gossip/findings.FetchEquivocationByBinding round-trip
-     pulls back the verified finding.
+ 1. In-memory BadgerDB-backed gossipstore
+ 2. EquivocationScanner subscribed to splitid index (0x0A)
+ 3. Two splitid entries at the same (schema, split_id) signed
+    by the same DID — a real cryptographic equivocation
+ 4. NopSink as the gossip output (we read the local gossip
+    Store + projection directly)
+ 5. Verifies: scanner detects, signs the gossip event, appends
+    locally, projects into 0x0B, AND a fresh
+    gossip/findings.FetchEquivocationByBinding round-trip
+    pulls back the verified finding.
 */
 package gossipnet_test
 
@@ -62,7 +62,7 @@ func TestEquivocationScanner_DetectsAndPublishes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
-	// The "equivocator" — also the operator that admitted both
+	// The "equivocator" — also the ledger that admitted both
 	// entries. Single DID signs both sides.
 	eqKP, err := did.GenerateDIDKeySecp256k1()
 	if err != nil {

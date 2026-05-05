@@ -2,7 +2,7 @@
 FILE PATH: cmd/submit-stamp/main.go
 
 submit-stamp — local-dev / CI client that submits a single signed
-entry to the operator. Handles both admission modes:
+entry to the ledger. Handles both admission modes:
 
 	Mode A (authenticated): -token "tok-dev"
 	  Adds Authorization: Bearer <token>; admission deducts one
@@ -14,7 +14,7 @@ entry to the operator. Handles both admission modes:
 	  flag), embeds it in the entry header, signs, POSTs.
 
 A fresh did:key:z... keypair is generated per invocation and used
-both as the SignerDID and as the signing key. With the operator
+both as the SignerDID and as the signing key. With the ledger
 wired to did.NewECDSAKeyResolver (SDK), the signature verifies
 cryptographically — no test-mode shortcuts.
 
@@ -22,12 +22,12 @@ Usage:
 
 	go run ./cmd/submit-stamp \
 	    -url http://localhost:8080 \
-	    -log-did "did:attesta:operator:001" \
+	    -log-did "did:attesta:ledger:001" \
 	    -payload "hello world"
 
 	go run ./cmd/submit-stamp \
 	    -url http://localhost:8080 \
-	    -log-did "did:attesta:operator:001" \
+	    -log-did "did:attesta:ledger:001" \
 	    -token "tok-dev" \
 	    -payload @/path/to/payload.json
 
@@ -64,14 +64,14 @@ import (
 
 func main() {
 	var (
-		operatorURL = flag.String("url", "http://localhost:8080", "operator base URL")
-		logDID      = flag.String("log-did", "did:attesta:operator:001", "destination log DID (admission rejects mismatched Header.Destination)")
-		token       = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
-		difficulty  = flag.Int("difficulty", 0, "Mode B difficulty; 0 → query /v1/admission/difficulty")
-		epochSec    = flag.Int("epoch-window", 3600, "epoch window seconds (must match OPERATOR_EPOCH_WINDOW_SECONDS)")
-		payload     = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
-		dryRun      = flag.Bool("dry-run", false, "build and print the entry without POSTing")
-		operatorDID = flag.String("operator-did", "", "operator's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
+		ledgerURL  = flag.String("url", "http://localhost:8080", "ledger base URL")
+		logDID     = flag.String("log-did", "did:attesta:ledger:001", "destination log DID (admission rejects mismatched Header.Destination)")
+		token      = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
+		difficulty = flag.Int("difficulty", 0, "Mode B difficulty; 0 → query /v1/admission/difficulty")
+		epochSec   = flag.Int("epoch-window", 3600, "epoch window seconds (must match LEDGER_EPOCH_WINDOW_SECONDS)")
+		payload    = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
+		dryRun     = flag.Bool("dry-run", false, "build and print the entry without POSTing")
+		ledgerDID  = flag.String("ledger-did", "", "ledger's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
 	)
 	flag.Parse()
 
@@ -109,7 +109,7 @@ func main() {
 		// Mode B — query difficulty if not supplied, brute-force.
 		diff := uint32(*difficulty)
 		if diff == 0 {
-			diff, err = queryDifficulty(*operatorURL)
+			diff, err = queryDifficulty(*ledgerURL)
 			if err != nil {
 				log.Fatalf("submit-stamp: query difficulty: %v", err)
 			}
@@ -126,7 +126,7 @@ func main() {
 		return
 	}
 
-	body, status, err := postAndRead(*operatorURL+"/v1/entries", *token, wire)
+	body, status, err := postAndRead(*ledgerURL+"/v1/entries", *token, wire)
 	if err != nil {
 		log.Fatalf("submit-stamp: %v", err)
 	}
@@ -135,14 +135,14 @@ func main() {
 		fmt.Printf("body: %s\n", body)
 		os.Exit(1)
 	}
-	printSCTResponse(body, *operatorDID)
+	printSCTResponse(body, *ledgerDID)
 }
 
-// printSCTResponse decodes the SCT and (when operatorDID is
+// printSCTResponse decodes the SCT and (when ledgerDID is
 // supplied) verifies the signature against the resolved public
 // key. The exit code stays 0 even on verification failure — the
-// SCT was decoded; the operator's DID may not be configured.
-func printSCTResponse(body []byte, operatorDID string) {
+// SCT was decoded; the ledger's DID may not be configured.
+func printSCTResponse(body []byte, ledgerDID string) {
 	var sct apiSCT
 	if err := json.Unmarshal(body, &sct); err != nil {
 		fmt.Printf("could not parse SCT: %v\nraw: %s\n", err, body)
@@ -157,25 +157,25 @@ func printSCTResponse(body []byte, operatorDID string) {
 	fmt.Printf("SCT.log_time_micros    = %d\n", sct.LogTimeMicros)
 	fmt.Printf("SCT.signature[:32]     = %.32s...\n", sct.Signature)
 
-	if operatorDID == "" {
-		fmt.Println("(SCT signature NOT verified — pass -operator-did did:key:z... to verify)")
+	if ledgerDID == "" {
+		fmt.Println("(SCT signature NOT verified — pass -ledger-did did:key:z... to verify)")
 		return
 	}
-	pub, _, err := sdkdid.ParseDIDKey(operatorDID)
+	pub, _, err := sdkdid.ParseDIDKey(ledgerDID)
 	if err != nil {
-		fmt.Printf("(SCT signature NOT verified — could not parse -operator-did: %v)\n", err)
+		fmt.Printf("(SCT signature NOT verified — could not parse -ledger-did: %v)\n", err)
 		return
 	}
 	pk, err := sdksigs.ParsePubKey(pub)
 	if err != nil {
-		fmt.Printf("(SCT signature NOT verified — non-secp256k1 operator key: %v)\n", err)
+		fmt.Printf("(SCT signature NOT verified — non-secp256k1 ledger key: %v)\n", err)
 		return
 	}
 	if err := verifyClientSCT(pk, &sct); err != nil {
 		fmt.Printf("SCT signature DOES NOT VERIFY: %v\n", err)
 		return
 	}
-	fmt.Println("SCT signature VERIFIED against operator did:key")
+	fmt.Println("SCT signature VERIFIED against ledger did:key")
 }
 
 // apiSCT mirrors api.SignedCertificateTimestamp's JSON shape so
@@ -254,11 +254,11 @@ func readPayload(spec string) ([]byte, error) {
 	return []byte(spec), nil
 }
 
-// queryDifficulty asks the operator's GET /v1/admission/difficulty for
+// queryDifficulty asks the ledger's GET /v1/admission/difficulty for
 // the live Mode B difficulty. The endpoint returns
 // {"difficulty": N, "hash_function": "sha256"} per api/queries.go.
-func queryDifficulty(operatorURL string) (uint32, error) {
-	resp, err := http.Get(operatorURL + "/v1/admission/difficulty")
+func queryDifficulty(ledgerURL string) (uint32, error) {
+	resp, err := http.Get(ledgerURL + "/v1/admission/difficulty")
 	if err != nil {
 		return 0, err
 	}

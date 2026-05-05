@@ -1,7 +1,7 @@
 # scripts/local/docker-compose.dev.yml
 #
 # Developer-laptop topology that hits REAL Google Cloud Storage.
-# Same shape as production: the operator's GCS adapter calls
+# Same shape as production: the ledger's GCS adapter calls
 # storage.googleapis.com directly with the developer's
 # Application Default Credentials.
 #
@@ -12,15 +12,15 @@
 #
 #   1. gcloud auth application-default login
 #        Writes ADC to ~/.config/gcloud/application_default_credentials.json
-#        which this compose mounts into both operator containers.
+#        which this compose mounts into both ledger containers.
 #
-#   2. gcloud storage buckets create gs://$OPERATOR_DEV_BUCKET_DAVIDSON \
+#   2. gcloud storage buckets create gs://$LEDGER_DEV_BUCKET_DAVIDSON \
 #        --location=US --project=$GOOGLE_PROJECT
-#      gcloud storage buckets create gs://$OPERATOR_DEV_BUCKET_COA \
+#      gcloud storage buckets create gs://$LEDGER_DEV_BUCKET_COA \
 #        --location=US --project=$GOOGLE_PROJECT
 #
-#   3. export OPERATOR_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
-#      export OPERATOR_DEV_BUCKET_COA=<your-coa-bucket>
+#   3. export LEDGER_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
+#      export LEDGER_DEV_BUCKET_COA=<your-coa-bucket>
 #
 # Why real GCS for dev (not fake-gcs-server):
 #   At-scale tests, latency profiles, IAM behaviour, multipart upload
@@ -50,20 +50,20 @@ services:
       timeout: 3s
       retries: 20
 
-  operator-davidson:
+  ledger-davidson:
     build:
       context: ../../
       dockerfile: scripts/local/Dockerfile
     image: ledger:dev
-    container_name: attesta-dev-operator-davidson
+    container_name: attesta-dev-ledger-davidson
     environment:
-      OPERATOR_ADDR: ":8080"
-      OPERATOR_LOG_DID: "did:web:state:tn:davidson"
-      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
-      OPERATOR_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:davidson"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
       # Required: developer-supplied bucket name (not anonymized).
       # Compose fails to start if unset.
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_DAVIDSON:?must export OPERATOR_DEV_BUCKET_DAVIDSON; see scripts/local/README.dev.md}"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "${LEDGER_DEV_BUCKET_DAVIDSON:?must export LEDGER_DEV_BUCKET_DAVIDSON; see scripts/local/README.dev.md}"
       # Real GCS = real auth via ADC. The Google Go SDK reads from
       # GOOGLE_APPLICATION_CREDENTIALS, falling back to
       # ~/.config/gcloud/application_default_credentials.json.
@@ -71,11 +71,11 @@ services:
       # Optional: project ID is sometimes required for billing
       # attribution on object operations.
       GOOGLE_CLOUD_PROJECT: "${GOOGLE_PROJECT:-}"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
-      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:davidson"
-      OPERATOR_SEQUENCER_INTERVAL: "500ms"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:davidson"
+      LEDGER_SEQUENCER_INTERVAL: "500ms"
     ports:
       - "8080:8080"
     volumes:
@@ -95,22 +95,22 @@ services:
       retries: 20
       start_period: 15s
 
-  operator-coa:
+  ledger-coa:
     image: ledger:dev
-    container_name: attesta-dev-operator-coa
+    container_name: attesta-dev-ledger-coa
     environment:
-      OPERATOR_ADDR: ":8080"
-      OPERATOR_LOG_DID: "did:web:state:tn:coa"
-      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
-      OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "${OPERATOR_DEV_BUCKET_COA:?must export OPERATOR_DEV_BUCKET_COA; see scripts/local/README.dev.md}"
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:coa"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "${LEDGER_DEV_BUCKET_COA:?must export LEDGER_DEV_BUCKET_COA; see scripts/local/README.dev.md}"
       GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/application_default_credentials.json"
       GOOGLE_CLOUD_PROJECT: "${GOOGLE_PROJECT:-}"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
-      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:coa"
-      OPERATOR_SEQUENCER_INTERVAL: "500ms"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:coa"
+      LEDGER_SEQUENCER_INTERVAL: "500ms"
     ports:
       - "8081:8080"
     volumes:
@@ -121,7 +121,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      operator-davidson:
+      ledger-davidson:
         condition: service_started     # build the image once via davidson; coa reuses it
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]

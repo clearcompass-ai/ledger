@@ -7,7 +7,7 @@ passthrough invariant.
 
 Why a mix of unit-level and HTTP-level tests:
 
-  - For NFC, signature, BLS quorum: the operator's admission
+  - For NFC, signature, BLS quorum: the ledger's admission
     package exposes typed errors directly. A unit-level call
     against the package's exported functions exercises the same
     code path the HTTP handler invokes, with less ceremony than
@@ -17,7 +17,7 @@ Why a mix of unit-level and HTTP-level tests:
     the wrapping fails the test.
 
   - For the SDK's commitment payload errors and the C2 passthrough
-    invariant: tests call the SDK schema parsers (or the operator's
+    invariant: tests call the SDK schema parsers (or the ledger's
     dispatch logic) directly because the rejection contract is the
     error type returned, not the HTTP status code that wraps it.
     The HTTP-status mapping is exercised in CI3's happy-path test
@@ -62,7 +62,7 @@ import (
 // CI5.1 — ErrIngressNotNFC
 // ─────────────────────────────────────────────────────────────────────
 
-// TestAdmission_RejectsNonNFCSignerDID confirms that the operator's
+// TestAdmission_RejectsNonNFCSignerDID confirms that the ledger's
 // defensive NFC check rejects an entry whose SignerDID is in NFD
 // (decomposed) form rather than NFC (composed). The test bypasses
 // envelope.NewEntry because that constructor enforces other
@@ -73,13 +73,13 @@ func TestAdmission_RejectsNonNFCSignerDID(t *testing.T) {
 	// bytes) versus "Café" (NFD, 6 bytes). The visual
 	// rendering is identical; the byte sequences are not. SDK
 	// Decision 52 puts the normalization burden on the caller; the
-	// operator MUST reject NFD-form input rather than silently
+	// ledger MUST reject NFD-form input rather than silently
 	// normalize it.
 	const nfdDID = "did:web:Café.example"
 	entry := &envelope.Entry{
 		Header: envelope.ControlHeader{
 			SignerDID:   nfdDID,
-			Destination: "did:web:operator.example",
+			Destination: "did:web:ledger.example",
 		},
 	}
 	err := admission.CheckNFC(entry)
@@ -99,7 +99,7 @@ func TestAdmission_AcceptsNFCSignerDID(t *testing.T) {
 	entry := &envelope.Entry{
 		Header: envelope.ControlHeader{
 			SignerDID:   nfcDID,
-			Destination: "did:web:operator.example",
+			Destination: "did:web:ledger.example",
 		},
 	}
 	if err := admission.CheckNFC(entry); err != nil {
@@ -116,7 +116,7 @@ func TestAdmission_AcceptsNFCSignerDID(t *testing.T) {
 // in ErrSignatureInvalid. The test signs the entry with key A and
 // asks the verifier to verify with key B's public key; the SDK's
 // signatures.VerifyEntry returns ErrSignatureVerificationFailed,
-// which the operator wrapper maps to ErrSignatureInvalid.
+// which the ledger wrapper maps to ErrSignatureInvalid.
 func TestAdmission_RejectsBadSignature(t *testing.T) {
 	keyA, err := signatures.GenerateKey()
 	if err != nil {
@@ -132,7 +132,7 @@ func TestAdmission_RejectsBadSignature(t *testing.T) {
 	entry := &envelope.Entry{
 		Header: envelope.ControlHeader{
 			SignerDID:   signerDID,
-			Destination: "did:web:operator.example",
+			Destination: "did:web:ledger.example",
 		},
 	}
 	// v7.75 signing contract (envelope/serialize.go:218-225): sign
@@ -187,7 +187,7 @@ func (s stubDIDResolver) ResolvePublicKey(_ context.Context, did string) (*ecdsa
 // whose commitment_bytes_hex decodes to bytes that do not parse as
 // a valid PREGrantCommitment wire form.
 //
-// The operator's C2 dispatcher routes such payloads through the
+// The ledger's C2 dispatcher routes such payloads through the
 // SDK parser; the rejection lands as ErrCommitmentPayloadMalformed
 // at the dispatch site and the admission handler maps that to
 // HTTP 422.
@@ -301,13 +301,13 @@ func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
 //
 // We pass a zero CosignedTreeHead with no signatures; cosign.Verify
 // rejects with cosign.ErrEmptySignatures before it touches the
-// witness key set. The operator wrapper catches this (and any other
-// quorum-class error) and remaps to the operator-side typed sentinel.
+// witness key set. The ledger wrapper catches this (and any other
+// quorum-class error) and remaps to the ledger-side typed sentinel.
 func TestAdmission_RejectsInsufficientWitnessQuorum(t *testing.T) {
 	v := admission.NewBLSQuorumVerifier(
 		emptyKeySet{},
-		nil,                  // BLS verifier not needed; ECDSA path handles empty sigs
-		cosign.NetworkID{1},  // any non-zero NetworkID; unreached here but required by the API
+		nil,                 // BLS verifier not needed; ECDSA path handles empty sigs
+		cosign.NetworkID{1}, // any non-zero NetworkID; unreached here but required by the API
 	)
 	// A zero CosignedTreeHead has no signatures — cosign.Verify
 	// rejects with ErrEmptySignatures before any cryptographic work.

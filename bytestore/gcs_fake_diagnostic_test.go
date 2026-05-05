@@ -14,22 +14,22 @@ this pattern, so running there is wasted I/O.
 Each experiment validates one hypothesis with a controlled change
 and explicit logging:
 
-  E1 PathExactMatch       — Does LIST return the same string GET
-                             constructs? (validates path-shape bug
-                             vs. handler bug.)
-  E2 FlatPath             — Same write/read flow, but objects live
-                             at <prefix>/<seq:016x> instead of
-                             <prefix>/<seq:016x>/data. (Validates
-                             nested-directory-creation bug.)
-  E3 AttrsRightAfterClose — Write ONE object, then call .Attrs()
-                             AND .NewReader() back-to-back. (If
-                             Attrs sees it but NewReader doesn't,
-                             fake-gcs's read paths disagree among
-                             themselves.)
-  E4 BurstWriteSettle     — Same eviction-style burst, but sleep
-                             5s before reading seq=0. (If 5s fixes
-                             it but 1.5s doesn't, the bug IS just
-                             a long settle window.)
+	E1 PathExactMatch       — Does LIST return the same string GET
+	                           constructs? (validates path-shape bug
+	                           vs. handler bug.)
+	E2 FlatPath             — Same write/read flow, but objects live
+	                           at <prefix>/<seq:016x> instead of
+	                           <prefix>/<seq:016x>/data. (Validates
+	                           nested-directory-creation bug.)
+	E3 AttrsRightAfterClose — Write ONE object, then call .Attrs()
+	                           AND .NewReader() back-to-back. (If
+	                           Attrs sees it but NewReader doesn't,
+	                           fake-gcs's read paths disagree among
+	                           themselves.)
+	E4 BurstWriteSettle     — Same eviction-style burst, but sleep
+	                           5s before reading seq=0. (If 5s fixes
+	                           it but 1.5s doesn't, the bug IS just
+	                           a long settle window.)
 
 Read the t.Logf output to interpret. Each test logs every read
 attempt with the exact path string for paste-into-an-issue clarity.

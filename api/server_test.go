@@ -160,7 +160,7 @@ func TestServer_MMDRouteWired(t *testing.T) {
 //
 // Without this test, /by-binding/{hash} could regress to 404
 // (the SDK FeedHandler internally dispatches the path; the
-// operator-side gap is the mux Handle call).
+// ledger-side gap is the mux Handle call).
 func TestServer_GossipFeedRoutes_Mounted(t *testing.T) {
 	called := 0
 	feed := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

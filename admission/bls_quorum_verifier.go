@@ -5,7 +5,7 @@ BLS quorum verification at admission time per Wave 1 v3 §S1.
 
 Scope (Wave 1 v3, intentionally narrow): this verifier fires ONLY for
 entries whose payload embeds a cosigned tree head — anchor entries
-authored by peer operators, witness-attestation commentary, cross-log
+authored by peer ledgers, witness-attestation commentary, cross-log
 proof entries. Plain submissions that do not carry an embedded
 checkpoint skip this stage entirely; the v7.75 commitment-entry
 surface (pre-grant-commitment-v1, escrow-split-commitment-v1) does
@@ -24,16 +24,16 @@ cosignature surface. cosign.Verify enforces, in one path:
     threshold counts with top-level cosign.ErrQuorumNotReached).
 
 All three are mandatory in cosign.Verify; they are not gated mutation
-switches. The operator's job is to invoke the primitive and map its
+switches. The ledger's job is to invoke the primitive and map its
 quorum-class errors to the admission-layer's
 ErrWitnessQuorumInsufficient.
 
 Detection vs. verification (separation of concerns):
 
   - EntryEmbedsTreeHead reports whether an entry's schema is one
-    the operator knows carries a cosigned tree head. Currently a
+    the ledger knows carries a cosigned tree head. Currently a
     closed-set predicate that returns false for every schema; future
-    commits add specific schema_id matches as the operator's
+    commits add specific schema_id matches as the ledger's
     cross-log proof and peer-anchor surfaces grow. As long as the
     predicate returns false, this verifier is dead code and Wave 1
     ships with the admission pipeline correctly skipping S1 — which
@@ -47,10 +47,10 @@ Detection vs. verification (separation of concerns):
     and complete — it would fire correctly the moment the detector
     matches a real schema.
 
-Active witness key set: loaded from operator config at startup via
+Active witness key set: loaded from ledger config at startup via
 the WitnessKeySet interface (config-backed implementations live in
-cmd/operator/main.go wiring, not here). Refresh on signal is the
-operator wiring's responsibility — this verifier reads a fresh
+cmd/ledger/main.go wiring, not here). Refresh on signal is the
+ledger wiring's responsibility — this verifier reads a fresh
 snapshot on every Verify call so updates propagate without restart.
 */
 package admission
@@ -74,14 +74,14 @@ import (
 //
 // Wraps the SDK's cosign.ErrQuorumNotReached and
 // cosign.ErrEmptySignatures via the %w verb so callers can
-// errors.Is on either the operator-side sentinel or the underlying
+// errors.Is on either the ledger-side sentinel or the underlying
 // SDK cause.
 var ErrWitnessQuorumInsufficient = errors.New(
 	"admission: witness quorum insufficient")
 
 // ErrWitnessKeySetUnavailable is returned when the active witness
 // key set provider returns an error. The HTTP layer maps this to
-// 503 — the entry is structurally valid but the operator cannot
+// 503 — the entry is structurally valid but the ledger cannot
 // presently verify it.
 var ErrWitnessKeySetUnavailable = errors.New(
 	"admission: witness key set unavailable")
@@ -92,7 +92,7 @@ var ErrWitnessKeySetUnavailable = errors.New(
 
 // WitnessKeySet provides the active witness public keys and quorum
 // threshold to the BLS quorum verifier. Implementations are config-
-// backed (operator startup loads from YAML) or remote-DID-backed
+// backed (ledger startup loads from YAML) or remote-DID-backed
 // (resolver fetches the current set from a witness coordinator).
 //
 // Active is called on every Verify invocation; implementations
@@ -105,9 +105,9 @@ var ErrWitnessKeySetUnavailable = errors.New(
 //   - keys:    the active witness public keys (BLS or ECDSA)
 //   - quorumK: the K threshold for the K-of-N quorum
 //   - err:     non-nil only on config / resolver failure; an empty
-//              key set is still a successful return that the
-//              verifier rejects with ErrWitnessQuorumInsufficient
-//              wrapping the SDK's ErrEmptyWitnessSet.
+//     key set is still a successful return that the
+//     verifier rejects with ErrWitnessQuorumInsufficient
+//     wrapping the SDK's ErrEmptyWitnessSet.
 type WitnessKeySet interface {
 	Active() (keys []types.WitnessPublicKey, quorumK int, err error)
 }
@@ -117,7 +117,7 @@ type WitnessKeySet interface {
 // ─────────────────────────────────────────────────────────────────────
 
 // BLSQuorumVerifier verifies cosigned tree heads embedded in
-// admission-time entry payloads. Constructed once at operator
+// admission-time entry payloads. Constructed once at ledger
 // startup and shared across the admission handler's request pool;
 // safe for concurrent use as long as the WitnessKeySet
 // implementation is.
@@ -189,7 +189,7 @@ func (v *BLSQuorumVerifier) VerifyEmbeddedTreeHead(
 	}
 
 	// Map quorum-class SDK errors to a single admission-layer
-	// sentinel. The HTTP layer renders this as 401; operators
+	// sentinel. The HTTP layer renders this as 401; ledgers
 	// inspecting the wrapped chain via errors.Unwrap can still
 	// see the specific SDK cause for diagnostics.
 	switch {
@@ -247,7 +247,7 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 // ─────────────────────────────────────────────────────────────────────
 
 // EntryEmbedsTreeHead reports whether an entry's payload schema is
-// one the operator knows to carry a cosigned tree head. Currently
+// one the ledger knows to carry a cosigned tree head. Currently
 // a closed-set predicate that returns false for every schema; the
 // v7.75 commitment-entry surface introduced in Wave 1 (pre-grant-
 // commitment-v1, escrow-split-commitment-v1) does NOT embed tree
@@ -257,14 +257,14 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 //
 //   - Cross-log proof entries (when a domain network adds a schema
 //     for them)
-//   - Peer-authored anchor entries (when the operator starts
+//   - Peer-authored anchor entries (when the ledger starts
 //     accepting external anchors)
-//   - Witness-attestation commentary (operator-owned schema)
+//   - Witness-attestation commentary (ledger-owned schema)
 //
 // Each addition is a trivial schema_id match against the entry's
 // SchemaRef-resolved manifest or a known-DID match on the signer
-// for operator-owned schemas. The closed-set discipline ensures
-// the operator never invokes S1 on payloads it does not own —
+// for ledger-owned schemas. The closed-set discipline ensures
+// the ledger never invokes S1 on payloads it does not own —
 // the Domain/Protocol Separation Principle remains intact.
 func EntryEmbedsTreeHead(entry *envelope.Entry) bool {
 	if entry == nil {

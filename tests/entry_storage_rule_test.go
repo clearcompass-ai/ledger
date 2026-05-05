@@ -5,12 +5,12 @@ Tests proving THE design rule: Postgres is an index. Tessera (EntryReader)
 is the source of truth for entry bytes. Always.
 
 These tests verify:
-  1. entry_index has NO canonical_bytes or sig_bytes columns
-  2. Submitted entries have bytes in EntryReader, not Postgres
-  3. PostgresEntryFetcher hydrates bytes from EntryReader
-  4. Query results hydrate bytes from EntryReader
-  5. If EntryReader has different bytes than what was submitted,
-     the fetcher returns EntryReader's bytes (source of truth)
+ 1. entry_index has NO canonical_bytes or sig_bytes columns
+ 2. Submitted entries have bytes in EntryReader, not Postgres
+ 3. PostgresEntryFetcher hydrates bytes from EntryReader
+ 4. Query results hydrate bytes from EntryReader
+ 5. If EntryReader has different bytes than what was submitted,
+    the fetcher returns EntryReader's bytes (source of truth)
 */
 package tests
 
@@ -26,9 +26,9 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/types"
 
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
-	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -105,7 +105,7 @@ func TestEscrowOverrideService_HappyPath(t *testing.T) {
 		t.Errorf("Signatures = %d, want 1", res.Signatures)
 	}
 	if res.Lamport != 1 {
-		t.Errorf("Lamport = %d, want 1 (first event in operator chain)", res.Lamport)
+		t.Errorf("Lamport = %d, want 1 (first event in ledger chain)", res.Lamport)
 	}
 	if res.EventID == [32]byte{} {
 		t.Error("EventID is zero")

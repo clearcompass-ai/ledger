@@ -13,28 +13,28 @@ Real Postgres + Tessera coverage lives in tests/e2e_v2_sct_test.go
 
 WHAT'S COVERED:
 
-  Lifecycle:
-    - NewSequencer normalizes zero-valued Config into defaults.
-    - Run drains immediately (no first-tick wait), then on
-      ticker.
-    - Run returns ctx.Err() on cancellation.
+	Lifecycle:
+	  - NewSequencer normalizes zero-valued Config into defaults.
+	  - Run drains immediately (no first-tick wait), then on
+	    ticker.
+	  - Run returns ctx.Err() on cancellation.
 
-  drainOnce / processOne:
-    - Pending entry → AppendLeaf → Sequence happy path.
-    - State guard: non-Pending entries skipped, attempts reset.
-    - wal.ErrNotFound during MetaState short-circuits cleanly.
-    - Tessera transport failure → MarkRetry; counter increments.
-    - MaxAttempts exhausted → MarkManual.
-    - Deserialize failure on durable WAL bytes → MarkManual
-      (treated as permanent corruption).
-    - UNIQUE-violation on entry_index INSERT is idempotent —
-      Sequence still called.
-    - WAL.Sequence transport failure → MarkRetry (Tessera/Postgres
-      already advanced; WAL state lag is recoverable).
+	drainOnce / processOne:
+	  - Pending entry → AppendLeaf → Sequence happy path.
+	  - State guard: non-Pending entries skipped, attempts reset.
+	  - wal.ErrNotFound during MetaState short-circuits cleanly.
+	  - Tessera transport failure → MarkRetry; counter increments.
+	  - MaxAttempts exhausted → MarkManual.
+	  - Deserialize failure on durable WAL bytes → MarkManual
+	    (treated as permanent corruption).
+	  - UNIQUE-violation on entry_index INSERT is idempotent —
+	    Sequence still called.
+	  - WAL.Sequence transport failure → MarkRetry (Tessera/Postgres
+	    already advanced; WAL state lag is recoverable).
 
-  Helpers:
-    - isUniqueViolation matches the three pgx error shapes,
-      rejects non-violations.
+	Helpers:
+	  - isUniqueViolation matches the three pgx error shapes,
+	    rejects non-violations.
 */
 package sequencer
 
@@ -277,21 +277,21 @@ func (f *fakeEntryLookupWriter) WriteEntryLookupEntry(
 }
 
 // TestSequencer_WithEntryLookup_CapturesWriterAndDID asserts the
-// fluent setter records both the writer and the operator's log
+// fluent setter records both the writer and the ledger's log
 // DID into the Sequencer's struct, so the loop's 0x0C write call
 // has both at hand.
 func TestSequencer_WithEntryLookup_CapturesWriterAndDID(t *testing.T) {
 	s := NewSequencer(newFakeWAL(), newFakeTessera(), nil, nil, Config{})
 	w := &fakeEntryLookupWriter{}
-	ret := s.WithEntryLookup(w, "did:web:operator.example")
+	ret := s.WithEntryLookup(w, "did:web:ledger.example")
 	if ret != s {
 		t.Error("WithEntryLookup should return receiver for fluent chaining")
 	}
 	if s.entryLookup == nil {
 		t.Fatal("entryLookup not captured")
 	}
-	if s.logDID != "did:web:operator.example" {
-		t.Errorf("logDID = %q, want did:web:operator.example", s.logDID)
+	if s.logDID != "did:web:ledger.example" {
+		t.Errorf("logDID = %q, want did:web:ledger.example", s.logDID)
 	}
 	// Compile-time interface check.
 	var _ EntryLookupWriter = w
@@ -591,12 +591,12 @@ func TestSequencer_isUniqueViolation_MatchesPgxShapes(t *testing.T) {
 // AppendLeaf path so tests can prove that no more than MaxInFlight
 // goroutines are inside it at once.
 type concurrencyTrackingTessera struct {
-	mu              sync.Mutex
-	concurrent      int
-	peakConcurrent  int
-	holdInside      time.Duration
-	nextSeq         uint64
-	assigned        map[[32]byte]uint64
+	mu             sync.Mutex
+	concurrent     int
+	peakConcurrent int
+	holdInside     time.Duration
+	nextSeq        uint64
+	assigned       map[[32]byte]uint64
 }
 
 func newConcurrencyTrackingTessera(holdInside time.Duration) *concurrencyTrackingTessera {
@@ -658,8 +658,8 @@ func TestSequencer_drainOnce_HonorsMaxInFlight(t *testing.T) {
 	ts := newConcurrencyTrackingTessera(20 * time.Millisecond)
 
 	cfg := Config{
-		MaxInFlight: maxInFlight,
-		MaxAttempts: 3,
+		MaxInFlight:  maxInFlight,
+		MaxAttempts:  3,
 		PollInterval: 1 * time.Hour, // we drive drainOnce manually
 	}
 	s := newTestSequencer(t, w, ts, cfg)

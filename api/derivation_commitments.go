@@ -2,7 +2,8 @@
 FILE PATH: api/derivation_commitments.go
 
 SMT batch DERIVATION commitment query endpoint:
-  GET /v1/derivation-commitments?seq=N → commitment whose range covers sequence N
+
+	GET /v1/derivation-commitments?seq=N → commitment whose range covers sequence N
 
 This file is NOT about v7.75 cryptographic Pedersen commitments;
 see store/derivation_commitments.go for the concept disambiguation.
@@ -72,4 +73,3 @@ func NewDerivationCommitmentQueryHandler(deps *DerivationCommitmentDeps) http.Ha
 		})
 	}
 }
-

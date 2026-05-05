@@ -17,7 +17,7 @@ var ErrQueueFull = errors.New("wal: submission queue full (backpressure)")
 var ErrNotFound = errors.New("wal: entry not found")
 
 // ErrPhantom is returned by Reconcile when an inflight entry has no
-// matching record in Tessera (the operator crashed before Tessera
+// matching record in Tessera (the ledger crashed before Tessera
 // received the entry, OR the entry was written but never sequenced).
 // True phantoms are GC'd; the caller's reconcile loop converts them
 // to terminal state.

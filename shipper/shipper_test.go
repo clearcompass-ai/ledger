@@ -4,19 +4,19 @@ FILE PATH: shipper/shipper_test.go
 Evidence-based unit tests for the Shipper. Establishes the
 load-bearing invariants:
 
-  1. Happy path: every sequenced entry uploads + MarkShipped + HWM
-     advances to last.
-  2. Out-of-order completion: workers finish in [3, 1, 2]; HWM
-     advances to 1 then 2 then 3 — never to 3 directly while 1 or
-     2 are still in flight.
-  3. Retry on failure: bytestore returns error → MarkRetry recorded;
-     after backoff, retry succeeds.
-  4. Retry exhaustion: N failures → MarkManual; no MarkShipped; HWM
-     does NOT advance past a failed entry.
-  5. Backoff respected: scan skips entries whose LastErrTs +
-     backoff(Attempts) is in the future.
-  6. Context cancel cleanly stops Run.
-  7. Metrics snapshot reflects shipped/retries/manual/HWM.
+ 1. Happy path: every sequenced entry uploads + MarkShipped + HWM
+    advances to last.
+ 2. Out-of-order completion: workers finish in [3, 1, 2]; HWM
+    advances to 1 then 2 then 3 — never to 3 directly while 1 or
+    2 are still in flight.
+ 3. Retry on failure: bytestore returns error → MarkRetry recorded;
+    after backoff, retry succeeds.
+ 4. Retry exhaustion: N failures → MarkManual; no MarkShipped; HWM
+    does NOT advance past a failed entry.
+ 5. Backoff respected: scan skips entries whose LastErrTs +
+    backoff(Attempts) is in the future.
+ 6. Context cancel cleanly stops Run.
+ 7. Metrics snapshot reflects shipped/retries/manual/HWM.
 
 The test fakes simulate the relevant WAL and Bytestore semantics:
   - fakeWAL keeps an in-memory map of (hash → meta) and (seq → hash).
@@ -234,7 +234,7 @@ type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-func wireFor(seq uint64) []byte { return []byte(fmt.Sprintf("entry-%d-content", seq)) }
+func wireFor(seq uint64) []byte   { return []byte(fmt.Sprintf("entry-%d-content", seq)) }
 func hashFor(seq uint64) [32]byte { return sha256.Sum256(wireFor(seq)) }
 
 // runUntilCondition runs the shipper in a goroutine and waits for
@@ -518,7 +518,7 @@ func TestShipper_BackoffFor_ExponentialCappedAtMax(t *testing.T) {
 		{2, 2 * time.Second},
 		{3, 4 * time.Second},
 		{4, 8 * time.Second},
-		{5, 10 * time.Second}, // 16s capped at 10s
+		{5, 10 * time.Second},  // 16s capped at 10s
 		{50, 10 * time.Second}, // overflow safe
 	}
 	for _, c := range cases {

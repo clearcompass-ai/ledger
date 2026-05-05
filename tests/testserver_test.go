@@ -5,7 +5,7 @@ FILE PATH:
 
 DESCRIPTION:
 
-	Wires up a complete operator HTTP server for integration testing.
+	Wires up a complete ledger HTTP server for integration testing.
 	Real Postgres, real middleware chain, real builder loop.
 
 KEY ARCHITECTURAL DECISIONS:
@@ -60,7 +60,7 @@ import (
 )
 
 // -------------------------------------------------------------------------------------------------
-// Test operator instance
+// Test ledger instance
 // -------------------------------------------------------------------------------------------------
 
 type testOperator struct {
@@ -174,7 +174,7 @@ func startTestOperator(t *testing.T) *testOperator {
 	// MerkleAppender. Production wires *tessera.EmbeddedAppender.
 	opSignerPriv, err := signatures.GenerateKey()
 	if err != nil {
-		t.Fatalf("operator signer key: %v", err)
+		t.Fatalf("ledger signer key: %v", err)
 	}
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
@@ -191,11 +191,11 @@ func startTestOperator(t *testing.T) *testOperator {
 			Credits:     creditStore,
 			DIDResolver: nil,
 		},
-		LogDID:             testLogDID,
-		OperatorDID:        testOperatorDID,
-		OperatorSignerPriv: opSignerPriv,
-		MaxEntrySize:       1 << 20,
-		Logger:             logger,
+		LogDID:           testLogDID,
+		LedgerDID:        testOperatorDID,
+		LedgerSignerPriv: opSignerPriv,
+		MaxEntrySize:     1 << 20,
+		Logger:           logger,
 	}
 
 	treeDeps := &api.TreeDeps{
@@ -287,7 +287,7 @@ func startTestOperator(t *testing.T) *testOperator {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("test operator did not become ready in 2.5s")
+	t.Fatal("test ledger did not become ready in 2.5s")
 	return nil
 }
 
@@ -354,7 +354,7 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 // newTestServer(t) helper whose docstring says:
 //
 //     "test harness returning *httptest.Server configured with testLogDID
-//     as cfg.LogDID and testOperatorDID as cfg.OperatorDID. Assumed
+//     as cfg.LogDID and testOperatorDID as cfg.LedgerDID. Assumed
 //     present in testserver_test.go. If unavailable, port the factory
 //     pattern from http_integration_test.go."
 //

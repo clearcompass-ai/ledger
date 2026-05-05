@@ -2,28 +2,29 @@
 FILE PATH: lifecycle/shard_manager.go
 
 DESCRIPTION:
-    Shard management — spawns a new shard (new log DID) with a genesis
-    commentary entry that carries forward the prior shard's final state.
+
+	Shard management — spawns a new shard (new log DID) with a genesis
+	commentary entry that carries forward the prior shard's final state.
 
 SDK ALIGNMENT:
-    - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-    - v7.75 split entry construction into two constructors:
-        envelope.NewEntry(header, payload, signatures)  — fully signed
-        envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
-      The genesis commentary is constructed here and signed downstream
-      (the operator that calls StartNewShard owns the institutional key
-      and signs the GenesisEntry before announcing the new shard's
-      DID), so this file uses NewUnsignedEntry.
-    - EventTime set to frozen-at timestamp to anchor the shard rotation
-      in wall-clock time (freshness policy uses this).
+  - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
+  - v7.75 split entry construction into two constructors:
+    envelope.NewEntry(header, payload, signatures)  — fully signed
+    envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
+    The genesis commentary is constructed here and signed downstream
+    (the ledger that calls StartNewShard owns the institutional key
+    and signs the GenesisEntry before announcing the new shard's
+    DID), so this file uses NewUnsignedEntry.
+  - EventTime set to frozen-at timestamp to anchor the shard rotation
+    in wall-clock time (freshness policy uses this).
 
 INVARIANTS:
-    - NewShardDID MUST differ from PriorLogDID — rotating to the same DID
-      would collapse the shard boundary.
-    - PriorFrozenRoot is recorded in the genesis payload so consumers can
-      cryptographically bind the new shard to the old one.
-    - Genesis entry is pure commentary (no Target_Root, no Authority_Path) —
-      zero SMT impact. State carries forward via replay, not by reference.
+  - NewShardDID MUST differ from PriorLogDID — rotating to the same DID
+    would collapse the shard boundary.
+  - PriorFrozenRoot is recorded in the genesis payload so consumers can
+    cryptographically bind the new shard to the old one.
+  - Genesis entry is pure commentary (no Target_Root, no Authority_Path) —
+    zero SMT impact. State carries forward via replay, not by reference.
 */
 package lifecycle
 
@@ -38,7 +39,7 @@ import (
 
 // NewShardConfig configures a shard rotation.
 type NewShardConfig struct {
-	OperatorDID     string
+	LedgerDID       string
 	PriorLogDID     string
 	NewShardDID     string
 	PriorFrozenSeq  uint64
@@ -59,6 +60,7 @@ type NewShardConfig struct {
 // A future iteration can split this into two stages:
 //   - StartNewShard returns the unsigned envelope.Entry
 //   - Caller signs and re-serializes
+//
 // For now, GenesisCanonical is best-effort: it serializes only when
 // the entry is in a state that envelope.Serialize accepts.
 type ShardRotationResult struct {
@@ -71,7 +73,7 @@ type ShardRotationResult struct {
 // StartNewShard produces the genesis commentary entry for a new shard.
 //
 // The genesis entry:
-//   - Is signed by the operator (SignerDID = OperatorDID) DOWNSTREAM —
+//   - Is signed by the ledger (SignerDID = LedgerDID) DOWNSTREAM —
 //     this function returns an unsigned entry; the caller attaches the
 //     signature.
 //   - Is bound to the NEW shard (Destination = NewShardDID).
@@ -109,10 +111,10 @@ func StartNewShard(cfg NewShardConfig) (*ShardRotationResult, error) {
 	//   - NewEntry(header, payload, signatures) for fully-signed callers
 	//   - NewUnsignedEntry(header, payload)     for build-then-sign callers
 	// StartNewShard's contract is to PRODUCE the genesis; signing
-	// happens in the calling layer (operator's institutional-key
+	// happens in the calling layer (ledger's institutional-key
 	// signing path, distinct from this lifecycle helper).
 	genesisEntry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
-		SignerDID:   cfg.OperatorDID,
+		SignerDID:   cfg.LedgerDID,
 		Destination: cfg.NewShardDID, // SDK v0.3.0: required field.
 		EventTime:   frozenAt.Unix(), // Binds rotation to wall-clock time.
 		// Target_Root=nil, Authority_Path=nil → commentary.
@@ -136,8 +138,8 @@ func StartNewShard(cfg NewShardConfig) (*ShardRotationResult, error) {
 // validateShardConfig checks the rotation invariants before entry construction.
 // Fail-loud: all error paths return sentinel-wrapped errors for dispatch.
 func validateShardConfig(cfg NewShardConfig) error {
-	if cfg.OperatorDID == "" {
-		return errors.New("lifecycle/shard: OperatorDID required")
+	if cfg.LedgerDID == "" {
+		return errors.New("lifecycle/shard: LedgerDID required")
 	}
 	if cfg.PriorLogDID == "" {
 		return errors.New("lifecycle/shard: PriorLogDID required")

@@ -3,9 +3,9 @@ FILE PATH: gossipstore/keyspace_extras.go
 
 Key encoders/decoders + on-disk shapes for the v0.9.6 sub-prefixes:
 
-  0x09  binding inverted index   (Filter.Binding O(1) lookup)
-  0x0A  splitid index            (EquivocationScanner subscribes here)
-  0x0B  equivocation projection  (read-side cache for /by-split-id)
+	0x09  binding inverted index   (Filter.Binding O(1) lookup)
+	0x0A  splitid index            (EquivocationScanner subscribes here)
+	0x0B  equivocation projection  (read-side cache for /by-split-id)
 
 Split from keyspace.go to keep both files under the 300-LOC budget.
 */
@@ -61,17 +61,17 @@ func eventIDFromBindingIndexKey(k []byte) ([32]byte, error) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 0x0A — splitid index (operator-local detection trigger)
+// 0x0A — splitid index (ledger-local detection trigger)
 // ─────────────────────────────────────────────────────────────────────
 
 // SplitIDIndexEntry is the value stored under the splitid index.
 // Carries everything the EquivocationScanner needs to construct an
 // EntryCommitmentEquivocationFinding without re-reading the WAL.
 type SplitIDIndexEntry struct {
-	// EquivocatorDID is the operator DID that signed this entry.
-	// Today every entry is signed by THIS operator, so all index
+	// EquivocatorDID is the ledger DID that signed this entry.
+	// Today every entry is signed by THIS ledger, so all index
 	// values share one DID; the field is explicit so a future
-	// multi-tenant operator (one binary serving multiple log DIDs)
+	// multi-tenant ledger (one binary serving multiple log DIDs)
 	// can still be detected.
 	EquivocatorDID string `json:"equivocator_did"`
 
@@ -81,7 +81,7 @@ type SplitIDIndexEntry struct {
 	// (schema_id, split_id) are the equivocation signature.
 	CanonicalHash [32]byte `json:"canonical_hash"`
 
-	// SigBytes is the operator's entry-signature over
+	// SigBytes is the ledger's entry-signature over
 	// CanonicalHash. The scanner copies this into the gossip
 	// event's per-side payload so consumers verify without
 	// fetching the entry.
@@ -207,8 +207,8 @@ func equivProjKey(binding [32]byte) []byte {
 // (the SDK consumer feeds this back into envelope.ParseEntry to
 // reconstruct domain payloads). LogTimeMicros is unix-micros so
 // the read handler reconstructs the time.Time deterministically;
-// LogDID is the operator's log DID (constant per operator binary
-// but stored per-row so a future multi-tenant operator can serve
+// LogDID is the ledger's log DID (constant per ledger binary
+// but stored per-row so a future multi-tenant ledger can serve
 // rows from multiple log DIDs without ambiguity).
 type EntryLookupIndexEntry struct {
 	CanonicalBytes []byte `json:"canonical_bytes"`

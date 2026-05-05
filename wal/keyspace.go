@@ -3,19 +3,20 @@ FILE PATH: wal/keyspace.go
 
 BadgerDB keyspace layout for the WAL.
 
-  entry:<hash:32>          → wire bytes        (immutable, write-once)
-  meta:<hash:32>            → meta record       (state, seq, attempts)
-  seq_index:<seq:8>         → hash:32           (after sequencing)
-  inflight:<hash:32>        → ts:8 (unix-nano)  (breadcrumb across Add)
-  hwm                       → seq:8             (high-water mark for shipped)
-  tessera_dedup:<id:32>     → seq:8             (Tessera Deduplicator backing)
+	entry:<hash:32>          → wire bytes        (immutable, write-once)
+	meta:<hash:32>            → meta record       (state, seq, attempts)
+	seq_index:<seq:8>         → hash:32           (after sequencing)
+	inflight:<hash:32>        → ts:8 (unix-nano)  (breadcrumb across Add)
+	hwm                       → seq:8             (high-water mark for shipped)
+	tessera_dedup:<id:32>     → seq:8             (Tessera Deduplicator backing)
 
 State machine on meta:
-  pending   — written by Submit, before tessera.Add
-  sequenced — written by Sequence (after tessera.Add returned a seq)
-  shipped   — written by MarkShipped (after bytestore upload completed)
-  manual    — written by Shipper after N retry-exhausted attempts
-              (operator-side metric only — bytes stay in WAL)
+
+	pending   — written by Submit, before tessera.Add
+	sequenced — written by Sequence (after tessera.Add returned a seq)
+	shipped   — written by MarkShipped (after bytestore upload completed)
+	manual    — written by Shipper after N retry-exhausted attempts
+	            (ledger-side metric only — bytes stay in WAL)
 
 INVARIANTS:
   - entry:<hash> is set ONCE per (hash) and never deleted while the
@@ -29,7 +30,7 @@ INVARIANTS:
     to ship.
   - inflight:<hash> exists only between Submit and Sequence. The
     Reconciler scans this on boot to catch entries that were Add'd
-    to Tessera but never Sequence'd locally (operator crashed in
+    to Tessera but never Sequence'd locally (ledger crashed in
     the window).
   - tessera_dedup is a separate keyspace prefix because Tessera's
     Deduplicator owns it; we never read or write under that prefix
@@ -44,12 +45,12 @@ import (
 // Keyspace prefixes. Single-byte tags chosen so the BadgerDB sort
 // order groups related keys (e.g., all `entry:` keys are contiguous).
 const (
-	prefixEntry         byte = 0x01
-	prefixMeta          byte = 0x02
-	prefixSeqIndex      byte = 0x03
-	prefixInflight      byte = 0x04
-	prefixHWM           byte = 0x05
-	prefixTesseraDedup  byte = 0x06
+	prefixEntry        byte = 0x01
+	prefixMeta         byte = 0x02
+	prefixSeqIndex     byte = 0x03
+	prefixInflight     byte = 0x04
+	prefixHWM          byte = 0x05
+	prefixTesseraDedup byte = 0x06
 )
 
 // entryKey builds the storage key for an entry's wire bytes.

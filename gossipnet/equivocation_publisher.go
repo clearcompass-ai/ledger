@@ -18,30 +18,30 @@ type's unexported fields make it impossible to construct without
 running the verification.
 
 This publisher takes only the verified type as input. Constructing
-the verified type elsewhere in the operator (the equivocation
+the verified type elsewhere in the ledger (the equivocation
 monitor) is the entry point; this publisher is the egress point.
 That separation closes the "I have an EquivocationFinding, let me
 just publish it" trap.
 
 # OPERATIONAL FLOW
 
-  monitor (witness/equivocation_monitor.go)
-    │   detects local-vs-peer disagreement
-    │   reconstructs witness.EquivocationProof
-    │   constructs findings.NewEquivocationFinding(proof, ourEndpoint)
-    │   calls finding.Verify(witnessKeySet, K)
-    │     ↓ (only on cryptographic verification success)
-    │   *findings.VerifiedEquivocationFinding
-    └── EquivocationPublisher.Publish(verified)
-          ├── extracts the inner *EquivocationFinding via verified.AsEvent()
-          ├── reads gossip.Store.Head() for chain-discipline state
-          ├── gossip.Sign as KindEquivocationFinding
-          ├── gossip.Store.Append (local persistence)
-          └── gossip.Sink.Broadcast (fan-out via BufferedSink)
+	monitor (witness/equivocation_monitor.go)
+	  │   detects local-vs-peer disagreement
+	  │   reconstructs witness.EquivocationProof
+	  │   constructs findings.NewEquivocationFinding(proof, ourEndpoint)
+	  │   calls finding.Verify(witnessKeySet, K)
+	  │     ↓ (only on cryptographic verification success)
+	  │   *findings.VerifiedEquivocationFinding
+	  └── EquivocationPublisher.Publish(verified)
+	        ├── extracts the inner *EquivocationFinding via verified.AsEvent()
+	        ├── reads gossip.Store.Head() for chain-discipline state
+	        ├── gossip.Sign as KindEquivocationFinding
+	        ├── gossip.Store.Append (local persistence)
+	        └── gossip.Sink.Broadcast (fan-out via BufferedSink)
 
 # RECONSTRUCTION FROM EXISTING MONITOR
 
-The current witness.EquivocationMonitor (operator side) detects
+The current witness.EquivocationMonitor (ledger side) detects
 divergence by comparing tree_size + root_hash but does NOT capture
 peer cosignatures. To produce a *VerifiedEquivocationFinding the
 monitor needs full types.CosignedTreeHead values for both sides;
@@ -83,7 +83,7 @@ type EquivocationPublisher struct {
 // All fields parallel STHPublisher's config — the publisher is
 // the same shape but emits a different Kind. Config values
 // SHOULD be the same as STHPublisher (same originator, same
-// signing key) so the operator's chain in the gossip Store
+// signing key) so the ledger's chain in the gossip Store
 // covers all of its own emissions.
 type EquivocationPublisherConfig struct {
 	Store     sdkgossip.Store
@@ -91,7 +91,7 @@ type EquivocationPublisherConfig struct {
 	Signer    sdkcosign.WitnessSigner
 	NetworkID sdkcosign.NetworkID
 
-	// Originator is the operator's own DID. Same DID used for
+	// Originator is the ledger's own DID. Same DID used for
 	// STHPublisher; the gossip Store maintains one chain per
 	// originator regardless of Kind.
 	Originator string
@@ -187,7 +187,7 @@ func (p *EquivocationPublisher) Publish(ctx context.Context, verified *findings.
 
 	p.logger.Error("EQUIVOCATION PUBLISHED",
 		"verified_quorum", verified.VerifiedAtQuorum(),
-		"operator_endpoint", verified.OperatorEndpoint(),
+		"ledger_endpoint", verified.OperatorEndpoint(),
 		"lamport", nextLamport,
 	)
 }

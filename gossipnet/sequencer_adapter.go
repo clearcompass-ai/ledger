@@ -68,7 +68,7 @@ func (a *SequencerSplitIDAdapter) WriteSplitIDIndexEntry(
 // SequencerEntryLookupAdapter wraps a *gossipstore.BadgerStore so
 // it satisfies sequencer.EntryLookupWriter. Construct once at
 // startup and pass to sequencer.Sequencer.WithEntryLookup along
-// with the operator's log DID.
+// with the ledger's log DID.
 type SequencerEntryLookupAdapter struct {
 	store *gossipstore.BadgerStore
 }

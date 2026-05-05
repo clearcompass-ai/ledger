@@ -7,47 +7,47 @@ high-water mark through contiguous runs.
 
 PIPELINE STAGES:
 
-  1. scan         — every PollInterval, IterateSequenced(fromSeq=HWM)
-                    yields candidate entries. Per-entry meta is
-                    consulted to enforce exponential backoff on
-                    retried uploads.
-  2. dispatch     — entries are pushed onto a bounded work channel.
-                    Workers pull from the channel.
-  3. ship         — N concurrent workers Read wire bytes from the
-                    WAL, WriteEntry to the bytestore, MarkShipped
-                    in the WAL, then signal completion.
-  4. advance HWM  — single hwmAdvancer goroutine drains completion
-                    signals and advances the WAL's HWM only through
-                    contiguous runs. Out-of-order completions are
-                    held in an in-memory above-HWM set until their
-                    predecessor lands.
+ 1. scan         — every PollInterval, IterateSequenced(fromSeq=HWM)
+    yields candidate entries. Per-entry meta is
+    consulted to enforce exponential backoff on
+    retried uploads.
+ 2. dispatch     — entries are pushed onto a bounded work channel.
+    Workers pull from the channel.
+ 3. ship         — N concurrent workers Read wire bytes from the
+    WAL, WriteEntry to the bytestore, MarkShipped
+    in the WAL, then signal completion.
+ 4. advance HWM  — single hwmAdvancer goroutine drains completion
+    signals and advances the WAL's HWM only through
+    contiguous runs. Out-of-order completions are
+    held in an in-memory above-HWM set until their
+    predecessor lands.
 
 OUT-OF-ORDER COMPLETION:
 
-  Workers can complete in any order (network jitter, retry timing,
-  per-entry size differences). HWM must only advance over a
-  contiguous run from HWM+1, otherwise read paths that promise
-  "HWM is the highest shipped seq" would lie. The hwmAdvancer
-  enforces this invariant with a single-goroutine state machine
-  and an in-memory completed-above-HWM set.
+	Workers can complete in any order (network jitter, retry timing,
+	per-entry size differences). HWM must only advance over a
+	contiguous run from HWM+1, otherwise read paths that promise
+	"HWM is the highest shipped seq" would lie. The hwmAdvancer
+	enforces this invariant with a single-goroutine state machine
+	and an in-memory completed-above-HWM set.
 
 BACKOFF + RETRY:
 
-  Upload failure → wal.MarkRetry (Attempts++, LastErrTs=now). The
-  scan loop's backoff filter checks LastErrTs + backoff(Attempts);
-  entries inside their backoff window are skipped on this scan
-  cycle and re-evaluated on the next.
+	Upload failure → wal.MarkRetry (Attempts++, LastErrTs=now). The
+	scan loop's backoff filter checks LastErrTs + backoff(Attempts);
+	entries inside their backoff window are skipped on this scan
+	cycle and re-evaluated on the next.
 
-  After MaxAttempts, an entry is marked StateManual. Bytes stay in
-  the WAL (no DLQ — no separate storage tier); the operator's
-  metrics surface the manual queue for human intervention.
+	After MaxAttempts, an entry is marked StateManual. Bytes stay in
+	the WAL (no DLQ — no separate storage tier); the ledger's
+	metrics surface the manual queue for human intervention.
 
 LIFECYCLE:
 
-  Run blocks until ctx is cancelled. The composition root listens
-  on a fatal channel so any unrecoverable Shipper error (none in
-  the current implementation — all Shipper errors are per-entry
-  and logged) propagates to panic.
+	Run blocks until ctx is cancelled. The composition root listens
+	on a fatal channel so any unrecoverable Shipper error (none in
+	the current implementation — all Shipper errors are per-entry
+	and logged) propagates to panic.
 */
 package shipper
 

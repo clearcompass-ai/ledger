@@ -1,25 +1,25 @@
 /*
 FILE PATH: wal/wal.go
 
-Package wal is the operator's write-ahead log + byte-of-record store
+Package wal is the ledger's write-ahead log + byte-of-record store
 for entries between admission and shipping. Backed by BadgerDB.
 
 PURPOSE:
 
-  Under v7.75 admission, the operator MUST return HTTP 202 only after
-  the wire bytes are durable on disk. The legacy code path returned
-  202 after a Postgres INSERT, which works at small scale but
-  thrashes Postgres autovacuum at 10B+ entries and ties admission
-  latency to network-bound network storage. The WAL replaces that:
+	Under v7.75 admission, the ledger MUST return HTTP 202 only after
+	the wire bytes are durable on disk. The legacy code path returned
+	202 after a Postgres INSERT, which works at small scale but
+	thrashes Postgres autovacuum at 10B+ entries and ties admission
+	latency to network-bound network storage. The WAL replaces that:
 
-    1. Submit blocks until bytes are fsync'd to local NVMe (Badger's
-       WAL on the operator host).
-    2. Tessera assigns the sequence number.
-    3. Postgres entry_index INSERT records sidecar metadata.
-    4. The Shipper migrates bytes to the production byte store
-       (GCS/S3) asynchronously and advances HWM.
-    5. Reads of pre-shipped entries serve from the WAL; reads of
-       shipped entries 302-redirect to the byte store's presigned URL.
+	  1. Submit blocks until bytes are fsync'd to local NVMe (Badger's
+	     WAL on the ledger host).
+	  2. Tessera assigns the sequence number.
+	  3. Postgres entry_index INSERT records sidecar metadata.
+	  4. The Shipper migrates bytes to the production byte store
+	     (GCS/S3) asynchronously and advances HWM.
+	  5. Reads of pre-shipped entries serve from the WAL; reads of
+	     shipped entries 302-redirect to the byte store's presigned URL.
 
 ARCHITECTURE:
 
@@ -34,16 +34,16 @@ ARCHITECTURE:
 
 KEYSPACE:
 
-  See keyspace.go for the on-disk layout. All paths use prefix tags
-  so a future migration can add or remove a category without
-  rewriting existing keys.
+	See keyspace.go for the on-disk layout. All paths use prefix tags
+	so a future migration can add or remove a category without
+	rewriting existing keys.
 
 OPENING THE DB:
 
-  Open returns a Badger DB configured with SyncWrites=false (the
-  Committer manages fsync explicitly via db.Sync()) and tuned for
-  the operator's write-heavy workload. Caller is responsible for
-  closing both the Committer and the DB at shutdown.
+	Open returns a Badger DB configured with SyncWrites=false (the
+	Committer manages fsync explicitly via db.Sync()) and tuned for
+	the ledger's write-heavy workload. Caller is responsible for
+	closing both the Committer and the DB at shutdown.
 */
 package wal
 
@@ -55,7 +55,7 @@ import (
 )
 
 // Open opens (or creates) a BadgerDB at path with options tuned for
-// the operator's write path.
+// the ledger's write path.
 //
 // SyncWrites=false: the Committer manages fsync explicitly via
 // db.Sync() after each group-commit batch. Passing SyncWrites=true

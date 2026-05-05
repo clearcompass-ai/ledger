@@ -10,13 +10,13 @@ WHAT'S COVERED:
 	  - Panics on nil deps.
 	  - Panics on non-positive EpochWindowSeconds.
 	  - Panics on empty LogDID.
-	  - Panics on empty OperatorDID.
-	  - Panics on nil OperatorSignerPriv.
+	  - Panics on empty LedgerDID.
+	  - Panics on nil LedgerSignerPriv.
 
 	Happy path:
 	  - Returns 202 + signed SCT.
-	  - SCT signature verifies against the operator's public key.
-	  - SCT carries the configured LogDID, OperatorDID, version 1.
+	  - SCT signature verifies against the ledger's public key.
+	  - SCT carries the configured LogDID, LedgerDID, version 1.
 	  - WAL.Submit invoked exactly once.
 
 	Error paths:
@@ -48,17 +48,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/clearcompass-ai/attesta/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
 	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
-	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/apitypes"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
-
 
 // ─────────────────────────────────────────────────────────────────────
 // Constructor guards
@@ -73,12 +72,12 @@ func TestNewSubmissionHandler_MissingEpochPanics(t *testing.T) {
 	priv, _ := signatures.GenerateKey()
 	defer expectPanic(t, "EpochWindowSeconds")
 	NewSubmissionHandler(&SubmissionDeps{
-		Admission:          AdmissionConfig{EpochWindowSeconds: 0},
-		OperatorDID:        "did:test:operator",
-		LogDID:             "did:test:log",
-		MaxEntrySize:       1 << 20,
-		Logger:             discardLogger(),
-		OperatorSignerPriv: priv,
+		Admission:        AdmissionConfig{EpochWindowSeconds: 0},
+		LedgerDID:        "did:test:ledger",
+		LogDID:           "did:test:log",
+		MaxEntrySize:     1 << 20,
+		Logger:           discardLogger(),
+		LedgerSignerPriv: priv,
 	})
 }
 
@@ -86,37 +85,37 @@ func TestNewSubmissionHandler_MissingLogDIDPanics(t *testing.T) {
 	priv, _ := signatures.GenerateKey()
 	defer expectPanic(t, "LogDID")
 	NewSubmissionHandler(&SubmissionDeps{
-		Admission:          AdmissionConfig{EpochWindowSeconds: 3600},
-		OperatorDID:        "did:test:operator",
-		LogDID:             "",
-		MaxEntrySize:       1 << 20,
-		Logger:             discardLogger(),
-		OperatorSignerPriv: priv,
+		Admission:        AdmissionConfig{EpochWindowSeconds: 3600},
+		LedgerDID:        "did:test:ledger",
+		LogDID:           "",
+		MaxEntrySize:     1 << 20,
+		Logger:           discardLogger(),
+		LedgerSignerPriv: priv,
 	})
 }
 
-func TestNewSubmissionHandler_MissingOperatorDIDPanics(t *testing.T) {
+func TestNewSubmissionHandler_MissingLedgerDIDPanics(t *testing.T) {
 	priv, _ := signatures.GenerateKey()
-	defer expectPanic(t, "OperatorDID")
+	defer expectPanic(t, "LedgerDID")
 	NewSubmissionHandler(&SubmissionDeps{
-		Admission:          AdmissionConfig{EpochWindowSeconds: 3600},
-		OperatorDID:        "",
-		LogDID:             "did:test:log",
-		MaxEntrySize:       1 << 20,
-		Logger:             discardLogger(),
-		OperatorSignerPriv: priv,
+		Admission:        AdmissionConfig{EpochWindowSeconds: 3600},
+		LedgerDID:        "",
+		LogDID:           "did:test:log",
+		MaxEntrySize:     1 << 20,
+		Logger:           discardLogger(),
+		LedgerSignerPriv: priv,
 	})
 }
 
 func TestNewSubmissionHandler_NilSignerPanics(t *testing.T) {
-	defer expectPanic(t, "OperatorSignerPriv")
+	defer expectPanic(t, "LedgerSignerPriv")
 	NewSubmissionHandler(&SubmissionDeps{
-		Admission:          AdmissionConfig{EpochWindowSeconds: 3600},
-		OperatorDID:        "did:test:operator",
-		LogDID:             "did:test:log",
-		MaxEntrySize:       1 << 20,
-		Logger:             discardLogger(),
-		OperatorSignerPriv: nil,
+		Admission:        AdmissionConfig{EpochWindowSeconds: 3600},
+		LedgerDID:        "did:test:ledger",
+		LogDID:           "did:test:log",
+		MaxEntrySize:     1 << 20,
+		Logger:           discardLogger(),
+		LedgerSignerPriv: nil,
 	})
 }
 
@@ -145,8 +144,8 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if sct.LogDID != deps.LogDID {
 		t.Errorf("SCT.LogDID = %q, want %q", sct.LogDID, deps.LogDID)
 	}
-	if sct.SignerDID != deps.OperatorDID {
-		t.Errorf("SCT.SignerDID = %q, want %q", sct.SignerDID, deps.OperatorDID)
+	if sct.SignerDID != deps.LedgerDID {
+		t.Errorf("SCT.SignerDID = %q, want %q", sct.SignerDID, deps.LedgerDID)
 	}
 	if sct.Version != sdksct.Version {
 		t.Errorf("SCT.Version = %d, want %d", sct.Version, sdksct.Version)
@@ -163,35 +162,35 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 // resubmission absorbs the retry as SEMANTIC idempotency (not
 // byte idempotency — ECDSA k-randomness + HSM compatibility
 // preclude byte-identical signatures without coupling the
-// operator to RFC 6979 / non-HSM keys).
+// ledger to RFC 6979 / non-HSM keys).
 //
 // The full SLA-correctness assertion chain:
 //
-//   Claim equivalency:
-//     1. SCT_A.SignerDID     == SCT_B.SignerDID
-//     2. SCT_A.CanonicalHash == SCT_B.CanonicalHash
-//     3. SCT_A.LogTime       == SCT_B.LogTime
-//        (clamping the LogTime is what makes MMD honor the
-//        original admission moment — a fresh LogTime on retry
-//        would reset the MMD clock = SLA violation)
-//     4. SCT_A.LogDID        == SCT_B.LogDID
+//	Claim equivalency:
+//	  1. SCT_A.SignerDID     == SCT_B.SignerDID
+//	  2. SCT_A.CanonicalHash == SCT_B.CanonicalHash
+//	  3. SCT_A.LogTime       == SCT_B.LogTime
+//	     (clamping the LogTime is what makes MMD honor the
+//	     original admission moment — a fresh LogTime on retry
+//	     would reset the MMD clock = SLA violation)
+//	  4. SCT_A.LogDID        == SCT_B.LogDID
 //
-//   Cryptographic validity (both bytes-distinct, both valid):
-//     5. Verify(opPubKey, SCT_A) == nil
-//     6. Verify(opPubKey, SCT_B) == nil
+//	Cryptographic validity (both bytes-distinct, both valid):
+//	  5. Verify(opPubKey, SCT_A) == nil
+//	  6. Verify(opPubKey, SCT_B) == nil
 //
-//   State isolation (load-bearing "no double-write"):
-//     7. WAL.SubmitCount(after) == WAL.SubmitCount(before) + 1
-//        (exactly one durable write for two semantically-equivalent
-//        retries)
-//     8. Credit deduction is reachable ONLY in the
-//        non-replay path. The handler's idempotentReplay branch
-//        returns BEFORE deductCreditModeA — structurally
-//        guaranteed in api/submission.go. Mode B test path skips
-//        deduct entirely (unauthenticated stamps); a Mode A
-//        credit-isolation test would require a CreditStore stub
-//        and is left as a follow-up if/when authenticated tests
-//        ship.
+//	State isolation (load-bearing "no double-write"):
+//	  7. WAL.SubmitCount(after) == WAL.SubmitCount(before) + 1
+//	     (exactly one durable write for two semantically-equivalent
+//	     retries)
+//	  8. Credit deduction is reachable ONLY in the
+//	     non-replay path. The handler's idempotentReplay branch
+//	     returns BEFORE deductCreditModeA — structurally
+//	     guaranteed in api/submission.go. Mode B test path skips
+//	     deduct entirely (unauthenticated stamps); a Mode A
+//	     credit-isolation test would require a CreditStore stub
+//	     and is left as a follow-up if/when authenticated tests
+//	     ship.
 func TestV1Handler_SemanticIdempotency(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
 	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("idempotent"), 1, 3600)
@@ -266,11 +265,11 @@ func TestV1Handler_SemanticIdempotency(t *testing.T) {
 // crypto/admission.ProofFromWire promotes it to uint32 inside
 // types.AdmissionProof; VerifyStamp then enforces
 //
-//   1 <= proof.Difficulty <= 256
+//	1 <= proof.Difficulty <= 256
 //
 // (difficultyMin = 1, difficultyMax = 256). On a uint8 wire that
 // means a wire byte of 0x00 → proof.Difficulty=0 → rejected as
-// ErrStampDifficultyOutOfRange. This test pins the operator-side
+// ErrStampDifficultyOutOfRange. This test pins the ledger-side
 // validation so the SDK's bounds-check actually fires when a
 // pathological client (or a wrapped int → byte cast bug) sends
 // difficulty=0.
@@ -324,7 +323,7 @@ func TestV1Handler_ZeroDifficulty_Rejected(t *testing.T) {
 	if rr.Code == http.StatusAccepted {
 		t.Fatalf("zero-difficulty entry was admitted; expected rejection. body: %s", rr.Body.String())
 	}
-	// 403 is the operator's stamp-rejection class; either 403 or
+	// 403 is the ledger's stamp-rejection class; either 403 or
 	// 422 is acceptable (validation failure surface). What we
 	// MUST NOT see is 202 (accepted).
 	if rr.Code != http.StatusForbidden && rr.Code != http.StatusUnprocessableEntity {

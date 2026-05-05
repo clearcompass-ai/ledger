@@ -17,14 +17,14 @@
 #     5. api/submission.go: has step 3a (Validate), 3b (destination), 3c (freshness)
 #     6. api/queries.go: uses envelope.EntryIdentity after Deserialize
 #     7. lifecycle/shard_manager.go: NewEntry has Destination+EventTime
-#     8. cmd/operator/main.go: wires LogDID to PublisherConfig and
+#     8. cmd/ledger/main.go: wires LogDID to PublisherConfig and
 #        NewCommitmentPublisher
 #
 #   SOURCE (must be absent):
 #     9. No builder/loop.go references to sha256.Sum256(wireBytes) or AppendSignature
 #        at the Merkle append site
-#    10. No EntryLeafHash anywhere in operator source (RFC 6962 wrapping is
-#        Tessera's job, not the operator's)
+#    10. No EntryLeafHash anywhere in ledger source (RFC 6962 wrapping is
+#        Tessera's job, not the ledger's)
 #
 #   BUILD:
 #    11. go vet ./... clean
@@ -37,7 +37,7 @@
 #   0 — all invariants hold
 #   1 — at least one invariant failed (specifics printed)
 #
-# Run from operator repo root.
+# Run from ledger repo root.
 
 set -uo pipefail
 
@@ -147,29 +147,29 @@ must_contain "lifecycle/shard_manager.go" \
     "EventTime:" \
     "lifecycle/shard_manager.go genesis has EventTime"
 
-must_contain "cmd/operator/main.go" \
+must_contain "cmd/ledger/main.go" \
     "cfg\.LogDID" \
-    "cmd/operator/main.go threads cfg.LogDID"
+    "cmd/ledger/main.go threads cfg.LogDID"
 
-must_contain "cmd/operator/main.go" \
+must_contain "cmd/ledger/main.go" \
     "NewCommitmentPublisher(" \
-    "cmd/operator/main.go calls NewCommitmentPublisher"
+    "cmd/ledger/main.go calls NewCommitmentPublisher"
 
 echo ""
 bold "━━━ SOURCE: absence checks (must NOT regress) ━━━"
 
-# EntryLeafHash is for consumer-side verification. Operator MUST NOT use
+# EntryLeafHash is for consumer-side verification. Ledger MUST NOT use
 # it — Tessera-personality applies RFC 6962 leaf prefix internally, and
-# EntryLeafHash in the operator would double-apply it.
+# EntryLeafHash in the ledger would double-apply it.
 if grep -rn "envelope\.EntryLeafHash" --include="*.go" \
         --exclude-dir=vendor --exclude-dir=.git . 2>/dev/null | \
         grep -v "_test\.go\|EntryLeafHash is for" >/dev/null; then
-    fail "EntryLeafHash is referenced in non-test operator code — must use EntryIdentity at AppendLeaf sites"
+    fail "EntryLeafHash is referenced in non-test ledger code — must use EntryIdentity at AppendLeaf sites"
     grep -rn "envelope\.EntryLeafHash" --include="*.go" \
         --exclude-dir=vendor --exclude-dir=.git . | \
         grep -v "_test\.go\|EntryLeafHash is for" | head -5 | sed 's/^/      /'
 else
-    pass "No EntryLeafHash in operator source (correct — Tessera applies it)"
+    pass "No EntryLeafHash in ledger source (correct — Tessera applies it)"
 fi
 
 # The old Merkle leaf scheme computed sha256 over wireBytes. Must be gone.
@@ -198,9 +198,9 @@ E_COUNT=$(grep -rn "sha256\.Sum256" --include="*.go" \
     grep -v "witness/serve\.go\|tessera/proof_adapter\.go\|crypto/" | wc -l | tr -d ' ')
 
 if [[ "$E_COUNT" == "0" ]]; then
-    pass "Non-test operator code has zero stray sha256.Sum256 calls"
+    pass "Non-test ledger code has zero stray sha256.Sum256 calls"
 else
-    warn "Non-test operator code has $E_COUNT sha256.Sum256 sites — review each:"
+    warn "Non-test ledger code has $E_COUNT sha256.Sum256 sites — review each:"
     grep -rn "sha256\.Sum256" --include="*.go" \
         --exclude-dir=vendor --exclude-dir=.git \
         --exclude="*_test.go" \

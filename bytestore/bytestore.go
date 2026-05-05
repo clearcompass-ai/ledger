@@ -1,44 +1,46 @@
 /*
 FILE PATH: bytestore/bytestore.go
 
-Package bytestore is the operator's wire-byte storage abstraction.
+Package bytestore is the ledger's wire-byte storage abstraction.
 
 HEXAGONAL DESIGN:
 
-  The operator depends only on the interfaces defined here. Adapters
-  (gcs.go, s3.go, memory.go) live in this package but are
-  interchangeable through the factory (factory.go). Production
-  swaps backends via OPERATOR_BYTE_STORE_BACKEND={gcs|s3} without
-  touching admission, builder, or read code.
+	The ledger depends only on the interfaces defined here. Adapters
+	(gcs.go, s3.go, memory.go) live in this package but are
+	interchangeable through the factory (factory.go). Production
+	swaps backends via LEDGER_BYTE_STORE_BACKEND={gcs|s3} without
+	touching admission, builder, or read code.
 
-  Why both GCS and S3:
-    - GCS native: workload identity / ADC on GCE/GKE; integrates
-      with Google's IAM signed-URL primitive natively.
-    - S3 (AWS SDK v2): same wire as RustFS / Cloudflare R2 /
-      AWS S3. Local-dev gets a paved path via a RustFS container;
-      future cloud migrations don't require a code change.
+	Why both GCS and S3:
+	  - GCS native: workload identity / ADC on GCE/GKE; integrates
+	    with Google's IAM signed-URL primitive natively.
+	  - S3 (AWS SDK v2): same wire as RustFS / Cloudflare R2 /
+	    AWS S3. Local-dev gets a paved path via a RustFS container;
+	    future cloud migrations don't require a code change.
 
 TESSERA-ALIGNMENT INVARIANT:
-  Entries are opaque []byte blobs keyed by (sequence, hash) — the
-  same shape upstream Tessera consumes. The byte store has no
-  knowledge of envelope structure; whatever bytes are written are
-  what reads return.
 
-  Under v7.75 the wire bytes ARE the canonical bytes (the multi-sig
-  section is appended INSIDE the canonical form by envelope.Serialize),
-  so a single blob carries everything a consumer needs;
-  envelope.Deserialize recovers the structure on the read path.
+	Entries are opaque []byte blobs keyed by (sequence, hash) — the
+	same shape upstream Tessera consumes. The byte store has no
+	knowledge of envelope structure; whatever bytes are written are
+	what reads return.
+
+	Under v7.75 the wire bytes ARE the canonical bytes (the multi-sig
+	section is appended INSIDE the canonical form by envelope.Serialize),
+	so a single blob carries everything a consumer needs;
+	envelope.Deserialize recovers the structure on the read path.
 
 OBJECT KEY SHAPE:
-  All adapters use the same path layout via layoutKey:
 
-    <prefix>/<seq:016x>/<hash_hex>
+	All adapters use the same path layout via layoutKey:
 
-  Hash in the path is what makes the 302 redirect path safe: the
-  consumer can verify statically that the URL points at the bytes
-  the operator promised, before fetching. Adapters MUST use
-  layoutKey for the canonical name so a bucket written by one
-  adapter is readable by any other (useful for migrations).
+	  <prefix>/<seq:016x>/<hash_hex>
+
+	Hash in the path is what makes the 302 redirect path safe: the
+	consumer can verify statically that the URL points at the bytes
+	the ledger promised, before fetching. Adapters MUST use
+	layoutKey for the canonical name so a bucket written by one
+	adapter is readable by any other (useful for migrations).
 
 INTERFACE SURFACE:
   - Reader: ReadEntry, ReadEntryBatch — opaque byte fetch
@@ -98,7 +100,7 @@ type Writer interface {
 
 // Presigner issues a time-bounded URL that grants HTTP GET access
 // to a single entry's bytes. Used by api/entries.go for the 302
-// redirect path: the operator avoids proxying 1MB payloads inline
+// redirect path: the ledger avoids proxying 1MB payloads inline
 // for shipped entries.
 //
 // The returned URL embeds the bucket-side path, which contains the

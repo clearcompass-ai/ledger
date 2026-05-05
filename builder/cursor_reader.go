@@ -54,7 +54,7 @@ type BatchReader interface {
 	//
 	// tx is the transaction CommitBatch will run inside. The cursor
 	// reader ignores it (the builder's singleton-goroutine guarantee,
-	// enforced by the operator's advisory lock, makes per-row
+	// enforced by the ledger's advisory lock, makes per-row
 	// locking unnecessary).
 	BeginBatch(ctx context.Context, tx pgx.Tx, batchSize int) ([]uint64, error)
 
@@ -85,9 +85,9 @@ type BatchReader interface {
 type CursorReader struct {
 	cursor *store.SequenceCursor
 
-	mu        sync.Mutex
-	current   uint64 // in-memory cursor; -1 sentinel via initialized=false
-	initFromDB bool  // false until Read() bootstraps from the database
+	mu         sync.Mutex
+	current    uint64 // in-memory cursor; -1 sentinel via initialized=false
+	initFromDB bool   // false until Read() bootstraps from the database
 }
 
 // NewCursorReader constructs a reader over the supplied cursor.
@@ -101,7 +101,7 @@ func NewCursorReader(cursor *store.SequenceCursor) *CursorReader {
 // BeginBatch returns up to batchSize sequence numbers from
 // entry_index whose sequence_number > current cursor, ASC. tx is
 // ignored — the cursor reader does not need transactional
-// locking; the operator's advisory-lock-enforced singleton
+// locking; the ledger's advisory-lock-enforced singleton
 // builder makes per-row locking redundant.
 func (r *CursorReader) BeginBatch(ctx context.Context, _ pgx.Tx, batchSize int) ([]uint64, error) {
 	r.mu.Lock()

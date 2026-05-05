@@ -2,7 +2,7 @@
 FILE PATH: gossipnet/publisher.go
 
 STHPublisher publishes a KindCosignedTreeHead event into the
-operator's gossip Sink after each successful K-of-N collection.
+ledger's gossip Sink after each successful K-of-N collection.
 
 # WHY A SEPARATE COMPONENT
 
@@ -21,29 +21,29 @@ no-ops the publish call.
 
 Per successful K-of-N:
 
-  Kind:        KindCosignedTreeHead
-  Body:        CosignedTreeHeadFinding {Head, OperatorEndpoint}
-  Originator:  operator's own DID
-  PrevHash:    last STH event's EventID for this originator
-                 (read from gossipstore.LatestSTH)
-  Lamport:     last STH lamport + 1
-                 (so monotonicity holds inside the
-                  KindCosignedTreeHead chain even when other
-                  Kinds also use this originator's lamport space)
+	Kind:        KindCosignedTreeHead
+	Body:        CosignedTreeHeadFinding {Head, OperatorEndpoint}
+	Originator:  ledger's own DID
+	PrevHash:    last STH event's EventID for this originator
+	               (read from gossipstore.LatestSTH)
+	Lamport:     last STH lamport + 1
+	               (so monotonicity holds inside the
+	                KindCosignedTreeHead chain even when other
+	                Kinds also use this originator's lamport space)
 
 # CHAIN-DISCIPLINE NOTE
 
 Per the SDK's gossip.Store contract, all events from one
 originator share a single lamport space, NOT a per-Kind
 lamport space. The publisher reads Head() from the Store and uses
-that — every event the operator publishes (STH, equivocation,
+that — every event the ledger publishes (STH, equivocation,
 escrow override) advances the same chain.
 
 # FAILURE MODE
 
 A publish that fails is logged + dropped, never propagated to the
-caller. The operator's commit path is the source of truth; gossip
-fan-out is best-effort. Anti-entropy in peer operators (read-side
+caller. The ledger's commit path is the source of truth; gossip
+fan-out is best-effort. Anti-entropy in peer ledgers (read-side
 catchup via /v1/gossip/since) covers transient publish failures.
 */
 package gossipnet
@@ -63,16 +63,16 @@ import (
 // STHPublisher emits KindCosignedTreeHead events to the gossip
 // Sink after successful K-of-N collection. Stateless — chain
 // discipline state is read from the Store on every publish so
-// the operator's two append paths (the gossip handler's inbound
+// the ledger's two append paths (the gossip handler's inbound
 // publishes and the publisher's outbound) stay coherent.
 type STHPublisher struct {
-	store            sdkgossip.Store
-	sink             sdkgossip.Sink
-	signer           sdkcosign.WitnessSigner
-	networkID        sdkcosign.NetworkID
-	originator       string
-	operatorEndpoint string
-	logger           *slog.Logger
+	store          sdkgossip.Store
+	sink           sdkgossip.Sink
+	signer         sdkcosign.WitnessSigner
+	networkID      sdkcosign.NetworkID
+	originator     string
+	ledgerEndpoint string
+	logger         *slog.Logger
 }
 
 // PublisherConfig configures STHPublisher.
@@ -89,7 +89,7 @@ type PublisherConfig struct {
 	Sink sdkgossip.Sink
 
 	// Signer signs the KindCosignedTreeHead events. Typically the
-	// same signer used elsewhere in the operator for cosign
+	// same signer used elsewhere in the ledger for cosign
 	// operations; the Purpose separation in cosign means signing
 	// keys can be safely shared across /v1/cosign and /v1/gossip.
 	Signer sdkcosign.WitnessSigner
@@ -97,16 +97,19 @@ type PublisherConfig struct {
 	// NetworkID binds every event to the deployment's network.
 	NetworkID sdkcosign.NetworkID
 
-	// Originator is the operator's own DID. Inbound
+	// Originator is the ledger's own DID. Inbound
 	// authentication on /v1/gossip resolves this DID via the
 	// did.VerifierRegistry; the same registry MUST be able to
 	// verify our own outbound events.
 	Originator string
 
-	// OperatorEndpoint is the operator's public base URL,
-	// embedded in the finding body for diagnostics. Not part of
-	// the cryptographic content.
-	OperatorEndpoint string
+	// LedgerEndpoint is the ledger's public base URL, embedded in
+	// the finding body for diagnostics. Not part of the
+	// cryptographic content. Passed to the SDK's
+	// findings.NewCosignedTreeHeadFinding which exposes it via
+	// VerifiedCosignedTreeHeadFinding.OperatorEndpoint() — the SDK
+	// keeps the historical "ledger" naming on its public method.
+	LedgerEndpoint string
 
 	// Logger receives publish diagnostics. nil ⇒ slog.Default.
 	Logger *slog.Logger
@@ -135,13 +138,13 @@ func NewSTHPublisher(cfg PublisherConfig) (*STHPublisher, error) {
 		cfg.Logger = slog.Default()
 	}
 	return &STHPublisher{
-		store:            cfg.Store,
-		sink:             cfg.Sink,
-		signer:           cfg.Signer,
-		networkID:        cfg.NetworkID,
-		originator:       cfg.Originator,
-		operatorEndpoint: cfg.OperatorEndpoint,
-		logger:           cfg.Logger,
+		store:          cfg.Store,
+		sink:           cfg.Sink,
+		signer:         cfg.Signer,
+		networkID:      cfg.NetworkID,
+		originator:     cfg.Originator,
+		ledgerEndpoint: cfg.LedgerEndpoint,
+		logger:         cfg.Logger,
 	}, nil
 }
 
@@ -157,7 +160,7 @@ func (p *STHPublisher) PublishCosignedHead(ctx context.Context, head types.Cosig
 	if p == nil {
 		return
 	}
-	finding, err := findings.NewCosignedTreeHeadFinding(head, p.operatorEndpoint)
+	finding, err := findings.NewCosignedTreeHeadFinding(head, p.ledgerEndpoint)
 	if err != nil {
 		p.logger.Warn("gossip publisher: build finding failed", "error", err)
 		return

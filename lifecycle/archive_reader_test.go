@@ -2,15 +2,16 @@
 FILE PATH: lifecycle/archive_reader_test.go
 
 DESCRIPTION:
-    Tier-3 alignment tests for the SDK-backed HTTP wiring inside
-    lifecycle/archive_reader.go. Pre-fix the bare http.Client gave
-    no 503-Retry-After honoring; post-fix sdklog.DefaultClient
-    delivers it.
 
-    Also pins the mirrored Tier-2 BUG #3 detect-and-error behavior
-    for fetchBytes — oversize archive bodies surface as typed errors
-    instead of being silently truncated to ingest failures
-    downstream.
+	Tier-3 alignment tests for the SDK-backed HTTP wiring inside
+	lifecycle/archive_reader.go. Pre-fix the bare http.Client gave
+	no 503-Retry-After honoring; post-fix sdklog.DefaultClient
+	delivers it.
+
+	Also pins the mirrored Tier-2 BUG #3 detect-and-error behavior
+	for fetchBytes — oversize archive bodies surface as typed errors
+	instead of being silently truncated to ingest failures
+	downstream.
 */
 package lifecycle
 

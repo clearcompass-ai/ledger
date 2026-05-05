@@ -46,8 +46,8 @@ import (
 
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
-	"github.com/clearcompass-ai/ledger/store"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // getScaleN returns the entry count from ATTESTA_SCALE_N (default 1M).
@@ -543,32 +543,32 @@ func TestScale_HTTPAdmission_10K(t *testing.T) {
 // 7. HTTP Admission — Mode B (compute stamp) Throughput
 //
 // Mode B is intentionally slower than Mode A — every submission requires
-// a proof-of-work stamp before the operator will accept it. This test
+// a proof-of-work stamp before the ledger will accept it. This test
 // uses low difficulty (8 bits) to keep runtime tractable while still
 // exercising the full SDK admission verification path: the wire-format
 // AdmissionProofBody → ProofFromWire adapter → 8-arg VerifyStamp.
 //
 // Failure modes this test would catch:
 //   - ProofFromWire bug → 100% rejection rate
-//   - Epoch math drift between client and operator → 100% rejection rate
+//   - Epoch math drift between client and ledger → 100% rejection rate
 //   - Difficulty controller returning wrong target → bursty rejections
-//   - Operator's epoch acceptance window incorrectly enforced → flaky
+//   - Ledger's epoch acceptance window incorrectly enforced → flaky
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 	op := startTestOperator(t)
 
 	// 1K Mode B entries at difficulty 8 → ~50ms per entry on commodity HW.
-	// At difficulty 16 (operator default) this would take ~10x longer; we
+	// At difficulty 16 (ledger default) this would take ~10x longer; we
 	// use 8 to keep test runtime under 5 minutes.
 	const (
 		N          = 1_000
 		difficulty = 8
 	)
 
-	// First, lower the operator's required difficulty to match what we'll
+	// First, lower the ledger's required difficulty to match what we'll
 	// generate. We can't change DifficultyController from the test, so we
-	// have to use difficulty == operator.MinDifficulty (8 by default).
+	// have to use difficulty == ledger.MinDifficulty (8 by default).
 
 	start := time.Now()
 	accepted := 0

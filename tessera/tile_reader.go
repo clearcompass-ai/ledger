@@ -1,36 +1,39 @@
 /*
 FILE PATH:
-    tessera/tile_reader.go
+
+	tessera/tile_reader.go
 
 DESCRIPTION:
-    Tile reader with c2sp.org/tlog-tiles compliant path encoding. Reads immutable
-    Merkle tree tiles (hash tiles and entry data tiles) from the Tessera personality's
-    HTTP read API. Read-through LRU cache minimizes backend calls.
 
-    Tile paths follow the c2sp.org/tlog-tiles spec:
-      Hash tiles:  tile/{L}/{N}          (e.g., tile/0/x001/x234/067)
-      Entry tiles: tile/entries/{N}      (e.g., tile/entries/x000/042)
-    Where {N} uses three-digit path components with 'x' prefix for full tiles.
+	Tile reader with c2sp.org/tlog-tiles compliant path encoding. Reads immutable
+	Merkle tree tiles (hash tiles and entry data tiles) from the Tessera personality's
+	HTTP read API. Read-through LRU cache minimizes backend calls.
+
+	Tile paths follow the c2sp.org/tlog-tiles spec:
+	  Hash tiles:  tile/{L}/{N}          (e.g., tile/0/x001/x234/067)
+	  Entry tiles: tile/entries/{N}      (e.g., tile/entries/x000/042)
+	Where {N} uses three-digit path components with 'x' prefix for full tiles.
 
 KEY ARCHITECTURAL DECISIONS:
-    - c2sp.org path encoding: three-digit segments, 'x' prefix for full (256-entry)
-      tiles, '.p/{count}' suffix for partial tiles. This is the canonical format
-      that Tessera's POSIX driver writes and GCS/S3 drivers serve.
-    - Dual read methods: ReadTile for hash tiles (level > 0), ReadEntryTile for
-      entry data tiles (tile/entries/ path). Both go through the same LRU cache.
-    - Tiles are immutable after write — cached indefinitely once read.
-    - LRU with access-counter eviction (not random).
-    - No write path: Tessera personality manages tile writes. Operator only reads.
+  - c2sp.org path encoding: three-digit segments, 'x' prefix for full (256-entry)
+    tiles, '.p/{count}' suffix for partial tiles. This is the canonical format
+    that Tessera's POSIX driver writes and GCS/S3 drivers serve.
+  - Dual read methods: ReadTile for hash tiles (level > 0), ReadEntryTile for
+    entry data tiles (tile/entries/ path). Both go through the same LRU cache.
+  - Tiles are immutable after write — cached indefinitely once read.
+  - LRU with access-counter eviction (not random).
+  - No write path: Tessera personality manages tile writes. Ledger only reads.
 
 OVERVIEW:
-    ReadTile(ctx, level, index) → cache check → fetch via HTTP → cache store → return.
-    ReadEntryTile(ctx, index) → same flow but with tile/entries/ path prefix.
-    TilePath(level, index) → c2sp.org three-digit path encoding.
+
+	ReadTile(ctx, level, index) → cache check → fetch via HTTP → cache store → return.
+	ReadEntryTile(ctx, index) → same flow but with tile/entries/ path prefix.
+	TilePath(level, index) → c2sp.org three-digit path encoding.
 
 KEY DEPENDENCIES:
-    - tessera/proof_adapter.go: Reads tiles for proof computation.
-    - tessera/entry_reader.go: Reads entry tiles for byte hydration.
-    - tessera-personality: The HTTP server serving static tile files.
+  - tessera/proof_adapter.go: Reads tiles for proof computation.
+  - tessera/entry_reader.go: Reads entry tiles for byte hydration.
+  - tessera-personality: The HTTP server serving static tile files.
 */
 package tessera
 
@@ -231,7 +234,7 @@ func encodeTileIndex(index uint64) string {
 }
 
 // HTTPTileBackend was removed in Phase 1B alongside the
-// standalone tessera-personality binary. The operator now reads
+// standalone tessera-personality binary. The ledger now reads
 // tiles directly from a POSIX directory via POSIXTileBackend
 // (defined in posix_tile_backend.go), shared with the embedded
 // upstream Tessera writer. See tessera/embedded_appender.go for

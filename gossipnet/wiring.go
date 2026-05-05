@@ -1,26 +1,26 @@
 /*
 FILE PATH: gossipnet/wiring.go
 
-Operator-side gossip plumbing: connects the SDK's gossip handler /
+Ledger-side gossip plumbing: connects the SDK's gossip handler /
 feed handler / cached DID verifier / buffered sink to the
-operator's BadgerStore-backed gossip.Store and the cmd/operator
+ledger's BadgerStore-backed gossip.Store and the cmd/ledger
 main.go startup sequence.
 
 # WHY THIS PACKAGE
 
 The SDK ships every gossip primitive (Store interface, Handler,
 FeedHandler, Sink, OriginatorVerifier) as an independent component.
-The operator owns the choices a single-deployment binary makes:
+The ledger owns the choices a single-deployment binary makes:
 
   - Which Store implementation? (gossipstore.BadgerStore)
   - Which DID verifiers are in scope? (did:key today; did:web later)
   - What rate-limit policy? (crypto/middleware token bucket)
   - What sink topology? (BufferedSink → MultiSink over peer
-    operators, or NopSink in single-process tests)
+    ledgers, or NopSink in single-process tests)
   - What cache TTL on the originator key resolver?
 
 Bundling these decisions into one wiring helper keeps
-cmd/operator/main.go from carrying ~200 lines of plumbing for a
+cmd/ledger/main.go from carrying ~200 lines of plumbing for a
 sub-feature.
 
 # RATE LIMITING
@@ -43,11 +43,11 @@ budget for a rotation that bypasses the gossip publishing path
 
 # FAN-OUT TOPOLOGY
 
-Single-network deployments use NopSink — the operator's own
+Single-network deployments use NopSink — the ledger's own
 BadgerStore is the only consumer; nothing to fan out to.
 
 Multi-network deployments wrap a MultiSink over an HTTPSink per
-peer operator's /v1/gossip endpoint. The MultiSink is wrapped in a
+peer ledger's /v1/gossip endpoint. The MultiSink is wrapped in a
 BufferedSink so the publish call site (builder loop hot path)
 never blocks on slow peers. Drop policy = DropOldest so a
 persistently-slow peer doesn't accumulate unbounded backlog.
@@ -68,7 +68,7 @@ import (
 )
 
 // Config bundles everything gossipnet.Build needs to wire the
-// operator's gossip stack.
+// ledger's gossip stack.
 type Config struct {
 	// Store is the persistent gossip store. Required.
 	Store sdkgossip.Store
@@ -77,9 +77,9 @@ type Config struct {
 	// Required (non-zero).
 	NetworkID sdkcosign.NetworkID
 
-	// PeerEndpoints is the set of base URLs of peer operators
+	// PeerEndpoints is the set of base URLs of peer ledgers
 	// running their own /v1/gossip endpoint. Empty ⇒ NopSink
-	// (no fan-out; single-process or single-operator deployment).
+	// (no fan-out; single-process or single-ledger deployment).
 	PeerEndpoints []string
 
 	// RateLimitRPS is the per-peer-IP rate limit on /v1/gossip.
@@ -137,7 +137,7 @@ const DefaultSinkQueueSize = 1024
 // PostHandler at POST /v1/gossip and FeedHandler at GET
 // /v1/gossip/{since,sth/latest,event,by-kind}.
 //
-// Sink is the fan-out destination for operator-published events
+// Sink is the fan-out destination for ledger-published events
 // (KindCosignedTreeHead from the commit hot path,
 // KindEquivocationFinding from the equivocation monitor). It is
 // safe to publish into Sink even when no peers are configured —
@@ -226,7 +226,7 @@ func (v *RotationCachedVerifier) Invalidate(originator string) {
 	v.cached.Invalidate(originator)
 }
 
-// Build constructs the operator's gossip stack from cfg. Returns
+// Build constructs the ledger's gossip stack from cfg. Returns
 // the Bundle and any construction error.
 func Build(cfg Config) (*Bundle, error) {
 	if cfg.Store == nil {
@@ -322,7 +322,7 @@ func Build(cfg Config) (*Bundle, error) {
 // The composed RotationCachedVerifier exposes the union of the
 // three packages' interfaces (Verify + Resolve + Rotate +
 // Invalidate) on a single value the SDK Handler can type-assert
-// against. Decomposing into three returns + asking the operator
+// against. Decomposing into three returns + asking the ledger
 // to pass each individually would require Handler API changes
 // upstream; composing here keeps the SDK boundary stable.
 func buildVerifier(cfg Config) (*RotationCachedVerifier, error) {

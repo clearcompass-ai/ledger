@@ -3,7 +3,7 @@ FILE PATH: gossipnet/equivocation_publisher_test.go
 
 Smoke tests for EquivocationPublisher. The verified-finding
 construction path lives in the SDK's findings package; this file
-only exercises the operator-side wiring (config validation +
+only exercises the ledger-side wiring (config validation +
 the panic-on-nil contract).
 */
 package gossipnet

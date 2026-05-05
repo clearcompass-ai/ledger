@@ -1,5 +1,5 @@
 /*
-Package store provides Postgres persistence for the Attesta operator.
+Package store provides Postgres persistence for the Attesta ledger.
 
 FILE PATH: store/postgres.go
 
@@ -47,7 +47,7 @@ import (
 // 1) Connection Pools
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Pool wraps pgxpool.Pool with operator lifecycle.
+// Pool wraps pgxpool.Pool with ledger lifecycle.
 type Pool struct {
 	DB  *pgxpool.Pool
 	cfg PoolConfig

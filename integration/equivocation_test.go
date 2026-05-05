@@ -6,7 +6,7 @@ End-to-end test for the v7.75 cryptographic-commitment surface.
 # WHAT THIS TEST PINS
 
 A malicious dealer publishes two distinct commitment entries
-under the same (schema_id, split_id) tuple. The operator's
+under the same (schema_id, split_id) tuple. The ledger's
 admission pipeline admits both — the (schema_id, split_id)
 BTREE index is non-UNIQUE per Decision 3 specifically so this
 case lands as cryptographic evidence rather than being silently
@@ -14,18 +14,18 @@ destroyed by a constraint violation.
 
 Surviving guarantees (post legacy-monitor retirement):
 
-  1. Both entries are durable in commitment_split_id.
-     A regression here destroys evidence at admission time.
+ 1. Both entries are durable in commitment_split_id.
+    A regression here destroys evidence at admission time.
 
-  2. The C7 lookup endpoint
-     (GET /v1/commitments/by-split-id/{schema_id}/{hex})
-     returns BOTH entries in ascending sequence order.
-     Surfaces directly from commitment_split_id; no monitor
-     dependency.
+ 2. The C7 lookup endpoint
+    (GET /v1/commitments/by-split-id/{schema_id}/{hex})
+    returns BOTH entries in ascending sequence order.
+    Surfaces directly from commitment_split_id; no monitor
+    dependency.
 
-  3. The SDK's *artifact.CommitmentEquivocationError construction
-     wraps the two-entry response correctly. Confirms the error
-     shape callers see in production.
+ 3. The SDK's *artifact.CommitmentEquivocationError construction
+    wraps the two-entry response correctly. Confirms the error
+    shape callers see in production.
 
 # RETIRED GUARANTEES
 

@@ -10,11 +10,12 @@ KEY ARCHITECTURAL DECISIONS:
   - Valid token → context carries exchangeDID + authenticated=true.
 
 PT-7 — Pure CQRS:
-  Auth takes a SessionLookup interface (NOT *pgxpool.Pool). The
-  production wiring in cmd/operator/main.go constructs a thin
-  adapter over store/'s sessions surface that satisfies
-  SessionLookup. This keeps the api/middleware package free of
-  pgx imports — the load-bearing piece of the api/ pgx-purge.
+
+	Auth takes a SessionLookup interface (NOT *pgxpool.Pool). The
+	production wiring in cmd/ledger/main.go constructs a thin
+	adapter over store/'s sessions surface that satisfies
+	SessionLookup. This keeps the api/middleware package free of
+	pgx imports — the load-bearing piece of the api/ pgx-purge.
 */
 package middleware
 
@@ -47,7 +48,7 @@ var ErrSessionNotFound = errors.New("middleware: session not found")
 // is treated as a transient failure (HTTP 500).
 //
 // Production: wired via a thin adapter over store/'s sessions
-// surface in cmd/operator/main.go.
+// surface in cmd/ledger/main.go.
 type SessionLookup interface {
 	LookupSession(ctx context.Context, token string) (exchangeDID string, expiresAt time.Time, err error)
 }

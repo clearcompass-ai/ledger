@@ -2,20 +2,21 @@
 FILE PATH: anchor/publisher_test.go
 
 DESCRIPTION:
-    Tier-3 alignment tests for the SDK-backed outbound HTTP wiring
-    inside anchor/publisher.go. The previous bare http.Client gave
-    no connection pooling and no 503-Retry-After backpressure
-    honoring; SubmitViaHTTP and Publisher now use sdklog.DefaultClient
-    so WAL-pressure 503s from the operator's own admission endpoint
-    are absorbed locally rather than turning into hard submit
-    failures.
 
-    These tests pin the new behavior:
-      - SubmitViaHTTP succeeds when the target returns 503-then-202.
-      - SubmitViaHTTP propagates a non-202, non-503 status as an
-        error (no spurious retry on, e.g., 422).
-      - SubmitViaHTTP propagates an entry whose canonical bytes
-        round-trip correctly even after a retry.
+	Tier-3 alignment tests for the SDK-backed outbound HTTP wiring
+	inside anchor/publisher.go. The previous bare http.Client gave
+	no connection pooling and no 503-Retry-After backpressure
+	honoring; SubmitViaHTTP and Publisher now use sdklog.DefaultClient
+	so WAL-pressure 503s from the ledger's own admission endpoint
+	are absorbed locally rather than turning into hard submit
+	failures.
+
+	These tests pin the new behavior:
+	  - SubmitViaHTTP succeeds when the target returns 503-then-202.
+	  - SubmitViaHTTP propagates a non-202, non-503 status as an
+	    error (no spurious retry on, e.g., 422).
+	  - SubmitViaHTTP propagates an entry whose canonical bytes
+	    round-trip correctly even after a retry.
 */
 package anchor
 

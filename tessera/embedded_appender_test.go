@@ -269,10 +269,10 @@ func TestEmbeddedAppender_AddThenHead_RoundTrip(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────
 //
 // Upstream Tessera's antispam (when enabled) deduplicates by
-// identity hash. With antispam off (operator's chosen
+// identity hash. With antispam off (ledger's chosen
 // configuration — see the architecture doc's §2 antispam-off
 // rationale), the SAME hash submitted twice gets two distinct
-// indices. This test pins the operator's antispam-off contract:
+// indices. This test pins the ledger's antispam-off contract:
 // duplicate hashes appear at distinct positions in the log.
 
 func TestEmbeddedAppender_AppendLeaf_DuplicateHashGetsDistinctIndices(t *testing.T) {

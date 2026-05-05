@@ -5,21 +5,21 @@ FILE PATH:
 
 DESCRIPTION:
 
-	Defensive NFC normalization assertion at the operator's trust
+	Defensive NFC normalization assertion at the ledger's trust
 	boundary. The SDK's caller-normalizes contract (Decision 52)
-	places NFC normalization at the caller boundary; the operator
+	places NFC normalization at the caller boundary; the ledger
 	asserts the caller honored that contract and rejects mismatches.
 
-	The operator never normalizes on the caller's behalf. Silent
+	The ledger never normalizes on the caller's behalf. Silent
 	normalization at admission would diverge the bytes the caller
-	signed over from the bytes the operator stored, breaking the
+	signed over from the bytes the ledger stored, breaking the
 	canonical-hash invariant downstream consumers depend on.
 
 KEY ARCHITECTURAL DECISIONS:
 
   - Defensive only. CheckNFC is a structural assertion, not a
     transformation. If `norm.NFC.String(s) != s`, the entry is
-    rejected; the operator does not rewrite `s`.
+    rejected; the ledger does not rewrite `s`.
   - All DID-shaped header fields covered: SignerDID, Destination,
     DelegateDID (when non-nil), and every key in AuthoritySet.
     These are the four places where Unicode normalization mismatches

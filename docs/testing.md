@@ -1,6 +1,6 @@
 # Test plan
 
-How the operator is tested today, and how to extend the test surface
+How the ledger is tested today, and how to extend the test surface
 cleanly when adding new behavior. Every Principle and Alignment in
 [architecture.md](architecture.md) is anchored to specific tests
 listed below — the table is the canonical compliance map.
@@ -24,7 +24,7 @@ tessera/*_test.go          Embedded Tessera appender
 wal/*_test.go              Badger WAL state machine
 integration/*_test.go      Full-stack (Postgres + bytestore) — gated by ATTESTA_TEST_DSN
 tests/*_test.go            End-to-end (HTTP + Postgres + Badger) — gated
-cmd/*/*_test.go            CLI binaries (submit-stamp, operator pool sizing)
+cmd/*/*_test.go            CLI binaries (submit-stamp, ledger pool sizing)
 ```
 
 Total: 316 test functions across 20 packages.
@@ -66,27 +66,27 @@ export ATTESTA_REAL_S3_BUCKET=my-test-bucket
 
 ## Compliance map
 
-For every Principle (P*) and Alignment (A*) the operator advertises in
+For every Principle (P*) and Alignment (A*) the ledger advertises in
 [architecture.md](architecture.md), this table maps the production
 code that implements it to the test that pins the contract.
 
-### The 15 Operator Principles
+### The 15 Ledger Principles
 
 | # | Principle | Production code | Test |
 |---|---|---|---|
-| P1 | Dumb Operator (SDK validates) | `api/commitments.go:79` closed-set schema check; `api/submission.go` calls only SDK primitives (`envelope.Deserialize`, `entry.Validate`, `admission.CheckNFC`, `admission.VerifyEntrySignature`, `sdkadmission.VerifyStamp`) | `admission/nfc_check_test.go` (8 sub-tests pinning SDK validation paths); `api/submission_test.go::TestV1Handler_HappyPath_ReturnsValidSCT` |
-| P2 | Pure v1.0.0 (zero tech debt) | `go.mod` pins SDK v1.0.0; compile-time interface checks at `gossipstore/commitment_fetcher.go:121`, `gossipnet/sequencer_adapter.go:103-105` | `gossipnet/equivocation_binding_pin_test.go::TestEquivocationBinding_OperatorMatchesSDK` (drift pin between operator code and SDK helper) |
+| P1 | Dumb Ledger (SDK validates) | `api/commitments.go:79` closed-set schema check; `api/submission.go` calls only SDK primitives (`envelope.Deserialize`, `entry.Validate`, `admission.CheckNFC`, `admission.VerifyEntrySignature`, `sdkadmission.VerifyStamp`) | `admission/nfc_check_test.go` (8 sub-tests pinning SDK validation paths); `api/submission_test.go::TestV1Handler_HappyPath_ReturnsValidSCT` |
+| P2 | Pure v1.0.0 (zero tech debt) | `go.mod` pins SDK v1.0.0; compile-time interface checks at `gossipstore/commitment_fetcher.go:121`, `gossipnet/sequencer_adapter.go:103-105` | `gossipnet/equivocation_binding_pin_test.go::TestEquivocationBinding_LedgerMatchesSDK` (drift pin between ledger code and SDK helper) |
 | P3 | Melt-Proof admission | `wal/committer.go::Submit` returns `ErrQueueFull`; `api/submission.go` maps to 503 + `Retry-After`; `gossipnet/wiring.go:400` `BufferedSink` with `DropPolicyDropOldest` | `api/submission_test.go::TestV1Handler_WALQueueFull_Returns503` |
 | P4 | SCT as SLA | `api/sct.go::SignSCT`; `api/submission.go:557` returns 202 + SCT after WAL fsync | `api/submission_test.go::TestV1Handler_HappyPath_ReturnsValidSCT`; `cmd/submit-stamp/main_test.go::TestVerifyClientSCT_MatchesAPIPath` |
 | P5 | Deterministic idempotency | `wal/meta.go::LogTimeMicros` (8 bytes in 29-byte Meta); `api/submission.go:432` idempotency probe via `wal.MetaState` | `api/submission_test.go::TestV1Handler_SemanticIdempotency` (full claim-equivalency assertion chain) |
 | P6 | Hot-path isolation | `api/submission.go` handler does WAL fsync only; sequencer goroutine owns Tessera + Postgres + Badger projections (`sequencer/loop.go::insertEntryIndex`) | `sequencer/sequencer_test.go::TestSequencer_processOne_HappyPath` |
-| P7 | Static CT API (edge offload) | `cmd/operator/main.go:74` imports `transparency-dev/tessera/storage/posix`; `tessera/embedded_appender.go` | `tessera/embedded_appender_test.go::TestEmbeddedAppender_*` |
+| P7 | Static CT API (edge offload) | `cmd/ledger/main.go:74` imports `transparency-dev/tessera/storage/posix`; `tessera/embedded_appender.go` | `tessera/embedded_appender_test.go::TestEmbeddedAppender_*` |
 | P8 | Pure CQRS | `gossipstore/commitment_fetcher.go::BadgerCommitmentFetcher`; `api/commitments.go:135 Fetcher types.CommitmentFetcher`; `gossipstore/projections.go` Badger 0x0C | `api/commitments_test.go::TestCommitmentLookup_EndToEnd_BadgerCQRS`; `TestCommitmentLookup_EndToEnd_EquivocationCase`. Compliance check: `go list -deps ./api/ \| grep pgx \| wc -l == 0` |
 | P9 | Pull-based gossip | `api/server.go:303-312` five GET routes + `:312` `/v1/gossip/by-binding/{hash}` | `api/server_test.go::TestServer_GossipFeedRoutes_Mounted`; `TestServer_GossipFeedByBinding_NotMountedWhenFeedNil` |
 | P10 | SRE-grade observability | `api/errors.go::writeTypedError`; `apitypes/apitypes.go::ErrorClass` taxonomy | `api/errors_test.go::TestWriteTypedError_IncrementsCounter`; `TestWriteTypedError_DistinctClassesIncrementSeparately`; `apitypes/error_class_test.go::TestErrorClass_DistinctStrings` |
-| P11 | Graceful teardowns | `cmd/operator/main.go::gossipWG.Wait`; `sequencer/sequencer.go:339-356 wg.Wait` for replayer | `sequencer/replay_test.go::TestSequencer_Run_DrainsReplayerOnCtxCancel`; `lifecycle/archive_reader_test.go` |
+| P11 | Graceful teardowns | `cmd/ledger/main.go::gossipWG.Wait`; `sequencer/sequencer.go:339-356 wg.Wait` for replayer | `sequencer/replay_test.go::TestSequencer_Run_DrainsReplayerOnCtxCancel`; `lifecycle/archive_reader_test.go` |
 | P12 | Test integrity | Race detector + 316 tests across 20 packages, all green | `go test -race -short ./...` (meta-property; the test suite IS the test) |
-| P13 | Two clocks (commit vs transparency) | `api/server.go:290 POST /v1/cosign` (synchronous) vs `:300 POST /v1/gossip` (async). Distinct types: `cosign.Purpose` ≠ `gossip.Kind` | `gossipnet/cross_operator_test.go::TestCrossOperator_STHRoundTrip` |
+| P13 | Two clocks (commit vs transparency) | `api/server.go:290 POST /v1/cosign` (synchronous) vs `:300 POST /v1/gossip` (async). Distinct types: `cosign.Purpose` ≠ `gossip.Kind` | `gossipnet/cross_ledger_test.go::TestCrossLedger_STHRoundTrip` |
 | P14 | Unified SDK verify | `admission.VerifyEntrySignature` in `api/submission.go`; `BadgerCommitmentFetcher` returns SDK `types.EntryWithMetadata`; `cmd/submit-stamp/main_test.go` uses `sdksct.Verify` | `cmd/submit-stamp/main_test.go::TestVerifyClientSCT_MatchesAPIPath`; `admission/sdk_resolver_pin_test.go` |
 | P15 | Per-originator parallelism | `gossipstore/badger_store.go:113 originatorLocks []sync.Mutex` (sharded FNV-1a) | `gossipstore/badger_store_test.go::TestAppend_Idempotent`; `TestAppendChain_HeadAdvances` (exercise per-originator paths) |
 
@@ -99,10 +99,10 @@ code that implements it to the test that pins the contract.
 | A3 | Deterministic Equivocation Detection | `gossipnet/equivocation_scanner.go` builds `findings.NewEntryCommitmentEquivocationFinding` | `gossipnet/equivocation_scanner_test.go::TestEquivocationScanner_DetectsAndPublishes`; `gossipnet/equivocation_monitor_test.go` |
 | A4 | O(1) SplitID Sentry | Scanner subscribes to Badger 0x0A (`gossipnet/equivocation_scanner.go`); read serves from 0x0C (`gossipstore/commitment_fetcher.go::BadgerCommitmentFetcher`) | `api/commitments_test.go::TestCommitmentLookup_EndToEnd_EquivocationCase`; `gossipnet/equivocation_scanner_test.go::TestEquivocationScanner_DetectsAndPublishes`; `gossipstore/entry_lookup_test.go::TestWriteAndListEntryLookupEntriesAt_EquivocationOrder` |
 | A5 | Pure pull-based gossip | `api/server.go:303-312` (5 GET routes) | `api/server_test.go::TestServer_GossipFeedRoutes_Mounted` |
-| A6 | Non-blocking gossip sinks | `gossipnet/wiring.go:396 NewBufferedSink` + `Policy: DropPolicyDropOldest` + `wgSenders` | `gossipnet/wiring_test.go::TestBuild_*`; `gossipnet/cross_operator_test.go` |
-| A7 | Universal domain separation | SDK side; consumed via `cosign.Sign` / `cosign.Verify` calls in `gossipnet/equivocation_scanner.go::sdkgossip.Sign` | `gossipnet/cross_operator_test.go::TestCrossOperator_STHRoundTrip` |
+| A6 | Non-blocking gossip sinks | `gossipnet/wiring.go:396 NewBufferedSink` + `Policy: DropPolicyDropOldest` + `wgSenders` | `gossipnet/wiring_test.go::TestBuild_*`; `gossipnet/cross_ledger_test.go` |
+| A7 | Universal domain separation | SDK side; consumed via `cosign.Sign` / `cosign.Verify` calls in `gossipnet/equivocation_scanner.go::sdkgossip.Sign` | `gossipnet/cross_ledger_test.go::TestCrossLedger_STHRoundTrip` |
 | A8 | Zero-trust dual verification | Handler returns canonical_bytes_hex; `gossipstore/commitment_fetcher.go:105` returns independent byte copies | `api/commitments_test.go::TestCommitmentLookup_EndToEnd_BadgerCQRS`; `gossipstore/commitment_fetcher_test.go::TestBadgerCommitmentFetcher_CanonicalBytesAreCopies` |
-| A9 | Cryptographic topologies | SDK `gossip/findings/originator_rotation.go` consumed via gossipnet | `gossipnet/cross_operator_test.go` (originator/key-set rotation paths) |
+| A9 | Cryptographic topologies | SDK `gossip/findings/originator_rotation.go` consumed via gossipnet | `gossipnet/cross_ledger_test.go` (originator/key-set rotation paths) |
 | A10 | Strict error dimensionality | `apitypes/apitypes.go::ErrorClass` (~30 typed values); `api/errors.go::writeTypedError` | `apitypes/error_class_test.go` (5 tests); `api/errors_test.go` (6 tests) |
 | A11 | Purpose vs Kind isolation | Distinct routes: `POST /v1/cosign` (cosign.Purpose) vs `POST /v1/gossip` (gossip.Kind). Distinct types in `cosign` and `gossip` SDK packages | `api/server_test.go::TestServer_*` (each route mount tested independently) |
 | A12 | Two-tier quorum (Validate vs ValidateAgainstQuorum) | SDK side; consumed via `findings.Validate` + `findings.ValidateAgainstQuorum` in `gossipnet/equivocation_publisher.go` | `gossipnet/equivocation_publisher_test.go::TestEquivocationPublisher_RejectsZeroNetworkID` |
@@ -292,7 +292,7 @@ When refactoring, the following files should follow the project's
 | Pattern | Action |
 |---|---|
 | Stale migration scripts (e.g., `script/run.sh` for old SDK migration) | Delete — they are commit-history artifacts, not runtime tools |
-| Unused configuration files (e.g., `config/operator.yaml` not read by any Go code) | Delete — operator reads env only |
+| Unused configuration files (e.g., `config/ledger.yaml` not read by any Go code) | Delete — ledger reads env only |
 | Duplicate compose files | Consolidate — one canonical compose per scenario |
 | `.bak` files or rotated backups | Delete — git is the backup |
 | Test files that contain `TODO` or `FIXME` for behavior never wired | Delete the test, OR wire the behavior. No half-finished tests |

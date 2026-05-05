@@ -3,12 +3,12 @@ FILE PATH: api/queries.go
 
 DESCRIPTION:
 
-	Read-side query handlers for the operator's HTTP API. Fetches entries
+	Read-side query handlers for the ledger's HTTP API. Fetches entries
 	by sequence range, by hash, and by signer DID. Returns EntryResponse
 	structures with canonical hash + metadata + payload byte-size.
 
 	Also hosts the thin query handlers the read-write and read-only
-	operator both serve (CosignatureOf, TargetRoot, SignerDID, SchemaRef,
+	ledger both serve (CosignatureOf, TargetRoot, SignerDID, SchemaRef,
 	Scan) plus the difficulty endpoint. These delegate to PostgresQueryAPI
 	or to DiffController — zero business logic, just HTTP → internal-API
 	adapters.
@@ -64,7 +64,7 @@ const defaultScanCount = 100
 //	                 bytestore.Reader internally.
 //	DiffController — live difficulty source for /v1/admission/difficulty.
 //	                 Nil-safe: the handler responds 503 when absent, which
-//	                 is what the read-only operator wants.
+//	                 is what the read-only ledger wants.
 //	Logger         — slog handle.
 type QueryDeps struct {
 	EntryStore     EntryStore
@@ -78,7 +78,7 @@ type QueryDeps struct {
 	// (entry_index INSERT happens in the background sequencer).
 	// Nil-safe: when WAL is nil the handler skips the probe and
 	// the v1 hash lookup behaves as it always did. The read-only
-	// operator-reader binary leaves this nil — it has no WAL.
+	// ledger-reader binary leaves this nil — it has no WAL.
 	WAL EntryWALReader
 }
 
@@ -210,22 +210,22 @@ func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 //
 // Routing decision matrix:
 //
-//   WAL.MetaState (when configured)   entry_index    Outcome
-//   ───────────────────────────────   ──────────     ──────────────────
-//   StatePending                      —              200 {state:pending}
-//   StateManual                       —              200 {state:manual}
-//   StateSequenced / StateShipped     row exists     200 + full metadata
-//   StateSequenced / StateShipped     no row         500 (state machine
-//                                                       desync; sequencer
-//                                                       will catch up)
-//   wal.ErrNotFound                   row exists     200 + full metadata
-//                                                       (post-GC-retention
-//                                                       case; sequencer
-//                                                       processed long ago)
-//   wal.ErrNotFound                   no row         404
-//   WAL transport error               —              500
+//	WAL.MetaState (when configured)   entry_index    Outcome
+//	───────────────────────────────   ──────────     ──────────────────
+//	StatePending                      —              200 {state:pending}
+//	StateManual                       —              200 {state:manual}
+//	StateSequenced / StateShipped     row exists     200 + full metadata
+//	StateSequenced / StateShipped     no row         500 (state machine
+//	                                                    desync; sequencer
+//	                                                    will catch up)
+//	wal.ErrNotFound                   row exists     200 + full metadata
+//	                                                    (post-GC-retention
+//	                                                    case; sequencer
+//	                                                    processed long ago)
+//	wal.ErrNotFound                   no row         404
+//	WAL transport error               —              500
 //
-// When deps.WAL is nil (read-only operator), the WAL probe is
+// When deps.WAL is nil (read-only ledger), the WAL probe is
 // skipped and the handler falls through to entry_index directly.
 func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +263,7 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 				case wal.StateManual:
 					// Sequencer gave up after MaxAttempts. Bytes
 					// are durable in WAL but never reached
-					// entry_index; consumer needs operator
+					// entry_index; consumer needs ledger
 					// intervention.
 					w.Header().Set("Content-Type", "application/json")
 					_ = json.NewEncoder(w).Encode(map[string]any{
@@ -326,8 +326,8 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 // These five handlers expose the PostgresQueryAPI's "query by control
 // header field" methods. Referenced by api/server.go as
 // Handlers.CosignatureOf / .TargetRoot / .SignerDID / .SchemaRef / .Scan
-// and wired by both the read-write operator (cmd/operator) and the
-// read-only operator (cmd/operator-reader).
+// and wired by both the read-write ledger (cmd/ledger) and the
+// read-only ledger (cmd/ledger-reader).
 //
 // Uniform HTTP surface on purpose: one parsing rule, one response shape.
 

@@ -17,16 +17,16 @@ SCANNER goroutine, on its own scheduling.
 
 # DETECTION FLOW
 
-  1. badger.DB.Subscribe(prefix=0x0A) wakes on every splitid
-     index PUT (the sequencer's Phase 2 commit).
-  2. Subscribe callback receives (schema_id, split_id, seq).
-  3. Scanner re-loads via gossipstore.ListSplitIDIndexEntriesAt
-     (one View transaction, fresh consistent snapshot).
-  4. If the list contains < 2 entries: legitimate first
-     admission. No-op.
-  5. If the list contains >= 2 entries: equivocation. Pick the
-     two earliest seqs, build *VerifiedEntryCommitmentEquivocationFinding,
-     sign + Append + Broadcast via the operator's gossip Sink.
+ 1. badger.DB.Subscribe(prefix=0x0A) wakes on every splitid
+    index PUT (the sequencer's Phase 2 commit).
+ 2. Subscribe callback receives (schema_id, split_id, seq).
+ 3. Scanner re-loads via gossipstore.ListSplitIDIndexEntriesAt
+    (one View transaction, fresh consistent snapshot).
+ 4. If the list contains < 2 entries: legitimate first
+    admission. No-op.
+ 5. If the list contains >= 2 entries: equivocation. Pick the
+    two earliest seqs, build *VerifiedEntryCommitmentEquivocationFinding,
+    sign + Append + Broadcast via the ledger's gossip Sink.
 
 # IDEMPOTENCY
 
@@ -58,7 +58,7 @@ re-broadcast a no-op.
     splitid index regardless; a future scanner restart will see
     the entries again and re-attempt detection.
   - Sink Broadcast failure: logged. Anti-entropy in peer
-    operators backfills the missed event on the next /since
+    ledgers backfills the missed event on the next /since
     pull.
 */
 package gossipnet
@@ -79,7 +79,7 @@ import (
 
 // EquivocationScannerConfig configures the scanner goroutine.
 type EquivocationScannerConfig struct {
-	// Store is the operator's BadgerDB-backed gossip store. The
+	// Store is the ledger's BadgerDB-backed gossip store. The
 	// scanner subscribes to 0x0A (splitid index), reads from
 	// 0x0A on collision, and projects into 0x0B
 	// (equivocation projection).
@@ -95,9 +95,9 @@ type EquivocationScannerConfig struct {
 	// Sink is the fan-out destination. Required.
 	Sink sdkgossip.Sink
 
-	// Signer signs the gossip envelope under the operator's
+	// Signer signs the gossip envelope under the ledger's
 	// originator DID — the SAME DID the sequencer wrote into
-	// the splitid index entries (the operator that admitted
+	// the splitid index entries (the ledger that admitted
 	// both sides is also the equivocator).
 	Signer sdkcosign.WitnessSigner
 
@@ -105,7 +105,7 @@ type EquivocationScannerConfig struct {
 	// network.
 	NetworkID sdkcosign.NetworkID
 
-	// Originator is the operator's own DID (matches Signer).
+	// Originator is the ledger's own DID (matches Signer).
 	Originator string
 
 	Logger *slog.Logger
@@ -187,7 +187,7 @@ func (s *EquivocationScanner) handle(ctx context.Context, schemaID string, split
 	// — the underlying scan returns them in seq-ascending order.
 	a, b := hits[0], hits[1]
 	if a.Entry.EquivocatorDID != b.Entry.EquivocatorDID {
-		// Defensive: two different operators' entries at the
+		// Defensive: two different ledgers' entries at the
 		// same SplitID is a different threat model (cross-
 		// originator collision). Skip — handled by a separate
 		// detector if/when needed.
@@ -217,7 +217,7 @@ func (s *EquivocationScanner) handle(ctx context.Context, schemaID string, split
 		return
 	}
 
-	// Sign the gossip envelope under the operator's own
+	// Sign the gossip envelope under the ledger's own
 	// originator. Reads the chain head from the gossip Store so
 	// lamport advances correctly.
 	prev, lamport, err := s.cfg.GossipStore.Head(ctx, s.cfg.Originator)

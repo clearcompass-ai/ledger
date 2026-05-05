@@ -1,10 +1,13 @@
 # Rebrand history
 
-The repository was rebranded from `ortholog-sdk` + `ortholog-operator`
-to `attesta` + `ledger`. This document is now historical — it
-captures what shipped, not work to do.
+This document is historical. It captures the renames that landed, not
+work to do. Two distinct renames happened, in two phases.
 
-## What shipped
+## Phase 1 — SDK + module-path rename (v1.0.0)
+
+The SDK was rebranded from `ortholog-sdk` to `attesta`, and the
+operator binary's module path was rebranded from `ortholog-operator`
+to `ledger`. Both renames shipped together with attesta v1.0.0.
 
 ### SDK rename: `ortholog-sdk` → `attesta`
 
@@ -12,7 +15,7 @@ captures what shipped, not work to do.
 |---|---|---|
 | Module path | `github.com/clearcompass-ai/ortholog-sdk` | `github.com/clearcompass-ai/attesta` |
 | Tag | v0.9.6 | v1.0.0 |
-| Wire format | wire-incompatible with v1.0.0 | hard fork from v0.9.x |
+| Wire format | (within v0.9.x) | hard fork — wire-incompatible with v0.9.x |
 
 The rename touched every protocol-internal hash that mixed in the
 literal string `"Ortholog"`. Updated frozen values are documented
@@ -29,53 +32,80 @@ Unchanged (intentionally):
 - Gossip Kind strings (`OL-GOSSIP-*` is a protocol identifier, not branding).
 - Multicodec prefixes.
 
-### Operator rename: `ortholog-operator` → `ledger`
+### Module-path rename: `ortholog-operator` → `ledger`
 
 | Aspect | Before | After |
 |---|---|---|
 | Module path | `github.com/clearcompass-ai/ortholog-operator` | `github.com/clearcompass-ai/ledger` |
 | SDK pin | `ortholog-sdk v0.9.6` | `attesta v1.0.0` |
-| Env vars (test-only) | `ORTHOLOG_TEST_*` | `ATTESTA_TEST_*` |
+| Test env vars | `ORTHOLOG_TEST_*` | `ATTESTA_TEST_*` |
 
-The HTTP API, Postgres schema, BadgerDB keyspace (`0x07 0x01..0x0D`),
-and on-disk file layouts are byte-compatible. The rename is at the
-identifier level only — operator state from a `ortholog-operator`
-deployment is readable by a `ledger` deployment.
+In phase 1 the binary identifier (`OPERATOR_*` env vars,
+`cmd/operator/`, log messages saying "operator") was deliberately
+left in place to keep the wire-format scope bounded.
 
-What did NOT rename:
+## Phase 2 — binary identifier rename (this commit)
 
-- `OPERATOR_*` env vars: still present. The "operator" framing is
-  the binary's role name, not branding. A future major release may
-  reframe this as "ledger" but the identifier-level rename is
-  deliberately deferred to keep the v1.0.0 scope bounded.
-- HTTP route paths (`/v1/entries`, `/v1/tree/head`, etc.): wire
-  contracts; unchanged.
-- Response shapes (`signer_did`, `log_did`, `canonical_hash`): wire
-  contracts; unchanged.
-- Postgres table names: byte-compatible.
-- BadgerDB keyspace prefixes: byte-compatible.
+The deferred binary-side terminology is now flipped. Every place
+that called the binary an "operator" now calls it a "ledger". This
+is identifier-level only — wire format is unchanged from phase 1.
 
-## Wire-incompatibility note
+| Aspect | Before | After |
+|---|---|---|
+| Binary directory | `cmd/operator/` | `cmd/ledger/` |
+| Read-only sibling | `cmd/operator-reader/` | `cmd/ledger-reader/` |
+| Env vars | `OPERATOR_*` (33 vars) | `LEDGER_*` |
+| Go config fields | `OperatorDID`, `OperatorSignerKeyFile`, `OperatorSignerPriv`, `OperatorURL`, `OperatorEndpoint` (operator-local) | `LedgerDID`, `LedgerSignerKeyFile`, `LedgerSignerPriv`, `LedgerURL`, `LedgerEndpoint` |
+| YAML / log keys | `operator_did`, `operator_endpoint` | `ledger_did`, `ledger_endpoint` |
+| Comments + log messages | "operator" / "Operators" | "ledger" / "Ledgers" |
+| Test names | `TestCrossOperator_*`, `TestEquivocationBinding_OperatorMatchesSDK` | `TestCrossLedger_*`, `TestEquivocationBinding_LedgerMatchesSDK` |
+| Test fixture file | `gossipnet/cross_operator_test.go` | `gossipnet/cross_ledger_test.go` |
+| Service name (OTel) | `"operator"` (was already `"ledger"` in phase 1) | unchanged |
 
-A v1.0.0 `attesta` deployment is wire-incompatible with any v0.9.x
-`ortholog-sdk` deployment. Drain v0.9.x before bringing up v1.0.0;
-do not run mixed populations. Old signed events, SCTs, and
-commitment artifacts cannot be re-verified by v1.0.0 code — the
-underlying domain hashes changed.
+What still uses "Operator" (intentionally — SDK-owned API surface):
+
+- `attesta/log.OperatorQueryAPI` — SDK interface; the ledger
+  implements it via `store/indexes.PostgresQueryAPI`.
+- `attesta/gossip/findings.VerifiedCosignedTreeHeadFinding.OperatorEndpoint()`
+  — SDK accessor; the ledger calls it but does not own it. The
+  field on the wire (the `OperatorEndpoint` field of the SDK's
+  `CosignedTreeHeadFinding`) is part of the canonical bytes and
+  has not been renamed.
+- `attesta/log.SubmitterConfig.OperatorDID` — SDK config field
+  (the ledger does not currently construct this, but other
+  consumers do).
+
+Wire-format unchanged in phase 2:
+- HTTP route paths (`/v1/entries`, `/v1/tree/head`, etc.).
+- Response shapes (`signer_did`, `log_did`, `canonical_hash`).
+- Postgres table names + column names.
+- BadgerDB keyspace prefixes.
+- Gossip event canonical bytes (the SDK-owned `OperatorEndpoint`
+  field stays on the wire).
+
+State from a phase-1 deployment (using `OPERATOR_*` env vars and
+`cmd/operator`) reads byte-identical on disk to a phase-2
+deployment (using `LEDGER_*` env vars and `cmd/ledger`). The
+deployment-plan change is just env-var renaming and the binary
+path; no data migration.
+
+## Wire-incompatibility note (phase 1)
+
+A v1.0.0 `attesta` deployment is wire-incompatible with any
+v0.9.x `ortholog-sdk` deployment. Drain v0.9.x before bringing
+up v1.0.0; do not run mixed populations. Old signed events,
+SCTs, and commitment artifacts cannot be re-verified by v1.0.0
+code — the underlying domain hashes changed.
 
 This was a deliberate hard fork, not a back-compatible release.
 
 ## What's still pending
 
-A small set of follow-ups remain when the broader release is
-coordinated:
-
 | Item | Owner | Notes |
 |---|---|---|
-| Tag `attesta@v1.0.0` | SDK release engineer | After all 17 wire-format-lock goldens were regenerated and tests run green; tag pushed to `clearcompass-ai/ortholog-sdk` (legacy URL; will move to `clearcompass-ai/attesta` when that repo is created). |
-| Drop the `replace` directive in operator `go.mod` | Operator owner | Currently pinned via `replace github.com/clearcompass-ai/attesta => /home/user/ortholog-sdk`. After the SDK tag publishes, run `go mod edit -dropreplace` + `go get github.com/clearcompass-ai/attesta@v1.0.0` + `go mod tidy`. |
-| Migrate sibling consumers (`artifact-store`, `judicial-network`, `tessera`) | Each repo's owner | Same pin migration. Each repo has its own go.mod with the SDK pin. |
-| Deployment plan: drain v0.9.x | Operations | Wire-incompatibility means old deployments produce signatures the new code refuses. Coordinate the cutover in deployment runbooks. |
+| Migrate sibling consumers (`artifact-store`, `judicial-network`, `tessera`) | Each repo's owner | Each repo has its own go.mod with the SDK pin; same drop-replace + `go get attesta@v1.0.0` cycle, plus the API breakage from the v0.8.x → v1.0.0 surface (NetworkID plumbing, BLSAggregateVerifier, WitnessKeySet). |
+| Deployment plan: drain v0.9.x | Operations | Wire-incompatibility from phase 1 means old deployments produce signatures the new code refuses. Coordinate the cutover in deployment runbooks. |
+| Deployment plan: env-var rename | Operations | Phase-2 cutover requires updating Helm / Terraform / SOPS to set `LEDGER_*` instead of `OPERATOR_*`. |
 
-Once these land, this document and the rebrand-history references
-in code comments can be deleted.
+Once these land, this document and any remaining rebrand-history
+references in code comments can be deleted.

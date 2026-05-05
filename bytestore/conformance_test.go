@@ -28,23 +28,23 @@ WHAT WE ASSERT (Backend, adds Presigner):
   - The presigned URL contains the entry's hash hex in its path —
     this is the static-verifiability invariant the 302 redirect
     relies on. Without this, a consumer can't tell whether a
-    redirect points at the bytes the operator promised.
+    redirect points at the bytes the ledger promised.
 
 BACKEND MATRIX (each entry point gates on its env vars; otherwise
 skips):
 
-  TestConformance_Memory          (always runs — Store only)
-  TestConformance_GCS_Container   (ATTESTA_TEST_GCS_ENDPOINT)  Store
-  TestConformance_GCS_Real        (ATTESTA_TEST_GCS_BUCKET, no
-                                   endpoint) Backend
-  TestConformance_S3_Container    (ATTESTA_TEST_S3_ENDPOINT)   Backend
-                                  (RustFS issues valid SigV4 URLs
-                                  that local SigV4 verifies)
-  TestConformance_S3_Real         (ATTESTA_TEST_S3_REAL=1 +
-                                   ATTESTA_TEST_S3_BUCKET)     Backend
+	TestConformance_Memory          (always runs — Store only)
+	TestConformance_GCS_Container   (ATTESTA_TEST_GCS_ENDPOINT)  Store
+	TestConformance_GCS_Real        (ATTESTA_TEST_GCS_BUCKET, no
+	                                 endpoint) Backend
+	TestConformance_S3_Container    (ATTESTA_TEST_S3_ENDPOINT)   Backend
+	                                (RustFS issues valid SigV4 URLs
+	                                that local SigV4 verifies)
+	TestConformance_S3_Real         (ATTESTA_TEST_S3_REAL=1 +
+	                                 ATTESTA_TEST_S3_BUCKET)     Backend
 
-  GCS container (fake-gcs-server) does NOT validate V4 signatures,
-  so it can only run the Store half of the suite.
+	GCS container (fake-gcs-server) does NOT validate V4 signatures,
+	so it can only run the Store half of the suite.
 */
 package bytestore
 
@@ -65,7 +65,7 @@ import (
 )
 
 // runStoreConformance exercises the Store contract: WriteEntry/
-// ReadEntry/ReadEntryBatch with the boundary cases that the operator
+// ReadEntry/ReadEntryBatch with the boundary cases that the ledger
 // depends on. Each subtest uses an isolated (seq, hash) so they can
 // run in any order against a shared bucket.
 func runStoreConformance(ctx context.Context, t *testing.T, store Store) {
@@ -176,7 +176,7 @@ func runStoreConformance(ctx context.Context, t *testing.T, store Store) {
 	t.Run("Concurrent_Writers_Safe", func(t *testing.T) {
 		// Per-goroutine seq + hash so writes don't collide. We're
 		// asserting the interface itself is goroutine-safe; the
-		// underlying SDK clients all promise this, and the operator
+		// underlying SDK clients all promise this, and the ledger
 		// shares one *Backend across admission goroutines.
 		const N = 12
 		var wg sync.WaitGroup
@@ -260,7 +260,7 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 	t.Run("Presign_URLContainsHashHex", func(t *testing.T) {
 		// Static-verifiability invariant: a consumer following a 302
 		// redirect MUST be able to verify (without fetching) that the
-		// URL points at the bytes the operator promised. We achieve
+		// URL points at the bytes the ledger promised. We achieve
 		// this by including the hash hex in the object path
 		// (layoutKey: <prefix>/<seq:016x>/<hash_hex>). If the URL
 		// doesn't contain the hex, the redirect path is broken.

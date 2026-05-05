@@ -10,7 +10,7 @@ The SDK ships cosign.WitnessClient (per-endpoint HTTP client) and
 cosign.WitnessCollector (K-of-N parallel collector with short-circuit
 cancellation on the K-th valid signature). HeadSync glues those to:
 
-  - The operator's TreeHeadStore — persists the (head + per-witness
+  - The ledger's TreeHeadStore — persists the (head + per-witness
     signatures) tuple so downstream readers (api/, anchor publisher,
     audit consumers) see a single materialized record per signed
     head.
@@ -28,7 +28,7 @@ collector returns ErrQuorumCollectionFailed only if the
 unrecoverable failures (rate-limit + network + 5xx aggregate) leave
 fewer than K endpoints capable of returning a valid signature.
 
-The operator-side action on rate-limit failure is to log and
+The ledger-side action on rate-limit failure is to log and
 continue; the next builder cycle re-requests cosignatures on a
 larger tree head. This is correct because cosignatures are
 per-head; the witness signing the next cycle's head is identical
@@ -100,7 +100,7 @@ type HeadSyncConfig struct {
 	// CosignedTreeHead. The publisher is responsible for signing
 	// the event as a KindCosignedTreeHead and broadcasting it to
 	// peers via the gossip Sink. Optional; nil disables the
-	// publish step (useful for read-only operators or trimmed
+	// publish step (useful for read-only ledgers or trimmed
 	// test rigs).
 	GossipPublisher CosignedHeadPublisher
 }
@@ -245,7 +245,7 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 // K successfully-collected signatures; PerEndpoint[i].Err == nil
 // identifies which endpoints contributed. The signature payload is
 // JSON-encoded for the row's `signature` BYTEA column — the SDK type
-// fields are opaque to the operator's persistence layer; downstream
+// fields are opaque to the ledger's persistence layer; downstream
 // consumers parse it back via json.Unmarshal into
 // types.WitnessSignature.
 func (hs *HeadSync) persistSignatures(
@@ -286,7 +286,7 @@ func (hs *HeadSync) persistSignatures(
 
 // logQuorumFailure emits a structured per-endpoint diagnostic when
 // the SDK collector returns ErrQuorumCollectionFailed. ErrRateLimited
-// causes are tagged separately so operators reading logs can
+// causes are tagged separately so ledgers reading logs can
 // distinguish "everyone's overloaded" from "everyone's broken".
 func (hs *HeadSync) logQuorumFailure(err error, result *cosign.CollectionResult, head types.TreeHead) {
 	if !errors.Is(err, cosign.ErrQuorumCollectionFailed) {

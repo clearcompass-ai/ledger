@@ -3,7 +3,7 @@ FILE PATH: api/batch_test.go
 
 Unit-level tests for POST /v1/entries/batch. Covers:
 
-  - Constructor guards (nil deps, missing OperatorDID, etc.).
+  - Constructor guards (nil deps, missing LedgerDID, etc.).
   - Empty batch → 400.
   - Oversized batch (>MaxBatchSize) → 400.
   - Bad JSON → 400.
@@ -11,8 +11,8 @@ Unit-level tests for POST /v1/entries/batch. Covers:
   - Per-entry validation failure (e.g. wrong destination) → 403.
   - Happy path → 202 + array of SCTs, each verifies.
   - Hard-ceiling AbsoluteMaxBatchPayloadBytes is respected:
-      requests larger than the absolute cap are truncated by
-      io.LimitReader and surface as a JSON-decode error (not OOM).
+    requests larger than the absolute cap are truncated by
+    io.LimitReader and surface as a JSON-decode error (not OOM).
 
 Full end-to-end coverage (real WAL, real Sequencer drain) belongs
 in tests/. Here we drive the handler against the in-package fakes.

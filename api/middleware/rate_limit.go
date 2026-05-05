@@ -68,7 +68,7 @@ func DefaultDifficultyConfig() DifficultyConfig {
 }
 
 // NewDifficultyController creates a difficulty controller. lag may be nil
-// for read-only operators that do not run admission; in that case the
+// for read-only ledgers that do not run admission; in that case the
 // auto-adjust loop runs at static initial difficulty.
 func NewDifficultyController(lag LagProvider, cfg DifficultyConfig, logger *slog.Logger) *DifficultyController {
 	dc := &DifficultyController{

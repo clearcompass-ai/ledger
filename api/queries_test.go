@@ -11,17 +11,17 @@ provide the entry_index row).
 
 WHAT'S COVERED:
 
-  Hash lookup — short-circuit branches:
-    - StatePending → 200 {state:"pending", canonical_hash:hex}.
-    - StateManual  → 200 {state:"manual", canonical_hash:hex}.
-    - bad hex → 400.
-    - missing nil-WAL deps gracefully fall through (entry_index
-      lookup; not exercised here).
+	Hash lookup — short-circuit branches:
+	  - StatePending → 200 {state:"pending", canonical_hash:hex}.
+	  - StateManual  → 200 {state:"manual", canonical_hash:hex}.
+	  - bad hex → 400.
+	  - missing nil-WAL deps gracefully fall through (entry_index
+	    lookup; not exercised here).
 
-  WAL transport error → 500.
+	WAL transport error → 500.
 
-  WAL.ErrNotFound + nil EntryStore → handler reaches entry_index
-  fall-through (covered by e2e tests).
+	WAL.ErrNotFound + nil EntryStore → handler reaches entry_index
+	fall-through (covered by e2e tests).
 
 MMD handler unit-level tests are in api/mmd_test.go.
 */
@@ -150,7 +150,7 @@ func TestHashLookup_WALTransportError_Returns500(t *testing.T) {
 }
 
 func TestHashLookup_NilWAL_FallsThroughToEntryIndex(t *testing.T) {
-	// Read-only operator path: WAL is nil, handler must skip the
+	// Read-only ledger path: WAL is nil, handler must skip the
 	// probe and fall through to entry_index. Without an EntryStore
 	// the call would NPE; assert the handler reaches the
 	// fall-through code path by triggering a nil-pointer recovery

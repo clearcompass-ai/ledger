@@ -1,5 +1,5 @@
 /*
-FILE PATH: cmd/operator/pool_sizing_test.go
+FILE PATH: cmd/ledger/pool_sizing_test.go
 
 Tests defaultPgMaxConns + validatePgPoolSizing — boot-time guards
 that prevent the Sequencer from saturating the Postgres pool and
@@ -39,7 +39,7 @@ func TestDefaultPgMaxConns_FloorsAt20(t *testing.T) {
 func TestDefaultPgMaxConns_ZeroFallsBackToSequencerDefault(t *testing.T) {
 	// MaxInFlight=0 must use sequencer.DefaultMaxInFlight; pinning
 	// the contract here so a future tweak to DefaultMaxInFlight
-	// stays consistent with operator-side defaulting.
+	// stays consistent with ledger-side defaulting.
 	got := defaultPgMaxConns(0)
 	expectedFromDefault := int32(sequencer.DefaultMaxInFlight * 4)
 	if expectedFromDefault < 20 {
@@ -86,11 +86,11 @@ func TestValidatePgPoolSizing_ErrorMessageActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// The error must point at the env var to set so an operator
+	// The error must point at the env var to set so an ledger
 	// reading the boot log can fix the misconfig without spelunking.
 	for _, want := range []string{
-		"OPERATOR_PG_MAX_CONNS",
-		"OPERATOR_SEQUENCER_MAX_INFLIGHT",
+		"LEDGER_PG_MAX_CONNS",
+		"LEDGER_SEQUENCER_MAX_INFLIGHT",
 		"headroom",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -100,7 +100,7 @@ func TestValidatePgPoolSizing_ErrorMessageActionable(t *testing.T) {
 }
 
 // Defaults from defaultPgMaxConns must always satisfy
-// validatePgPoolSizing — i.e. the operator never refuses to start
+// validatePgPoolSizing — i.e. the ledger never refuses to start
 // when no env override is set.
 func TestDefaultPgMaxConns_AlwaysPassesValidation(t *testing.T) {
 	cases := []int{0, 1, 2, 4, 8, 16, 32, 64, 128}

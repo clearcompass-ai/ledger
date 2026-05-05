@@ -10,7 +10,7 @@ POST-WAVE-1.5 CHANGES:
   - admission.VerifyStamp takes 8 args including currentEpoch + acceptanceWindow.
   - Test helpers buildStampParams + verifyStampForTest (helpers_test.go) keep
     call sites readable. They wire Epoch from currentTestEpoch() so the test
-    matches what the operator's runtime computes.
+    matches what the ledger's runtime computes.
   - Wire format is protocol v5 (Wave 1.5). All preamble references updated.
 
 Run without Postgres:  go test ./tests/ -v -count=1
@@ -250,7 +250,7 @@ func TestAdmission_EvidenceCapSnapshotExempt_Decision51(t *testing.T) {
 
 // TestAdmission_ModeB_ValidStamp generates a stamp with the SDK and verifies
 // it round-trips. Uses the post-Wave-1.5 StampParams API. The verification
-// uses the test epoch (matching what the operator computes at request time).
+// uses the test epoch (matching what the ledger computes at request time).
 func TestAdmission_ModeB_ValidStamp(t *testing.T) {
 	h := [32]byte{1, 2, 3, 4}
 	params := buildStampParams(h, testLogDID, 8)
@@ -267,7 +267,7 @@ func TestAdmission_ModeB_ValidStamp(t *testing.T) {
 
 // TestAdmission_ModeB_WrongLog confirms that a stamp generated for one log
 // fails verification when the verifier expects a different log DID. This is
-// the binding that prevents stamp reuse across operators.
+// the binding that prevents stamp reuse across ledgers.
 func TestAdmission_ModeB_WrongLog(t *testing.T) {
 	h := [32]byte{5, 6, 7, 8}
 	params := buildStampParams(h, testLogDID, 8)
@@ -287,7 +287,7 @@ func TestAdmission_ModeB_WrongLog(t *testing.T) {
 
 // TestAdmission_ModeB_BelowDifficulty confirms that a stamp generated at
 // difficulty 8 fails verification when the verifier requires difficulty 16.
-// This protects operators from accepting under-powered submissions when
+// This protects ledgers from accepting under-powered submissions when
 // they raise their difficulty target via DifficultyController.
 func TestAdmission_ModeB_BelowDifficulty(t *testing.T) {
 	h := [32]byte{9, 10, 11, 12}
@@ -1231,7 +1231,7 @@ func TestOps_HealthCheckAccuracy(t *testing.T) {
 //  1. ProofFromWire never returns nil for non-nil input
 //  2. The translated proof carries forward Nonce, Epoch, SubmitterCommit
 //     verbatim — these are the fields the verifier hashes
-//  3. TargetLog is populated from the operator-supplied logDID
+//  3. TargetLog is populated from the ledger-supplied logDID
 //  4. The translated proof verifies if and only if the wire body would
 //     hash valid against (entryHash, logDID, difficulty, hashFunc, epoch)
 //
@@ -1255,7 +1255,7 @@ func TestSDKAdapter_ProofFromWire_RoundTrip(t *testing.T) {
 		t.Fatalf("GenerateStamp: %v", err)
 	}
 
-	// Construct the wire-format body the operator would receive over HTTP.
+	// Construct the wire-format body the ledger would receive over HTTP.
 	// Use the SDK's exported wire-byte aliases (v0.1.1+) — locked against
 	// typed-constant drift by wire_encoding_test.go in the SDK.
 	body := &envelope.AdmissionProofBody{
@@ -1286,7 +1286,7 @@ func TestSDKAdapter_ProofFromWire_RoundTrip(t *testing.T) {
 		t.Fatalf("ProofFromWire output failed VerifyStamp: %v", err)
 	}
 
-	// Spot-check the fields VerifyStamp doesn't touch but the operator
+	// Spot-check the fields VerifyStamp doesn't touch but the ledger
 	// reads downstream (audit logs, metrics, rate limiting).
 	if apiProof.Nonce != nonce {
 		t.Errorf("Nonce: got %d, want %d (must round-trip verbatim)", apiProof.Nonce, nonce)
@@ -1295,7 +1295,7 @@ func TestSDKAdapter_ProofFromWire_RoundTrip(t *testing.T) {
 		t.Errorf("Epoch: got %d, want %d (must round-trip verbatim)", apiProof.Epoch, params.Epoch)
 	}
 	if apiProof.TargetLog != testLogDID {
-		t.Errorf("TargetLog: got %q, want %q (must come from operator context)",
+		t.Errorf("TargetLog: got %q, want %q (must come from ledger context)",
 			apiProof.TargetLog, testLogDID)
 	}
 	if apiProof.SubmitterCommit == nil || *apiProof.SubmitterCommit != commit {
@@ -1392,7 +1392,7 @@ func TestSDKAdapter_TwoTypesAreDistinct(t *testing.T) {
 
 	// Verify each type has a field the other lacks. This is purely a
 	// compile-time documentation check: if these field references break,
-	// the SDK has merged the types and the operator's adapter is dead code.
+	// the SDK has merged the types and the ledger's adapter is dead code.
 	wire.Hash = [32]byte{1} // present on wire only (verifier recomputes)
 	if wire.Hash[0] != 1 {
 		t.Fatal("Hash field should exist on wire type")

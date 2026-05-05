@@ -19,8 +19,8 @@ without a single canonical helper.
 
 Per witness DID:
 
-  pubBytes, _ = did.ParseDIDKey(witnessDID)
-  pubKeyID    = SHA-256(pubBytes)            // matches signatures.PubKeyBytes hash form
+	pubBytes, _ = did.ParseDIDKey(witnessDID)
+	pubKeyID    = SHA-256(pubBytes)            // matches signatures.PubKeyBytes hash form
 
 For ECDSA secp256k1 keys: ParseDIDKey returns the COMPRESSED
 33-byte form. The witness signing path (cosign.NewECDSAWitnessSigner)
@@ -99,7 +99,7 @@ func WitnessKeysFromDIDs(dids []string) ([]types.WitnessPublicKey, error) {
 // the form NewECDSAWitnessSigner.PubKeyID hashes.
 //
 // Accepts already-uncompressed 65-byte input as a passthrough
-// (operators with explicit public-key files can supply either
+// (ledgers with explicit public-key files can supply either
 // form via WitnessKeysFromDIDs's parsing path).
 func uncompressSecp256k1(b []byte) ([]byte, error) {
 	switch len(b) {

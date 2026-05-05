@@ -2,53 +2,55 @@
 FILE PATH: tests/destination_binding_test.go
 
 DESCRIPTION:
-    Integration tests that lock in the v0.3.0-tessera security invariants
-    at the operator's HTTP admission boundary. Every test here is
-    load-bearing — a failure is either a real security regression or a
-    protocol change that requires explicit review.
+
+	Integration tests that lock in the v0.3.0-tessera security invariants
+	at the ledger's HTTP admission boundary. Every test here is
+	load-bearing — a failure is either a real security regression or a
+	protocol change that requires explicit review.
 
 INVARIANTS LOCKED (5 total):
 
-    1. Cross-destination rejection (step 3b → 403 Forbidden)
-       Entry signed for exchange A is rejected at exchange B, even
-       though the cryptographic signature is valid. This is the runtime
-       defense that the destination-binding hash scheme enables.
+ 1. Cross-destination rejection (step 3b → 403 Forbidden)
+    Entry signed for exchange A is rejected at exchange B, even
+    though the cryptographic signature is valid. This is the runtime
+    defense that the destination-binding hash scheme enables.
 
-    2. Malformed-destination rejection (step 3a → 422 Unprocessable)
-       Entry wire-forged with empty Destination (bypassing NewEntry) is
-       caught by entry.Validate(). Closes the Deserialize-is-a-parser
-       gap where forged wire bytes bypass write-time invariants.
+ 2. Malformed-destination rejection (step 3a → 422 Unprocessable)
+    Entry wire-forged with empty Destination (bypassing NewEntry) is
+    caught by entry.Validate(). Closes the Deserialize-is-a-parser
+    gap where forged wire bytes bypass write-time invariants.
 
-    3. Late-replay rejection (step 3c → 422 Unprocessable)
-       Entry with EventTime outside FreshnessInteractive (5min) is
-       rejected. Defends against an attacker who captured a legitimately-
-       signed entry and replayed it arbitrarily later.
+ 3. Late-replay rejection (step 3c → 422 Unprocessable)
+    Entry with EventTime outside FreshnessInteractive (5min) is
+    rejected. Defends against an attacker who captured a legitimately-
+    signed entry and replayed it arbitrarily later.
 
-    4. Same-destination acceptance (positive path sanity)
-       Entry correctly bound to the log's own Destination is admitted
-       end-to-end. Without this, invariant 1's negative assertion is
-       meaningless — rejections could be for unrelated reasons.
+ 4. Same-destination acceptance (positive path sanity)
+    Entry correctly bound to the log's own Destination is admitted
+    end-to-end. Without this, invariant 1's negative assertion is
+    meaningless — rejections could be for unrelated reasons.
 
-    5. Tessera leaf is envelope.EntryIdentity, not sha256(wire)
-       Inclusion proof fetched after submission commits to
-       envelope.EntryIdentity(entry), NOT sha256(canonical+sig). Locks
-       the Tessera leaf-scheme migration against regression.
+ 5. Tessera leaf is envelope.EntryIdentity, not sha256(wire)
+    Inclusion proof fetched after submission commits to
+    envelope.EntryIdentity(entry), NOT sha256(canonical+sig). Locks
+    the Tessera leaf-scheme migration against regression.
 
 KEY DEPENDENCIES:
-    - newTestServer(t): test harness returning *httptest.Server configured
-      with testLogDID as cfg.LogDID and testOperatorDID as cfg.OperatorDID.
-      Assumed present in testserver_test.go (the location of line 311's
-      sha256 suppressor). If unavailable, port the factory pattern from
-      http_integration_test.go.
-    - testLogDID constant: the DID the test server is bound to. Defined
-      in helpers_test.go per the v0.3.0 migration patch.
+  - newTestServer(t): test harness returning *httptest.Server configured
+    with testLogDID as cfg.LogDID and testOperatorDID as cfg.LedgerDID.
+    Assumed present in testserver_test.go (the location of line 311's
+    sha256 suppressor). If unavailable, port the factory pattern from
+    http_integration_test.go.
+  - testLogDID constant: the DID the test server is bound to. Defined
+    in helpers_test.go per the v0.3.0 migration patch.
 
 WHY THIS FILE IS NEW, NOT A PATCH:
-    These five tests are net-new behavior guarantees introduced by the
-    v0.3.0 migration. Bundling them together rather than scattering
-    across existing files makes them discoverable as a single security
-    spec — any regression here means a specific defense has broken, not
-    an unrelated refactor.
+
+	These five tests are net-new behavior guarantees introduced by the
+	v0.3.0 migration. Bundling them together rather than scattering
+	across existing files makes them discoverable as a single security
+	spec — any regression here means a specific defense has broken, not
+	an unrelated refactor.
 */
 package tests
 
@@ -348,7 +350,7 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 	}
 	// We don't hex-decode and strictly compare here because that requires a
 	// JSON parser and drags in more test infrastructure than the invariant
-	// warrants. The operator's own unit tests cover the hash-format
+	// warrants. The ledger's own unit tests cover the hash-format
 	// contract; this test covers the end-to-end admission path.
 }
 
@@ -361,10 +363,11 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 // (NOT sha256 of the full wire bytes). Locks the builder/loop.go step-6
 // migration against regression.
 //
-// This test is the most sensitive to operator-internal plumbing: it
+// This test is the most sensitive to ledger-internal plumbing: it
 // requires the test harness to expose either:
-//   (a) a synchronous "wait for batch commit" hook, OR
-//   (b) a long-enough timeout + polling on the /v1/tree/head endpoint
+//
+//	(a) a synchronous "wait for batch commit" hook, OR
+//	(b) a long-enough timeout + polling on the /v1/tree/head endpoint
 //
 // The approach below uses (b) with a conservative timeout. Tune down
 // if your test harness offers a synchronous hook.

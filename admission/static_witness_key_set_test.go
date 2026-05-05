@@ -5,23 +5,23 @@ Tests for StaticWitnessKeySet + BLSQuorumVerifier wiring contract.
 
 The R1 audit revealed BLSQuorumVerifier was constructed in code
 but unwired — defined in admission/bls_quorum_verifier.go,
-referenced only from a test. The cmd/operator/main.go wiring
+referenced only from a test. The cmd/ledger/main.go wiring
 was missing.
 
 These tests pin the construction contract end-to-end:
 
-  1. StaticWitnessKeySet rejects empty keys / bad K.
-  2. StaticWitnessKeySet's Active() returns a defensive copy
-     (caller can't mutate authoritative state).
-  3. BLSQuorumVerifier.VerifyEntry on a non-embedding entry is a
-     no-op — confirms the verifier accepts the v7.75 entry surface
-     without spurious rejections.
+ 1. StaticWitnessKeySet rejects empty keys / bad K.
+ 2. StaticWitnessKeySet's Active() returns a defensive copy
+    (caller can't mutate authoritative state).
+ 3. BLSQuorumVerifier.VerifyEntry on a non-embedding entry is a
+    no-op — confirms the verifier accepts the v7.75 entry surface
+    without spurious rejections.
 
 # WHAT THIS DOES NOT PIN
 
 Running cosign.Verify against real K-of-N witness signatures
 on a synthetic CosignedTreeHead would duplicate the SDK's
-cosign tests. The wiring contract is what's operator-side; the
+cosign tests. The wiring contract is what's ledger-side; the
 crypto path is the SDK's responsibility.
 */
 package admission_test

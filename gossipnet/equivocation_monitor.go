@@ -8,7 +8,7 @@ both sides) and hands it to the EquivocationPublisher.
 
 # WHY THIS REPLACES witness/equivocation_monitor.go
 
-The legacy operator monitor fetched /v1/tree/head — an endpoint
+The legacy ledger monitor fetched /v1/tree/head — an endpoint
 that returns tree_size + root_hash but NO witness signatures.
 Without the cosignatures, the legacy monitor could detect SUSPECT
 equivocation but could not produce cryptographic evidence — a
@@ -24,26 +24,26 @@ plumbing on our side.
 
 For each (peer, originator) pair where:
 
-  - peer is one of OPERATOR_GOSSIP_PEER_ENDPOINTS
+  - peer is one of LEDGER_GOSSIP_PEER_ENDPOINTS
   - originator is the peer's own DID (the peer might equivocate
     by publishing different heads to different audiences)
 
 Per tick:
 
-  1. Fetch peer.LatestSTH(originatorDID) via gossip.Client. Decode
-     the SignedEvent body to extract types.CosignedTreeHead with
-     full signatures.
-  2. Fetch our local Store.LatestSTH(originatorDID). Decode same
-     way.
-  3. If both exist, both at the same tree_size, but different
-     root_hash → call witness.DetectEquivocation. The SDK helper
-     verifies BOTH heads against the WitnessKeySet at K-of-N and
-     returns *witness.EquivocationProof on success.
-  4. Wrap in findings.NewEquivocationFinding, call .Verify(set, K)
-     to obtain *VerifiedEquivocationFinding (the type-safety
-     constructor — only path).
-  5. Publish via EquivocationPublisher (signs as
-     KindEquivocationFinding + appends + broadcasts).
+ 1. Fetch peer.LatestSTH(originatorDID) via gossip.Client. Decode
+    the SignedEvent body to extract types.CosignedTreeHead with
+    full signatures.
+ 2. Fetch our local Store.LatestSTH(originatorDID). Decode same
+    way.
+ 3. If both exist, both at the same tree_size, but different
+    root_hash → call witness.DetectEquivocation. The SDK helper
+    verifies BOTH heads against the WitnessKeySet at K-of-N and
+    returns *witness.EquivocationProof on success.
+ 4. Wrap in findings.NewEquivocationFinding, call .Verify(set, K)
+    to obtain *VerifiedEquivocationFinding (the type-safety
+    constructor — only path).
+ 5. Publish via EquivocationPublisher (signs as
+    KindEquivocationFinding + appends + broadcasts).
 
 # FALSE-POSITIVE GATE
 
@@ -95,13 +95,13 @@ const DefaultEquivocationInterval = 60 * time.Second
 // EquivocationMonitorConfig configures the equivocation monitor.
 type EquivocationMonitorConfig struct {
 	// Store is the local gossip Store. Required. Used for
-	// LatestSTH(originator) lookups against the operator's own
+	// LatestSTH(originator) lookups against the ledger's own
 	// chain history.
 	Store sdkgossip.Store
 
 	// Peers is the set of peers to compare against. Same shape
 	// as the anti-entropy config; reusing the type keeps the
-	// operator's peer config consistent across the two loops.
+	// ledger's peer config consistent across the two loops.
 	// Empty disables the monitor (Run returns immediately).
 	Peers []AntiEntropyPeer
 

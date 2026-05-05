@@ -30,8 +30,8 @@ SDK ALIGNMENT:
   - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
   - v7.75: entry construction split into two constructors per
     core/envelope/entry.go's docblock —
-        envelope.NewEntry(header, payload, signatures)  — fully signed
-        envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
+    envelope.NewEntry(header, payload, signatures)  — fully signed
+    envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
     The publisher constructs the commentary unsigned and hands it to
     submitFn for signing and submission, so the right constructor is
     NewUnsignedEntry. submitFn (or SubmitViaHTTP) is responsible for
@@ -62,7 +62,7 @@ type CommitmentPublisherConfig struct {
 
 // CommitmentPublisher publishes derivation commitments.
 type CommitmentPublisher struct {
-	operatorDID  string
+	ledgerDID    string
 	logDID       string // NEW (v0.3.0): destination for self-published commentary.
 	cfg          CommitmentPublisherConfig
 	logger       *slog.Logger
@@ -75,13 +75,13 @@ type CommitmentPublisher struct {
 
 // NewCommitmentPublisher creates a commitment publisher.
 //
-// operatorDID: the key DID signing the commentary entries.
-// logDID:      the destination the commentary binds to (this operator's log).
+// ledgerDID: the key DID signing the commentary entries.
+// logDID:      the destination the commentary binds to (this ledger's log).
 //
 // logDID MUST be non-empty — envelope.NewUnsignedEntry will reject
 // construction otherwise (SDK v0.3.0 destination-binding).
 func NewCommitmentPublisher(
-	operatorDID string,
+	ledgerDID string,
 	logDID string,
 	cfg CommitmentPublisherConfig,
 	submitFn func(entry *envelope.Entry) error,
@@ -94,7 +94,7 @@ func NewCommitmentPublisher(
 		cfg.IntervalTime = 1 * time.Hour
 	}
 	return &CommitmentPublisher{
-		operatorDID: operatorDID,
+		ledgerDID:   ledgerDID,
 		logDID:      logDID,
 		cfg:         cfg,
 		submitFn:    submitFn,
@@ -174,7 +174,7 @@ func (cp *CommitmentPublisher) publish(
 	// publisher constructs the entry, submitFn signs and submits.
 	// Fully-signed callers use envelope.NewEntry(header, payload, sigs).
 	entry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
-		SignerDID:   cp.operatorDID,
+		SignerDID:   cp.ledgerDID,
 		Destination: cp.logDID,
 		// EventTime in microseconds — matches what SDK
 		// exchange/policy.CheckFreshness actually reads

@@ -3,26 +3,26 @@ FILE PATH: gossipstore/projections.go
 
 Public API for the v0.9.6 sub-prefixes:
 
-  WriteSplitIDIndexEntry — sequencer writes one entry per
-                           commitment_split_id INSERT (Phase 2).
-                           EquivocationScanner subscribes to
-                           the prefix and detects collisions.
+	WriteSplitIDIndexEntry — sequencer writes one entry per
+	                         commitment_split_id INSERT (Phase 2).
+	                         EquivocationScanner subscribes to
+	                         the prefix and detects collisions.
 
-  ListSplitIDIndexEntriesAt — scanner / diagnostics: list every
-                              entry under a (schema_id, split_id).
+	ListSplitIDIndexEntriesAt — scanner / diagnostics: list every
+	                            entry under a (schema_id, split_id).
 
-  PutEquivProjection / GetEquivProjection — read-side
-                                            projection store
-                                            (0x0B). O(1) point
-                                            access for
-                                            /v1/commitments/by-split-id.
+	PutEquivProjection / GetEquivProjection — read-side
+	                                          projection store
+	                                          (0x0B). O(1) point
+	                                          access for
+	                                          /v1/commitments/by-split-id.
 
 # WHY HERE (NOT badger_store.go)
 
 Keeps badger_store.go under the 300-LOC budget and isolates the
 v0.9.6-specific projection surface from the gossip-store core.
 The Store interface continues to be exactly what gossip.Store
-requires; these are operator-internal extensions.
+requires; these are ledger-internal extensions.
 */
 package gossipstore
 

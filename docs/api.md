@@ -1,6 +1,6 @@
 # API
 
-Every HTTP route the operator serves. Single source of truth:
+Every HTTP route the ledger serves. Single source of truth:
 `api/server.go`. Lines below are exact references.
 
 ## Health
@@ -30,7 +30,7 @@ Response on success: `202 Accepted` + JSON
 ```json
 {
   "version": 1,
-  "signer_did": "did:web:operator.example",
+  "signer_did": "did:web:ledger.example",
   "sig_algo_id": "ECDSA-secp256k1-SHA256",
   "log_did": "did:web:log.example",
   "canonical_hash": "abcd...",
@@ -41,7 +41,7 @@ Response on success: `202 Accepted` + JSON
 ```
 
 Idempotency contract: byte-identical resubmission re-issues the SAME
-SCT (semantic equivalence — the operator-side
+SCT (semantic equivalence — the ledger-side
 `LogTimeMicros` is persisted in WAL `Meta`, so the SCT's signed
 fields are identical). Pinned by
 `api/submission_test.go::TestV1Handler_SemanticIdempotency`.
@@ -58,7 +58,7 @@ see [observability.md](observability.md)):
 | 413 | Body too large | `body_too_large` |
 | 422 | Envelope rejected | `envelope_rejected`, `freshness_expired` |
 | 503 | WAL backpressure | `wal_backpressure` (sets `Retry-After`) |
-| 500 | Operator infrastructure | `wal_persist_failed`, `sct_signing_failed` |
+| 500 | Ledger infrastructure | `wal_persist_failed`, `sct_signing_failed` |
 
 ## Tree head + Merkle proofs
 
@@ -104,7 +104,7 @@ The `/raw` route applies a routing decision matrix (`api/entries_read.go`):
 | WAL state | entry_index | Outcome |
 |---|---|---|
 | `StatePending` | — | 200 `{"state":"pending"}` (truthful — bytes durable, not yet sequenced) |
-| `StateManual` | — | 200 `{"state":"manual"}` (sequencer gave up; needs operator) |
+| `StateManual` | — | 200 `{"state":"manual"}` (sequencer gave up; needs ledger) |
 | `StateSequenced` / `StateShipped` | row exists | 200 + full metadata |
 | `wal.ErrNotFound` | row exists | 200 + full metadata (post-GC; sequenced long ago) |
 | `wal.ErrNotFound` | no row | 404 |
@@ -138,7 +138,7 @@ Distinct from `/by-split-id` (cryptographic Pedersen commitments).
 
 ## Witness cosign
 
-Mounted only when `WitnessCosign` handler is set (i.e. operator runs
+Mounted only when `WitnessCosign` handler is set (i.e. ledger runs
 in witness mode):
 
 | Route | File:Line | Notes |
@@ -170,7 +170,7 @@ Mounted iff gossip is enabled (`gossipBStore != nil`):
 |---|---|
 | `GET /metrics` | `server.go:322` |
 
-Prometheus scrape endpoint. Mounted iff `OPERATOR_METRICS_ENABLE=true`.
+Prometheus scrape endpoint. Mounted iff `LEDGER_METRICS_ENABLE=true`.
 Metric: `attesta_api_errors_total{error_class, http_status}` —
 see [observability.md](observability.md).
 

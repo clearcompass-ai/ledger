@@ -4,7 +4,7 @@ FILE PATH: cmd/rebuild-tiles/main.go
 DESCRIPTION:
 
 	One-shot utility that rebuilds the Tessera tile store after the
-	v0.3.0-tessera operator migration. Drives the patched builder loop
+	v0.3.0-tessera ledger migration. Drives the patched builder loop
 	to completion over existing admitted entries in Postgres, against
 	a FRESH Tessera personality (empty storage).
 
@@ -14,7 +14,7 @@ DESCRIPTION:
 
 WHY A SEPARATE BINARY:
 
-	The production operator runs admission, anchor publisher, commitment
+	The production ledger runs admission, anchor publisher, commitment
 	publisher, and witness cosigner concurrently with the builder loop.
 	For a tile rebuild we want ONLY the builder loop — no new admissions,
 	no anchor publishing, no witness cosig requests. A dedicated binary
@@ -22,24 +22,24 @@ WHY A SEPARATE BINARY:
 
 SAFETY CONTRACT:
  1. Idempotent against its OWN re-runs.
- 2. NOT idempotent against the production operator running
+ 2. NOT idempotent against the production ledger running
     concurrently. Stop the production binary first.
  3. Point --tessera-url at a FRESH personality with empty storage. If
     the target contains existing tile data, rebuild will APPEND rather
     than replace.
  4. BYTE STORE: uses bytestore.NewMemory() here, which is
     EMPTY at startup. For a real rebuild, the byte store MUST be the
-    same persistent backend the production operator wrote to —
+    same persistent backend the production ledger wrote to —
     otherwise the fetcher will find nothing to replay. Wire your
     persistent store at the marked line.
 
 USAGE:
 
-	# 1. Stop the production operator.
+	# 1. Stop the production ledger.
 	systemctl stop ledger
 
 	# 2. Back up Postgres.
-	pg_dump attesta > /var/backups/operator-pre-rebuild-$(date -I).sql
+	pg_dump attesta > /var/backups/ledger-pre-rebuild-$(date -I).sql
 
 	# 3. Start a FRESH Tessera personality on a new port with empty
 	#    storage (or wipe the existing personality's storage and restart).
@@ -55,12 +55,12 @@ USAGE:
 
 	# 5. Run the rebuild.
 	./rebuild-tiles \
-	    --database-url="$OPERATOR_DATABASE_URL" \
+	    --database-url="$LEDGER_DATABASE_URL" \
 	    --log-did="did:web:your-log.example" \
 	    --tessera-url="http://fresh-tessera:8081" \
 	    --batch-size=1000
 
-	# 6. Start the production operator pointing at the new personality.
+	# 6. Start the production ledger pointing at the new personality.
 
 EXIT CODES:
 
@@ -98,10 +98,10 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	var (
-		databaseURL       = flag.String("database-url", os.Getenv("OPERATOR_DATABASE_URL"), "Postgres connection string")
-		logDID            = flag.String("log-did", os.Getenv("OPERATOR_LOG_DID"), "log DID (must match production)")
-		tesseraStorageDir = flag.String("tessera-storage-dir", os.Getenv("OPERATOR_TESSERA_STORAGE_DIR"), "POSIX directory for the rebuilt Tessera (MUST be empty / fresh)")
-		tesseraOrigin     = flag.String("tessera-origin", os.Getenv("OPERATOR_TESSERA_ORIGIN"), "tlog-tiles origin string for the rebuilt log (defaults to log-did)")
+		databaseURL       = flag.String("database-url", os.Getenv("LEDGER_DATABASE_URL"), "Postgres connection string")
+		logDID            = flag.String("log-did", os.Getenv("LEDGER_LOG_DID"), "log DID (must match production)")
+		tesseraStorageDir = flag.String("tessera-storage-dir", os.Getenv("LEDGER_TESSERA_STORAGE_DIR"), "POSIX directory for the rebuilt Tessera (MUST be empty / fresh)")
+		tesseraOrigin     = flag.String("tessera-origin", os.Getenv("LEDGER_TESSERA_ORIGIN"), "tlog-tiles origin string for the rebuilt log (defaults to log-did)")
 		batchSize         = flag.Int("batch-size", 1000, "builder batch size")
 		pollInterval      = flag.Duration("poll-interval", 10*time.Millisecond, "queue poll interval")
 		idleShutdownAfter = flag.Duration("idle-shutdown-after", 30*time.Second, "exit cleanly after this much idle time")

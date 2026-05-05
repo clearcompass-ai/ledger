@@ -43,7 +43,7 @@ import (
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-// testLogDID is the DID the test operator is bound to. Every test helper
+// testLogDID is the DID the test ledger is bound to. Every test helper
 // that constructs an Entry defaults Destination to this value so existing
 // fixtures keep working without a per-test edit.
 //
@@ -55,7 +55,7 @@ import (
 // fail step 3b's destination check with 403 Forbidden.
 // testLogDID is defined in helpers_test.go at package scope. We reuse that
 // value (did:attesta:test:integration) as both the log destination and
-// the operator DID for self-published entries in v0.3.0 fixtures.
+// the ledger DID for self-published entries in v0.3.0 fixtures.
 const testOperatorDID = testLogDID
 
 // ─────────────────────────────────────────────────────────────────────

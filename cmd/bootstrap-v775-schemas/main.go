@@ -4,7 +4,7 @@ Command bootstrap-v775-schemas — F4 schema-entry bootstrap script.
 Wave 1 v3 §F4. Idempotent script that publishes the two v7.75
 cryptographic-commitment schema-marker entries
 (pre-grant-commitment-v1, escrow-split-commitment-v1) on the
-operator's log so downstream consumers can locate them via the
+ledger's log so downstream consumers can locate them via the
 output YAML's (sequence_number, canonical_hash) map. Run once at
 cutover; safe to re-run.
 
@@ -40,25 +40,25 @@ Idempotency model:
     (--output, default config/v775_schemas.yaml). On every run, it
     loads the file first; if both schemas are already recorded with
     valid sequence numbers, it exits success without contacting the
-    operator. This is the fast-path for production deploys where
+    ledger. This is the fast-path for production deploys where
     the bootstrap has already run.
   - If the output file is missing or incomplete, the script builds
     fresh commentary entries and submits them via POST /v1/entries/batch.
-    The operator's UNIQUE constraint on canonical_hash means a
+    The ledger's UNIQUE constraint on canonical_hash means a
     duplicate submission (same content) returns HTTP 409; the script
-    aborts and operators reconcile manually (rare — only happens
-    when the YAML was deleted while the operator state survived).
+    aborts and ledgers reconcile manually (rare — only happens
+    when the YAML was deleted while the ledger state survived).
 
 Usage:
 
 	bootstrap-v775-schemas \
-	    --operator-url http://localhost:8080 \
-	    --signer-did   did:web:operator.example \
+	    --ledger-url http://localhost:8080 \
+	    --signer-did   did:web:ledger.example \
 	    --log-did      did:web:log.example \
-	    --key-path     /etc/attesta/operator-key.hex \
+	    --key-path     /etc/attesta/ledger-key.hex \
 	    --output       config/v775_schemas.yaml
 
-Run order in deploy: schema bootstrap → service start. The operator
+Run order in deploy: schema bootstrap → service start. The ledger
 itself does NOT need the schemas to start (commitment admission
 works without them); the bootstrap is a separate cutover step.
 */
@@ -90,21 +90,21 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type config struct {
-	OperatorURL string
-	SignerDID   string
-	LogDID      string
-	KeyPath     string
-	OutputPath  string
+	LedgerURL  string
+	SignerDID  string
+	LogDID     string
+	KeyPath    string
+	OutputPath string
 }
 
 func parseFlags() config {
 	cfg := config{}
-	flag.StringVar(&cfg.OperatorURL, "operator-url", "",
-		"base URL of the operator HTTP API (e.g. http://localhost:8080)")
+	flag.StringVar(&cfg.LedgerURL, "ledger-url", "",
+		"base URL of the ledger HTTP API (e.g. http://localhost:8080)")
 	flag.StringVar(&cfg.SignerDID, "signer-did", "",
-		"DID that signs the schema-marker entries (operator institutional DID)")
+		"DID that signs the schema-marker entries (ledger institutional DID)")
 	flag.StringVar(&cfg.LogDID, "log-did", "",
-		"destination log DID for the schema entries (must equal operator's LogDID)")
+		"destination log DID for the schema entries (must equal ledger's LogDID)")
 	flag.StringVar(&cfg.KeyPath, "key-path", "",
 		"path to a hex-encoded 32-byte secp256k1 private key file")
 	flag.StringVar(&cfg.OutputPath, "output", "config/v775_schemas.yaml",
@@ -112,8 +112,8 @@ func parseFlags() config {
 	flag.Parse()
 
 	missing := []string{}
-	if cfg.OperatorURL == "" {
-		missing = append(missing, "--operator-url")
+	if cfg.LedgerURL == "" {
+		missing = append(missing, "--ledger-url")
 	}
 	if cfg.SignerDID == "" {
 		missing = append(missing, "--signer-did")
@@ -138,12 +138,12 @@ func parseFlags() config {
 
 // bootstrapResult is the YAML output shape. Hand-rolled minimal
 // YAML emitter below — the only YAML dependency for this script
-// would be gopkg.in/yaml.v3, which the operator already pulls in
+// would be gopkg.in/yaml.v3, which the ledger already pulls in
 // transitively, but for a single-file output the hand-roll is
 // dead-simple and avoids the indirect dep being promoted to direct.
 type bootstrapResult struct {
 	GeneratedAt string           `yaml:"generated_at"`
-	OperatorDID string           `yaml:"operator_did"`
+	LedgerDID   string           `yaml:"ledger_did"`
 	LogDID      string           `yaml:"log_did"`
 	Schemas     []bootstrapEntry `yaml:"schemas"`
 }
@@ -163,7 +163,7 @@ func main() {
 	logger := log.New(os.Stderr, "bootstrap-v775-schemas: ", log.LstdFlags)
 
 	// Idempotency check: if output file exists and has both schemas,
-	// exit success without contacting the operator. This is the
+	// exit success without contacting the ledger. This is the
 	// fast-path for re-runs in production.
 	if existing, ok := readExisting(cfg.OutputPath); ok && hasBothSchemas(existing) {
 		logger.Printf("schemas already bootstrapped at %s; nothing to do",
@@ -171,7 +171,7 @@ func main() {
 		return
 	}
 
-	// Load operator's signing key.
+	// Load ledger's signing key.
 	priv, err := loadPrivateKey(cfg.KeyPath)
 	if err != nil {
 		logger.Fatalf("load key: %v", err)
@@ -188,7 +188,7 @@ func main() {
 	}
 
 	// Submit batch.
-	results, err := submitBatch(cfg.OperatorURL, [][]byte{preWire, escrowWire})
+	results, err := submitBatch(cfg.LedgerURL, [][]byte{preWire, escrowWire})
 	if err != nil {
 		logger.Fatalf("submit batch: %v", err)
 	}
@@ -199,7 +199,7 @@ func main() {
 	// Write output.
 	out := bootstrapResult{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		OperatorDID: cfg.SignerDID,
+		LedgerDID:   cfg.SignerDID,
 		LogDID:      cfg.LogDID,
 		Schemas: []bootstrapEntry{
 			{
@@ -240,7 +240,7 @@ type schemaMarkerPayload struct {
 }
 
 // buildAndSign constructs a commentary marker entry for the supplied
-// schema_id, signs it with the operator's key, and returns the wire
+// schema_id, signs it with the ledger's key, and returns the wire
 // bytes ready for batch submission.
 //
 // Why commentary instead of BuildSchemaEntry: see the file docblock.
@@ -323,10 +323,10 @@ type batchRequest struct {
 // successful run that failed to write the YAML), the script aborts
 // — re-running with the existing YAML output file in place would
 // catch this case via the idempotency fast-path. If the YAML is
-// missing AND the operator has the schemas, the operator state
-// disagrees with the bootstrap state and an operator needs to
+// missing AND the ledger has the schemas, the ledger state
+// disagrees with the bootstrap state and an ledger needs to
 // reconcile manually.
-func submitBatch(operatorURL string, wires [][]byte) ([]batchResultEntry, error) {
+func submitBatch(ledgerURL string, wires [][]byte) ([]batchResultEntry, error) {
 	req := batchRequest{Entries: make([]batchEntry, 0, len(wires))}
 	for _, w := range wires {
 		req.Entries = append(req.Entries, batchEntry{
@@ -339,7 +339,7 @@ func submitBatch(operatorURL string, wires [][]byte) ([]batchResultEntry, error)
 	}
 
 	httpReq, err := http.NewRequest("POST",
-		operatorURL+"/v1/entries/batch", bytes.NewReader(body))
+		ledgerURL+"/v1/entries/batch", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build HTTP request: %w", err)
 	}
@@ -354,7 +354,7 @@ func submitBatch(operatorURL string, wires [][]byte) ([]batchResultEntry, error)
 
 	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusAccepted {
-		return nil, fmt.Errorf("operator returned HTTP %d: %s",
+		return nil, fmt.Errorf("ledger returned HTTP %d: %s",
 			resp.StatusCode, string(rawBody))
 	}
 
@@ -372,13 +372,13 @@ func submitBatch(operatorURL string, wires [][]byte) ([]batchResultEntry, error)
 
 // loadPrivateKey reads a hex-encoded 32-byte secp256k1 scalar from
 // disk and returns an *ecdsa.PrivateKey. The hex file is the
-// operator's institutional governance key for v7.75 deployments;
+// ledger's institutional governance key for v7.75 deployments;
 // HSM-backed key custody is Wave 2.
 //
 // File format: a single line of 64 lowercase hex characters
 // (optional trailing newline). Any other content is rejected.
 //
-// SECURITY NOTE: this script is operator-side tooling running with
+// SECURITY NOTE: this script is ledger-side tooling running with
 // access to the institutional key. It is NOT exposed to network
 // callers. Wave 2 replaces direct file-based key access with HSM
 // integration; the bootstrap script's interface (--key-path) becomes
@@ -430,7 +430,7 @@ func readExisting(path string) (bootstrapResult, bool) {
 // A partial state (one schema bootstrapped, one missing) returns
 // false so the script re-bootstraps both — duplicate submissions
 // for the already-bootstrapped one will catch on canonical_hash
-// uniqueness and the operator will need manual reconciliation. A
+// uniqueness and the ledger will need manual reconciliation. A
 // future iteration can do a per-schema submission to handle the
 // partial case more gracefully.
 func hasBothSchemas(b bootstrapResult) bool {
@@ -456,11 +456,11 @@ func hasBothSchemas(b bootstrapResult) bool {
 
 // writeYAML emits the bootstrapResult in a fixed canonical YAML
 // shape. Hand-rolled to avoid pulling gopkg.in/yaml.v3 into the
-// operator's direct dependencies just for this one-shot script.
+// ledger's direct dependencies just for this one-shot script.
 func writeYAML(path string, b bootstrapResult) error {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "generated_at: %q\n", b.GeneratedAt)
-	fmt.Fprintf(&buf, "operator_did: %q\n", b.OperatorDID)
+	fmt.Fprintf(&buf, "ledger_did: %q\n", b.LedgerDID)
 	fmt.Fprintf(&buf, "log_did: %q\n", b.LogDID)
 	buf.WriteString("schemas:\n")
 	for _, s := range b.Schemas {
@@ -478,7 +478,7 @@ func writeYAML(path string, b bootstrapResult) error {
 // Format expectations (matching writeYAML's output):
 //
 //	generated_at: "..."
-//	operator_did: "..."
+//	ledger_did: "..."
 //	log_did: "..."
 //	schemas:
 //	  - schema_id: "..."
@@ -498,8 +498,8 @@ func parseMinimalYAML(raw []byte) (bootstrapResult, bool) {
 			continue
 		case startsWith(s, "generated_at: "):
 			out.GeneratedAt = unquote(s[len("generated_at: "):])
-		case startsWith(s, "operator_did: "):
-			out.OperatorDID = unquote(s[len("operator_did: "):])
+		case startsWith(s, "ledger_did: "):
+			out.LedgerDID = unquote(s[len("ledger_did: "):])
 		case startsWith(s, "log_did: "):
 			out.LogDID = unquote(s[len("log_did: "):])
 		case s == "schemas:":

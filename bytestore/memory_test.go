@@ -5,32 +5,32 @@ Evidence-based unit tests for the byte-store interface and the
 in-memory implementation. Establishes the load-bearing invariants
 that production callers rely on:
 
-  Tessera-alignment invariant:
-    The byte store treats entries as opaque []byte blobs, identical
-    to the upstream Tessera library's storage shape (driver.Add
-    takes []byte, driver.ReadEntries returns []byte). A blob
-    written via WriteEntry round-trips byte-identically through
-    ReadEntry — no in-band length prefix, no split, no
-    interpretation.
+	Tessera-alignment invariant:
+	  The byte store treats entries as opaque []byte blobs, identical
+	  to the upstream Tessera library's storage shape (driver.Add
+	  takes []byte, driver.ReadEntries returns []byte). A blob
+	  written via WriteEntry round-trips byte-identically through
+	  ReadEntry — no in-band length prefix, no split, no
+	  interpretation.
 
-  Hash-keyed storage invariant:
-    Entries are keyed by (seq, hash), not seq alone. Two writes
-    with the same seq but different hash are STORED AS DISTINCT
-    entries — the byte store does not collapse them. This matches
-    the upstream Tessera storage model where each integration
-    produces a unique (sequence, identity) tuple.
+	Hash-keyed storage invariant:
+	  Entries are keyed by (seq, hash), not seq alone. Two writes
+	  with the same seq but different hash are STORED AS DISTINCT
+	  entries — the byte store does not collapse them. This matches
+	  the upstream Tessera storage model where each integration
+	  produces a unique (sequence, identity) tuple.
 
-  Envelope round-trip invariant:
-    For any *envelope.Entry e produced by envelope.NewEntry +
-    Sign + Validate, the bytes envelope.Serialize(e) round-trip
-    through the byte store and recover an Entry equal to e via
-    envelope.Deserialize. EntryIdentity stable across the round
-    trip (Tessera dedup load-bearing property).
+	Envelope round-trip invariant:
+	  For any *envelope.Entry e produced by envelope.NewEntry +
+	  Sign + Validate, the bytes envelope.Serialize(e) round-trip
+	  through the byte store and recover an Entry equal to e via
+	  envelope.Deserialize. EntryIdentity stable across the round
+	  trip (Tessera dedup load-bearing property).
 
-  Defensive copy invariant:
-    Mutating the input slice after WriteEntry returns must not
-    corrupt the stored value. Mutating the output slice from
-    ReadEntry must not corrupt the stored value.
+	Defensive copy invariant:
+	  Mutating the input slice after WriteEntry returns must not
+	  corrupt the stored value. Mutating the output slice from
+	  ReadEntry must not corrupt the stored value.
 
 The GCS and S3 implementations reuse many of the same scenarios in
 their respective _test.go files against fake-gcs-server / RustFS;

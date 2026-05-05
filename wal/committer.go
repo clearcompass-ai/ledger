@@ -7,40 +7,40 @@ multiple concurrent admissions.
 
 GROUP COMMIT:
 
-  HTTP admission paths call Submit(ctx, hash, wire). Submit pushes a
-  submission record (including a per-call done channel) onto an
-  in-memory queue, then blocks on done. A single background goroutine
-  drains the queue, batches submissions, opens a single Badger txn
-  that writes entry + meta + inflight for every batched submission,
-  commits the txn, then calls db.Sync() ONCE for the whole batch.
-  After Sync returns, the goroutine signals every batched
-  submission's done channel with the same error.
+	HTTP admission paths call Submit(ctx, hash, wire). Submit pushes a
+	submission record (including a per-call done channel) onto an
+	in-memory queue, then blocks on done. A single background goroutine
+	drains the queue, batches submissions, opens a single Badger txn
+	that writes entry + meta + inflight for every batched submission,
+	commits the txn, then calls db.Sync() ONCE for the whole batch.
+	After Sync returns, the goroutine signals every batched
+	submission's done channel with the same error.
 
-  Triggers (whichever fires first):
-    - len(batch) >= BatchMaxEntries
-    - bytes(batch) >= BatchMaxBytes
-    - elapsed since first submission in batch >= BatchMaxLatency
+	Triggers (whichever fires first):
+	  - len(batch) >= BatchMaxEntries
+	  - bytes(batch) >= BatchMaxBytes
+	  - elapsed since first submission in batch >= BatchMaxLatency
 
 BACKPRESSURE:
 
-  Submit uses a non-blocking send to the queue. If the queue is full,
-  Submit returns ErrQueueFull immediately; the HTTP handler maps to
-  503 + Retry-After. This protects the operator from running out of
-  memory or scheduler slots during burst load.
+	Submit uses a non-blocking send to the queue. If the queue is full,
+	Submit returns ErrQueueFull immediately; the HTTP handler maps to
+	503 + Retry-After. This protects the ledger from running out of
+	memory or scheduler slots during burst load.
 
 DURABILITY GUARANTEE:
 
-  Badger is opened with SyncWrites=false so individual txn commits
-  return after writing to the in-memory memtable + the WAL buffer
-  (NOT after fsync). The committer goroutine calls db.Sync()
-  explicitly after each batched commit, which flushes Badger's WAL
-  to disk. Submit returns only after Sync has confirmed durability.
+	Badger is opened with SyncWrites=false so individual txn commits
+	return after writing to the in-memory memtable + the WAL buffer
+	(NOT after fsync). The committer goroutine calls db.Sync()
+	explicitly after each batched commit, which flushes Badger's WAL
+	to disk. Submit returns only after Sync has confirmed durability.
 
-  Failure semantics: if db.Sync() errors, EVERY submission in that
-  batch sees the same error. None proceeds to tessera.Add. Submitters
-  retry on their side; the WAL is left in a "partial-but-not-
-  acknowledged" state — entries that are present in the file but
-  never produced a 202 are reconciled at startup as phantoms.
+	Failure semantics: if db.Sync() errors, EVERY submission in that
+	batch sees the same error. None proceeds to tessera.Add. Submitters
+	retry on their side; the WAL is left in a "partial-but-not-
+	acknowledged" state — entries that are present in the file but
+	never produced a 202 are reconciled at startup as phantoms.
 */
 package wal
 
@@ -144,7 +144,7 @@ func NewCommitter(db *badger.DB, cfg CommitterConfig) *Committer {
 // wire, ctx.Err() on cancellation, or the underlying Badger / Sync
 // error if the group commit failed.
 //
-// logTimeMicros is the operator-assigned admission time (unix
+// logTimeMicros is the ledger-assigned admission time (unix
 // microseconds) that gets persisted in the Meta record. Used by the
 // HTTP handler's deterministic-idempotency path (P5): a
 // byte-identical resubmission reads back the persisted value and

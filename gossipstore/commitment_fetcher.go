@@ -25,13 +25,13 @@ Compliance test:
 FindCommitmentEntries(schemaID, splitID) → []*EntryWithMetadata
 
   - len = 0  → SDK consumer treats as "no commitment on log"
-                (the api handler maps this to 404).
+    (the api handler maps this to 404).
   - len = 1  → normal admission case.
   - len ≥ 2  → cryptographic equivocation per Decision 4
-                (admit both, surface as evidence). Returned in
-                seq-ascending order so the SDK's
-                CommitmentEquivocationError construction is
-                deterministic.
+    (admit both, surface as evidence). Returned in
+    seq-ascending order so the SDK's
+    CommitmentEquivocationError construction is
+    deterministic.
 
 Every returned EntryWithMetadata is reconstituted from the
 sequencer's at-write-time snapshot of canonical bytes + log time
@@ -56,7 +56,7 @@ import (
 )
 
 // BadgerCommitmentFetcher resolves a (schemaID, splitID) tuple to
-// every matching entry on the operator's log by scanning the
+// every matching entry on the ledger's log by scanning the
 // 0x0C entry-lookup projection in the BadgerStore.
 //
 // Implements types.CommitmentFetcher. A Postgres-free counterpart
@@ -68,7 +68,7 @@ type BadgerCommitmentFetcher struct {
 
 // NewBadgerCommitmentFetcher constructs a fetcher reading from
 // the supplied BadgerStore. nil store panics — without a store
-// the fetcher cannot serve any request, and the operator should
+// the fetcher cannot serve any request, and the ledger should
 // refuse to start rather than silently return empty results.
 func NewBadgerCommitmentFetcher(store *BadgerStore) *BadgerCommitmentFetcher {
 	if store == nil {

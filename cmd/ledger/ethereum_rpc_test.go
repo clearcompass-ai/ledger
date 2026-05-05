@@ -1,25 +1,27 @@
 /*
-FILE PATH: cmd/operator/ethereum_rpc_test.go
+FILE PATH: cmd/ledger/ethereum_rpc_test.go
 
 DESCRIPTION:
-    Tests LoadEthereumRPCConfig and BuildEthereumRPCClient. Covers:
-      - default-disabled (zero env vars).
-      - enable + endpoint contract.
-      - https-only enforcement (refuse http:// without explicit opt-in).
-      - timeout default and override.
-      - construction returns nil when disabled.
-      - construction succeeds and returns a non-nil client when enabled.
-      - the constructed client satisfies the SDK's
-        EthereumRPCClient interface (compile-time + structural check).
-      - SDK-level URL-scheme rejection bubbles up wrapped (defense-
-        in-depth: even if the operator-side check is bypassed, the
-        SDK refuses an http:// endpoint).
+
+	Tests LoadEthereumRPCConfig and BuildEthereumRPCClient. Covers:
+	  - default-disabled (zero env vars).
+	  - enable + endpoint contract.
+	  - https-only enforcement (refuse http:// without explicit opt-in).
+	  - timeout default and override.
+	  - construction returns nil when disabled.
+	  - construction succeeds and returns a non-nil client when enabled.
+	  - the constructed client satisfies the SDK's
+	    EthereumRPCClient interface (compile-time + structural check).
+	  - SDK-level URL-scheme rejection bubbles up wrapped (defense-
+	    in-depth: even if the ledger-side check is bypassed, the
+	    SDK refuses an http:// endpoint).
 
 NOTES:
-    Each test sets and unsets the four env vars explicitly. We avoid
-    t.Setenv only because the helper functions live in package main
-    and we want the env-isolation semantics to be obvious to the
-    reader.
+
+	Each test sets and unsets the four env vars explicitly. We avoid
+	t.Setenv only because the helper functions live in package main
+	and we want the env-isolation semantics to be obvious to the
+	reader.
 */
 package main
 
@@ -32,16 +34,16 @@ import (
 	sdkcryptosigs "github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
-// withEthEnv sets all four OPERATOR_ETH_RPC_* env vars and returns a
+// withEthEnv sets all four LEDGER_ETH_RPC_* env vars and returns a
 // cleanup. Empty values set the var to "" (Setenv "" still defines
 // the var; for our parser that's equivalent to unset because we test
 // for "true" / non-empty explicitly).
 func withEthEnv(t *testing.T, enabled, endpoint, timeoutMS, allowHTTP string) {
 	t.Helper()
-	t.Setenv("OPERATOR_ETH_RPC_ENABLED", enabled)
-	t.Setenv("OPERATOR_ETH_RPC_ENDPOINT", endpoint)
-	t.Setenv("OPERATOR_ETH_RPC_TIMEOUT_MS", timeoutMS)
-	t.Setenv("OPERATOR_ETH_RPC_ALLOW_HTTP", allowHTTP)
+	t.Setenv("LEDGER_ETH_RPC_ENABLED", enabled)
+	t.Setenv("LEDGER_ETH_RPC_ENDPOINT", endpoint)
+	t.Setenv("LEDGER_ETH_RPC_TIMEOUT_MS", timeoutMS)
+	t.Setenv("LEDGER_ETH_RPC_ALLOW_HTTP", allowHTTP)
 }
 
 // ─── LoadEthereumRPCConfig ─────────────────────────────────────
@@ -131,7 +133,7 @@ func TestLoadEthereumRPCConfig_TimeoutOverride(t *testing.T) {
 
 func TestLoadEthereumRPCConfig_DisabledIgnoresOtherFields(t *testing.T) {
 	// When ENABLED is false, the other env vars are irrelevant —
-	// not even an "endpoint required" check fires. The operator
+	// not even an "endpoint required" check fires. The ledger
 	// runs in EOA-only mode regardless of the noise.
 	withEthEnv(t, "false", "", "", "")
 	cfg, err := LoadEthereumRPCConfig()
@@ -173,7 +175,7 @@ func TestBuildEthereumRPCClient_HTTPSConstructsClient(t *testing.T) {
 
 func TestBuildEthereumRPCClient_HTTPWithoutOptInRejectedBySDK(t *testing.T) {
 	// Defense-in-depth: even if a misconfigured test bypasses the
-	// operator-side gate (e.g., constructs the config struct
+	// ledger-side gate (e.g., constructs the config struct
 	// directly with Enabled=true, http endpoint, AllowInsecureHTTP
 	// false), the SDK's own NewHTTPEthereumRPC enforces the
 	// http-or-explicit-opt-in invariant.

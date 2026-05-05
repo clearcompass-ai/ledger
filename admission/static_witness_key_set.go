@@ -3,7 +3,7 @@ FILE PATH: admission/static_witness_key_set.go
 
 StaticWitnessKeySet — minimal WitnessKeySet implementation
 backed by an immutable slice of types.WitnessPublicKey + a
-fixed K threshold. Constructed once at operator startup from
+fixed K threshold. Constructed once at ledger startup from
 the network bootstrap document's GenesisWitnessSet (resolved
 to public keys by gossipnet.WitnessKeysFromDIDs) and shared
 across every admission request.
@@ -14,7 +14,7 @@ The genesis witness set is fixed at NetworkID derivation —
 changing it would change the NetworkID and break every signed
 event ever produced under it. Witness rotation lives at a
 different layer (KindOriginatorRotation gossip events for
-operator DIDs; witness key rotation is a v0.10.0+ concern).
+ledger DIDs; witness key rotation is a v0.10.0+ concern).
 Static suffices for the v0.9.6 admission verifier.
 
 # THREAD SAFETY
