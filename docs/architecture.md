@@ -236,7 +236,7 @@ artifact encryption + key management lives outside this binary.
 ## SDK pin
 
 ```
-go.mod:  github.com/clearcompass-ai/attesta v0.9.6
+go.mod:  github.com/clearcompass-ai/attesta v1.0.0
 ```
 
 The operator never re-implements SDK validation logic. Every signed
