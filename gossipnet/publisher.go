@@ -22,7 +22,7 @@ no-ops the publish call.
 Per successful K-of-N:
 
 	Kind:        KindCosignedTreeHead
-	Body:        CosignedTreeHeadFinding {Head, OperatorEndpoint}
+	Body:        CosignedTreeHeadFinding {Head, LedgerEndpoint}
 	Originator:  ledger's own DID
 	PrevHash:    last STH event's EventID for this originator
 	               (read from gossipstore.LatestSTH)
@@ -107,7 +107,7 @@ type PublisherConfig struct {
 	// the finding body for diagnostics. Not part of the
 	// cryptographic content. Passed to the SDK's
 	// findings.NewCosignedTreeHeadFinding which exposes it via
-	// VerifiedCosignedTreeHeadFinding.OperatorEndpoint() — the SDK
+	// VerifiedCosignedTreeHeadFinding.LedgerEndpoint() — the SDK
 	// keeps the historical "ledger" naming on its public method.
 	LedgerEndpoint string
 

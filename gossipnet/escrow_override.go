@@ -46,7 +46,7 @@ going through the ledger.
 The gossip event itself IS the persistence record: immutable,
 content-addressed (EventID = SHA-256 of canonical bytes),
 append-only in the local Store. Auditors read overrides from
-/v1/gossip/by-kind?kind=OL-GOSSIP-ESCROW-V1. No separate
+/v1/gossip/by-kind?kind=AT-GOSSIP-ESCROW-V1. No separate
 Postgres table is required — the gossip Store covers the role.
 */
 package gossipnet

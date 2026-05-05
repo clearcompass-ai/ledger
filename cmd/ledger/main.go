@@ -18,7 +18,7 @@ SDK v0.3.0 WIRING CHANGES (addressed in this rewrite):
  4. Phase 4 DID verifier scaffolded behind a nil — when ready, swap
     for did.DefaultVerifierRegistry(cfg.LogDID, resolver).
 
-OPERATOR INTERNAL SIGNATURES (the ones the last attempt got wrong):
+LEDGER INTERNAL SIGNATURES (the ones the last attempt got wrong):
   - tessera.NewEmbeddedAppender(ctx, driver, opts, logger) →
     *EmbeddedAppender. Wraps in-process upstream Tessera; no
     HTTP. Phase 1B replaced the standalone tessera-personality
