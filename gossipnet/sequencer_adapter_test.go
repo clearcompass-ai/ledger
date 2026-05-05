@@ -190,3 +190,73 @@ func TestSequencerEntryLookupAdapter_StaticInterfaceCheck(t *testing.T) {
 func TestSequencerSplitIDAdapter_StaticInterfaceCheck(t *testing.T) {
 	var _ sequencer.SplitIDIndexWriter = (*SequencerSplitIDAdapter)(nil)
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// SequencerReplayCursorAdapter (PT-4)
+// ─────────────────────────────────────────────────────────────────────
+
+func TestNewSequencerReplayCursorAdapter_NilStore(t *testing.T) {
+	if a := NewSequencerReplayCursorAdapter(nil); a != nil {
+		t.Errorf("nil store should produce nil adapter, got %v", a)
+	}
+}
+
+func TestSequencerReplayCursorAdapter_NilAdapterIsNoOp(t *testing.T) {
+	var a *SequencerReplayCursorAdapter
+	got, err := a.SplitIDReplayHWM(context.Background())
+	if err != nil {
+		t.Errorf("nil adapter HWM read should return (0, nil), got error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("nil adapter HWM read should return 0, got %d", got)
+	}
+	if err := a.SetSplitIDReplayHWM(context.Background(), 1); err != nil {
+		t.Errorf("nil adapter Set should be no-op, got error: %v", err)
+	}
+}
+
+func TestSequencerReplayCursorAdapter_RoundTripsHWM(t *testing.T) {
+	st := adapterTestStore(t)
+	a := NewSequencerReplayCursorAdapter(st)
+	if a == nil {
+		t.Fatal("expected non-nil adapter")
+	}
+	ctx := context.Background()
+
+	// First read: HWM = 0 (no record).
+	got, err := a.SplitIDReplayHWM(ctx)
+	if err != nil {
+		t.Fatalf("SplitIDReplayHWM: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("first read HWM = %d, want 0", got)
+	}
+
+	// Advance.
+	if err := a.SetSplitIDReplayHWM(ctx, 100); err != nil {
+		t.Fatalf("SetSplitIDReplayHWM: %v", err)
+	}
+	got, err = a.SplitIDReplayHWM(ctx)
+	if err != nil {
+		t.Fatalf("SplitIDReplayHWM: %v", err)
+	}
+	if got != 100 {
+		t.Errorf("HWM after Set = %d, want 100", got)
+	}
+
+	// Backward Set is silently rejected (handled in gossipstore).
+	if err := a.SetSplitIDReplayHWM(ctx, 50); err != nil {
+		t.Fatalf("backwards Set: %v", err)
+	}
+	got, err = a.SplitIDReplayHWM(ctx)
+	if err != nil {
+		t.Fatalf("SplitIDReplayHWM: %v", err)
+	}
+	if got != 100 {
+		t.Errorf("HWM after backwards Set = %d, want 100 (stuck)", got)
+	}
+}
+
+func TestSequencerReplayCursorAdapter_StaticInterfaceCheck(t *testing.T) {
+	var _ sequencer.SplitIDReplayCursor = (*SequencerReplayCursorAdapter)(nil)
+}

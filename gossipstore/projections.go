@@ -28,6 +28,7 @@ package gossipstore
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -245,6 +246,95 @@ func (s *BadgerStore) WriteEntryLookupEntry(
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(entryLookupKey(schemaID, splitID, seq), value)
 	})
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 0x0D — splitid replay HWM (sequencer boot replay support)
+// ─────────────────────────────────────────────────────────────────────
+
+// SplitIDReplayHWM returns the high-water-mark sequence number
+// the sequencer's replay loop has successfully back-populated to
+// 0x0A + 0x0C. Returns 0 when no HWM is recorded yet (first
+// boot, or after a manual reset). The replayer treats 0 as "scan
+// commitment_split_id from the beginning."
+func (s *BadgerStore) SplitIDReplayHWM(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var hwm uint64
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, gerr := txn.Get(splitIDReplayHWMKey())
+		if errors.Is(gerr, badger.ErrKeyNotFound) {
+			return nil
+		}
+		if gerr != nil {
+			return gerr
+		}
+		return item.Value(func(raw []byte) error {
+			if len(raw) != 8 {
+				return fmt.Errorf("gossipstore: splitid replay HWM length=%d, want 8", len(raw))
+			}
+			hwm = decodeReplayHWM(raw)
+			return nil
+		})
+	})
+	return hwm, err
+}
+
+// SetSplitIDReplayHWM advances the high-water-mark to seq.
+// Monotonicity is enforced: a SetSplitIDReplayHWM call with a
+// seq below the current HWM is a no-op (replay batches are
+// always seq-ascending; a regression would indicate caller
+// bug).
+//
+// I9 IDEMPOTENCY: writing the same seq twice produces the same
+// on-disk bytes; the replayer is safe to re-call after a crash
+// mid-batch.
+func (s *BadgerStore) SetSplitIDReplayHWM(ctx context.Context, seq uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		// Read current HWM inside the txn for a consistent
+		// monotonicity check.
+		item, gerr := txn.Get(splitIDReplayHWMKey())
+		if gerr != nil && !errors.Is(gerr, badger.ErrKeyNotFound) {
+			return gerr
+		}
+		var current uint64
+		if gerr == nil {
+			verr := item.Value(func(raw []byte) error {
+				if len(raw) != 8 {
+					return fmt.Errorf("gossipstore: splitid replay HWM length=%d, want 8", len(raw))
+				}
+				current = decodeReplayHWM(raw)
+				return nil
+			})
+			if verr != nil {
+				return verr
+			}
+		}
+		if seq <= current {
+			// Monotonic no-op. Equal is fine (idempotent
+			// re-call after crash on the same batch).
+			return nil
+		}
+		return txn.Set(splitIDReplayHWMKey(), encodeReplayHWM(seq))
+	})
+}
+
+// encodeReplayHWM returns the 8-byte big-endian encoding of seq.
+// Big-endian for parity with the rest of the gossipstore keyspace
+// — though as a singleton value, sort-order doesn't matter.
+func encodeReplayHWM(seq uint64) []byte {
+	out := make([]byte, 8)
+	binary.BigEndian.PutUint64(out, seq)
+	return out
+}
+
+// decodeReplayHWM is the symmetric reader.
+func decodeReplayHWM(raw []byte) uint64 {
+	return binary.BigEndian.Uint64(raw)
 }
 
 // ListEntryLookupEntriesAt scans 0x0C for the supplied

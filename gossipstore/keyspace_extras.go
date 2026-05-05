@@ -303,3 +303,13 @@ func DecodeEntryLookupIndexEntry(raw []byte) (EntryLookupIndexEntry, error) {
 	}
 	return out, nil
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 0x0D — splitid replay HWM (singleton)
+// ─────────────────────────────────────────────────────────────────────
+
+// splitIDReplayHWMKey returns the singleton key for the
+// replay-on-restart high-water-mark.
+func splitIDReplayHWMKey() []byte {
+	return []byte{prefixGossipRoot, subSplitIDReplayHWM}
+}

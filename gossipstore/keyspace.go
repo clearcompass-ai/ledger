@@ -21,6 +21,7 @@ co-tenants gossip data with the existing WAL keyspace (prefixes
   0x07 0x0A <slen:2><schema><spid:32><seq:8>          → SplitIDIndexEntry JSON
   0x07 0x0B <binding:32>                              → SignedEvent JSON (equiv projection)
   0x07 0x0C <slen:2><schema><spid:32><seq:8>          → EntryLookupIndexEntry JSON
+  0x07 0x0D                                           → uint64 BE (splitid replay HWM)
 
 # SCALE NOTES
 
@@ -158,6 +159,28 @@ const (
 	// types.CommitmentFetcher (a pure interface) so api/'s
 	// transitive imports do not include pgx.
 	subEntryLookup byte = 0x0C
+
+	// subSplitIDReplayHWM is the singleton high-water-mark for
+	// the sequencer-driven replay-on-restart loop (PT-4). The
+	// replayer scans commitment_split_id ⨝ entry_index ordered
+	// by sequence_number ASC for rows with sequence_number > HWM
+	// and back-populates 0x0A + 0x0C for each. The HWM advances
+	// after each batch's writes are durable in Badger.
+	//
+	// Why singleton: there is exactly one replayer running per
+	// operator binary, and the HWM is a single uint64. The empty
+	// suffix matches the same singleton pattern subStats (0x06)
+	// uses.
+	//
+	//   Key:   0x07 0x0D
+	//   Value: 8-byte big-endian uint64 (last replayed
+	//          sequence_number; 0 = never replayed)
+	//
+	// I9 IDEMPOTENCY: replay re-writes 0x0A + 0x0C with the same
+	// (key, value) pairs the live admission path produced — no
+	// double-writes, no state corruption. The HWM is purely an
+	// optimization to bound the scan size on subsequent boots.
+	subSplitIDReplayHWM byte = 0x0D
 )
 
 // MaxOriginatorLen mirrors gossip.MaxOriginatorLen. Lengths are

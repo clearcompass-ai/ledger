@@ -1636,6 +1636,29 @@ func main() {
 		seq = seq.WithEntryLookup(
 			gossipnet.NewSequencerEntryLookupAdapter(gossipBStore),
 			cfg.LogDID)
+
+		// Wire the boot replayer (PT-4 — P3 + I9 + A4). On every
+		// boot, the sequencer scans Postgres above the persisted
+		// HWM (Badger 0x0D) and back-populates 0x0A + 0x0C for
+		// any rows missing — closing the gap between the
+		// Postgres source-of-truth and the best-effort Badger
+		// projection writes that happen AFTER the Postgres
+		// commit. Idempotent (writes are SET on the same key, value
+		// the live admission path produces).
+		replayer, rerr := sequencer.NewReplayer(sequencer.ReplayConfig{
+			DB:           pool,
+			Reader:       byteStore,
+			SplitIDIndex: gossipnet.NewSequencerSplitIDAdapter(gossipBStore),
+			EntryLookup:  gossipnet.NewSequencerEntryLookupAdapter(gossipBStore),
+			Cursor:       gossipnet.NewSequencerReplayCursorAdapter(gossipBStore),
+			LogDID:       cfg.LogDID,
+			Logger:       logger,
+		})
+		if rerr != nil {
+			logger.Error("sequencer replayer construct", "error", rerr)
+			os.Exit(1)
+		}
+		seq = seq.WithReplayer(replayer)
 	}
 	logger.Info("sequencer ready",
 		"poll_interval", cfg.SequencerInterval,
@@ -1643,6 +1666,7 @@ func main() {
 		"mmd", cfg.MMD,
 		"splitid_index", gossipBStore != nil,
 		"entry_lookup_projection", gossipBStore != nil,
+		"boot_replayer", gossipBStore != nil,
 	)
 
 	// ── Shipper ──────────────────────────────────────────────────────
