@@ -143,6 +143,19 @@ type Handlers struct {
 	// path can still be served if GossipPost is set.
 	GossipFeed http.Handler
 
+	// EscrowOverride mounts at POST /v1/escrow-override. Accepts
+	// a {escrow_id, decision_hash, effective} body, runs K-of-N
+	// witness cosignature collection, and broadcasts the
+	// authorization as a KindEscrowOverrideAuth gossip event.
+	// nil disables the endpoint (gossip disabled, witness mode
+	// disabled, or no signer configured).
+	EscrowOverride http.HandlerFunc
+
+	// Metrics mounts at GET /metrics — the Prometheus scrape
+	// endpoint. nil disables the endpoint (OPERATOR_METRICS_ENABLE
+	// is false; default).
+	Metrics http.Handler
+
 	// ── Read endpoints (entry fetch + SMT leaf + commitments) ───────
 	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
 	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
@@ -274,6 +287,16 @@ func NewServer(
 		mux.Handle("GET /v1/gossip/since", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/by-kind", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/event/{eventID}", handlers.GossipFeed)
+	}
+	if handlers.EscrowOverride != nil {
+		mux.HandleFunc("POST /v1/escrow-override", handlers.EscrowOverride)
+	}
+
+	// ── Prometheus scrape endpoint (optional) ──────────────────────────
+	// GET /metrics serves the SDK's MeterProvider Prometheus output.
+	// Mounted only when MetricsEnable=true at boot.
+	if handlers.Metrics != nil {
+		mux.Handle("GET /metrics", handlers.Metrics)
 	}
 
 	// ── Entry read endpoints (nil-guarded for read-only operators) ─────

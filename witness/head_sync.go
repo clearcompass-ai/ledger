@@ -165,6 +165,21 @@ func NewHeadSync(cfg HeadSyncConfig, treeStore *store.TreeHeadStore, logger *slo
 	}, nil
 }
 
+// Collector exposes the underlying K-of-N collector so other
+// services (escrow override endpoint, future rotation publisher)
+// can submit alternate CosignPayload types — e.g.,
+// cosign.EscrowOverridePayload or cosign.RotationPayload —
+// against the same witness peer set without standing up a
+// parallel client pool. The collector is purpose-agnostic: each
+// Collect call's payload determines the cosign canonical bytes
+// being signed.
+func (hs *HeadSync) Collector() *cosign.WitnessCollector {
+	if hs == nil {
+		return nil
+	}
+	return hs.collector
+}
+
 // RequestCosignatures implements builder.WitnessCosigner.
 // Collects K-of-N cosignatures via the SDK collector and persists
 // the (head + per-witness signatures) tuple. Non-fatal: the builder

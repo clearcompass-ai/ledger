@@ -64,6 +64,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/middleware"
 	"github.com/clearcompass-ai/ortholog-sdk/did"
 	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Config bundles everything gossipnet.Build needs to wire the
@@ -113,6 +114,13 @@ type Config struct {
 	// gossip clients. nil ⇒ SDK default (with retry on 503).
 	HTTPClient *http.Client
 
+	// Meter, if non-nil, drives the gossip subsystem's OTel
+	// instruments (received_total, published_total,
+	// verify_duration_seconds, queue_depth, drops_total). When
+	// nil, gossip.NewInstruments is skipped and the handler /
+	// sink run un-instrumented.
+	Meter metric.Meter
+
 	// Logger receives diagnostics. nil ⇒ slog.Default().
 	Logger *slog.Logger
 }
@@ -145,12 +153,77 @@ type Bundle struct {
 	FeedHandler http.Handler
 	Sink        sdkgossip.Sink
 
-	Verifier *sdkgossip.CachedDIDOriginatorVerifier
+	// Verifier is the rotation-aware, LRU-cached originator
+	// verifier. Implements:
+	//   - sdkgossip.OriginatorVerifier (for handler verification)
+	//   - sdkgossip.OriginatorKeyManager (so handler.applyRotation
+	//     can record KindOriginatorRotation events into the
+	//     rotated-key map)
+	//   - sdkgossip.PubKeyResolver (so handler can cross-check
+	//     SignedEvent.PubKeyID against the resolved key — H3)
+	//   - cacheInvalidator (Invalidate(originator)) — so
+	//     handler post-rotation evicts the stale cached key
+	Verifier *RotationCachedVerifier
 
 	// Closeables are the gossip-side Closeable instances. The
 	// caller's shutdown ordering should Close these in slice
 	// order (sink → post handler → feed handler → store).
 	Closeables []sdkgossip.Closeable
+}
+
+// RotationCachedVerifier composes:
+//
+//   - DIDOriginatorVerifier (resolves did:key →
+//     types.WitnessPublicKey + verifies signatures)
+//   - CachedDIDOriginatorVerifier (LRU+TTL on resolved
+//     PubKeyIDs)
+//   - InMemoryKeyManager (rotation override map; falls
+//     through to the cached verifier when no rotation is
+//     present)
+//
+// The composition is the single value the gossip Handler holds
+// as Verifier. Without composing all three, the SDK Handler's
+// type-assertions for OriginatorKeyManager + cacheInvalidator
+// would fail and KindOriginatorRotation events would store but
+// not actually rotate keys — leaving subsequent verifications
+// against the old key (a stale-key attack window).
+type RotationCachedVerifier struct {
+	keyMgr *sdkgossip.InMemoryKeyManager
+	cached *sdkgossip.CachedDIDOriginatorVerifier
+}
+
+// VerifyOriginator implements sdkgossip.OriginatorVerifier.
+// Routes through the keyMgr so rotation overrides apply
+// before falling through to the cached resolver.
+func (v *RotationCachedVerifier) VerifyOriginator(
+	originator string, digest [32]byte, sigBytes []byte, schemeTag uint8,
+) error {
+	return v.keyMgr.VerifyOriginator(originator, digest, sigBytes, schemeTag)
+}
+
+// ResolvePubKeyID implements sdkgossip.PubKeyResolver. The
+// keyMgr's ResolvePubKeyID either returns the rotated PubKeyID
+// or delegates to its wrapped verifier (cached) which provides
+// LRU+TTL.
+func (v *RotationCachedVerifier) ResolvePubKeyID(originator string) ([32]byte, error) {
+	return v.keyMgr.ResolvePubKeyID(originator)
+}
+
+// RotateOriginator implements sdkgossip.OriginatorKeyManager.
+// Called by the SDK Handler's applyRotation after a successful
+// KindOriginatorRotation Append.
+func (v *RotationCachedVerifier) RotateOriginator(
+	originator string, newPublicKey []byte, checkpoint [32]byte,
+) error {
+	return v.keyMgr.RotateOriginator(originator, newPublicKey, checkpoint)
+}
+
+// Invalidate implements the cacheInvalidator interface the SDK
+// Handler casts to. Called post-rotation to evict any cached
+// pre-rotation PubKeyID for this originator (B7 stale-key
+// attack closure).
+func (v *RotationCachedVerifier) Invalidate(originator string) {
+	v.cached.Invalidate(originator)
 }
 
 // Build constructs the operator's gossip stack from cfg. Returns
@@ -172,7 +245,18 @@ func Build(cfg Config) (*Bundle, error) {
 		return nil, err
 	}
 
-	sink, sinkClose, err := buildSink(cfg)
+	// gossip.Instruments — wire OTel observability when a Meter
+	// is supplied. nil cfg.Meter is the no-op path; downstream
+	// gossip components tolerate nil instruments by design.
+	var instruments *sdkgossip.Instruments
+	if cfg.Meter != nil {
+		instruments, err = sdkgossip.NewInstruments(cfg.Meter, cfg.Store)
+		if err != nil {
+			return nil, fmt.Errorf("gossipnet: NewInstruments: %w", err)
+		}
+	}
+
+	sink, sinkClose, err := buildSink(cfg, instruments)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +267,7 @@ func Build(cfg Config) (*Bundle, error) {
 		AllowedNetworks: map[sdkcosign.NetworkID]struct{}{cfg.NetworkID: {}},
 		Sink:            sink,
 		Logger:          cfg.Logger,
+		Instruments:     instruments,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gossipnet: NewHandler: %w", err)
@@ -220,10 +305,27 @@ func Build(cfg Config) (*Bundle, error) {
 	}, nil
 }
 
-// buildVerifier constructs the CachedDIDOriginatorVerifier wrapping
-// a DIDOriginatorVerifier registered with did:key. Future DID
-// methods (did:web, did:pkh) can be registered alongside.
-func buildVerifier(cfg Config) (*sdkgossip.CachedDIDOriginatorVerifier, error) {
+// buildVerifier constructs the rotation-aware, LRU-cached
+// originator verifier. Composition order (innermost → outermost):
+//
+//  1. DIDOriginatorVerifier(registry) — knows did:key today;
+//     additional methods register alongside.
+//  2. CachedDIDOriginatorVerifier(base) — LRU+TTL on
+//     ResolvePubKeyID. Caches the (originator → PubKeyID)
+//     mapping so the gossip handler's H3 cross-check is O(1)
+//     after warmup.
+//  3. InMemoryKeyManager(cached) — rotation override map.
+//     Tracks (originator → rotated key) entries written via
+//     RotateOriginator after a verified KindOriginatorRotation
+//     event lands.
+//
+// The composed RotationCachedVerifier exposes the union of the
+// three packages' interfaces (Verify + Resolve + Rotate +
+// Invalidate) on a single value the SDK Handler can type-assert
+// against. Decomposing into three returns + asking the operator
+// to pass each individually would require Handler API changes
+// upstream; composing here keeps the SDK boundary stable.
+func buildVerifier(cfg Config) (*RotationCachedVerifier, error) {
 	registry := did.NewVerifierRegistry()
 	if err := registry.Register("key", did.NewKeyVerifier()); err != nil {
 		return nil, fmt.Errorf("gossipnet: register did:key: %w", err)
@@ -244,7 +346,11 @@ func buildVerifier(cfg Config) (*sdkgossip.CachedDIDOriginatorVerifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gossipnet: NewCachedDIDOriginatorVerifier: %w", err)
 	}
-	return cached, nil
+	keyMgr, err := sdkgossip.NewInMemoryKeyManager(cached)
+	if err != nil {
+		return nil, fmt.Errorf("gossipnet: NewInMemoryKeyManager: %w", err)
+	}
+	return &RotationCachedVerifier{keyMgr: keyMgr, cached: cached}, nil
 }
 
 // buildSink constructs the fan-out sink. Returns NopSink + nil
@@ -254,7 +360,7 @@ func buildVerifier(cfg Config) (*sdkgossip.CachedDIDOriginatorVerifier, error) {
 // The second return value is the Closeable for the BufferedSink
 // (caller's shutdown drains the queue). For NopSink the
 // closeable is nil — nothing to flush.
-func buildSink(cfg Config) (sdkgossip.Sink, sdkgossip.Closeable, error) {
+func buildSink(cfg Config, instruments *sdkgossip.Instruments) (sdkgossip.Sink, sdkgossip.Closeable, error) {
 	if len(cfg.PeerEndpoints) == 0 {
 		return sdkgossip.NopSink, nil, nil
 	}
@@ -274,7 +380,11 @@ func buildSink(cfg Config) (sdkgossip.Sink, sdkgossip.Closeable, error) {
 		}
 		peerSinks = append(peerSinks, sink)
 	}
-	multi, err := sdkgossip.NewMultiSink(peerSinks)
+	multiOpts := []sdkgossip.MultiSinkOption{}
+	if instruments != nil {
+		multiOpts = append(multiOpts, sdkgossip.WithMultiSinkInstruments(instruments))
+	}
+	multi, err := sdkgossip.NewMultiSink(peerSinks, multiOpts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("gossipnet: NewMultiSink: %w", err)
 	}
@@ -284,11 +394,12 @@ func buildSink(cfg Config) (sdkgossip.Sink, sdkgossip.Closeable, error) {
 		queueSize = DefaultSinkQueueSize
 	}
 	buffered, err := sdkgossip.NewBufferedSink(sdkgossip.BufferedSinkConfig{
-		Underlying: multi,
-		QueueSize:  queueSize,
-		Workers:    1,
-		Policy:     sdkgossip.DropPolicyDropOldest,
-		Logger:     cfg.Logger,
+		Underlying:  multi,
+		QueueSize:   queueSize,
+		Workers:     1,
+		Policy:      sdkgossip.DropPolicyDropOldest,
+		Logger:      cfg.Logger,
+		Instruments: instruments,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("gossipnet: NewBufferedSink: %w", err)
