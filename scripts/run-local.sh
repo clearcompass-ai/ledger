@@ -20,7 +20,7 @@
 #
 # What this script wires:
 #
-#   * Postgres + fake-gcs via integration/docker-compose.yml.
+#   * Postgres + fake-gcs via scripts/local/docker-compose.testharness.yml.
 #   * .run/{wal,tessera,antispam} as ephemeral on-disk volumes
 #     (gitignored). Re-running keeps state across restarts; pass
 #     `clean` as the first arg to wipe them.
@@ -42,7 +42,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/integration/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
 RUN_DIR="${REPO_ROOT}/.run"
 
 case "${1:-}" in

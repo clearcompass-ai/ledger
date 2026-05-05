@@ -1,4 +1,4 @@
-# deployment/local/docker-compose.integration.yml
+# scripts/local/docker-compose.integration.yml
 #
 # Integration-test topology. Same operator + database shape as
 # docker-compose.dev.yml but the GCS dependency is satisfied by
@@ -16,9 +16,9 @@
 # pagination, and multipart-threshold behaviour that fake-gcs-server
 # masks.
 #
-# Bring up:   docker compose -f deployment/local/docker-compose.integration.yml up -d
+# Bring up:   docker compose -f scripts/local/docker-compose.integration.yml up -d
 #             (or: make integration-up)
-# Tear down:  docker compose -f deployment/local/docker-compose.integration.yml down -v
+# Tear down:  docker compose -f scripts/local/docker-compose.integration.yml down -v
 #             (or: make integration-down)
 #
 # Health checks:
@@ -82,7 +82,7 @@ services:
   operator-davidson:
     build:
       context: ../../
-      dockerfile: deployment/local/Dockerfile
+      dockerfile: scripts/local/Dockerfile
     image: ortholog-operator:integration
     container_name: ortholog-int-operator-davidson
     environment:

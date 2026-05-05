@@ -1,4 +1,4 @@
-# deployment/local/Dockerfile
+# scripts/local/Dockerfile
 FROM golang:1.25-alpine AS builder
 
 # FIX: Install git so 'go mod download' can fetch from GitHub

@@ -35,7 +35,7 @@ services:
   operator:
     build:
       context: ../../
-      dockerfile: deployment/local/Dockerfile
+      dockerfile: scripts/local/Dockerfile
     environment:
       - ORTHOLOG_LOG_DID=did:ortholog:operator:local:001
       - ORTHOLOG_POSTGRES_DSN=postgres://ortholog:orthologpassword@postgres:5432/ortholog?sslmode=disable

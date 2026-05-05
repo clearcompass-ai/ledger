@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/integration/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
 
 cd "${REPO_ROOT}"
 
@@ -97,4 +97,4 @@ echo "== to inspect specific 404s with their object paths: =="
 echo "   grep -E '404|GET' /tmp/fake-gcs-diag.log | head -50"
 echo
 echo "== to tear down: =="
-echo "   docker compose -f integration/docker-compose.yml down -v"
+echo "   docker compose -f scripts/local/docker-compose.testharness.yml down -v"

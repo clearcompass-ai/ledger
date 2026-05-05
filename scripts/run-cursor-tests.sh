@@ -21,7 +21,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/integration/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
 
 # Tear-down mode.
 if [ "${1:-}" = "down" ]; then

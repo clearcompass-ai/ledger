@@ -61,6 +61,7 @@ Every page links to the file:line that backs it.
 | [docs/storage.md](docs/storage.md) | WAL state machine, gossipstore keyspace (`0x07 0x01..0x0D`), Postgres role |
 | [docs/operations.md](docs/operations.md) | Boot order, Kubernetes deployment, test suite |
 | [docs/observability.md](docs/observability.md) | OpenTelemetry wiring, the typed `error_class` taxonomy |
+| [docs/testing.md](docs/testing.md) | Test plan, compliance map (Principle/Alignment → test), clean-extension rules |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ## Compliance evidence
