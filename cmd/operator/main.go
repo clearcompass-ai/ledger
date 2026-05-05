@@ -1127,6 +1127,16 @@ func main() {
 			_ = gossipBStore.Close(ctx)
 		}()
 
+		// gossipWG drains the async goroutines (anti-entropy,
+		// equivocation monitor, equivocation scanner) BEFORE
+		// the store close defer above fires. Defer-LIFO
+		// guarantees the order: cancels signal first → Wait
+		// blocks until goroutines exit → store closes safely.
+		// Without this, gossipBStore.Close could race a still-
+		// running scanner.SubscribeSplitIDIndex callback.
+		var gossipWG sync.WaitGroup
+		defer gossipWG.Wait()
+
 		logger.Info("gossip endpoints mounted",
 			"post_path", "/v1/gossip",
 			"feed_path_prefix", "/v1/gossip/",
@@ -1156,7 +1166,9 @@ func main() {
 				os.Exit(1)
 			}
 			aeCtx, aeCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
 			go func() {
+				defer gossipWG.Done()
 				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("anti-entropy: exited with error", "error", rerr)
 				}
@@ -1229,7 +1241,9 @@ func main() {
 				os.Exit(1)
 			}
 			eqCtx, eqCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
 			go func() {
+				defer gossipWG.Done()
 				if rerr := eqMon.Run(eqCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation monitor: exited with error", "error", rerr)
 				}
@@ -1277,7 +1291,9 @@ func main() {
 				os.Exit(1)
 			}
 			scanCtx, scanCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
 			go func() {
+				defer gossipWG.Done()
 				if rerr := scanner.Run(scanCtx); rerr != nil &&
 					!errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation scanner: exited with error", "error", rerr)

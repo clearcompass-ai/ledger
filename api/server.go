@@ -138,9 +138,12 @@ type Handlers struct {
 	GossipPost http.Handler
 
 	// GossipFeed mounts at GET /v1/gossip/{since,sth/latest,event,
-	// by-kind}. Audit consumers + peer operators pull catchup
-	// events here. nil disables read-side gossip; the publish
-	// path can still be served if GossipPost is set.
+	// by-kind,by-binding}. Audit consumers + peer operators pull
+	// catchup events here. /by-binding/{hash} (v0.9.6) is the
+	// zero-trust audit primitive — content-keyed lookup that
+	// powers findings.FetchEquivocationByBinding. nil disables
+	// read-side gossip; the publish path can still be served if
+	// GossipPost is set.
 	GossipFeed http.Handler
 
 	// EscrowOverride mounts at POST /v1/escrow-override. Accepts
@@ -277,7 +280,8 @@ func NewServer(
 	// ── Gossip endpoints (optional) ────────────────────────────────────
 	// POST /v1/gossip      — peer publish (signed events)
 	// GET  /v1/gossip/sth/latest, /v1/gossip/since,
-	//      /v1/gossip/by-kind, /v1/gossip/event/{eventID}
+	//      /v1/gossip/by-kind, /v1/gossip/event/{eventID},
+	//      /v1/gossip/by-binding/{hash}
 	//                       — audit pull (CDN-cacheable)
 	if handlers.GossipPost != nil {
 		mux.Handle("POST /v1/gossip", handlers.GossipPost)
@@ -287,6 +291,12 @@ func NewServer(
 		mux.Handle("GET /v1/gossip/since", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/by-kind", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/event/{eventID}", handlers.GossipFeed)
+		// /v1/gossip/by-binding/{hash} — v0.9.6 zero-trust audit
+		// endpoint. Returns every event whose Bindings slice
+		// contains the supplied 32-byte hash; the SDK helper
+		// findings.FetchEquivocationByBinding queries it +
+		// re-Verifies cryptographically.
+		mux.Handle("GET /v1/gossip/by-binding/{hash}", handlers.GossipFeed)
 	}
 	if handlers.EscrowOverride != nil {
 		mux.HandleFunc("POST /v1/escrow-override", handlers.EscrowOverride)
