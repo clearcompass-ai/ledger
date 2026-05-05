@@ -1247,6 +1247,44 @@ func main() {
 				"publisher_wired", gossipPublisher != nil,
 			)
 		}
+
+		// ── EquivocationScanner (entry-level, v0.9.6) ────────────────
+		//
+		// Independent goroutine subscribed to the splitid index
+		// (Badger prefix 0x0A). The sequencer writes one entry
+		// per Phase 2 commit; the scanner detects collisions
+		// (≥ 2 entries at the same (schema_id, split_id)) and
+		// publishes a verified KindEntryCommitmentEquivocation
+		// event.
+		//
+		// Hot-path isolation: this runs on its OWN goroutine,
+		// never on the admission or sequencer pools. Detection
+		// adds zero overhead to the SCT-return latency.
+		if gossipBStore != nil && gossipBundle != nil {
+			scanner, scerr := gossipnet.NewEquivocationScanner(
+				gossipnet.EquivocationScannerConfig{
+					Store:       gossipBStore,
+					GossipStore: gossipBStore,
+					Sink:        gossipBundle.Sink,
+					Signer:      cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+					NetworkID:   cfg.NetworkID,
+					Originator:  cfg.OperatorDID,
+					Logger:      logger,
+				})
+			if scerr != nil {
+				logger.Error("equivocation scanner construction", "error", scerr)
+				os.Exit(1)
+			}
+			scanCtx, scanCancel := context.WithCancel(ctx)
+			go func() {
+				if rerr := scanner.Run(scanCtx); rerr != nil &&
+					!errors.Is(rerr, context.Canceled) {
+					logger.Warn("equivocation scanner: exited with error", "error", rerr)
+				}
+			}()
+			defer scanCancel()
+			logger.Info("equivocation scanner: enabled (subscribed to splitid index 0x0A)")
+		}
 	} else if cfg.GossipDisable {
 		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
 	} else {
@@ -1510,10 +1548,22 @@ func main() {
 		MaxInFlight:  cfg.SequencerMaxInFlight,
 		Logger:       logger,
 	})
+	if gossipBStore != nil {
+		// Wire the v0.9.6 splitid index writer. Sequencer
+		// continues to write Postgres commitment_split_id
+		// (existing read-path consumers); ALSO writes the
+		// Badger 0x0A index that the EquivocationScanner
+		// subscribes to. Migration of the read path to
+		// gossipstore.GetEquivProjection (0x0B) is a
+		// separate cleanup commit on this branch.
+		seq = seq.WithSplitIDIndex(
+			gossipnet.NewSequencerSplitIDAdapter(gossipBStore))
+	}
 	logger.Info("sequencer ready",
 		"poll_interval", cfg.SequencerInterval,
 		"max_in_flight", cfg.SequencerMaxInFlight,
 		"mmd", cfg.MMD,
+		"splitid_index", gossipBStore != nil,
 	)
 
 	// ── Shipper ──────────────────────────────────────────────────────

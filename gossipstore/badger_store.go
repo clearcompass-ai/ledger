@@ -284,6 +284,24 @@ func (s *BadgerStore) Append(ctx context.Context, ev gossip.SignedEvent) error {
 			}
 		}
 
+		// Binding inverted index — one PUT per Bindings entry on
+		// the SignedEvent. Powers Filter.Binding O(1) lookup +
+		// /v1/gossip/by-binding/{hash}. Any consumer (including
+		// the gossip handler's post-Append hook for the
+		// equivocation projection 0x0B) may read this index.
+		for _, b := range ev.Bindings {
+			if len(b) != 64 {
+				continue
+			}
+			var binding [32]byte
+			if _, derr := hex.Decode(binding[:], []byte(b)); derr != nil {
+				continue
+			}
+			if err := txn.Set(bindingIndexKey(binding, id), nil); err != nil {
+				return err
+			}
+		}
+
 		newHead := encodeHead(headRecord{prevHash: id, lamport: ev.LamportTime})
 		if err := txn.Set(headKey(ev.Originator), newHead); err != nil {
 			return err

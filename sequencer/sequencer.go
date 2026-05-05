@@ -142,14 +142,47 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	}
 }
 
+// SplitIDIndexWriter is the operator-internal hook the
+// Sequencer invokes after a successful Phase 2 commit to
+// populate the splitid index (Badger prefix 0x0A) — the
+// gossipnet.EquivocationScanner subscribes to this index and
+// detects collisions on the same (schema_id, split_id) tuple.
+//
+// nil receiver is allowed: when no writer is wired, the
+// Sequencer skips the splitid write entirely (test mode + the
+// transitional state where gossip is disabled). The Postgres
+// commitment_split_id INSERT is unaffected; only the Badger
+// index population is gated.
+type SplitIDIndexWriter interface {
+	WriteSplitIDIndexEntry(
+		ctx context.Context,
+		schemaID string,
+		splitID [32]byte,
+		seq uint64,
+		entry SplitIDIndexEntry,
+	) error
+}
+
+// SplitIDIndexEntry mirrors gossipstore.SplitIDIndexEntry —
+// the value side of one splitid index row. Defined here so the
+// sequencer doesn't import gossipstore (the dependency arrow
+// is sequencer → gossipstore via main.go's wiring, not via
+// type imports).
+type SplitIDIndexEntry struct {
+	EquivocatorDID string
+	CanonicalHash  [32]byte
+	SigBytes       []byte
+}
+
 // Sequencer is the WAL → Tessera → entry_index pipeline worker.
 type Sequencer struct {
-	wal     WAL
-	tessera Tessera
-	db      *pgxpool.Pool
-	store   *store.EntryStore
-	cfg     Config
-	logger  *slog.Logger
+	wal          WAL
+	tessera      Tessera
+	db           *pgxpool.Pool
+	store        *store.EntryStore
+	splitIDIndex SplitIDIndexWriter
+	cfg          Config
+	logger       *slog.Logger
 
 	metrics Metrics
 
@@ -198,6 +231,19 @@ func NewSequencer(
 		logger:   cfg.Logger,
 		attempts: make(map[[32]byte]uint32),
 	}
+}
+
+// WithSplitIDIndex wires the gossipstore-backed splitid index
+// writer. Optional; called once at startup by cmd/operator/main.go
+// after the gossipstore is constructed. When nil, the Sequencer
+// runs without the splitid write.
+//
+// Returns the receiver for fluent wiring. Idempotent against a
+// nil writer. Race-free against drain cycles only when called
+// before Run starts; the v0.9.6 wiring respects that.
+func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
+	s.splitIDIndex = w
+	return s
 }
 
 // Metrics returns a snapshot of the Sequencer's atomic counters.

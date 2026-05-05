@@ -240,7 +240,7 @@ func (s *Sequencer) insertEntryIndex(
 		return fmt.Errorf("commitment schema: %w", dispatchErr)
 	}
 
-	return store.WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
 		if err := s.store.Insert(ctx, tx, store.EntryRow{
 			SequenceNumber: seq,
 			CanonicalHash:  hash,
@@ -262,7 +262,35 @@ func (s *Sequencer) insertEntryIndex(
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Postgres committed. Now write the splitid index entry to
+	// the operator-local Badger store (prefix 0x0A) so the
+	// gossipnet.EquivocationScanner's db.Subscribe wakes and
+	// detects collisions. AFTER the Postgres commit so a
+	// rollback never leaves a stale index entry.
+	//
+	// Best-effort: a write failure here doesn't block the commit
+	// path. Postgres still has the durable record; on operator
+	// restart the splitid index is rebuilt by replaying
+	// entry_index (future migration — not in this PR's scope).
+	if extractedSplitID != nil && s.splitIDIndex != nil && len(entry.Signatures) > 0 {
+		idxEntry := SplitIDIndexEntry{
+			EquivocatorDID: entry.Header.SignerDID,
+			CanonicalHash:  hash,
+			SigBytes:       append([]byte{}, entry.Signatures[0].Bytes...),
+		}
+		if werr := s.splitIDIndex.WriteSplitIDIndexEntry(
+			ctx, extractedSchemaID, *extractedSplitID, seq, idxEntry,
+		); werr != nil {
+			s.logger.Warn("sequencer: splitid index write failed",
+				"seq", seq, "schema_id", extractedSchemaID,
+				"error", werr)
+		}
+	}
+	return nil
 }
 
 type commitmentPayloadPeek struct {
