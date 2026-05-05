@@ -158,77 +158,101 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	}
 }
 
-// TestV1Handler_Idempotent_ReturnsSameSCT pins P5 deterministic
-// idempotency: byte-identical resubmission MUST return the
-// SAME SCT bytes (not 409 Conflict, not a new SCT with a fresh
-// log_time) AND MUST NOT call WAL.Submit a second time.
-func TestV1Handler_Idempotent_ReturnsSameSCT(t *testing.T) {
+// TestV1Handler_SemanticIdempotency pins P5: byte-identical
+// resubmission absorbs the retry as SEMANTIC idempotency (not
+// byte idempotency — ECDSA k-randomness + HSM compatibility
+// preclude byte-identical signatures without coupling the
+// operator to RFC 6979 / non-HSM keys).
+//
+// The full SLA-correctness assertion chain:
+//
+//   Claim equivalency:
+//     1. SCT_A.SignerDID     == SCT_B.SignerDID
+//     2. SCT_A.CanonicalHash == SCT_B.CanonicalHash
+//     3. SCT_A.LogTime       == SCT_B.LogTime
+//        (clamping the LogTime is what makes MMD honor the
+//        original admission moment — a fresh LogTime on retry
+//        would reset the MMD clock = SLA violation)
+//     4. SCT_A.LogDID        == SCT_B.LogDID
+//
+//   Cryptographic validity (both bytes-distinct, both valid):
+//     5. Verify(opPubKey, SCT_A) == nil
+//     6. Verify(opPubKey, SCT_B) == nil
+//
+//   State isolation (load-bearing "no double-write"):
+//     7. WAL.SubmitCount(after) == WAL.SubmitCount(before) + 1
+//        (exactly one durable write for two semantically-equivalent
+//        retries)
+//     8. Credit deduction is reachable ONLY in the
+//        non-replay path. The handler's idempotentReplay branch
+//        returns BEFORE deductCreditModeA — structurally
+//        guaranteed in api/submission.go. Mode B test path skips
+//        deduct entirely (unauthenticated stamps); a Mode A
+//        credit-isolation test would require a CreditStore stub
+//        and is left as a follow-up if/when authenticated tests
+//        ship.
+func TestV1Handler_SemanticIdempotency(t *testing.T) {
 	opSignerPriv, _ := signatures.GenerateKey()
 	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("idempotent"), 1, 3600)
 	walFake := &stubSubmissionWAL{}
 	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
 	h := NewSubmissionHandler(deps)
 
-	// First submission.
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
-	rr1 := httptest.NewRecorder()
-	h.ServeHTTP(rr1, req1)
-	if rr1.Code != http.StatusAccepted {
-		t.Fatalf("first submission: status = %d, want 202\nbody: %s", rr1.Code, rr1.Body.String())
-	}
-	body1 := rr1.Body.Bytes()
-	var sct1 sdksct.SignedCertificateTimestamp
-	if err := json.Unmarshal(body1, &sct1); err != nil {
-		t.Fatalf("decode sct1: %v", err)
-	}
-
-	// Second submission (byte-identical wire).
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
-	rr2 := httptest.NewRecorder()
-	h.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusAccepted {
-		t.Fatalf("second submission: status = %d, want 202\nbody: %s", rr2.Code, rr2.Body.String())
-	}
-	body2 := rr2.Body.Bytes()
-	var sct2 sdksct.SignedCertificateTimestamp
-	if err := json.Unmarshal(body2, &sct2); err != nil {
-		t.Fatalf("decode sct2: %v", err)
+	submitOnce := func(label string) sdksct.SignedCertificateTimestamp {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("%s submission: status = %d, want 202\nbody: %s",
+				label, rr.Code, rr.Body.String())
+		}
+		var sct sdksct.SignedCertificateTimestamp
+		if err := json.Unmarshal(rr.Body.Bytes(), &sct); err != nil {
+			t.Fatalf("%s decode: %v", label, err)
+		}
+		return sct
 	}
 
-	// P5 invariant 1 — LogTime is deterministic across replays.
-	// The SCT signs over LogTimeMicros + canonical_hash; equal
-	// LogTime means equal signing payload, which is the
-	// cryptographic claim the operator commits to. (ECDSA bytes
-	// differ per call due to RFC 6979 / k randomness; SDK-level
-	// determinism would also pin the bytes — out of operator
-	// scope.)
-	if sct1.LogTimeMicros != sct2.LogTimeMicros {
-		t.Errorf("LogTimeMicros differ: first=%d, replay=%d (P5 violated)",
-			sct1.LogTimeMicros, sct2.LogTimeMicros)
+	// Snapshot WAL state before the first call.
+	walSubmitsBefore := len(walFake.submitted)
+
+	sctA := submitOnce("first")
+	sctB := submitOnce("replay")
+
+	// ── Claim equivalency ────────────────────────────────────
+	if sctA.SignerDID != sctB.SignerDID {
+		t.Errorf("SignerDID differs: A=%q B=%q", sctA.SignerDID, sctB.SignerDID)
+	}
+	if sctA.CanonicalHash != sctB.CanonicalHash {
+		t.Errorf("CanonicalHash differs: A=%q B=%q",
+			sctA.CanonicalHash, sctB.CanonicalHash)
+	}
+	if sctA.LogTimeMicros != sctB.LogTimeMicros {
+		t.Errorf("LogTimeMicros differs: A=%d B=%d (MMD-clock reset = SLA violation)",
+			sctA.LogTimeMicros, sctB.LogTimeMicros)
+	}
+	if sctA.LogTime != sctB.LogTime {
+		t.Errorf("LogTime differs: A=%q B=%q",
+			sctA.LogTime, sctB.LogTime)
+	}
+	if sctA.LogDID != sctB.LogDID {
+		t.Errorf("LogDID differs: A=%q B=%q", sctA.LogDID, sctB.LogDID)
 	}
 
-	// P5 invariant 2 — both SCTs cover the SAME canonical hash
-	// + LogDID + SignerDID. Two valid SCTs at the same logical
-	// admission moment.
-	if sct1.LogDID != sct2.LogDID || sct1.SignerDID != sct2.SignerDID {
-		t.Errorf("SCT identity differs: first=(%s,%s) replay=(%s,%s)",
-			sct1.LogDID, sct1.SignerDID, sct2.LogDID, sct2.SignerDID)
+	// ── Cryptographic validity ───────────────────────────────
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sctA); err != nil {
+		t.Errorf("Verify(SCT_A): %v", err)
+	}
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sctB); err != nil {
+		t.Errorf("Verify(SCT_B): %v", err)
 	}
 
-	// P5 invariant 3 — both SCTs verify under the operator's key.
-	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct1); err != nil {
-		t.Errorf("first SCT verify: %v", err)
-	}
-	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct2); err != nil {
-		t.Errorf("replay SCT verify: %v", err)
-	}
-
-	// P5 invariant 4 — WAL.Submit called exactly ONCE for the
-	// shared canonical hash. The second request short-circuits.
-	// This is the load-bearing "no double-write" property.
-	if len(walFake.submitted) != 1 {
-		t.Errorf("WAL.Submit calls = %d, want 1 (replay MUST skip Submit)",
-			len(walFake.submitted))
+	// ── State isolation: WAL no-double-write ─────────────────
+	walSubmitsAfter := len(walFake.submitted)
+	if delta := walSubmitsAfter - walSubmitsBefore; delta != 1 {
+		t.Errorf("WAL.Submit delta across two resubmissions = %d, want 1 (no-double-write)",
+			delta)
 	}
 }
 
