@@ -379,6 +379,13 @@ type Config struct {
 	// (and unused) when witness mode is inactive.
 	NetworkID cosign.NetworkID
 
+	// GenesisWitnessSet is the slice of witness DIDs extracted
+	// from the network bootstrap document. Consumed by the
+	// equivocation monitor to verify K-of-N signatures on
+	// observed cosigned tree heads. Empty when witness mode is
+	// inactive (no bootstrap doc loaded).
+	GenesisWitnessSet []string
+
 	// WALPath is the BadgerDB directory the WAL Committer opens.
 	// Required for WAL-first admission (commit 10). The Shipper
 	// migrates entries from this path into the byte store; the
@@ -516,6 +523,7 @@ func loadConfig() (*Config, error) {
 				cfg.NetworkBootstrapFile, err)
 		}
 		cfg.NetworkID = ids.NetworkID
+		cfg.GenesisWitnessSet = append([]string{}, doc.GenesisWitnessSet...)
 	}
 
 	return cfg, nil
@@ -1084,6 +1092,86 @@ func main() {
 			logger.Warn("anti-entropy: disabled (peer DID/endpoint length mismatch)",
 				"dids", len(cfg.GossipPeerDIDs),
 				"endpoints", len(cfg.GossipPeerEndpoints))
+		}
+
+		// ── Equivocation monitor (optional) ──────────────────────────
+		//
+		// Compares each peer's view of their own STH against our
+		// local view. On (size-equal, root-different) divergence
+		// the SDK's witness.DetectEquivocation verifies both heads
+		// against the witness key set + K-of-N quorum, the
+		// type-safety constructor (.Verify) returns a
+		// *VerifiedEquivocationFinding, and the EquivocationPublisher
+		// fans the finding out to peers as a KindEquivocationFinding
+		// gossip event.
+		//
+		// Disabled when:
+		//   - GenesisWitnessSet is empty (no witness keys to verify
+		//     against — bootstrap doc not loaded)
+		//   - peer DID/endpoint pairs are not configured
+		//   - publisher is not wired (gossip disabled / no signer)
+		if len(cfg.GenesisWitnessSet) > 0 &&
+			len(cfg.GossipPeerDIDs) > 0 &&
+			len(cfg.GossipPeerDIDs) == len(cfg.GossipPeerEndpoints) &&
+			gossipPublisher != nil {
+			witnessKeys, werr := gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+			if werr != nil {
+				logger.Error("equivocation monitor: witness key resolution",
+					"error", werr)
+				os.Exit(1)
+			}
+			equivPub, perr := gossipnet.NewEquivocationPublisher(gossipnet.EquivocationPublisherConfig{
+				Store:      gossipBStore,
+				Sink:       gossipBundle.Sink,
+				Signer:     cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+				NetworkID:  cfg.NetworkID,
+				Originator: cfg.OperatorDID,
+				Logger:     logger,
+			})
+			if perr != nil {
+				logger.Error("equivocation publisher", "error", perr)
+				os.Exit(1)
+			}
+			equivPeers := make([]gossipnet.AntiEntropyPeer, 0, len(cfg.GossipPeerDIDs))
+			for i, did := range cfg.GossipPeerDIDs {
+				equivPeers = append(equivPeers, gossipnet.AntiEntropyPeer{
+					DID:     did,
+					BaseURL: cfg.GossipPeerEndpoints[i],
+				})
+			}
+			eqMon, eerr := gossipnet.NewEquivocationMonitor(gossipnet.EquivocationMonitorConfig{
+				Store:       gossipBStore,
+				Peers:       equivPeers,
+				WitnessKeys: witnessKeys,
+				QuorumK:     cfg.WitnessQuorumK,
+				NetworkID:   cfg.NetworkID,
+				BLSVerifier: cosign.NewProductionBLSVerifier(),
+				Publisher:   equivPub,
+				Logger:      logger,
+			})
+			if eerr != nil {
+				logger.Error("equivocation monitor", "error", eerr)
+				os.Exit(1)
+			}
+			eqCtx, eqCancel := context.WithCancel(ctx)
+			go func() {
+				if rerr := eqMon.Run(eqCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+					logger.Warn("equivocation monitor: exited with error", "error", rerr)
+				}
+			}()
+			defer eqCancel()
+			logger.Info("equivocation monitor: enabled",
+				"peers", len(equivPeers),
+				"quorum_k", cfg.WitnessQuorumK,
+				"witness_set_size", len(witnessKeys),
+			)
+		} else {
+			logger.Info("equivocation monitor: disabled (missing prerequisites)",
+				"genesis_witness_set", len(cfg.GenesisWitnessSet),
+				"peer_dids", len(cfg.GossipPeerDIDs),
+				"peer_endpoints", len(cfg.GossipPeerEndpoints),
+				"publisher_wired", gossipPublisher != nil,
+			)
 		}
 	} else if cfg.GossipDisable {
 		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
