@@ -1,0 +1,163 @@
+# scripts/local/docker-compose.integration.yml
+#
+# Integration-test topology. Same ledger + database shape as
+# docker-compose.dev.yml but the GCS dependency is satisfied by
+# fake-gcs-server (in-process, anonymous, deterministic) instead
+# of real Google Cloud Storage.
+#
+# Use this for:
+#   - CI integration tests that must run offline
+#   - Air-gapped local runs (e.g., on an airplane)
+#   - Deterministic regression suites where bucket state must be
+#     wiped between runs
+#
+# DO NOT use this for daily development. Prefer the real-GCS
+# topology in docker-compose.dev.yml — it surfaces the IAM, latency,
+# pagination, and multipart-threshold behaviour that fake-gcs-server
+# masks.
+#
+# Bring up:   docker compose -f scripts/local/docker-compose.integration.yml up -d
+#             (or: make integration-up)
+# Tear down:  docker compose -f scripts/local/docker-compose.integration.yml down -v
+#             (or: make integration-down)
+#
+# Health checks:
+#   curl -fsS http://localhost:8080/healthz
+#   curl -fsS http://localhost:8081/healthz
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: attesta-int-postgres
+    environment:
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attestapassword
+      POSTGRES_DB: attesta_davidson
+    ports:
+      - "5432:5432"
+    volumes:
+      - int_postgres_data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attesta -d attesta_davidson"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  gcs:
+    image: fsouza/fake-gcs-server:1.50.2
+    container_name: attesta-int-gcs
+    command: >
+      -scheme http -port 4443 -public-host gcs:4443
+    ports:
+      - "4443:4443"
+    volumes:
+      - int_gcs_data:/storage
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q -O- http://localhost:4443/storage/v1/b 2>&1 | grep -q '^{' || exit 1"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  gcs-init:
+    image: curlimages/curl:8.11.0
+    container_name: attesta-int-gcs-init
+    depends_on:
+      gcs:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      for b in davidson-entries coa-entries; do
+        curl -fsS -X POST 'http://gcs:4443/storage/v1/b?project=attesta-int' \
+             -H 'Content-Type: application/json' \
+             -d \"{\\\"name\\\":\\\"$$b\\\"}\" || \
+        curl -fsS 'http://gcs:4443/storage/v1/b/'$$b > /dev/null;
+        echo \"bucket ready: $$b\";
+      done
+      "
+
+  ledger-davidson:
+    build:
+      context: ../../
+      dockerfile: scripts/local/Dockerfile
+    image: ledger:integration
+    container_name: attesta-int-ledger-davidson
+    environment:
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:davidson"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "davidson-entries"
+      LEDGER_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
+      LEDGER_BYTE_STORE_GCS_ANONYMOUS: "true"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:davidson"
+      LEDGER_SEQUENCER_INTERVAL: "200ms"
+    ports:
+      - "8080:8080"
+    volumes:
+      - int_davidson_tessera:/var/lib/attesta/tessera
+      - int_davidson_wal:/var/lib/attesta/wal
+      - int_davidson_antispam:/var/lib/attesta/antispam
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gcs-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  ledger-coa:
+    image: ledger:integration
+    container_name: attesta-int-ledger-coa
+    environment:
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:coa"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "coa-entries"
+      LEDGER_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
+      LEDGER_BYTE_STORE_GCS_ANONYMOUS: "true"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:coa"
+      LEDGER_SEQUENCER_INTERVAL: "200ms"
+    ports:
+      - "8081:8080"
+    volumes:
+      - int_coa_tessera:/var/lib/attesta/tessera
+      - int_coa_wal:/var/lib/attesta/wal
+      - int_coa_antispam:/var/lib/attesta/antispam
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gcs-init:
+        condition: service_completed_successfully
+      ledger-davidson:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  int_postgres_data:
+  int_gcs_data:
+  int_davidson_tessera:
+  int_davidson_wal:
+  int_davidson_antispam:
+  int_coa_tessera:
+  int_coa_wal:
+  int_coa_antispam:

@@ -1,0 +1,29 @@
+.git
+.venv
+*/.venv
+**/.venv
+**/__pycache__
+*.pyc
+.run
+**/.run
+*.egg-info
+**/*.egg-info
+node_modules
+.mypy_cache
+.pytest_cache
+.ruff_cache
+title_chain/agents/parcel_finder/.venv
+title_chain/agents/instrument_downloader/.venv
+
+# --- Secrets & Keys (Never bake these in) ---
+age-key.txt
+keys.txt
+.env
+**/.env
+.env.*
+env.*
+
+# --- Allowed Env Files (Baked in for runtime/reference) ---
+!title_chain/agents/.env.enc
+!**/.env.example
+!**/env.example

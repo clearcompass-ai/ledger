@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attestapassword
+      POSTGRES_DB: attesta
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attesta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  tessera-personality:
+    build:
+      context: ../../
+      dockerfile: tessera-personality/Dockerfile
+    command:
+      - "--storage_dir=/data"
+      - "--listen=:8081"
+    ports:
+      - "8081:8081"
+    volumes:
+      - tessera_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ledger:
+    build:
+      context: ../../
+      dockerfile: scripts/local/Dockerfile
+    environment:
+      - ATTESTA_LOG_DID=did:attesta:ledger:local:001
+      - ATTESTA_POSTGRES_DSN=postgres://attesta:attestapassword@postgres:5432/attesta?sslmode=disable
+      - ATTESTA_TESSERA_URL=http://tessera-personality:8081
+      - ATTESTA_SERVER_ADDR=:8080
+      - LOG_LEVEL=debug
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tessera-personality:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  tessera_data:
