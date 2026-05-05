@@ -113,7 +113,10 @@ func requireDB(t *testing.T) *pgxpool.Pool {
 func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, stmt := range []string{
-		`TRUNCATE TABLE commitment_equivocation_proofs RESTART IDENTITY`,
+		// commitment_equivocation_proofs was dropped in v0.9.6
+		// (equivocation evidence now lives in the gossipstore
+		// BadgerDB projection 0x0B). No SQL TRUNCATE needed —
+		// the in-memory Badger used by tests resets per fixture.
 		`TRUNCATE TABLE commitment_split_id`,
 		`TRUNCATE TABLE entry_index CASCADE`,
 		// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first;

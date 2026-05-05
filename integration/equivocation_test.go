@@ -32,16 +32,13 @@ Surviving guarantees (post legacy-monitor retirement):
 The legacy witness/commitment_equivocation_monitor.go was
 retired (HTTP-webhook publisher already gone; monitor itself
 deleted). The proofs-table writer (S2) and HTTP alert dispatch
-(S3) are no longer wired. Equivocation transparency now flows
-through the gossip layer (KindEquivocationFinding via
-gossipnet.EquivocationPublisher); commitment-level detection
-follows in a follow-up PR (separate scope from tree-head
-equivocation, which the gossip path covers today).
-
-The commitment_equivocation_proofs table schema in
-store/postgres.go is preserved for the readers
-(api/commitments.go, store/commitment_fetcher.go) but is no
-longer populated. Removing the schema is a separate cleanup.
+(S3) are no longer wired. v0.9.6 closes the loop: entry-level
+equivocation transparency flows through KindEntryCommitmentEquivocation
+via gossipnet.EquivocationScanner (subscribed to the splitid
+index 0x0A), with cryptographically-verified findings projected
+into the BadgerDB equivocation projection 0x0B. The previous
+commitment_equivocation_proofs Postgres table was dropped in
+the v0.9.6 adoption.
 
 Skip semantics match CI3: skipped when ORTHOLOG_TEST_DSN is unset.
 */
