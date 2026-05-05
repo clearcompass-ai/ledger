@@ -13,7 +13,7 @@ Unit-level coverage for the sequencer.Replayer (PT-4):
     ctx cancellation) is covered in sequencer_test.go.
 
 The full SELECT loop (fetchBatch) is covered by an integration
-test in integration/replay_test.go (requires ORTHOLOG_TEST_DSN).
+test in integration/replay_test.go (requires ATTESTA_TEST_DSN).
 This file uses fakes so the suite stays Postgres-free.
 */
 package sequencer
@@ -29,9 +29,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────

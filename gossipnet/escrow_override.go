@@ -57,11 +57,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // EscrowOverrideServiceConfig configures the service.

@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 )
 
 func nonZeroNetworkID() sdkcosign.NetworkID {

@@ -123,14 +123,14 @@ func TestGenerateEphemeralSigner_HappyPath(t *testing.T) {
 	}
 }
 
-func TestGenerateEphemeralSigner_DefaultsToOrtholog(t *testing.T) {
+func TestGenerateEphemeralSigner_DefaultsToAttesta(t *testing.T) {
 	signer, _, err := GenerateEphemeralSigner("")
 	if err != nil {
 		t.Fatalf("GenerateEphemeralSigner: %v", err)
 	}
-	if signer.Name() != "ortholog-local-dev" {
+	if signer.Name() != "attesta-local-dev" {
 		t.Errorf("default signer name: got %q, want %q",
-			signer.Name(), "ortholog-local-dev")
+			signer.Name(), "attesta-local-dev")
 	}
 }
 

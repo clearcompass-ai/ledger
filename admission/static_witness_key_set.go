@@ -28,7 +28,7 @@ package admission
 import (
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // StaticWitnessKeySet implements the WitnessKeySet interface with

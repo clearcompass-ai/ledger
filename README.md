@@ -1,4 +1,4 @@
-# Ortholog Operator
+# Attesta Operator
 
 Single-binary log operator. Receives signed entries, sequences them via
 embedded Tessera, publishes cryptographically-verified findings to a
@@ -63,7 +63,7 @@ Every page links to the file:line that backs it.
 | [docs/observability.md](docs/observability.md) | OpenTelemetry wiring, the typed `error_class` taxonomy |
 | [docs/testing.md](docs/testing.md) | Test plan, compliance map (Principle/Alignment → test), clean-extension rules |
 | [docs/sdk-validation.md](docs/sdk-validation.md) | Per-package SDK contract validation (compile-time anchors, code-level checks) |
-| [docs/rebrand-plan.md](docs/rebrand-plan.md) | Plan for `ortholog-sdk → attesta` + `ortholog-operator → ledger` (no execution yet) |
+| [docs/rebrand-plan.md](docs/rebrand-plan.md) | Plan for `attesta → attesta` + `ledger → ledger` (no execution yet) |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ## Compliance evidence

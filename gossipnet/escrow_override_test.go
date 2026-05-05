@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/did"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 )
 
 // stubCosignServer returns one signed cosign response per request,

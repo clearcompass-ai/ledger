@@ -42,8 +42,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/types"
 
 	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 )

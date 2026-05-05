@@ -27,9 +27,9 @@ Flow under test:
 
 Skip semantics:
 
-  - Skips when ORTHOLOG_TEST_DSN is unset (the CI2 docker-compose
+  - Skips when ATTESTA_TEST_DSN is unset (the CI2 docker-compose
     harness sets it). Local developers can opt in by exporting
-    ORTHOLOG_TEST_DSN to a disposable Postgres database.
+    ATTESTA_TEST_DSN to a disposable Postgres database.
   - Skips when the SDK lifecycle.GrantArtifactAccess API is not
     invoked here — this test validates the operator's serving
     surface against synthesized commitments because the
@@ -72,12 +72,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
-	opapi "github.com/clearcompass-ai/ortholog-operator/api"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	opapi "github.com/clearcompass-ai/ledger/api"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 const testLogDID = "did:web:test-operator.example"
@@ -87,12 +87,12 @@ const testLogDID = "did:web:test-operator.example"
 // ─────────────────────────────────────────────────────────────────────
 
 // requireDB connects to the integration Postgres and runs migrations.
-// Skips when ORTHOLOG_TEST_DSN is unset.
+// Skips when ATTESTA_TEST_DSN is unset.
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN unset; integration suite skipped")
+		t.Skip("ATTESTA_TEST_DSN unset; integration suite skipped")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -135,8 +135,8 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 //
 // Resolution chain (mirrors bytestore.NewGCS production path):
 //
-//  1. ORTHOLOG_TEST_GCS_BUCKET — required. Skip if unset.
-//  2. ORTHOLOG_TEST_GCS_ENDPOINT — must be EMPTY. The integration
+//  1. ATTESTA_TEST_GCS_BUCKET — required. Skip if unset.
+//  2. ATTESTA_TEST_GCS_ENDPOINT — must be EMPTY. The integration
 //     suite refuses fake-gcs to keep production behavior pinned
 //     (presigned URLs, V4 signing, ADC chain).
 //  3. ADC chain (in priority order):
@@ -149,15 +149,15 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 func requireRealGCS(t *testing.T) opbytestore.Backend {
 	t.Helper()
 
-	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
 	if bucket == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset; integration suite skipped")
+		t.Skip("ATTESTA_TEST_GCS_BUCKET unset; integration suite skipped")
 	}
 
-	if endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT"); endpoint != "" {
+	if endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT"); endpoint != "" {
 		t.Fatalf(
-			"integration suite refuses fake-gcs (ORTHOLOG_TEST_GCS_ENDPOINT=%q). "+
-				"Real-GCS only — point ORTHOLOG_TEST_GCS_BUCKET at a real bucket "+
+			"integration suite refuses fake-gcs (ATTESTA_TEST_GCS_ENDPOINT=%q). "+
+				"Real-GCS only — point ATTESTA_TEST_GCS_BUCKET at a real bucket "+
 				"and rely on ADC / Workload Identity for credentials.", endpoint)
 	}
 

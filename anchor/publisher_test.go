@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // fixtureSignedEntry builds a minimal signed entry suitable for

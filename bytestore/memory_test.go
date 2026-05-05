@@ -48,7 +48,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // wireHash returns sha256(wire) — matches envelope.EntryIdentity

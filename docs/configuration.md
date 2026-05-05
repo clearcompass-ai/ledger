@@ -44,9 +44,9 @@ When `cfg.WitnessQuorumK > 0` (witness mode active):
 
 | Variable | Default | Read at |
 |---|---|---|
-| `OPERATOR_WAL_PATH` | `/var/lib/ortholog/wal` | `main.go:484` |
-| `OPERATOR_TESSERA_STORAGE_DIR` | `/var/lib/ortholog/tessera` | `main.go:453` |
-| `OPERATOR_TESSERA_ANTISPAM_PATH` | `/var/lib/ortholog/tessera-antispam` | `main.go:485` |
+| `OPERATOR_WAL_PATH` | `/var/lib/attesta/wal` | `main.go:484` |
+| `OPERATOR_TESSERA_STORAGE_DIR` | `/var/lib/attesta/tessera` | `main.go:453` |
+| `OPERATOR_TESSERA_ANTISPAM_PATH` | `/var/lib/attesta/tessera-antispam` | `main.go:485` |
 
 ### Signer keys
 
@@ -127,13 +127,13 @@ When `cfg.WitnessQuorumK > 0` (witness mode active):
 ## Quick start
 
 ```sh
-export OPERATOR_DATABASE_URL="postgres://operator:secret@db:5432/ortholog"
+export OPERATOR_DATABASE_URL="postgres://operator:secret@db:5432/attesta"
 export OPERATOR_LOG_DID="did:web:operator.example/log/main"
 export OPERATOR_BYTE_STORE_BACKEND=s3
-export OPERATOR_BYTE_STORE_S3_BUCKET=ortholog-entries
+export OPERATOR_BYTE_STORE_S3_BUCKET=attesta-entries
 export OPERATOR_BYTE_STORE_S3_REGION=us-east-1
-export OPERATOR_SIGNER_KEY_FILE=/etc/ortholog/operator.key
-export OPERATOR_TESSERA_SIGNER_KEY_FILE=/etc/ortholog/tessera.key
+export OPERATOR_SIGNER_KEY_FILE=/etc/attesta/operator.key
+export OPERATOR_TESSERA_SIGNER_KEY_FILE=/etc/attesta/tessera.key
 
 # Optional: enable Prometheus metrics + typed error_class dimensions
 export OPERATOR_METRICS_ENABLE=true

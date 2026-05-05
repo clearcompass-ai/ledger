@@ -70,8 +70,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // WAL is the minimal WAL surface the Sequencer depends on.

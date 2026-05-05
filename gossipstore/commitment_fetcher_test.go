@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 func TestNewBadgerCommitmentFetcher_NilStorePanics(t *testing.T) {
@@ -59,7 +59,7 @@ func TestBadgerCommitmentFetcher_NoMatch_ReturnsNil(t *testing.T) {
 func TestBadgerCommitmentFetcher_SingleRow_RoundTrips(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
-	schema := "ortholog.network/schema/pre-grant-commitment/v1"
+	schema := "attesta.network/schema/pre-grant-commitment/v1"
 	split := [32]byte{0xab, 0xcd}
 	wantBytes := []byte("canonical-wire-bytes-for-single-row")
 	wantMicros := int64(1714659120_000000)

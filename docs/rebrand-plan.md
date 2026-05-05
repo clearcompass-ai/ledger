@@ -1,4 +1,4 @@
-# Rebrand plan: ortholog → attesta · operator → ledger
+# Rebrand plan: attesta → attesta · operator → ledger
 
 **Status:** plan only — no code change in this document. Execution is
 deferred until the SDK rename to `attesta` ships and the new operator
@@ -8,8 +8,8 @@ Two parallel renames:
 
 | From | To | Concept shift |
 |---|---|---|
-| `github.com/clearcompass-ai/ortholog-sdk` | `github.com/clearcompass-ai/attesta` | SDK rebrand |
-| `github.com/clearcompass-ai/ortholog-operator` | `github.com/clearcompass-ai/ledger` | The operator becomes a "ledger" — a simpler, more accurate name. The "operator" framing is retired |
+| `github.com/clearcompass-ai/attesta` | `github.com/clearcompass-ai/attesta` | SDK rebrand |
+| `github.com/clearcompass-ai/ledger` | `github.com/clearcompass-ai/ledger` | The operator becomes a "ledger" — a simpler, more accurate name. The "operator" framing is retired |
 
 The rebrand reframes the project: this binary is no longer "an
 operator" with implied policy ownership; it is a **ledger** — a
@@ -29,7 +29,7 @@ Owned by the SDK team. Constraints we can rely on after Phase A
 completes:
 
 - New module path: `github.com/clearcompass-ai/attesta`.
-- Tagged release. Old `ortholog-sdk` repo accepts no further commits
+- Tagged release. Old `attesta` repo accepts no further commits
   but stays readable for at least 90 days.
 - Public API is byte-compatible: only the import path changes. No
   type renames, no breaking signature changes. (Renaming the
@@ -43,14 +43,14 @@ also lands on a tagged version.
 
 ### Phase B — Operator: import-path migration only
 
-In the existing `ortholog-operator` repo, on a feature branch:
+In the existing `ledger` repo, on a feature branch:
 
 ```
-1. go mod edit -dropreplace github.com/clearcompass-ai/ortholog-sdk
-2. go mod edit -droprequire github.com/clearcompass-ai/ortholog-sdk
+1. go mod edit -dropreplace github.com/clearcompass-ai/attesta
+2. go mod edit -droprequire github.com/clearcompass-ai/attesta
 3. go get github.com/clearcompass-ai/attesta@vX.Y.Z
 4. find . -name '*.go' | xargs sed -i \
-       's|github.com/clearcompass-ai/ortholog-sdk|github.com/clearcompass-ai/attesta|g'
+       's|github.com/clearcompass-ai/attesta|github.com/clearcompass-ai/attesta|g'
 5. go mod tidy
 6. go vet ./...
 7. go test -count=1 -race -short ./...
@@ -59,19 +59,19 @@ In the existing `ortholog-operator` repo, on a feature branch:
 Verify zero residual references:
 
 ```
-$ go list -deps ./... | grep ortholog-sdk | wc -l
+$ go list -deps ./... | grep attesta | wc -l
 0
 
-$ grep -rn 'ortholog-sdk' --include='*.go' --include='*.mod' --include='*.sum'
+$ grep -rn 'attesta' --include='*.go' --include='*.mod' --include='*.sum'
 (no matches)
 ```
 
 **Do NOT rename the operator repo or module path in this phase.** The
-operator repo still lives at `ortholog-operator` and still has module
-path `github.com/clearcompass-ai/ortholog-operator`. Only the SDK
+operator repo still lives at `ledger` and still has module
+path `github.com/clearcompass-ai/ledger`. Only the SDK
 import changes. This keeps consumer-side breakage to one phase.
 
-Commit message convention: `deps: migrate from ortholog-sdk → attesta`.
+Commit message convention: `deps: migrate from attesta → attesta`.
 
 ### Phase C — Operator → ledger module rename
 
@@ -83,15 +83,15 @@ After Phase B is green and merged, on a separate feature branch:
 3. In the new repo:
      a. go mod edit -module github.com/clearcompass-ai/ledger
      b. find . -name '*.go' | xargs sed -i \
-            's|github.com/clearcompass-ai/ortholog-operator|github.com/clearcompass-ai/ledger|g'
+            's|github.com/clearcompass-ai/ledger|github.com/clearcompass-ai/ledger|g'
      c. go mod tidy
      d. go vet ./...
      e. go test -count=1 -race -short ./...
 4. Verify zero residual references:
-     $ grep -rn 'ortholog-operator' --include='*.go' --include='*.mod' --include='*.sum' --include='*.md' --include='*.yml' --include='*.yaml'
+     $ grep -rn 'ledger' --include='*.go' --include='*.mod' --include='*.sum' --include='*.md' --include='*.yml' --include='*.yaml'
      (no matches)
 5. Tag the first ledger release.
-6. Archive the old ortholog-operator repo (read-only); link the README
+6. Archive the old ledger repo (read-only); link the README
    to the new repo.
 ```
 
@@ -145,7 +145,7 @@ Items that are user-visible:
 - BadgerDB key prefixes (`0x07 0x01..0x0D`): byte values, no rename.
 - Service version strings (`OPERATOR_SERVICE_VERSION` → `LEDGER_SERVICE_VERSION`):
   configuration only; rename in Phase D.
-- Metric prefix (`ortholog_api_errors_total`): rename to
+- Metric prefix (`attesta_api_errors_total`): rename to
   `attesta_ledger_errors_total` IF AND ONLY IF the broader observability
   pipeline (dashboards, alerts) is moving in lockstep. Otherwise
   leave as-is and rename in a future major release.
@@ -166,7 +166,7 @@ people call it, not what it does:
 
 In other words: a `ledger` running attesta-vX.Y.Z observes the same
 Merkle tree, accepts the same entries, emits the same SCTs as an
-`ortholog-operator` running ortholog-sdk-v0.9.6 against the same
+`ledger` running attesta-v0.9.6 against the same
 inputs. **The rename is a relabeling; it is not a fork.**
 
 ## Risk register
@@ -176,8 +176,8 @@ inputs. **The rename is a relabeling; it is not a fork.**
 | SDK rename breaks downstream simultaneously | The SDK team owns Phase A; the SDK ships first AND tags. Operator-side migration only begins after SDK pin compiles in a clean module. |
 | Two repos diverging during the migration window | Single feature branch per phase. No phase opens until the previous phase merges + tags. |
 | Production deployments lose env-var bindings on upgrade | Phase D ships dual-name acceptance with a logged deprecation warning. Drop old names only after a confirmed deployment-wide migration. |
-| Metric prefix breaks dashboards | Phase E excludes metric rename unless dashboards rename in lockstep. The metric is `ortholog_api_errors_total` until then. |
-| Documentation drift between rebrand phases | Each phase commit MUST update `docs/` in lockstep with code. CI gate: `grep -rn 'ortholog-sdk\|ortholog-operator' README.md docs/` returns 0 after each phase. |
+| Metric prefix breaks dashboards | Phase E excludes metric rename unless dashboards rename in lockstep. The metric is `attesta_api_errors_total` until then. |
+| Documentation drift between rebrand phases | Each phase commit MUST update `docs/` in lockstep with code. CI gate: `grep -rn 'attesta\|ledger' README.md docs/` returns 0 after each phase. |
 | Old import path lingers in tests / generated code | `go list -deps ./...` is the canonical check. Run after each phase. |
 
 ## Rollback
@@ -193,9 +193,9 @@ ripple to consumers; treat it as a major-version bump.
 
 | Phase | Done when |
 |---|---|
-| A | SDK at `attesta` is tagged + reachable via `go get`. Public surface is byte-compatible with the prior `ortholog-sdk` tag |
-| B | `go list -deps ./... \| grep ortholog-sdk` returns 0; full test suite green; no `ortholog-sdk` strings in `go.mod` / `go.sum` / `*.go` |
-| C | New `ledger` repo has a tagged release; `grep -rn 'ortholog-operator' .` returns 0 across `*.go`, `*.mod`, `*.sum`, `*.md`, `*.yml`; old repo is archived |
+| A | SDK at `attesta` is tagged + reachable via `go get`. Public surface is byte-compatible with the prior `attesta` tag |
+| B | `go list -deps ./... \| grep attesta` returns 0; full test suite green; no `attesta` strings in `go.mod` / `go.sum` / `*.go` |
+| C | New `ledger` repo has a tagged release; `grep -rn 'ledger' .` returns 0 across `*.go`, `*.mod`, `*.sum`, `*.md`, `*.yml`; old repo is archived |
 | D | `cmd/ledger/` builds + runs; both `LEDGER_*` and `OPERATOR_*` env vars are accepted with a deprecation log; `docs/` references "ledger" not "operator" |
 | E | (optional) Metric / wire renames complete; consumer dashboards updated in lockstep |
 

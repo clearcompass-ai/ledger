@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdkcryptosigs "github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 // withEthEnv sets all four OPERATOR_ETH_RPC_* env vars and returns a

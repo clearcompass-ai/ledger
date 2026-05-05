@@ -18,7 +18,7 @@ hand-crafting SQL.
 Usage:
 
 	go run ./cmd/seed-session \
-	    -dsn "postgres://ortholog:ortholog@localhost:5544/ortholog_test?sslmode=disable" \
+	    -dsn "postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable" \
 	    -token "tok-dev" \
 	    -did "did:key:z6MkpTHR8VNsBxYAAWHut2..." \
 	    -credits 100 \
@@ -47,9 +47,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
+	sdkdid "github.com/clearcompass-ai/attesta/did"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 func main() {

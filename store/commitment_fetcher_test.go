@@ -11,9 +11,9 @@ collapsing to a single row would silently destroy the cryptographic
 evidence that ADR-005 §3 instructs verifiers to act on.
 
 Test isolation: tests requiring a live Postgres skip when
-ORTHOLOG_TEST_DSN is unset. The CI2 docker-compose harness
+ATTESTA_TEST_DSN is unset. The CI2 docker-compose harness
 (integration/) wires the env var so these tests run on every PR.
-Local developers can run them by exporting ORTHOLOG_TEST_DSN to a
+Local developers can run them by exporting ATTESTA_TEST_DSN to a
 disposable Postgres database.
 */
 package store
@@ -28,10 +28,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -79,14 +79,14 @@ var _ bytestore.Reader = (*fakeEntryReader)(nil)
 const testLogDID = "did:web:test-operator.example"
 
 // requireDB returns a connected pool or skips the test if no DSN
-// is provided. The Wave 1 v3 CI2 harness sets ORTHOLOG_TEST_DSN to
+// is provided. The Wave 1 v3 CI2 harness sets ATTESTA_TEST_DSN to
 // the docker-compose Postgres; local developers point it at any
 // disposable database.
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN unset; skipping integration-style fetcher test")
+		t.Skip("ATTESTA_TEST_DSN unset; skipping integration-style fetcher test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

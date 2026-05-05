@@ -29,7 +29,7 @@ WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 
 TEST GATES:
 
-  All tests Skip when ORTHOLOG_TEST_DSN is unset. No GCS/S3 needed —
+  All tests Skip when ATTESTA_TEST_DSN is unset. No GCS/S3 needed —
   the local presign backend is an httptest.Server backed by an
   in-memory bytestore.Memory, so the redirect path is fully exercised
   without cloud dependencies.
@@ -53,18 +53,18 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
-	"github.com/clearcompass-ai/ortholog-operator/shipper"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -176,9 +176,9 @@ func (op *e2eOperator) seedSession(t *testing.T, token, exchangeDID string, cred
 func startE2EOperator(t *testing.T) *e2eOperator {
 	t.Helper()
 
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN not set — skipping e2e shipper redirect test")
+		t.Skip("ATTESTA_TEST_DSN not set — skipping e2e shipper redirect test")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

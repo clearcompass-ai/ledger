@@ -44,7 +44,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // Attribute keys. Unexported; the only writers are inside this
@@ -79,7 +79,7 @@ func InstallErrorCounter(meter metric.Meter) bool {
 		return false
 	}
 	c, err := meter.Int64Counter(
-		"ortholog_api_errors_total",
+		"attesta_api_errors_total",
 		metric.WithDescription(
 			"Count of api/ errors emitted via writeError, broken down by typed error_class + http_status."),
 		metric.WithUnit("1"),

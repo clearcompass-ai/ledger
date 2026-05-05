@@ -20,7 +20,7 @@ echo "== ensuring rustfs is up =="
 docker compose -f "${COMPOSE_FILE}" up -d rustfs rustfs-init
 
 for i in $(seq 1 30); do
-    health="$(docker inspect --format='{{.State.Health.Status}}' ortholog_test_rustfs 2>/dev/null || true)"
+    health="$(docker inspect --format='{{.State.Health.Status}}' attesta_test_rustfs 2>/dev/null || true)"
     if [ "${health}" = "healthy" ]; then
         echo "rustfs healthy (attempt ${i})"
         break
@@ -30,8 +30,8 @@ done
 
 # Wait for the bucket-init job to complete (it exits 0 on success).
 for i in $(seq 1 30); do
-    status="$(docker inspect --format='{{.State.Status}}' ortholog_test_rustfs_init 2>/dev/null || true)"
-    exitcode="$(docker inspect --format='{{.State.ExitCode}}' ortholog_test_rustfs_init 2>/dev/null || echo -1)"
+    status="$(docker inspect --format='{{.State.Status}}' attesta_test_rustfs_init 2>/dev/null || true)"
+    exitcode="$(docker inspect --format='{{.State.ExitCode}}' attesta_test_rustfs_init 2>/dev/null || echo -1)"
     if [ "${status}" = "exited" ] && [ "${exitcode}" = "0" ]; then
         echo "bucket ready (attempt ${i})"
         break
@@ -46,11 +46,11 @@ for i in $(seq 1 30); do
 done
 
 echo "== running bytestore S3 tests against RustFS =="
-export ORTHOLOG_TEST_S3_ENDPOINT='http://127.0.0.1:9000'
-export ORTHOLOG_TEST_S3_BUCKET='ortholog-test-bytes'
-export ORTHOLOG_TEST_S3_ACCESS_KEY='rustfsadmin'
-export ORTHOLOG_TEST_S3_SECRET_KEY='rustfsadmin'
-export ORTHOLOG_TEST_S3_PATH_STYLE='true'
+export ATTESTA_TEST_S3_ENDPOINT='http://127.0.0.1:9000'
+export ATTESTA_TEST_S3_BUCKET='attesta-test-bytes'
+export ATTESTA_TEST_S3_ACCESS_KEY='rustfsadmin'
+export ATTESTA_TEST_S3_SECRET_KEY='rustfsadmin'
+export ATTESTA_TEST_S3_PATH_STYLE='true'
 
 go test -v -count=1 -timeout=120s -run 'TestS3_|TestConformance_S3_' ./bytestore/
 

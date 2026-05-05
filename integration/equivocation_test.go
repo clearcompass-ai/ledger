@@ -40,7 +40,7 @@ into the BadgerDB equivocation projection 0x0B. The previous
 commitment_equivocation_proofs Postgres table was dropped in
 the v0.9.6 adoption.
 
-Skip semantics match CI3: skipped when ORTHOLOG_TEST_DSN is unset.
+Skip semantics match CI3: skipped when ATTESTA_TEST_DSN is unset.
 */
 package integration
 
@@ -56,10 +56,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
 
-	opapi "github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	opapi "github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // TestEquivocation_EndToEnd seeds two distinct commitment entries

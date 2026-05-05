@@ -34,7 +34,7 @@ WHY A DEDICATED HELPER:
     production code; this helper is the test-side mirror, so test
     fixtures and production code agree on what a "valid signed
     entry" is.
-  - github.com/clearcompass-ai/ortholog-sdk/internal/testkeys is not
+  - github.com/clearcompass-ai/attesta/internal/testkeys is not
     importable from this module (Go's internal/ rule), so the
     operator's test tree carries its own thin wrapper.
 
@@ -55,9 +55,9 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
 )
 
 // testKeypair returns a freshly-generated secp256k1 keypair plus its

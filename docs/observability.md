@@ -8,7 +8,7 @@ Constructed at boot when `OPERATOR_METRICS_ENABLE=true`
 
 ```
 mpResult, _ := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
-    ServiceName:    "ortholog-operator",
+    ServiceName:    "ledger",
     ServiceVersion: cfg.ServiceVersion,
     Environment:    cfg.MetricsEnvironment,
     Exporters:      []sdklog.ExporterKind{sdklog.PrometheusExporter},
@@ -27,7 +27,7 @@ panic; no overhead).
 Single metric, two attributes, bounded cardinality:
 
 ```
-ortholog_api_errors_total{error_class, http_status}
+attesta_api_errors_total{error_class, http_status}
 ```
 
 Defined in `api/errors.go`. Every error-emission site in `api/` flows
@@ -116,7 +116,7 @@ budget never grows from caller-controlled strings.
 ```
 ErrorClass values:                30
 HTTP statuses (in practice):      ~10
-Total ortholog_api_errors_total
+Total attesta_api_errors_total
   time-series:                    ~300
 ```
 
@@ -129,14 +129,14 @@ caller-controlled strings (which would melt the index).
 ```promql
 # Hostile-flavor — alert on sustained rates
 sum by (error_class) (
-  rate(ortholog_api_errors_total{error_class=~"signature_invalid|admission_proof_invalid|destination_mismatch"}[5m])
+  rate(attesta_api_errors_total{error_class=~"signature_invalid|admission_proof_invalid|destination_mismatch"}[5m])
 )
 
 # Operator infrastructure — page on any uptick
-rate(ortholog_api_errors_total{error_class=~"wal_backpressure|wal_persist_failed|sct_signing_failed|db_query_failed"}[1m])
+rate(attesta_api_errors_total{error_class=~"wal_backpressure|wal_persist_failed|sct_signing_failed|db_query_failed"}[1m])
 
 # Tenant state — informational dashboard, not paging
-rate(ortholog_api_errors_total{error_class=~"insufficient_credits|expired_session"}[5m])
+rate(attesta_api_errors_total{error_class=~"insufficient_credits|expired_session"}[5m])
 ```
 
 ## Tests

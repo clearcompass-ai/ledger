@@ -2,7 +2,7 @@
 FILE PATH: tests/integration_test.go
 
 85 integration tests across 14 categories. Every test has real assertions.
-Tests requiring Postgres skip gracefully when ORTHOLOG_TEST_DSN is unset.
+Tests requiring Postgres skip gracefully when ATTESTA_TEST_DSN is unset.
 Tests requiring Tessera use the SDK's StubMerkleTree.
 
 POST-WAVE-1.5 CHANGES:
@@ -14,7 +14,7 @@ POST-WAVE-1.5 CHANGES:
   - Wire format is protocol v5 (Wave 1.5). All preamble references updated.
 
 Run without Postgres:  go test ./tests/ -v -count=1
-Run with Postgres:     ORTHOLOG_TEST_DSN="postgres://..." go test ./tests/ -v -count=1
+Run with Postgres:     ATTESTA_TEST_DSN="postgres://..." go test ./tests/ -v -count=1
 */
 package tests
 
@@ -26,17 +26,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/admission"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/witness"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	opbuilder "github.com/clearcompass-ai/ledger/builder"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/witness"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -278,7 +278,7 @@ func TestAdmission_ModeB_WrongLog(t *testing.T) {
 	}
 
 	// Verify against a DIFFERENT expected log DID — must fail.
-	err = verifyStampForTest(params, nonce, "did:ortholog:different", 8)
+	err = verifyStampForTest(params, nonce, "did:attesta:different", 8)
 	if err == nil {
 		t.Fatal("stamp bound to wrong log DID should fail verification")
 	}
@@ -722,7 +722,7 @@ func TestWitnessRotation_DualSign(t *testing.T) {
 }
 
 func TestEquivocation_Detection(t *testing.T) {
-	// Equivocation proof shape (per ortholog-sdk/witness): two
+	// Equivocation proof shape (per attesta/witness): two
 	// CosignedTreeHeads with the SAME tree_size and DIFFERENT
 	// root_hash. Constructing the SDK shape pins the structural
 	// contract used downstream by gossipnet.EquivocationMonitor.
@@ -874,7 +874,7 @@ func TestAnchor_CommentaryEntry(t *testing.T) {
 
 func TestAnchor_PayloadContent(t *testing.T) {
 	ref := sha256.Sum256([]byte("serialized-tree-head"))
-	payload := mustJSON(map[string]any{"anchor_type": "tree_head_ref", "source_log_did": "did:ortholog:source", "tree_head_ref": hex.EncodeToString(ref[:]), "tree_size": 42})
+	payload := mustJSON(map[string]any{"anchor_type": "tree_head_ref", "source_log_did": "did:attesta:source", "tree_head_ref": hex.EncodeToString(ref[:]), "tree_size": 42})
 	e := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:op"}, payload)
 	if len(e.DomainPayload) < 50 {
 		t.Fatal("payload too small")
@@ -1104,7 +1104,7 @@ func TestJudicial_EvidenceGrantCommentary(t *testing.T) {
 func TestJudicial_AppellateRelay(t *testing.T) {
 	h := newHarness()
 	rootBefore := h.root(t)
-	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:appellate"}, mustJSON(map[string]any{"relay": "cross_jurisdiction", "source": "did:ortholog:davidson", "seq": 42})), pos(1))
+	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:appellate"}, mustJSON(map[string]any{"relay": "cross_jurisdiction", "source": "did:attesta:davidson", "seq": 42})), pos(1))
 	if r.CommentaryCounts != 1 {
 		t.Fatal("relay should be commentary")
 	}

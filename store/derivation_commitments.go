@@ -38,7 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // CommitmentRow lives in apitypes/ so api/ can consume it without

@@ -52,7 +52,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // EscrowOverrideRequest is the JSON request body shape.

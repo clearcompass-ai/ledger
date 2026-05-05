@@ -64,10 +64,10 @@ MIGRATION NOTE:
     through the builder against a fresh Tessera backend.
 
 KEY DEPENDENCIES:
-  - github.com/clearcompass-ai/ortholog-sdk/builder: ProcessBatch, BatchResult,
+  - github.com/clearcompass-ai/attesta/builder: ProcessBatch, BatchResult,
     SchemaResolver, DeltaWindowBuffer.
-  - github.com/clearcompass-ai/ortholog-sdk/core/envelope: EntryIdentity.
-  - github.com/clearcompass-ai/ortholog-sdk/types: EntryFetcher (read-side
+  - github.com/clearcompass-ai/attesta/core/envelope: EntryIdentity.
+  - github.com/clearcompass-ai/attesta/types: EntryFetcher (read-side
     abstraction, moved from builder/ in v7.75).
   - tessera/proof_adapter.go: TesseraAdapter implements MerkleAppender.
   - store/smt_state.go: PostgresLeafStore.SetTx for atomic leaf writes.
@@ -87,12 +87,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // -------------------------------------------------------------------------------------------------

@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: ortholog
-      POSTGRES_PASSWORD: orthologpassword
-      POSTGRES_DB: ortholog
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attestapassword
+      POSTGRES_DB: attesta
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ortholog"]
+      test: ["CMD-SHELL", "pg_isready -U attesta"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -37,10 +37,10 @@ services:
       context: ../../
       dockerfile: scripts/local/Dockerfile
     environment:
-      - ORTHOLOG_LOG_DID=did:ortholog:operator:local:001
-      - ORTHOLOG_POSTGRES_DSN=postgres://ortholog:orthologpassword@postgres:5432/ortholog?sslmode=disable
-      - ORTHOLOG_TESSERA_URL=http://tessera-personality:8081
-      - ORTHOLOG_SERVER_ADDR=:8080
+      - ATTESTA_LOG_DID=did:attesta:operator:local:001
+      - ATTESTA_POSTGRES_DSN=postgres://attesta:attestapassword@postgres:5432/attesta?sslmode=disable
+      - ATTESTA_TESSERA_URL=http://tessera-personality:8081
+      - ATTESTA_SERVER_ADDR=:8080
       - LOG_LEVEL=debug
     ports:
       - "8080:8080"

@@ -1,15 +1,15 @@
-# Ortholog Operator — make targets
+# Attesta Operator — make targets
 #
 # Wave 1 v3 §CI1 introduces the audit-v775 target. Other targets
 # below are conventional helpers for build / test / lint cadence.
 #
 # All targets use POSIX sh and are intended to run in CI without
 # relying on developer tooling. The audit target works whether the
-# SDK is vendored (vendor/github.com/clearcompass-ai/ortholog-sdk/)
+# SDK is vendored (vendor/github.com/clearcompass-ai/attesta/)
 # or resolved from the Go module cache (go env GOMODCACHE).
 
 GO          ?= go
-SDK_MODULE  := github.com/clearcompass-ai/ortholog-sdk
+SDK_MODULE  := github.com/clearcompass-ai/attesta
 
 .PHONY: build test test-short audit-v775 vet tidy clean help \
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
@@ -25,7 +25,7 @@ help: ## List available targets
 build: ## Compile every package
 	$(GO) build ./...
 
-test: ## Run all tests (integration tests skip without ORTHOLOG_TEST_DSN)
+test: ## Run all tests (integration tests skip without ATTESTA_TEST_DSN)
 	$(GO) test ./...
 
 test-short: ## Run only unit tests (skip integration via -short)

@@ -48,9 +48,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────

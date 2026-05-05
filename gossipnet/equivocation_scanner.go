@@ -70,11 +70,11 @@ import (
 	"log/slog"
 	"strings"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
 
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
+	"github.com/clearcompass-ai/ledger/gossipstore"
 )
 
 // EquivocationScannerConfig configures the scanner goroutine.

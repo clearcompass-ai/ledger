@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
+	"github.com/clearcompass-ai/ledger/sequencer"
 )
 
 func TestDefaultPgMaxConns_FloorsAt20(t *testing.T) {

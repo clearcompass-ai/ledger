@@ -2,7 +2,7 @@
 FILE PATH: store/sequence_cursor_test.go
 
 Integration-style tests for SequenceCursor against a real Postgres.
-Skips when ORTHOLOG_TEST_DSN is unset — same pattern as
+Skips when ATTESTA_TEST_DSN is unset — same pattern as
 commitment_fetcher_test.go's requireDB helper. Wave 1 v3 §CI2's
 docker-compose harness sets the DSN; local developers can point it
 at any disposable database.

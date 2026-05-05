@@ -19,10 +19,10 @@ integrity/*_test.go        Boot reconciliation + sample-verify detector
 lifecycle/*_test.go        Graceful shutdown components
 sequencer/*_test.go        WAL drain + boot replayer
 shipper/*_test.go          WAL → bytestore migrator
-store/*_test.go            Postgres-backed stores (gated by ORTHOLOG_TEST_DSN)
+store/*_test.go            Postgres-backed stores (gated by ATTESTA_TEST_DSN)
 tessera/*_test.go          Embedded Tessera appender
 wal/*_test.go              Badger WAL state machine
-integration/*_test.go      Full-stack (Postgres + bytestore) — gated by ORTHOLOG_TEST_DSN
+integration/*_test.go      Full-stack (Postgres + bytestore) — gated by ATTESTA_TEST_DSN
 tests/*_test.go            End-to-end (HTTP + Postgres + Badger) — gated
 cmd/*/*_test.go            CLI binaries (submit-stamp, operator pool sizing)
 ```
@@ -42,14 +42,14 @@ go test -count=1 -race -short ./...
 go vet ./...
 
 # Postgres-backed integration tests (needs a live DB)
-export ORTHOLOG_TEST_DSN="postgres://ortholog:ortholog@localhost:5544/ortholog_test?sslmode=disable"
+export ATTESTA_TEST_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable"
 go test -count=1 ./integration/... ./tests/...
 
 # GCS tests against fake-gcs-server
 ./scripts/run-gcs-tests.sh
 
 # GCS tests against REAL GCS (validates production code path)
-export ORTHOLOG_REAL_GCS_BUCKET=my-test-bucket
+export ATTESTA_REAL_GCS_BUCKET=my-test-bucket
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 ./scripts/run-gcs-tests-real.sh
 
@@ -57,7 +57,7 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 ./scripts/run-bytestore-tests-rustfs.sh
 
 # S3 tests against REAL S3
-export ORTHOLOG_REAL_S3_BUCKET=my-test-bucket
+export ATTESTA_REAL_S3_BUCKET=my-test-bucket
 ./scripts/run-bytestore-tests-real-s3.sh
 
 # Soak (24h-style)
@@ -276,7 +276,7 @@ The test-runner gates unit tests cleanly:
 # Unit only — no Postgres needed
 go test -count=1 -short ./...
 
-# Integration — needs ORTHOLOG_TEST_DSN set
+# Integration — needs ATTESTA_TEST_DSN set
 go test -count=1 ./integration/... ./tests/...
 ```
 

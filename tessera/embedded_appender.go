@@ -89,7 +89,7 @@ import (
 
 	uptessera "github.com/transparency-dev/tessera"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // AppenderOptions bundles the knobs cmd/operator/main.go threads
@@ -101,7 +101,7 @@ type AppenderOptions struct {
 	// Origin is the c2sp.org/tlog-tiles "origin" line written
 	// to every checkpoint. SHOULD be a stable identifier for
 	// this log (e.g., the operator's LogDID). Defaults to
-	// "ortholog-local-dev" when empty — fine for tests, never
+	// "attesta-local-dev" when empty — fine for tests, never
 	// for production.
 	Origin string
 
@@ -146,7 +146,7 @@ type AppenderOptions struct {
 // pointer for chaining-style use.
 func (o *AppenderOptions) applyDefaults() {
 	if o.Origin == "" {
-		o.Origin = "ortholog-local-dev"
+		o.Origin = "attesta-local-dev"
 	}
 	if o.CheckpointInterval == 0 {
 		o.CheckpointInterval = 1 * time.Second
@@ -311,12 +311,12 @@ func (e *EmbeddedAppender) Close(ctx context.Context) error {
 // then lost.
 //
 // Mirrors tessera-personality/main.go's
-// getSignerOrGenerate("ortholog-local-dev") helper, lifted here
+// getSignerOrGenerate("attesta-local-dev") helper, lifted here
 // so the personality binary can be deleted without losing the
 // dev-mode convenience.
 func GenerateEphemeralSigner(name string) (note.Signer, string, error) {
 	if name == "" {
-		name = "ortholog-local-dev"
+		name = "attesta-local-dev"
 	}
 	skey, vkey, err := note.GenerateKey(rand.Reader, name)
 	if err != nil {

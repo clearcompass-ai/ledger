@@ -37,7 +37,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // hashLookupWAL is a tiny WAL-only fake that satisfies

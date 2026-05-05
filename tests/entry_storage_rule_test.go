@@ -23,12 +23,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════

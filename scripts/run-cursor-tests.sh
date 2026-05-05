@@ -43,7 +43,7 @@ echo "== tearing down any prior stack (force-clear anonymous volumes) =="
 # POSTGRES_USER, etc.) only on first boot when the data dir is
 # empty. So if a prior run left behind a populated data volume,
 # the new container reuses it and skips init — the result is
-# tests that fail with "database \"ortholog_test\" does not exist".
+# tests that fail with "database \"attesta_test\" does not exist".
 #
 # `down -v` removes anonymous volumes, guaranteeing a clean slate
 # every run. Cheap (postgres init takes ~2s) and idempotent.
@@ -54,7 +54,7 @@ docker compose -f "${COMPOSE_FILE}" up -d
 
 echo "== waiting for postgres container readiness (pg_isready inside container) =="
 for i in $(seq 1 60); do
-    if docker exec ortholog_test_postgres pg_isready -U ortholog -d ortholog_test >/dev/null 2>&1; then
+    if docker exec attesta_test_postgres pg_isready -U attesta -d attesta_test >/dev/null 2>&1; then
         echo "postgres container ready (attempt ${i})"
         break
     fi
@@ -77,7 +77,7 @@ for i in $(seq 1 60); do
     if [ "$i" = "60" ]; then
         echo "FATAL: host port 5544 not reachable within 60s"
         echo "Check: docker compose ps"
-        echo "       docker logs ortholog_test_postgres"
+        echo "       docker logs attesta_test_postgres"
         exit 1
     fi
     sleep 1
@@ -88,11 +88,11 @@ echo "== exporting test env =="
 # terminal autolinker (paste-time markdown rewrite) cannot
 # transform the string into something pgx fails to parse.
 # Pgx accepts this exact format via pgconn.ParseConfig.
-export ORTHOLOG_TEST_DSN='host=127.0.0.1 port=5544 user=ortholog password=ortholog dbname=ortholog_test sslmode=disable'
-export ORTHOLOG_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
-export ORTHOLOG_TEST_GCS_BUCKET='ortholog-test-bytes'
+export ATTESTA_TEST_DSN='host=127.0.0.1 port=5544 user=attesta password=attesta dbname=attesta_test sslmode=disable'
+export ATTESTA_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
+export ATTESTA_TEST_GCS_BUCKET='attesta-test-bytes'
 
-echo "DSN length: ${#ORTHOLOG_TEST_DSN} chars (sanity: ~96 expected)"
+echo "DSN length: ${#ATTESTA_TEST_DSN} chars (sanity: ~96 expected)"
 
 echo "== running cursor + sequence tests =="
 go test -v -count=1 -p 1 -timeout=120s \

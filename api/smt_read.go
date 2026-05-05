@@ -19,9 +19,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 const maxLeafBatchSize = 100

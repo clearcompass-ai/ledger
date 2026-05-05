@@ -59,7 +59,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // WAL is the WAL surface the Shipper depends on. *wal.Committer

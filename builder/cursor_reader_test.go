@@ -2,7 +2,7 @@
 FILE PATH: builder/cursor_reader_test.go
 
 Integration-style tests for *CursorReader. Skips when
-ORTHOLOG_TEST_DSN is unset, runs against the docker-compose
+ATTESTA_TEST_DSN is unset, runs against the docker-compose
 Postgres harness when set.
 
 Coverage:
@@ -29,18 +29,18 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
-// requireDB connects to ORTHOLOG_TEST_DSN, runs migrations, and
+// requireDB connects to ATTESTA_TEST_DSN, runs migrations, and
 // returns a pool. Skips the test when the DSN is unset — same
 // behavior as store/commitment_fetcher_test.go's requireDB so the
 // suite is uniformly skip-friendly under `go test -short ./...`.
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN unset; skipping integration-style cursor reader test")
+		t.Skip("ATTESTA_TEST_DSN unset; skipping integration-style cursor reader test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

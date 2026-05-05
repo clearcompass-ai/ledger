@@ -44,19 +44,19 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	opbuilder "github.com/clearcompass-ai/ledger/builder"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -76,9 +76,9 @@ type testOperator struct {
 func startTestOperator(t *testing.T) *testOperator {
 	t.Helper()
 
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN not set — skipping HTTP integration test")
+		t.Skip("ATTESTA_TEST_DSN not set — skipping HTTP integration test")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/did"
 )
 
 func TestWitnessKeysFromDIDs_RoundTrip(t *testing.T) {

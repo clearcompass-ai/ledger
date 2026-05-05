@@ -3,8 +3,8 @@
 # the postgres container (mounted at /docker-entrypoint-initdb.d/).
 #
 # Creates the additional databases this dev topology needs:
-#   ortholog_davidson  (default; owned by the davidson operator)
-#   ortholog_coa       (owned by the coa operator)
+#   attesta_davidson  (default; owned by the davidson operator)
+#   attesta_coa       (owned by the coa operator)
 #   court_tools        (owned by judicial-network's court-tools +
 #                       provider-tools binaries)
 #
@@ -14,11 +14,11 @@
 set -euo pipefail
 
 psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" <<-EOSQL
-    CREATE DATABASE ortholog_coa;
-    GRANT ALL PRIVILEGES ON DATABASE ortholog_coa TO ${POSTGRES_USER};
+    CREATE DATABASE attesta_coa;
+    GRANT ALL PRIVILEGES ON DATABASE attesta_coa TO ${POSTGRES_USER};
 
     CREATE DATABASE court_tools;
     GRANT ALL PRIVILEGES ON DATABASE court_tools TO ${POSTGRES_USER};
 EOSQL
 
-echo "postgres-init: created ortholog_coa + court_tools databases"
+echo "postgres-init: created attesta_coa + court_tools databases"

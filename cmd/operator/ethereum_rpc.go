@@ -38,7 +38,7 @@ OVERVIEW:
                                  on success, (nil, err) on misconfig
 
 KEY DEPENDENCIES:
-  - github.com/clearcompass-ai/ortholog-sdk/crypto/signatures:
+  - github.com/clearcompass-ai/attesta/crypto/signatures:
     EthereumRPCClient + HTTPEthereumRPC + options.
 */
 package main
@@ -50,7 +50,7 @@ import (
 	"strings"
 	"time"
 
-	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdkcryptosigs "github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 // -------------------------------------------------------------------------------------------------

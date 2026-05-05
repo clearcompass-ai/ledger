@@ -28,8 +28,8 @@ package api_test
 import (
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/admission"
-	"github.com/clearcompass-ai/ortholog-operator/api"
+	"github.com/clearcompass-ai/ledger/admission"
+	"github.com/clearcompass-ai/ledger/api"
 )
 
 // TestSubmissionDeps_BLSQuorumVerifier_FieldType pins the field

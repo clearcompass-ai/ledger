@@ -55,7 +55,7 @@ Usage:
 	    --operator-url http://localhost:8080 \
 	    --signer-did   did:web:operator.example \
 	    --log-did      did:web:log.example \
-	    --key-path     /etc/ortholog/operator-key.hex \
+	    --key-path     /etc/attesta/operator-key.hex \
 	    --output       config/v775_schemas.yaml
 
 Run order in deploy: schema bootstrap → service start. The operator
@@ -78,11 +78,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 // ─────────────────────────────────────────────────────────────────────

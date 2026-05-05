@@ -59,9 +59,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // ─────────────────────────────────────────────────────────────────────

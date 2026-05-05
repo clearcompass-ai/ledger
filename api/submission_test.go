@@ -48,15 +48,15 @@ import (
 	"testing"
 	"time"
 
-	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/apitypes"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 

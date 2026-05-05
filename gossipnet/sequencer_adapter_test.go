@@ -32,8 +32,8 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
+	"github.com/clearcompass-ai/ledger/gossipstore"
+	"github.com/clearcompass-ai/ledger/sequencer"
 )
 
 func adapterTestStore(t *testing.T) *gossipstore.BadgerStore {

@@ -3,7 +3,7 @@ FILE PATH:
     cmd/operator-reader/main.go
 
 DESCRIPTION:
-    Read-only Ortholog log operator. Serves all GET endpoints.
+    Read-only Attesta log operator. Serves all GET endpoints.
     Does NOT run the builder loop, accept submissions, or write anything.
 
 KEY ARCHITECTURAL DECISIONS:
@@ -39,14 +39,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/attesta/core/smt"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/tessera"
 )
 
 func main() {
@@ -285,13 +285,13 @@ type readerConfig struct {
 
 func loadConfig() readerConfig {
 	return readerConfig{
-		LogDID:            envOr("ORTHOLOG_LOG_DID", "did:ortholog:operator:001"),
-		PostgresDSN:       envOr("ORTHOLOG_POSTGRES_DSN", "postgres://ortholog:ortholog@localhost:5432/ortholog?sslmode=disable"),
-		ReplicaDSN:        envOr("ORTHOLOG_REPLICA_DSN", ""),
+		LogDID:            envOr("ATTESTA_LOG_DID", "did:attesta:operator:001"),
+		PostgresDSN:       envOr("ATTESTA_POSTGRES_DSN", "postgres://attesta:attesta@localhost:5432/attesta?sslmode=disable"),
+		ReplicaDSN:        envOr("ATTESTA_REPLICA_DSN", ""),
 		MaxConns:          20,
 		MinConns:          5,
-		ServerAddr:        envOr("ORTHOLOG_SERVER_ADDR", ":8081"),
-		TesseraStorageDir: envOr("ORTHOLOG_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
+		ServerAddr:        envOr("ATTESTA_SERVER_ADDR", ":8081"),
+		TesseraStorageDir: envOr("ATTESTA_TESSERA_STORAGE_DIR", "/var/lib/attesta/tessera"),
 		TileCacheSize:     10000,
 		WarmTopLevels:     32,
 		SMTCacheSize:      100000,

@@ -34,7 +34,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // BatchReader is the abstraction the builder loop uses to fetch

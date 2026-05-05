@@ -33,7 +33,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // NewShardConfig configures a shard rotation.

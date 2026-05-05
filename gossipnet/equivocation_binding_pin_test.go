@@ -21,7 +21,7 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
 )
 
 // TestEquivocationBinding_OperatorMatchesSDK pins the byte-level
@@ -37,7 +37,7 @@ func TestEquivocationBinding_OperatorMatchesSDK(t *testing.T) {
 		splitID  [32]byte
 	}{
 		{"empty-split", "schema-x", [32]byte{}},
-		{"common", "ortholog.network/schema/pre-grant-commitment/v1",
+		{"common", "attesta.network/schema/pre-grant-commitment/v1",
 			[32]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}},
 		{"all-ones", "schema-y",
 			[32]byte{

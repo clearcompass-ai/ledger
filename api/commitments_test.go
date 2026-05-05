@@ -39,12 +39,12 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/gossipstore"
 )
 
 // ─────────────────────────────────────────────────────────────────────

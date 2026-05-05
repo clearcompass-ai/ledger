@@ -10,7 +10,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // QueryBySignerDID returns entries signed by the given DID.

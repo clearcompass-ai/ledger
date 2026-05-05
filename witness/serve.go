@@ -66,7 +66,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
 )
 
 // ServeConfig configures the witness cosign endpoint.

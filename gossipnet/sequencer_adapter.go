@@ -25,8 +25,8 @@ package gossipnet
 import (
 	"context"
 
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
+	"github.com/clearcompass-ai/ledger/gossipstore"
+	"github.com/clearcompass-ai/ledger/sequencer"
 )
 
 // SequencerSplitIDAdapter wraps a *gossipstore.BadgerStore so it

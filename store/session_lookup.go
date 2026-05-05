@@ -32,7 +32,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ledger/api/middleware"
 )
 
 // PostgresSessionLookup satisfies api/middleware.SessionLookup

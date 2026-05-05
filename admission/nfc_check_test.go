@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // nfdEAcute is the precomposed NFC form of "é" expressed as the NFD

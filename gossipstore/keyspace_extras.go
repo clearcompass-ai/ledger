@@ -19,7 +19,7 @@ import (
 
 // MaxSchemaIDLen caps the schema_id stored in the splitid index.
 // 256 bytes is generous for v7.75-style identifiers
-// ("ortholog.network/schema/pre-grant-commitment/v1").
+// ("attesta.network/schema/pre-grant-commitment/v1").
 const MaxSchemaIDLen = 256
 
 // ─────────────────────────────────────────────────────────────────────

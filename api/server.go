@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/server.go
 
-HTTP server initialization and route registration. All Ortholog
+HTTP server initialization and route registration. All Attesta
 operator endpoints live under /v1/. Health checks at /healthz and
 /readyz.
 
@@ -62,7 +62,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ledger/api/middleware"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -36,16 +36,16 @@ SAFETY CONTRACT:
 USAGE:
 
 	# 1. Stop the production operator.
-	systemctl stop ortholog-operator
+	systemctl stop ledger
 
 	# 2. Back up Postgres.
-	pg_dump ortholog > /var/backups/operator-pre-rebuild-$(date -I).sql
+	pg_dump attesta > /var/backups/operator-pre-rebuild-$(date -I).sql
 
 	# 3. Start a FRESH Tessera personality on a new port with empty
 	#    storage (or wipe the existing personality's storage and restart).
 
 	# 4. Reset cursor + tree state so every admitted entry replays.
-	psql ortholog <<SQL
+	psql attesta <<SQL
 	    UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1;
 	    DELETE FROM derivation_commitments WHERE true;
 	    DELETE FROM smt_leaves WHERE true;
@@ -84,14 +84,14 @@ import (
 
 	"github.com/transparency-dev/tessera/storage/posix"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
 
-	"github.com/clearcompass-ai/ortholog-operator/builder"
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ledger/builder"
+	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/tessera"
 )
 
 func main() {

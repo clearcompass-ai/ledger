@@ -55,7 +55,7 @@ import (
 	"log/slog"
 	"math/bits"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // -------------------------------------------------------------------------------------------------

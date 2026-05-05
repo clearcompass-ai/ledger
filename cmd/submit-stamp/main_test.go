@@ -30,10 +30,10 @@ import (
 	"testing"
 	"time"
 
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
-	sdksigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
+	sdksigs "github.com/clearcompass-ai/attesta/crypto/signatures"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
+	"github.com/clearcompass-ai/ledger/api"
 )
 
 // TestApiSCTJSONRoundTrips_MatchesAPIType: marshalling api's

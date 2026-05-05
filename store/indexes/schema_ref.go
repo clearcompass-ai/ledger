@@ -9,9 +9,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // QueryBySchemaRef returns entries referencing the given schema position.

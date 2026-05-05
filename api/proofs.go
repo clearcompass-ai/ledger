@@ -20,9 +20,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/attesta/core/smt"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // SMTDeps holds dependencies for SMT proof handlers.

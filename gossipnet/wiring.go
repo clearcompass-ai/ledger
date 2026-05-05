@@ -60,10 +60,10 @@ import (
 	"net/http"
 	"time"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/middleware"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/middleware"
+	"github.com/clearcompass-ai/attesta/did"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 	"go.opentelemetry.io/otel/metric"
 )
 

@@ -28,25 +28,25 @@
 services:
   postgres:
     image: postgres:18-alpine
-    container_name: ortholog-int-postgres
+    container_name: attesta-int-postgres
     environment:
-      POSTGRES_USER: ortholog
-      POSTGRES_PASSWORD: orthologpassword
-      POSTGRES_DB: ortholog_davidson
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attestapassword
+      POSTGRES_DB: attesta_davidson
     ports:
       - "5432:5432"
     volumes:
       - int_postgres_data:/var/lib/postgresql/data
       - ./postgres-init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ortholog -d ortholog_davidson"]
+      test: ["CMD-SHELL", "pg_isready -U attesta -d attesta_davidson"]
       interval: 3s
       timeout: 3s
       retries: 20
 
   gcs:
     image: fsouza/fake-gcs-server:1.50.2
-    container_name: ortholog-int-gcs
+    container_name: attesta-int-gcs
     command: >
       -scheme http -port 4443 -public-host gcs:4443
     ports:
@@ -63,7 +63,7 @@ services:
 
   gcs-init:
     image: curlimages/curl:8.11.0
-    container_name: ortholog-int-gcs-init
+    container_name: attesta-int-gcs-init
     depends_on:
       gcs:
         condition: service_healthy
@@ -71,7 +71,7 @@ services:
       /bin/sh -c "
       set -e;
       for b in davidson-entries coa-entries; do
-        curl -fsS -X POST 'http://gcs:4443/storage/v1/b?project=ortholog-int' \
+        curl -fsS -X POST 'http://gcs:4443/storage/v1/b?project=attesta-int' \
              -H 'Content-Type: application/json' \
              -d \"{\\\"name\\\":\\\"$$b\\\"}\" || \
         curl -fsS 'http://gcs:4443/storage/v1/b/'$$b > /dev/null;
@@ -83,27 +83,27 @@ services:
     build:
       context: ../../
       dockerfile: scripts/local/Dockerfile
-    image: ortholog-operator:integration
-    container_name: ortholog-int-operator-davidson
+    image: ledger:integration
+    container_name: attesta-int-operator-davidson
     environment:
       OPERATOR_ADDR: ":8080"
       OPERATOR_LOG_DID: "did:web:state:tn:davidson"
-      OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_davidson?sslmode=disable"
+      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
       OPERATOR_BYTE_STORE_GCS_BUCKET: "davidson-entries"
       OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
       OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
+      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
       OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:davidson"
       OPERATOR_SEQUENCER_INTERVAL: "200ms"
     ports:
       - "8080:8080"
     volumes:
-      - int_davidson_tessera:/var/lib/ortholog/tessera
-      - int_davidson_wal:/var/lib/ortholog/wal
-      - int_davidson_antispam:/var/lib/ortholog/antispam
+      - int_davidson_tessera:/var/lib/attesta/tessera
+      - int_davidson_wal:/var/lib/attesta/wal
+      - int_davidson_antispam:/var/lib/attesta/antispam
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,27 +117,27 @@ services:
       start_period: 15s
 
   operator-coa:
-    image: ortholog-operator:integration
-    container_name: ortholog-int-operator-coa
+    image: ledger:integration
+    container_name: attesta-int-operator-coa
     environment:
       OPERATOR_ADDR: ":8080"
       OPERATOR_LOG_DID: "did:web:state:tn:coa"
-      OPERATOR_DATABASE_URL: "postgres://ortholog:orthologpassword@postgres:5432/ortholog_coa?sslmode=disable"
+      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
       OPERATOR_BYTE_STORE_BACKEND: "gcs"
       OPERATOR_BYTE_STORE_GCS_BUCKET: "coa-entries"
       OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
       OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/ortholog/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/ortholog/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/ortholog/wal"
+      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
       OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:coa"
       OPERATOR_SEQUENCER_INTERVAL: "200ms"
     ports:
       - "8081:8080"
     volumes:
-      - int_coa_tessera:/var/lib/ortholog/tessera
-      - int_coa_wal:/var/lib/ortholog/wal
-      - int_coa_antispam:/var/lib/ortholog/antispam
+      - int_coa_tessera:/var/lib/attesta/tessera
+      - int_coa_wal:/var/lib/attesta/wal
+      - int_coa_antispam:/var/lib/attesta/antispam
     depends_on:
       postgres:
         condition: service_healthy

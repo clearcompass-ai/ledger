@@ -10,9 +10,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // QueryByCosignatureOf returns entries whose Cosignature_Of matches pos.

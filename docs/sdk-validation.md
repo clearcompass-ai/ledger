@@ -5,8 +5,8 @@ Evidence is gathered from `go list`, `go vet`, `go build`, and
 compile-time interface assertions — never grep alone.
 
 ```
-$ go list -m all | grep ortholog-sdk
-github.com/clearcompass-ai/ortholog-sdk v0.9.6
+$ go list -m all | grep attesta
+github.com/clearcompass-ai/attesta v0.9.6
 
 $ go vet ./...
 (clean)
@@ -73,8 +73,8 @@ Integration tests in `integration/` and `tests/` use
 `integration/grant_lifecycle_test.go:149` and
 `tests/helpers_test.go:678`) which:
 
-1. Skips when `ORTHOLOG_TEST_GCS_BUCKET` is unset.
-2. **Refuses** fake-gcs (fails the test if `ORTHOLOG_TEST_GCS_ENDPOINT`
+1. Skips when `ATTESTA_TEST_GCS_BUCKET` is unset.
+2. **Refuses** fake-gcs (fails the test if `ATTESTA_TEST_GCS_ENDPOINT`
    is set). Integration tests must run against real GCS to keep
    production behavior pinned (V4 presigned URLs, ADC chain,
    Workload Identity).
@@ -101,7 +101,7 @@ iam.serviceAccounts.signBlob       # for V4 PresignGet
 ```
 
 The unit-level GCS tests in `bytestore/gcs_test.go` retain their
-fake-gcs option (`ORTHOLOG_TEST_GCS_ENDPOINT`) so developers can
+fake-gcs option (`ATTESTA_TEST_GCS_ENDPOINT`) so developers can
 iterate on bytestore code locally without burning GCS quota.
 Integration tests do NOT — production-shaped credential paths are
 the only acceptable validation surface there.
@@ -110,12 +110,12 @@ the only acceptable validation surface there.
 
 When the SDK ships a new version:
 
-1. Bump the pin in `go.mod` — `go get github.com/clearcompass-ai/ortholog-sdk@vX.Y.Z`
+1. Bump the pin in `go.mod` — `go get github.com/clearcompass-ai/attesta@vX.Y.Z`
 2. Run `go vet ./...` — catches signature drift at the 18 interface
    anchors.
 3. Run `go test -count=1 -race -short ./...` — every package's
    pinning tests run.
-4. Run the integration suite (`ORTHOLOG_TEST_DSN` + ADC creds set) —
+4. Run the integration suite (`ATTESTA_TEST_DSN` + ADC creds set) —
    exercises end-to-end against a real Postgres + real GCS bucket.
 
 Drift-detection test (`gossipnet/equivocation_binding_pin_test.go::
