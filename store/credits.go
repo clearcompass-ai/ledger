@@ -30,9 +30,16 @@ func NewCreditStore(db *pgxpool.Pool) *CreditStore {
 	return &CreditStore{db: db}
 }
 
-// Deduct atomically decrements one credit within a transaction.
-// Returns new balance. ErrInsufficientCredits if balance is zero.
-func (s *CreditStore) Deduct(ctx context.Context, tx pgx.Tx, exchangeDID string) (int64, error) {
+// DeductInTx atomically decrements one credit within the supplied
+// transaction. Returns new balance. ErrInsufficientCredits if
+// balance is zero.
+//
+// Useful when the caller already has a tx open and wants the
+// credit deduction to share its commit boundary. Most callers
+// should use Deduct instead — it manages its own transaction
+// internally and lets the api/ side keep zero pgx imports
+// (PT-7 — Pure CQRS).
+func (s *CreditStore) DeductInTx(ctx context.Context, tx pgx.Tx, exchangeDID string) (int64, error) {
 	var balance int64
 	err := tx.QueryRow(ctx,
 		"SELECT balance FROM credits WHERE exchange_did = $1 FOR UPDATE",
@@ -58,6 +65,21 @@ func (s *CreditStore) Deduct(ctx context.Context, tx pgx.Tx, exchangeDID string)
 		return 0, fmt.Errorf("store/credits: deduct: %w", err)
 	}
 	return newBalance, nil
+}
+
+// Deduct atomically decrements one credit, opening + committing
+// its own ReadCommitted transaction internally. Returns
+// ErrInsufficientCredits if the balance is zero.
+//
+// This is the api/ → CreditDeducter surface. The pgx.Tx-taking
+// DeductInTx variant is preserved for callers that need to share
+// a transaction (e.g., admission paths that bundle credit
+// deduction with another DML in one commit).
+func (s *CreditStore) Deduct(ctx context.Context, exchangeDID string) error {
+	return WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := s.DeductInTx(ctx, tx, exchangeDID)
+		return err
+	})
 }
 
 // BulkPurchase adds credits. UPSERT for idempotent retries.

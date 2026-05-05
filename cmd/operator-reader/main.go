@@ -216,7 +216,7 @@ func run(logger *slog.Logger) error {
 
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = cfg.ServerAddr
-	server := api.NewServer(serverCfg, pool.DB, handlers, logger)
+	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool.DB), handlers, logger)
 
 	// ── Start + shutdown ───────────────────────────────────────────────
 	var wg sync.WaitGroup

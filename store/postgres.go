@@ -39,6 +39,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,8 +393,11 @@ func WithReadCommittedTx(ctx context.Context, db *pgxpool.Pool, fn TxFunc) error
 // 5) Errors
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ErrInsufficientCredits signals balance = 0.
-var ErrInsufficientCredits = fmt.Errorf("store/credits: insufficient credits")
+// ErrInsufficientCredits signals balance = 0. Lives in apitypes/
+// so api/ can errors.Is against it without importing store/
+// (PT-7 — Pure CQRS). Re-exported here for backwards compatibility
+// with existing in-package call sites + integration tests.
+var ErrInsufficientCredits = apitypes.ErrInsufficientCredits
 
 // ErrDuplicateEntry signals a UNIQUE constraint violation on canonical_hash.
 var ErrDuplicateEntry = fmt.Errorf("store/entries: duplicate entry")

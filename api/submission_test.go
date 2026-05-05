@@ -54,6 +54,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
@@ -426,10 +427,9 @@ func TestV1Handler_UnauthenticatedSkipCreditDeduction(t *testing.T) {
 	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("anon"), 1, 3600)
 	walFake := &stubSubmissionWAL{}
 	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
-	// Belt-and-suspenders: make absolutely sure no DB/CreditStore
-	// is wired so the deductCreditModeA short-circuits.
-	deps.Storage.DB = nil
-	deps.Identity.CreditStore = nil
+	// Belt-and-suspenders: make absolutely sure no Credits
+	// deducter is wired so the deductCreditModeA short-circuits.
+	deps.Identity.Credits = nil
 
 	h := NewSubmissionHandler(deps)
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
@@ -444,10 +444,10 @@ func TestV1Handler_UnauthenticatedSkipCreditDeduction(t *testing.T) {
 }
 
 // deductCreditModeA returns nil for unauthenticated callers and for
-// the dev/test path where DB and CreditStore are nil. Insufficient
-// credits surface as store.ErrInsufficientCredits — the handler maps
-// that to 402. Locks the helper's contract so the handler-side guard
-// (above) cannot regress silently.
+// the dev/test path where Credits is nil. Insufficient credits
+// surface as apitypes.ErrInsufficientCredits — the handler maps
+// that to 402. Locks the helper's contract so the handler-side
+// guard cannot regress silently.
 func TestDeductCreditModeA_UnauthenticatedReturnsNil(t *testing.T) {
 	if err := deductCreditModeA(context.Background(), &SubmissionDeps{}, false, ""); err != nil {
 		t.Errorf("expected nil for unauthenticated: %v", err)
@@ -456,18 +456,25 @@ func TestDeductCreditModeA_UnauthenticatedReturnsNil(t *testing.T) {
 
 func TestDeductCreditModeA_NilStoresReturnNil(t *testing.T) {
 	deps := &SubmissionDeps{
-		Storage:  StorageDeps{DB: nil},
-		Identity: IdentityDeps{CreditStore: nil},
+		Identity: IdentityDeps{Credits: nil},
 	}
 	if err := deductCreditModeA(context.Background(), deps, true, "did:test:exchange"); err != nil {
-		t.Errorf("expected nil with nil DB+CreditStore: %v", err)
+		t.Errorf("expected nil with nil Credits: %v", err)
 	}
 }
 
 // Sentinel coverage for the 402 mapping at the handler boundary.
 // deductCreditModeA's full DB-side test is in store_test.go.
+//
+// PT-7: the sentinel now lives in apitypes/. The store-side
+// re-export (store.ErrInsufficientCredits = apitypes.ErrInsufficientCredits)
+// preserves backwards compatibility with tests/integration_test.go.
 func TestErrInsufficientCreditsIsRecognized(t *testing.T) {
-	if !errors.Is(store.ErrInsufficientCredits, store.ErrInsufficientCredits) {
+	if !errors.Is(apitypes.ErrInsufficientCredits, apitypes.ErrInsufficientCredits) {
 		t.Error("sentinel comparison broken")
+	}
+	// The store-side re-export must be the SAME error value.
+	if !errors.Is(store.ErrInsufficientCredits, apitypes.ErrInsufficientCredits) {
+		t.Error("store re-export drifted from apitypes")
 	}
 }

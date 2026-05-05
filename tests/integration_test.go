@@ -1167,7 +1167,7 @@ func TestOps_WriteCreditIsolation(t *testing.T) {
 		t.Fatal("B should have 0")
 	}
 	tx, _ := pool.Begin(ctx)
-	newBal, err := cs.Deduct(ctx, tx, "did:example:exchange-a")
+	newBal, err := cs.DeductInTx(ctx, tx, "did:example:exchange-a")
 	tx.Commit(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1176,7 +1176,7 @@ func TestOps_WriteCreditIsolation(t *testing.T) {
 		t.Fatalf("expected 99, got %d", newBal)
 	}
 	tx2, _ := pool.Begin(ctx)
-	_, err = cs.Deduct(ctx, tx2, "did:example:exchange-b")
+	_, err = cs.DeductInTx(ctx, tx2, "did:example:exchange-b")
 	tx2.Rollback(ctx)
 	if err != store.ErrInsufficientCredits {
 		t.Fatalf("expected insufficient, got: %v", err)

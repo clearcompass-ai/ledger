@@ -68,8 +68,6 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -108,7 +106,7 @@ type Presigner interface {
 // EntryReadDeps holds dependencies for entry read handlers.
 type EntryReadDeps struct {
 	Fetcher    EntryFetcher
-	QueryAPI   *indexes.PostgresQueryAPI
+	QueryAPI   QueryAPI
 	EntryStore SeqHashLookup
 	WAL        EntryWALReader
 	Presigner  Presigner
@@ -355,7 +353,10 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 // Compile-time pins
 // ─────────────────────────────────────────────────────────────────────
 
-// *store.EntryStore satisfies SeqHashLookup. Compile-time pin
-// here — if EntryStore's signature drifts the build breaks at
-// the deps wiring rather than at first request.
-var _ SeqHashLookup = (*store.EntryStore)(nil)
+// SeqHashLookup is satisfied by api.EntryStore (see ports.go);
+// the EntryStore interface declares FetchHashBySeq so any
+// implementation that implements it satisfies SeqHashLookup
+// transitively. The wire-time pin lives at cmd/operator/main.go
+// where *store.EntryStore is assigned into the api EntryStore
+// interface field — drift in either side surfaces there.
+var _ SeqHashLookup = EntryStore(nil)

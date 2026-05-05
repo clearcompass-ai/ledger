@@ -51,8 +51,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-
-	"github.com/clearcompass-ai/ortholog-operator/gossipnet"
 )
 
 // EscrowOverrideRequest is the JSON request body shape.
@@ -76,7 +74,7 @@ type EscrowOverrideResponse struct {
 //
 // Request body cap: 4 KiB. The wire shape is fixed-size hex
 // strings + a uint64; anything larger is malformed.
-func EscrowOverrideHandler(service *gossipnet.EscrowOverrideService, logger *slog.Logger) http.HandlerFunc {
+func EscrowOverrideHandler(service EscrowOverrideProcessor, logger *slog.Logger) http.HandlerFunc {
 	if service == nil {
 		return nil
 	}

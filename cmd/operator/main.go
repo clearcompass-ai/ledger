@@ -1433,7 +1433,6 @@ func main() {
 
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:         pool,
 			EntryStore: entryStore,
 			WAL:        walc,
 			Tessera:    embeddedAppender, // unused by facade; kept for API symmetry
@@ -1444,7 +1443,7 @@ func main() {
 			EpochAcceptanceWindow: cfg.EpochAcceptanceWindow,
 		},
 		Identity: api.IdentityDeps{
-			CreditStore: creditStore,
+			Credits:     creditStore,
 			DIDResolver: sdkdid.NewECDSAKeyResolver(),
 		},
 		OperatorDID:        cfg.OperatorDID,
@@ -1680,7 +1679,7 @@ func main() {
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = cfg.ServerAddr
 	serverCfg.MaxEntrySize = cfg.MaxEntrySize
-	server := api.NewServer(serverCfg, pool, handlers, logger)
+	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
 
 	// ── Goroutines + fatal supervisor ─────────────────────────────────
 	//
