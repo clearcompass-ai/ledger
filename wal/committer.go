@@ -46,6 +46,7 @@ package wal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -99,9 +100,10 @@ type Committer struct {
 
 // submission is a per-Submit record handed to the commit goroutine.
 type submission struct {
-	hash [32]byte
-	wire []byte
-	done chan error
+	hash          [32]byte
+	wire          []byte
+	logTimeMicros int64 // unix-micros, persisted in Meta for P5 idempotency
+	done          chan error
 }
 
 // NewCommitter wraps an open Badger DB and starts the group-commit
@@ -141,14 +143,21 @@ func NewCommitter(db *badger.DB, cfg CommitterConfig) *Committer {
 // full (HTTP handler should map to 503), ErrEmptyWire on a nil/empty
 // wire, ctx.Err() on cancellation, or the underlying Badger / Sync
 // error if the group commit failed.
-func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte) error {
+//
+// logTimeMicros is the operator-assigned admission time (unix
+// microseconds) that gets persisted in the Meta record. Used by the
+// HTTP handler's deterministic-idempotency path (P5): a
+// byte-identical resubmission reads back the persisted value and
+// re-issues the SAME SCT bytes instead of returning 409 Conflict.
+func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logTimeMicros int64) error {
 	if len(wire) == 0 {
 		return ErrEmptyWire
 	}
 	s := &submission{
-		hash: hash,
-		wire: wire,
-		done: make(chan error, 1),
+		hash:          hash,
+		wire:          wire,
+		logTimeMicros: logTimeMicros,
+		done:          make(chan error, 1),
 	}
 	select {
 	case c.in <- s:
@@ -267,14 +276,35 @@ func (c *Committer) flushBatch(batch []*submission) error {
 	now := time.Now().UnixNano()
 	err := c.db.Update(func(txn *badger.Txn) error {
 		for _, s := range batch {
-			// entry:<hash> = wire (immutable, write-once)
+			// entry:<hash> = wire (immutable, write-once).
+			// Re-Submit of byte-identical content overwrites with
+			// identical bytes — no harm.
 			if err := txn.Set(entryKey(s.hash), s.wire); err != nil {
 				return fmt.Errorf("wal/committer: set entry: %w", err)
 			}
-			// meta:<hash> = pending. Submit always writes pending —
-			// Sequence/MarkShipped advance the state in their own txn.
-			meta := encodeMeta(Meta{State: StatePending})
-			if err := txn.Set(metaKey(s.hash), meta); err != nil {
+			// meta:<hash>: Submit-on-existing-entry preserves the
+			// existing State (Sequenced / Shipped) AND the original
+			// LogTimeMicros. Without this, a re-Submit would
+			// regress State Sequenced → Pending and overwrite the
+			// original log_time, breaking deterministic
+			// idempotency (P5).
+			//
+			// First-time Submit: write {State: Pending, LogTime:
+			//                          this submission's micros}.
+			var existing Meta
+			if rerr := readMeta(txn, s.hash, &existing); rerr == nil {
+				// Entry already exists — preserve everything. The
+				// idempotent re-Submit reaches here.
+			} else if errors.Is(rerr, ErrNotFound) ||
+				errors.Is(rerr, badger.ErrKeyNotFound) {
+				existing = Meta{
+					State:         StatePending,
+					LogTimeMicros: s.logTimeMicros,
+				}
+			} else {
+				return fmt.Errorf("wal/committer: read meta: %w", rerr)
+			}
+			if err := txn.Set(metaKey(s.hash), encodeMeta(existing)); err != nil {
 				return fmt.Errorf("wal/committer: set meta: %w", err)
 			}
 			// inflight:<hash> = now. Cleared by Sequence; scanned by

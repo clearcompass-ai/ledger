@@ -87,7 +87,7 @@ func TestWAL_Submit_ReadRoundTrip(t *testing.T) {
 	wire := []byte("the wire bytes for the entry")
 	hash := wireHashWal(wire)
 
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
@@ -113,10 +113,10 @@ func TestWAL_Submit_RejectsEmptyWire(t *testing.T) {
 	c, _ := openTestCommitter(t)
 
 	hash := wireHashWal([]byte("x"))
-	if err := c.Submit(ctx, hash, nil); !errors.Is(err, ErrEmptyWire) {
+	if err := c.Submit(ctx, hash, nil, time.Now().UnixMicro()); !errors.Is(err, ErrEmptyWire) {
 		t.Fatalf("expected ErrEmptyWire on nil, got %v", err)
 	}
-	if err := c.Submit(ctx, hash, []byte{}); !errors.Is(err, ErrEmptyWire) {
+	if err := c.Submit(ctx, hash, []byte{}, time.Now().UnixMicro()); !errors.Is(err, ErrEmptyWire) {
 		t.Fatalf("expected ErrEmptyWire on empty, got %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestWAL_Submit_WritesInflight_SequenceClears(t *testing.T) {
 
 	wire := []byte("inflight test")
 	hash := wireHashWal(wire)
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestWAL_StateMachine_PendingToShipped(t *testing.T) {
 
 	wire := []byte("state-machine entry")
 	hash := wireHashWal(wire)
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestWAL_StateMachine_OutOfOrderRejected(t *testing.T) {
 
 	wire := []byte("ooo")
 	hash := wireHashWal(wire)
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestWAL_StateMachine_SequenceIdempotent(t *testing.T) {
 
 	wire := []byte("idem")
 	hash := wireHashWal(wire)
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	if err := c.Sequence(ctx, hash, 7); err != nil {
@@ -297,7 +297,7 @@ func TestWAL_IterateSequenced_OrderedAndFiltered(t *testing.T) {
 	for i := uint64(10); i < 15; i++ {
 		wire := []byte(fmt.Sprintf("entry-%d", i))
 		h := wireHashWal(wire)
-		if err := c.Submit(ctx, h, wire); err != nil {
+		if err := c.Submit(ctx, h, wire, time.Now().UnixMicro()); err != nil {
 			t.Fatalf("Submit seq=%d: %v", i, err)
 		}
 		if err := c.Sequence(ctx, h, i); err != nil {
@@ -332,7 +332,7 @@ func TestWAL_IterateSequenced_StartsAfterFromSeq(t *testing.T) {
 	for i := uint64(1); i <= 5; i++ {
 		wire := []byte(fmt.Sprintf("e%d", i))
 		h := wireHashWal(wire)
-		if err := c.Submit(ctx, h, wire); err != nil {
+		if err := c.Submit(ctx, h, wire, time.Now().UnixMicro()); err != nil {
 			t.Fatalf("Submit %d: %v", i, err)
 		}
 		if err := c.Sequence(ctx, h, i); err != nil {
@@ -374,7 +374,7 @@ func TestWAL_GroupCommit_ConcurrentSubmits(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if err := c.Submit(ctx, hashes[i], wires[i]); err != nil {
+			if err := c.Submit(ctx, hashes[i], wires[i], time.Now().UnixMicro()); err != nil {
 				errs <- err
 			}
 		}(i)
@@ -418,12 +418,12 @@ func TestWAL_Submit_SameHash_Idempotent(t *testing.T) {
 
 	wire := []byte("same-content")
 	hash := wireHashWal(wire)
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit 1: %v", err)
 	}
 	// Second Submit with same (hash, wire): committed again. Storage
 	// remains consistent — same value overwritten with same value.
-	if err := c.Submit(ctx, hash, wire); err != nil {
+	if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
 		t.Fatalf("Submit 2: %v", err)
 	}
 	got, err := c.Read(ctx, hash)

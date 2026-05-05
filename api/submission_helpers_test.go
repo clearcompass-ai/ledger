@@ -29,18 +29,32 @@ import (
 // Fakes
 // ─────────────────────────────────────────────────────────────────────
 
-// stubSubmissionWAL records hash-of-each-Submit and can inject a
-// configurable error.
+// stubSubmissionWAL records hash-of-each-Submit, persists Meta
+// (so the P5 idempotency probe via MetaState observes the
+// persisted log_time on resubmission), and can inject a
+// configurable Submit error.
 type stubSubmissionWAL struct {
 	submitErr error
 	submitted [][32]byte
+	metas     map[[32]byte]wal.Meta
 }
 
-func (s *stubSubmissionWAL) Submit(ctx context.Context, hash [32]byte, wire []byte) error {
+func (s *stubSubmissionWAL) Submit(ctx context.Context, hash [32]byte, wire []byte, logTimeMicros int64) error {
 	if s.submitErr != nil {
 		return s.submitErr
 	}
 	s.submitted = append(s.submitted, hash)
+	if s.metas == nil {
+		s.metas = make(map[[32]byte]wal.Meta)
+	}
+	// Mirror the real Committer's preserve-on-existing semantics:
+	// a re-Submit does NOT overwrite the persisted log_time.
+	if _, exists := s.metas[hash]; !exists {
+		s.metas[hash] = wal.Meta{
+			State:         wal.StatePending,
+			LogTimeMicros: logTimeMicros,
+		}
+	}
 	return nil
 }
 
@@ -49,6 +63,12 @@ func (s *stubSubmissionWAL) Sequence(ctx context.Context, hash [32]byte, seq uin
 }
 
 func (s *stubSubmissionWAL) MetaState(ctx context.Context, hash [32]byte) (wal.Meta, error) {
+	if s.metas == nil {
+		return wal.Meta{}, nil
+	}
+	if m, ok := s.metas[hash]; ok {
+		return m, nil
+	}
 	return wal.Meta{}, nil
 }
 

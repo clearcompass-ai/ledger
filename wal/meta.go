@@ -5,11 +5,16 @@ Meta record encoding for entry state.
 
 Wire format (binary, fixed-prefix):
 
-  [1 byte state] [8 bytes seq big-endian] [4 bytes attempts] [8 bytes lastErrTs unix-nano]
+  [1 byte state] [8 bytes seq big-endian] [4 bytes attempts] [8 bytes lastErrTs unix-nano] [8 bytes logTimeMicros big-endian]
 
-Total: 21 bytes. Fixed-width so iterators can decode without bounds-
+Total: 29 bytes. Fixed-width so iterators can decode without bounds-
 checking in the hot path. The format is internal — Badger keys + values
 are not exposed outside the wal package.
+
+LogTimeMicros (added v0.9.6): the unix-microsecond log_time
+assigned at first Submit. Persisted so a byte-identical
+resubmission can re-issue the SAME SCT bytes (P5 deterministic
+idempotency) instead of returning 409 Conflict.
 */
 package wal
 
@@ -66,14 +71,15 @@ func (s EntryState) String() string {
 // Meta is the in-memory representation of meta:<hash>. The disk
 // encoding is fixed-width binary (see metaEncodedSize).
 type Meta struct {
-	State      EntryState
-	Sequence   uint64    // valid iff State >= StateSequenced
-	Attempts   uint32    // shipper retry counter
-	LastErrTs  time.Time // wall-clock of last error; zero on success
+	State          EntryState
+	Sequence       uint64    // valid iff State >= StateSequenced
+	Attempts       uint32    // shipper retry counter
+	LastErrTs      time.Time // wall-clock of last error; zero on success
+	LogTimeMicros  int64     // unix-micros log_time assigned at first Submit (v0.9.6)
 }
 
 // metaEncodedSize is the on-disk size of a Meta record.
-const metaEncodedSize = 1 + 8 + 4 + 8
+const metaEncodedSize = 1 + 8 + 4 + 8 + 8
 
 // encodeMeta serializes Meta to fixed-width binary.
 func encodeMeta(m Meta) []byte {
@@ -88,6 +94,13 @@ func encodeMeta(m Meta) []byte {
 	} else {
 		binary.BigEndian.PutUint64(buf[13:21], uint64(m.LastErrTs.UnixNano()))
 	}
+	// LogTimeMicros: int64 stored as uint64 bit-pattern; preserves
+	// negative values (clock skew during early-1970 testing) without
+	// a sentinel collision against the 0-means-unset semantics —
+	// 0 is a valid log_time (the unix epoch instant) but in practice
+	// the operator's logTime = time.Now().UTC().UnixMicro() is always
+	// strictly positive at runtime.
+	binary.BigEndian.PutUint64(buf[21:29], uint64(m.LogTimeMicros))
 	return buf
 }
 
@@ -104,5 +117,6 @@ func decodeMeta(buf []byte) (Meta, error) {
 	if ns := int64(binary.BigEndian.Uint64(buf[13:21])); ns != 0 {
 		m.LastErrTs = time.Unix(0, ns).UTC()
 	}
+	m.LogTimeMicros = int64(binary.BigEndian.Uint64(buf[21:29]))
 	return m, nil
 }

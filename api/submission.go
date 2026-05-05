@@ -112,7 +112,11 @@ type WALCommitter interface {
 	// Submit blocks until wire bytes are durably persisted to local
 	// disk. Returns wal.ErrQueueFull when the in-memory queue is
 	// saturated; admission maps this to HTTP 503 + Retry-After.
-	Submit(ctx context.Context, hash [32]byte, wire []byte) error
+	// logTimeMicros is the operator-assigned admission time
+	// persisted in Meta for the P5 deterministic-idempotency
+	// path (re-issuing the same SCT bytes on byte-identical
+	// resubmission).
+	Submit(ctx context.Context, hash [32]byte, wire []byte, logTimeMicros int64) error
 
 	// Sequence transitions the WAL state pending → sequenced after
 	// Tessera assigned a sequence number for the entry. Used by the
@@ -209,6 +213,13 @@ type preparedSubmission struct {
 	logTime       time.Time
 	authenticated bool
 	exchangeDID   string
+
+	// idempotentReplay is true when the canonical hash already
+	// has a Meta record in the WAL (byte-identical resubmission).
+	// logTime is the persisted value — re-issuing the SCT with
+	// it produces byte-identical SCT bytes. The handler skips
+	// wal.Submit + credit deduction in this case (P5).
+	idempotentReplay bool
 }
 
 // submissionError carries the HTTP status + message a fast-path
@@ -392,13 +403,25 @@ func prepareSubmission(
 	// ── Step 8: Canonical hash ─────────────────────────────────────
 	canonicalHash := envelope.EntryIdentity(entry)
 
-	// ── Step 8a: Early duplicate check ─────────────────────────────
-	// Skipped when EntryStore is nil (unit-test path where there is
-	// no Postgres pool). Real production wiring always provides one.
-	if deps.Storage.EntryStore != nil {
-		if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, canonicalHash); fetchErr == nil && found {
-			return nil, &submissionError{http.StatusConflict,
-				fmt.Sprintf("duplicate entry: existing sequence %d", existingSeq)}
+	// ── Step 8a: Deterministic-idempotency probe (P5) ──────────────
+	// A byte-identical resubmission MUST return the SAME SCT bytes
+	// (not 409 Conflict). We probe the WAL's Meta record for the
+	// persisted log_time; if found, the caller short-circuits the
+	// new logTime assignment + the wal.Submit (re-Submit is
+	// byte-idempotent but skipping saves IOPS) and re-issues the
+	// SCT with the original log_time → identical wire bytes.
+	if deps.Storage.WAL != nil {
+		if meta, err := deps.Storage.WAL.MetaState(ctx, canonicalHash); err == nil &&
+			meta.State != wal.StateUnknown && meta.LogTimeMicros > 0 {
+			return &preparedSubmission{
+				raw:              raw,
+				entry:            entry,
+				canonicalHash:    canonicalHash,
+				logTime:          time.UnixMicro(meta.LogTimeMicros).UTC(),
+				idempotentReplay: true,
+				authenticated:    authenticated,
+				exchangeDID:      exchangeDID,
+			}, nil
 		}
 	}
 
@@ -489,6 +512,24 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			return
 		}
 
+		// ── P5 idempotent-replay short-circuit ────────────────────────
+		// Byte-identical resubmission: skip credit deduction (the
+		// caller paid on the first submission) AND skip wal.Submit
+		// (already durable). Re-issue the SAME SCT bytes by signing
+		// with the persisted log_time.
+		if prep.idempotentReplay {
+			sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
+			if err != nil {
+				deps.Logger.Error("SignSCT (idempotent replay)", "error", err)
+				writeError(w, http.StatusInternalServerError, "SCT signing failed")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(sct)
+			return
+		}
+
 		// ── Step 10-credit: Mode A credit deduction ────────────────────
 		// Pre-WAL so a credit-exhausted caller never gets an SCT.
 		// Failure modes:
@@ -505,7 +546,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		}
 
 		// ── Step 11: WAL durability ────────────────────────────────────
-		if err := deps.Storage.WAL.Submit(ctx, prep.canonicalHash, prep.raw); err != nil {
+		if err := deps.Storage.WAL.Submit(ctx, prep.canonicalHash, prep.raw, prep.logTime.UnixMicro()); err != nil {
 			if errors.Is(err, wal.ErrQueueFull) {
 				w.Header().Set("Retry-After", "5")
 				writeError(w, http.StatusServiceUnavailable,

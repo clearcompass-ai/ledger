@@ -188,7 +188,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical); err != nil {
+			if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical, pe.logTime.UnixMicro()); err != nil {
 				if errors.Is(err, wal.ErrQueueFull) {
 					w.Header().Set("Retry-After", "5")
 					writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("backpressure at entry %d/%d: WAL queue full", i, len(prepared)))
