@@ -174,6 +174,40 @@ type SplitIDIndexEntry struct {
 	SigBytes       []byte
 }
 
+// EntryLookupWriter is the operator-internal hook the Sequencer
+// invokes after a successful Phase 2 commit to populate the
+// entry-lookup projection (Badger prefix 0x0C) that backs
+// /v1/commitments/by-split-id under the Pure CQRS principle (P8).
+//
+// CQRS DISCIPLINE: the sequencer is the ONLY writer of 0x0C.
+// The api/ read-path consumes it via types.CommitmentFetcher (a
+// pure SDK interface) — api/'s transitive imports do not include
+// pgx. Verifiable: go list -deps ./api/ | grep pgx == 0.
+//
+// nil receiver is allowed: when no writer is wired (test mode
+// + the transitional state before gossip is enabled), the
+// sequencer skips the lookup write entirely. Postgres entry_index
+// + commitment_split_id INSERTs are unaffected; only the Badger
+// projection write is gated.
+type EntryLookupWriter interface {
+	WriteEntryLookupEntry(
+		ctx context.Context,
+		schemaID string,
+		splitID [32]byte,
+		seq uint64,
+		entry EntryLookupIndexEntry,
+	) error
+}
+
+// EntryLookupIndexEntry mirrors gossipstore.EntryLookupIndexEntry —
+// the value side of one 0x0C row. Defined here for the same reason
+// SplitIDIndexEntry is: the sequencer does not import gossipstore.
+type EntryLookupIndexEntry struct {
+	CanonicalBytes []byte
+	LogTimeMicros  int64
+	LogDID         string
+}
+
 // Sequencer is the WAL → Tessera → entry_index pipeline worker.
 type Sequencer struct {
 	wal          WAL
@@ -181,6 +215,9 @@ type Sequencer struct {
 	db           *pgxpool.Pool
 	store        *store.EntryStore
 	splitIDIndex SplitIDIndexWriter
+	entryLookup  EntryLookupWriter
+	replayer     *Replayer
+	logDID       string
 	cfg          Config
 	logger       *slog.Logger
 
@@ -246,6 +283,32 @@ func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
 	return s
 }
 
+// WithEntryLookup wires the gossipstore-backed entry-lookup
+// projection writer (Badger prefix 0x0C). The operator's log DID
+// is captured at wiring time and stamped into every 0x0C row so
+// the read endpoint can return it verbatim.
+//
+// Optional; nil writer is a no-op. Race-free against drain cycles
+// only when called before Run starts.
+func (s *Sequencer) WithEntryLookup(w EntryLookupWriter, logDID string) *Sequencer {
+	s.entryLookup = w
+	s.logDID = logDID
+	return s
+}
+
+// WithReplayer wires the boot replayer (PT-4) that back-populates
+// 0x0A + 0x0C from Postgres above the persisted HWM. Run starts
+// the replayer on a child goroutine; ctx cancellation propagates
+// and Run waits for the replayer to drain before returning
+// (P11 graceful teardown).
+//
+// Optional; nil receiver is a no-op (test mode + transitional
+// state where Postgres / bytestore aren't fully wired).
+func (s *Sequencer) WithReplayer(r *Replayer) *Sequencer {
+	s.replayer = r
+	return s
+}
+
 // Metrics returns a snapshot of the Sequencer's atomic counters.
 // Safe to call concurrently with Run.
 func (s *Sequencer) Metrics() MetricsSnapshot {
@@ -259,10 +322,37 @@ func (s *Sequencer) Metrics() MetricsSnapshot {
 // "Reconcile" entry point — the polling loop IS the
 // reconciliation, and on a quiet log it idles cheaply.
 //
+// Boot replay (PT-4): when WithReplayer is wired, Run spawns the
+// replayer on a child goroutine that scans Postgres above the
+// HWM and back-populates 0x0A + 0x0C. The replayer runs in
+// parallel with the drain loop — admission is never blocked.
+// On ctx cancellation, Run waits for the replayer to drain
+// before returning (P11 graceful teardown).
+//
 // Returns ctx.Err() on graceful shutdown.
 func (s *Sequencer) Run(ctx context.Context) error {
 	if s.wal == nil || s.tessera == nil {
 		return errors.New("sequencer: WAL and Tessera both required")
+	}
+
+	// Replay goroutine. Drains via wg.Wait below — guarantees the
+	// replayer is fully stopped before Run returns, even on
+	// abrupt ctx cancellation. The deferred wg.Wait runs AFTER
+	// the for-select loop exits, so the replayer sees ctx.Done()
+	// at the same instant the loop does.
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	if s.replayer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.replayer.Replay(ctx); err != nil &&
+				!errors.Is(err, context.Canceled) &&
+				!errors.Is(err, context.DeadlineExceeded) {
+				s.logger.Error("sequencer: boot replay failed",
+					"error", err)
+			}
+		}()
 	}
 
 	// First drain immediately on Run start so a freshly-booted

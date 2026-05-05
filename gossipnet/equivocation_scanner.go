@@ -65,7 +65,6 @@ package gossipnet
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -251,8 +250,11 @@ func (s *EquivocationScanner) handle(ctx context.Context, schemaID string, split
 		}
 	}
 
-	// Project into 0x0B for O(1) /by-split-id reads.
-	binding := sha256SchemaSplit(schemaID, splitID)
+	// Project into 0x0B for O(1) /by-split-id reads. Use the SDK
+	// helper so the projection key is computed identically to
+	// every consumer (findings.FetchEquivocationByBinding,
+	// SignedEvent.Bindings) — drift-free by construction.
+	binding := findings.EntryCommitmentBinding(schemaID, splitID)
 	signedBytes, jerr := json.Marshal(signed)
 	if jerr != nil {
 		s.log.Warn("equivocation scanner: marshal SignedEvent", "error", jerr)
@@ -276,17 +278,6 @@ func (s *EquivocationScanner) handle(ctx context.Context, schemaID string, split
 		"seq_a", a.EntrySeq,
 		"seq_b", b.EntrySeq,
 		"lamport", nextLamport)
-}
-
-// sha256SchemaSplit mirrors findings.EntryCommitmentBinding so
-// the scanner and consumers compute the same projection key.
-// (Re-implementing here avoids a cross-package import cycle on
-// findings → gossipnet for the scanner-only call.)
-func sha256SchemaSplit(schemaID string, splitID [32]byte) [32]byte {
-	var input []byte
-	input = append(input, []byte(schemaID)...)
-	input = append(input, splitID[:]...)
-	return sha256.Sum256(input)
 }
 
 // isAcceptableAppendError returns true for the error categories

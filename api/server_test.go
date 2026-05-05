@@ -226,4 +226,48 @@ func TestServer_HealthAndReadyWired(t *testing.T) {
 	}
 }
 
+// TestServer_CommitmentLookupRoute_MountedWhenSet pins the
+// /v1/commitments/by-split-id/{schema_id}/{hex} mount when
+// CommitmentLookup is configured. Without this test, the Pure
+// CQRS read endpoint could regress to 404 if a future refactor
+// removed the mux.HandleFunc call in api/server.go.
+func TestServer_CommitmentLookupRoute_MountedWhenSet(t *testing.T) {
+	called := false
+	lookup := func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}
+	srv := newTestServer(t, Handlers{CommitmentLookup: lookup})
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/commitments/by-split-id/pre-grant-commitment-v1/"+
+			"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+		nil)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Errorf("CommitmentLookup handler not invoked; status = %d", rr.Code)
+	}
+}
+
+// TestServer_CommitmentLookupRoute_NotMountedWhenNil pins the
+// nil-tolerance contract: when CommitmentLookup is unset, the
+// route returns 404 (not 500 or a nil-handler panic). Same
+// discipline the gossip /by-binding route follows.
+func TestServer_CommitmentLookupRoute_NotMountedWhenNil(t *testing.T) {
+	srv := newTestServer(t, Handlers{}) // CommitmentLookup nil
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/commitments/by-split-id/pre-grant-commitment-v1/"+
+			"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+		nil)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("nil CommitmentLookup: status = %d, want 404", rr.Code)
+	}
+}
+
 func noop(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) }
