@@ -131,6 +131,18 @@ type Handlers struct {
 	// ── Witness cosign (optional) ───────────────────────────────────
 	WitnessCosign http.Handler // nil unless serving as a witness
 
+	// ── Gossip (optional) ───────────────────────────────────────────
+	// GossipPost mounts at POST /v1/gossip; peers publish signed
+	// events here. nil disables the publish path; the feed
+	// endpoints can still be served if GossipFeed is set.
+	GossipPost http.Handler
+
+	// GossipFeed mounts at GET /v1/gossip/{since,sth/latest,event,
+	// by-kind}. Audit consumers + peer operators pull catchup
+	// events here. nil disables read-side gossip; the publish
+	// path can still be served if GossipPost is set.
+	GossipFeed http.Handler
+
 	// ── Read endpoints (entry fetch + SMT leaf + commitments) ───────
 	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
 	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
@@ -247,6 +259,21 @@ func NewServer(
 	// ── Witness cosign endpoint (optional) ─────────────────────────────
 	if handlers.WitnessCosign != nil {
 		mux.Handle("POST /v1/cosign", handlers.WitnessCosign)
+	}
+
+	// ── Gossip endpoints (optional) ────────────────────────────────────
+	// POST /v1/gossip      — peer publish (signed events)
+	// GET  /v1/gossip/sth/latest, /v1/gossip/since,
+	//      /v1/gossip/by-kind, /v1/gossip/event/{eventID}
+	//                       — audit pull (CDN-cacheable)
+	if handlers.GossipPost != nil {
+		mux.Handle("POST /v1/gossip", handlers.GossipPost)
+	}
+	if handlers.GossipFeed != nil {
+		mux.Handle("GET /v1/gossip/sth/latest", handlers.GossipFeed)
+		mux.Handle("GET /v1/gossip/since", handlers.GossipFeed)
+		mux.Handle("GET /v1/gossip/by-kind", handlers.GossipFeed)
+		mux.Handle("GET /v1/gossip/event/{eventID}", handlers.GossipFeed)
 	}
 
 	// ── Entry read endpoints (nil-guarded for read-only operators) ─────

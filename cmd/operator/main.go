@@ -88,6 +88,8 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 	"github.com/clearcompass-ai/ortholog-operator/builder"
 	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ortholog-operator/gossipnet"
+	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
 	"github.com/clearcompass-ai/ortholog-operator/integrity"
 	"github.com/clearcompass-ai/ortholog-operator/sequencer"
 	"github.com/clearcompass-ai/ortholog-operator/shipper"
@@ -383,6 +385,26 @@ type Config struct {
 	// integrity Detector reconciles inflight entries against
 	// Tessera at boot.
 	WALPath string
+
+	// GossipPeerEndpoints is the comma-separated list of peer
+	// operator base URLs whose /v1/gossip endpoints this operator
+	// fans out to. Empty (default) → no fan-out (NopSink); the
+	// gossip handler still accepts inbound publishes and serves
+	// the read-side feed.
+	GossipPeerEndpoints []string
+
+	// GossipPeerDIDs is parallel to GossipPeerEndpoints — the DID
+	// at index i is the peer operator's originator DID for the
+	// endpoint at index i. Required (non-empty) for the
+	// anti-entropy loop to know who to ask for events from. If
+	// empty, anti-entropy is disabled (the publish + feed paths
+	// still work).
+	GossipPeerDIDs []string
+
+	// GossipDisable, when true, disables gossip endpoint mounting
+	// and publisher wiring. Useful for read-only operators or
+	// trimmed-down test rigs.
+	GossipDisable bool
 }
 
 func loadConfig() (*Config, error) {
@@ -422,6 +444,9 @@ func loadConfig() (*Config, error) {
 		WitnessQuorumK:       envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
 		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
 		NetworkBootstrapFile: os.Getenv("OPERATOR_NETWORK_BOOTSTRAP_FILE"),
+		GossipPeerEndpoints:  parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_ENDPOINTS")),
+		GossipPeerDIDs:       parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_DIDS")),
+		GossipDisable:        os.Getenv("OPERATOR_GOSSIP_DISABLE") == "true",
 		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
 		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
 
@@ -950,17 +975,144 @@ func main() {
 	// OPERATOR_WITNESS_QUORUM_K=1 + OPERATOR_WITNESS_KEY_FILE — the
 	// operator becomes its own witness, exercising the same code
 	// paths as production K=N deployments.
+	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
+	//
+	// Co-tenants the WAL's Badger handle under a distinct keyspace
+	// prefix (gossipstore/keyspace.go uses 0x07 vs WAL's 0x01..0x06).
+	// Mounted iff:
+	//   - OPERATOR_GOSSIP_DISABLE != "true", and
+	//   - NetworkID is non-zero (witness mode active OR the operator
+	//     has loaded a network bootstrap document).
+	//
+	// Built BEFORE the witness cosigner so HeadSync can reference
+	// the gossip Sink as its CosignedHeadPublisher (W6 — fan out
+	// every K-of-N tree head as a KindCosignedTreeHead event).
+	var (
+		gossipBundle    *gossipnet.Bundle
+		gossipBStore    *gossipstore.BadgerStore
+		gossipPostH     http.Handler
+		gossipFeedH     http.Handler
+		gossipPublisher *gossipnet.STHPublisher
+	)
+	var zeroNetID cosign.NetworkID
+	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
+		gossipBStore, err = gossipstore.New(gossipstore.Config{DB: walDB})
+		if err != nil {
+			logger.Error("gossipstore open", "error", err)
+			os.Exit(1)
+		}
+		gossipBundle, err = gossipnet.Build(gossipnet.Config{
+			Store:         gossipBStore,
+			NetworkID:     cfg.NetworkID,
+			PeerEndpoints: cfg.GossipPeerEndpoints,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Error("gossipnet build", "error", err)
+			os.Exit(1)
+		}
+		gossipPostH = gossipBundle.PostHandler
+		gossipFeedH = gossipBundle.FeedHandler
+
+		// STH publisher: signs KindCosignedTreeHead events under the
+		// operator's own DID + signing key (the same key used to
+		// sign admitted entries; cosign Purpose separation keeps
+		// these signing roles non-replayable across one another).
+		gossipPublisher, err = gossipnet.NewSTHPublisher(gossipnet.PublisherConfig{
+			Store:            gossipBStore,
+			Sink:             gossipBundle.Sink,
+			Signer:           cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+			NetworkID:        cfg.NetworkID,
+			Originator:       cfg.OperatorDID,
+			OperatorEndpoint: cfg.ServerAddr,
+			Logger:           logger,
+		})
+		if err != nil {
+			logger.Error("gossip STH publisher", "error", err)
+			os.Exit(1)
+		}
+
+		// Shutdown ordering: drain sink → close handlers → close
+		// store. The underlying *badger.DB is owned by wal.Open
+		// (the existing defer above closes it last).
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, c := range gossipBundle.Closeables {
+				_ = c.Close(ctx)
+			}
+			_ = gossipBStore.Close(ctx)
+		}()
+
+		logger.Info("gossip endpoints mounted",
+			"post_path", "/v1/gossip",
+			"feed_path_prefix", "/v1/gossip/",
+			"peers", len(cfg.GossipPeerEndpoints),
+		)
+
+		// ── Anti-entropy catchup loop (optional) ─────────────────────
+		//
+		// Pulls peer events we missed via the read-side feed.
+		// Disabled when OPERATOR_GOSSIP_PEER_DIDS is empty or
+		// length-mismatched against OPERATOR_GOSSIP_PEER_ENDPOINTS.
+		if len(cfg.GossipPeerDIDs) > 0 && len(cfg.GossipPeerDIDs) == len(cfg.GossipPeerEndpoints) {
+			peers := make([]gossipnet.AntiEntropyPeer, 0, len(cfg.GossipPeerDIDs))
+			for i, did := range cfg.GossipPeerDIDs {
+				peers = append(peers, gossipnet.AntiEntropyPeer{
+					DID:     did,
+					BaseURL: cfg.GossipPeerEndpoints[i],
+				})
+			}
+			ae, aerr := gossipnet.NewAntiEntropy(gossipnet.AntiEntropyConfig{
+				Store:  gossipBStore,
+				Peers:  peers,
+				Logger: logger,
+			})
+			if aerr != nil {
+				logger.Error("anti-entropy construction", "error", aerr)
+				os.Exit(1)
+			}
+			aeCtx, aeCancel := context.WithCancel(ctx)
+			go func() {
+				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+					logger.Warn("anti-entropy: exited with error", "error", rerr)
+				}
+			}()
+			defer aeCancel()
+			logger.Info("anti-entropy: enabled", "peers", len(peers))
+		} else if len(cfg.GossipPeerDIDs) > 0 {
+			logger.Warn("anti-entropy: disabled (peer DID/endpoint length mismatch)",
+				"dids", len(cfg.GossipPeerDIDs),
+				"endpoints", len(cfg.GossipPeerEndpoints))
+		}
+	} else if cfg.GossipDisable {
+		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
+	} else {
+		logger.Info("gossip disabled (NetworkID unset; load network bootstrap)")
+	}
+
 	var cosigner builder.WitnessCosigner
 	if len(cfg.WitnessEndpoints) > 0 {
-		cosigner = witness.NewHeadSync(witness.HeadSyncConfig{
+		var pub witness.CosignedHeadPublisher
+		if gossipPublisher != nil {
+			pub = gossipPublisher
+		}
+		hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
 			WitnessEndpoints:  cfg.WitnessEndpoints,
 			QuorumK:           cfg.WitnessQuorumK,
 			PerWitnessTimeout: 30 * time.Second,
-			SchemeTag:         1, // single-byte version tag for the witness scheme
+			NetworkID:         cfg.NetworkID,
+			GossipPublisher:   pub,
 		}, treeHeadStore, logger)
+		if err != nil {
+			logger.Error("witness cosigner construction failed", "error", err)
+			os.Exit(1)
+		}
+		cosigner = hs
 		logger.Info("witness cosigner: HeadSync requester enabled",
 			"endpoints", cfg.WitnessEndpoints,
 			"quorum_k", cfg.WitnessQuorumK,
+			"gossip_publisher", gossipPublisher != nil,
 		)
 	} else {
 		logger.Info("witness cosigner: disabled (OPERATOR_WITNESS_ENDPOINTS unset)")
@@ -1081,12 +1233,23 @@ func main() {
 			logger.Error("witness signer", "error", err)
 			os.Exit(1)
 		}
-		cosignH := witness.NewCosignHandler(witness.ServeConfig{
+		// Tree-head-only signing surface: the operator's witness
+		// role refuses to cosign rotation or escrow-override
+		// payloads even though the SDK handler can serve them. A
+		// dedicated rotation/override witness is a separate
+		// deployment.
+		witnessHandler, err = witness.BuildCosignHandler(witness.ServeConfig{
 			WitnessKey: witnessKey,
 			NetworkID:  cfg.NetworkID,
-			Logger:     logger,
+			AllowedPurposes: map[cosign.Purpose]struct{}{
+				cosign.PurposeTreeHead: {},
+			},
+			Logger: logger,
 		})
-		witnessHandler = http.HandlerFunc(cosignH.ServeHTTP)
+		if err != nil {
+			logger.Error("witness cosign handler", "error", err)
+			os.Exit(1)
+		}
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 
@@ -1108,6 +1271,8 @@ func main() {
 		MMD:             mmdHandler,
 		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
+		GossipPost:      gossipPostH,    // nil unless gossip enabled + NetworkID set
+		GossipFeed:      gossipFeedH,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
