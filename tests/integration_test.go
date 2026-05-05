@@ -722,11 +722,19 @@ func TestWitnessRotation_DualSign(t *testing.T) {
 }
 
 func TestEquivocation_Detection(t *testing.T) {
+	// Equivocation proof shape (per ortholog-sdk/witness): two
+	// CosignedTreeHeads with the SAME tree_size and DIFFERENT
+	// root_hash. Constructing the SDK shape pins the structural
+	// contract used downstream by gossipnet.EquivocationMonitor.
 	hA := sha256.Sum256([]byte("tree-a"))
 	hB := sha256.Sum256([]byte("tree-b"))
-	proof := witness.EquivocationProof{TreeSize: 500, RootHashA: hA, RootHashB: hB}
-	if proof.RootHashA == proof.RootHashB {
-		t.Fatal("different roots required")
+	headA := types.CosignedTreeHead{TreeHead: types.TreeHead{TreeSize: 500, RootHash: hA}}
+	headB := types.CosignedTreeHead{TreeHead: types.TreeHead{TreeSize: 500, RootHash: hB}}
+	if headA.RootHash == headB.RootHash {
+		t.Fatal("different roots required for equivocation evidence")
+	}
+	if headA.TreeSize != headB.TreeSize {
+		t.Fatal("matching tree sizes required for equivocation evidence")
 	}
 }
 
