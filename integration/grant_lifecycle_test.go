@@ -76,7 +76,7 @@ import (
 	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
 
 	opapi "github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
+	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
 	"github.com/clearcompass-ai/ortholog-operator/store"
 )
 
@@ -126,6 +126,51 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 			t.Fatalf("reset %q: %v", stmt, err)
 		}
 	}
+}
+
+// requireRealGCS returns a real-GCS-backed bytestore.Backend for
+// integration tests. The integration suite is REAL-GCS-ONLY —
+// fake-gcs-server is rejected. ADC / Workload Identity is the
+// only supported credential path.
+//
+// Resolution chain (mirrors bytestore.NewGCS production path):
+//
+//  1. ORTHOLOG_TEST_GCS_BUCKET — required. Skip if unset.
+//  2. ORTHOLOG_TEST_GCS_ENDPOINT — must be EMPTY. The integration
+//     suite refuses fake-gcs to keep production behavior pinned
+//     (presigned URLs, V4 signing, ADC chain).
+//  3. ADC chain (in priority order):
+//        a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
+//        b. gcloud application-default login (workstation)
+//        c. Workload Identity (GKE / Cloud Run / GCE metadata)
+//
+// On wiring failure, the test fails loudly — a broken CI config
+// must NEVER silently turn into a green build.
+func requireRealGCS(t *testing.T) opbytestore.Backend {
+	t.Helper()
+
+	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	if bucket == "" {
+		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset; integration suite skipped")
+	}
+
+	if endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT"); endpoint != "" {
+		t.Fatalf(
+			"integration suite refuses fake-gcs (ORTHOLOG_TEST_GCS_ENDPOINT=%q). "+
+				"Real-GCS only — point ORTHOLOG_TEST_GCS_BUCKET at a real bucket "+
+				"and rely on ADC / Workload Identity for credentials.", endpoint)
+	}
+
+	store, err := opbytestore.NewFromConfig(context.Background(), opbytestore.Config{
+		Backend: "gcs",
+		Bucket:  bucket,
+	})
+	if err != nil {
+		t.Fatalf("requireRealGCS: bytestore.NewFromConfig: %v "+
+			"(ADC unavailable? ensure GOOGLE_APPLICATION_CREDENTIALS, "+
+			"gcloud application-default login, or Workload Identity is configured)", err)
+	}
+	return store
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -240,7 +285,7 @@ func (s *stubEntryReader) ReadEntry(_ context.Context, seq uint64, _ [32]byte) (
 	return wire, nil
 }
 
-func (s *stubEntryReader) ReadEntryBatch(_ context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
+func (s *stubEntryReader) ReadEntryBatch(_ context.Context, refs []opbytestore.EntryRef) ([][]byte, error) {
 	out := make([][]byte, len(refs))
 	for i, r := range refs {
 		wire, ok := s.wireBySeq[r.Seq]
@@ -254,7 +299,7 @@ func (s *stubEntryReader) ReadEntryBatch(_ context.Context, refs []bytestore.Ent
 
 // Compile-time check: a future bytestore.Reader signature drift
 // surfaces here as a build error rather than at the call site.
-var _ bytestore.Reader = (*stubEntryReader)(nil)
+var _ opbytestore.Reader = (*stubEntryReader)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
 // CI3 — Happy path

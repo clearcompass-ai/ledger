@@ -670,3 +670,64 @@ func mustJSON(v any) []byte {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = fmt.Sprintf
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Real-GCS gating for integration tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// requireRealGCS returns a real-GCS-backed bytestore.Backend for
+// integration tests that exercise the full byte-storage path. The
+// integration suite is REAL-GCS-ONLY — fake-gcs-server is rejected.
+//
+// Resolution chain (matches bytestore.NewGCS production path):
+//
+//  1. ORTHOLOG_TEST_GCS_BUCKET — required. Skip the test if unset.
+//  2. ORTHOLOG_TEST_GCS_ENDPOINT — must be EMPTY. The integration
+//     suite refuses fake-gcs to keep production behavior pinned
+//     (presigned URLs, V4 signing, ADC chain). Set the variable
+//     to fail the test loudly.
+//  3. ADC chain (in priority order):
+//        a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
+//        b. gcloud application-default login (developer workstation)
+//        c. Workload Identity (GKE / Cloud Run / GCE metadata server)
+//
+// The bucket must grant the test identity:
+//
+//   - storage.objects.create
+//   - storage.objects.get
+//   - storage.objects.list
+//   - storage.objects.delete
+//   - iam.serviceAccounts.signBlob (for V4 PresignGet)
+//
+// On any wiring failure, the test fails (NOT skips) so a broken
+// CI configuration doesn't silently turn into a green build.
+func requireRealGCS(t *testing.T) opbytestore.Backend {
+	t.Helper()
+
+	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	if bucket == "" {
+		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset; integration suite skipped")
+	}
+
+	if endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT"); endpoint != "" {
+		t.Fatalf(
+			"integration suite refuses fake-gcs (ORTHOLOG_TEST_GCS_ENDPOINT=%q). "+
+				"Real-GCS only — point ORTHOLOG_TEST_GCS_BUCKET at a real bucket "+
+				"and rely on ADC / Workload Identity for credentials.", endpoint,
+		)
+	}
+
+	store, err := opbytestore.NewFromConfig(context.Background(), opbytestore.Config{
+		Backend: "gcs",
+		Bucket:  bucket,
+		// No GCSEndpoint, no GCSAnonymous → ADC default chain.
+	})
+	if err != nil {
+		t.Fatalf("requireRealGCS: bytestore.NewFromConfig: %v "+
+			"(ADC credentials unavailable? ensure GOOGLE_APPLICATION_CREDENTIALS, "+
+			"gcloud application-default login, or Workload Identity is configured)", err)
+	}
+	// Backend impls handle their own connection lifetime; no Close
+	// method exists on the interface.
+	return store
+}
