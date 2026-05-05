@@ -34,23 +34,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
-// CommitmentRow represents a derivation commitment in the database.
-type CommitmentRow struct {
-	ID            int64
-	RangeStartSeq uint64
-	RangeEndSeq   uint64
-	PriorSMTRoot  [32]byte
-	PostSMTRoot   [32]byte
-	MutationsJSON []byte
-	CommentarySeq *uint64 // nullable — set when commentary entry submitted
-	CreatedAt     time.Time
-}
+// CommitmentRow lives in apitypes/ so api/ can consume it without
+// importing store/ (PT-7 — Pure CQRS). Re-exported as a type alias
+// for builder/ + integration tests already using *store.CommitmentRow.
+type CommitmentRow = apitypes.CommitmentRow
 
 // CommitmentStore persists derivation commitments.
 type CommitmentStore struct {

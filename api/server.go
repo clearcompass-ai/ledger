@@ -62,8 +62,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
 )
 
@@ -184,9 +182,14 @@ type Handlers struct {
 }
 
 // NewServer creates the HTTP server with all routes and middleware applied.
+//
+// PT-7 — Pure CQRS: the second parameter is middleware.SessionLookup
+// (NOT *pgxpool.Pool). The production wiring passes
+// store.NewPostgresSessionLookup(pool); tests pass nil for the
+// always-unauthenticated path. This keeps api/ pgx-free.
 func NewServer(
 	cfg ServerConfig,
-	db *pgxpool.Pool,
+	sessions middleware.SessionLookup,
 	handlers Handlers,
 	logger *slog.Logger,
 ) *Server {
@@ -214,7 +217,7 @@ func NewServer(
 	if handlers.Submission != nil {
 		submissionChain := middleware.SizeLimit(
 			cfg.MaxEntrySize+1024,
-			middleware.Auth(db, handlers.Submission),
+			middleware.Auth(sessions, handlers.Submission),
 		)
 		mux.Handle("POST /v1/entries", submissionChain)
 	}
@@ -226,7 +229,7 @@ func NewServer(
 	if handlers.BatchSubmission != nil {
 		batchChain := middleware.SizeLimit(
 			AbsoluteMaxBatchPayloadBytes+1024,
-			middleware.Auth(db, handlers.BatchSubmission),
+			middleware.Auth(sessions, handlers.BatchSubmission),
 		)
 		mux.Handle("POST /v1/entries/batch", batchChain)
 	}

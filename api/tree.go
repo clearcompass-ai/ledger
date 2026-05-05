@@ -20,7 +20,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // ConsistencyProver generates consistency proofs.
@@ -35,7 +35,7 @@ type InclusionProver interface {
 
 // TreeDeps holds dependencies for tree handlers.
 type TreeDeps struct {
-	TreeHeadStore *store.TreeHeadStore
+	TreeHeadStore TreeHeadFetcher
 	Inclusion     InclusionProver
 	Consistency   ConsistencyProver
 	Logger        *slog.Logger
@@ -46,7 +46,7 @@ type TreeDeps struct {
 // With ?size=N: returns tree head at that specific size via GetBySize().
 func NewTreeHeadHandler(deps *TreeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var head *store.CosignedTreeHead
+		var head *apitypes.CosignedTreeHead
 		var err error
 
 		// Check for ?size=N parameter (blocks fraud_proofs).

@@ -60,6 +60,8 @@ import (
 	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
 	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
 	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // EscrowOverrideServiceConfig configures the service.
@@ -138,11 +140,11 @@ func NewEscrowOverrideService(cfg EscrowOverrideServiceConfig) (*EscrowOverrideS
 
 // ProcessOverrideResult is the successful outcome of an override
 // request.
-type ProcessOverrideResult struct {
-	EventID    [32]byte
-	Signatures int
-	Lamport    uint64
-}
+// ProcessOverrideResult lives in apitypes/ so api/escrow_override.go
+// can consume it without importing gossipnet (which transitively
+// imports sequencer + pgx via PT-4). Re-exported here as a type
+// alias for backwards compatibility with internal call sites.
+type ProcessOverrideResult = apitypes.EscrowOverrideResult
 
 // ProcessOverride runs the full escrow-override flow:
 //

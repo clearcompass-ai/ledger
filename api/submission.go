@@ -72,16 +72,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -148,9 +145,14 @@ type TesseraAppender interface {
 // handler. The byte-store writer that lived here in v1 is gone:
 // admission writes wire bytes to the WAL only; the Shipper migrates
 // them to the byte store asynchronously.
+//
+// PT-7 — Pure CQRS: EntryStore is the api.EntryStore interface
+// (defined in ports.go); the field used to be *store.EntryStore.
+// The DB field is gone — credit deduction now uses the self-tx
+// CreditDeducter interface and admission's only Postgres write
+// (entry_index INSERT) lives entirely in the sequencer goroutine.
 type StorageDeps struct {
-	DB         *pgxpool.Pool
-	EntryStore *store.EntryStore
+	EntryStore EntryStore
 	WAL        WALCommitter
 	Tessera    TesseraAppender
 }
@@ -163,8 +165,13 @@ type AdmissionConfig struct {
 }
 
 // IdentityDeps groups credential and DID resolution dependencies.
+//
+// PT-7 — Pure CQRS: Credits is the api.CreditDeducter interface
+// (defined in ports.go); the field used to be *store.CreditStore.
+// The interface's tx-less Deduct(ctx, exchangeDID) signature lets
+// the api package hold zero pgx imports.
 type IdentityDeps struct {
-	CreditStore *store.CreditStore
+	Credits     CreditDeducter
 	DIDResolver DIDResolver
 }
 
@@ -439,13 +446,16 @@ func prepareSubmission(
 }
 
 // deductCreditModeA decrements one credit for the authenticated
-// exchange DID inside its own Postgres transaction. Called by
-// both v1 and v2 handlers BEFORE wal.Submit so a credit-exhausted
-// caller never gets an SCT (v2) or a slot in the WAL (v1).
+// exchange DID. Called by both v1 and batch handlers BEFORE
+// wal.Submit so a credit-exhausted caller never gets an SCT or a
+// slot in the WAL.
 //
 // Returns nil for unauthenticated callers (Mode B), or for the
-// dev/test path where DB and CreditStore are nil. Returns
-// store.ErrInsufficientCredits to surface as HTTP 402.
+// dev/test path where Credits is nil. Returns
+// apitypes.ErrInsufficientCredits to surface as HTTP 402.
+//
+// PT-7: api/ holds no pgx import — the CreditDeducter interface
+// (api/ports.go) hides the txn boundary inside the store impl.
 func deductCreditModeA(
 	ctx context.Context,
 	deps *SubmissionDeps,
@@ -455,13 +465,10 @@ func deductCreditModeA(
 	if !authenticated {
 		return nil
 	}
-	if deps.Storage.DB == nil || deps.Identity.CreditStore == nil {
+	if deps.Identity.Credits == nil {
 		return nil
 	}
-	return store.WithReadCommittedTx(ctx, deps.Storage.DB, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := deps.Identity.CreditStore.Deduct(ctx, tx, exchangeDID)
-		return err
-	})
+	return deps.Identity.Credits.Deduct(ctx, exchangeDID)
 }
 
 // NewSubmissionHandler creates the POST /v1/entries handler.
@@ -536,7 +543,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		//   - insufficient credits → 402
 		//   - transient DB error   → 500
 		if err := deductCreditModeA(ctx, deps, prep.authenticated, prep.exchangeDID); err != nil {
-			if errors.Is(err, store.ErrInsufficientCredits) {
+			if errors.Is(err, apitypes.ErrInsufficientCredits) {
 				writeError(w, http.StatusPaymentRequired, "insufficient write credits")
 				return
 			}

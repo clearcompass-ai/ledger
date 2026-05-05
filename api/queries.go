@@ -45,10 +45,12 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
+
+// defaultScanCount mirrors store/indexes.DefaultScanCount;
+// duplicated here so api/ holds zero pgx imports (PT-7).
+const defaultScanCount = 100
 
 // ─────────────────────────────────────────────────────────────────────
 // Dependencies
@@ -64,8 +66,8 @@ import (
 //	                 is what the read-only operator wants.
 //	Logger         — slog handle.
 type QueryDeps struct {
-	EntryStore     *store.EntryStore
-	QueryAPI       *indexes.PostgresQueryAPI
+	EntryStore     EntryStore
+	QueryAPI       QueryAPI
 	DiffController *middleware.DifficultyController
 	Logger         *slog.Logger
 
@@ -402,7 +404,7 @@ func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid start parameter")
 			return
 		}
-		count := indexes.DefaultScanCount
+		count := defaultScanCount
 		if countStr != "" {
 			parsed, err := strconv.Atoi(countStr)
 			if err != nil || parsed <= 0 {

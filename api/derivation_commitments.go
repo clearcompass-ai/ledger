@@ -17,15 +17,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-
-	"github.com/clearcompass-ai/ortholog-operator/store"
 )
 
 // DerivationCommitmentDeps groups the derivation-commitment query handler
 // dependencies. Distinct from CryptographicCommitmentDeps (api/commitments.go),
 // which serves the v7.75 cryptographic-commitment lookup endpoint.
 type DerivationCommitmentDeps struct {
-	CommitmentStore *store.CommitmentStore
+	CommitmentStore DerivationCommitmentFetcher
 	Logger          *slog.Logger
 }
 

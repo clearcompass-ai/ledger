@@ -21,32 +21,25 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-// CosignedTreeHead is a tree head with all its attestation signatures.
-type CosignedTreeHead struct {
-	TreeSize   uint64
-	RootHash   [32]byte
-	HashAlgo   uint16
-	Signatures []TreeHeadSignature
-	CreatedAt  time.Time
-}
-
-// TreeHeadSignature is a single attestation: "signer vouches for this root."
-type TreeHeadSignature struct {
-	Signer    string
-	SigAlgo   uint16
-	Signature []byte
-	CreatedAt time.Time
-}
+// CosignedTreeHead and TreeHeadSignature live in apitypes/ so
+// api/ can consume them without importing store/ (PT-7 — Pure
+// CQRS). Re-exported as type aliases here for backwards
+// compatibility with existing in-package call sites.
+type (
+	CosignedTreeHead   = apitypes.CosignedTreeHead
+	TreeHeadSignature  = apitypes.TreeHeadSignature
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Store

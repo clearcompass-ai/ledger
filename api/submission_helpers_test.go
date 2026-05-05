@@ -189,7 +189,6 @@ func makeSubmissionDeps(t *testing.T, opSignerPriv *ecdsa.PrivateKey, signerPub 
 	)
 	return &SubmissionDeps{
 		Storage: StorageDeps{
-			DB:         nil, // tests use authenticated=false → no credit deduction
 			EntryStore: nil,
 			WAL:        walFake,
 			Tessera:    &stubSubmissionTessera{},
@@ -200,7 +199,7 @@ func makeSubmissionDeps(t *testing.T, opSignerPriv *ecdsa.PrivateKey, signerPub 
 			EpochAcceptanceWindow: 1,
 		},
 		Identity: IdentityDeps{
-			CreditStore: nil,
+			Credits:     nil, // tests use authenticated=false → no credit deduction
 			DIDResolver: &fakeDIDResolver{pub: signerPub},
 		},
 		OperatorDID:        "did:test:operator",

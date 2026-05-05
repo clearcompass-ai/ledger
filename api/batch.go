@@ -18,7 +18,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -180,7 +180,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		results := make([]BatchResultEntry, 0, len(prepared))
 		for i, pe := range prepared {
 			if err := deductCreditModeA(ctx, deps, middleware.IsAuthenticated(ctx), middleware.ExchangeDID(ctx)); err != nil {
-				if errors.Is(err, store.ErrInsufficientCredits) {
+				if errors.Is(err, apitypes.ErrInsufficientCredits) {
 					writeError(w, http.StatusPaymentRequired, fmt.Sprintf("insufficient write credits at entry %d/%d", i, len(prepared)))
 					return
 				}

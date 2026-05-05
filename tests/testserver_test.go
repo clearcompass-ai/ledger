@@ -178,7 +178,6 @@ func startTestOperator(t *testing.T) *testOperator {
 	}
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB:         pool,
 			EntryStore: entryStore,
 			WAL:        walc,
 			Tessera:    merkle,
@@ -189,7 +188,7 @@ func startTestOperator(t *testing.T) *testOperator {
 			EpochAcceptanceWindow: 1,    // accept current ± 1
 		},
 		Identity: api.IdentityDeps{
-			CreditStore: creditStore,
+			Credits:     creditStore,
 			DIDResolver: nil,
 		},
 		LogDID:             testLogDID,
@@ -250,7 +249,7 @@ func startTestOperator(t *testing.T) *testOperator {
 
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = "127.0.0.1:0"
-	server := api.NewServer(serverCfg, pool, handlers, logger)
+	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
 
 	// ── Start on random port ───────────────────────────────────────────
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
