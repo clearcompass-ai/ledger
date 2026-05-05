@@ -237,6 +237,18 @@ type preparedSubmission struct {
 type submissionError struct {
 	Status  int
 	Message string
+	Class   apitypes.ErrorClass
+}
+
+// submissionFail constructs a typed *submissionError. PT-6: every
+// admission-side error carries an apitypes.ErrorClass so the
+// HTTP handler increments the right OTel counter dimension.
+func submissionFail(class apitypes.ErrorClass, status int, format string, args ...any) *submissionError {
+	return &submissionError{
+		Status:  status,
+		Message: fmt.Sprintf(format, args...),
+		Class:   class,
+	}
 }
 
 // prepareSubmission runs admission steps 1-9: read body, validate
@@ -269,71 +281,76 @@ func prepareSubmission(
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			return nil, &submissionError{
+			return nil, submissionFail(apitypes.ErrorClassBodyTooLarge,
 				http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("entry exceeds %d bytes", maxErr.Limit),
-			}
+				"entry exceeds %d bytes", maxErr.Limit)
 		}
-		return nil, &submissionError{http.StatusBadRequest, "failed to read request body"}
+		return nil, submissionFail(apitypes.ErrorClassMalformedBody,
+			http.StatusBadRequest, "failed to read request body")
 	}
 	if len(raw) < 6 {
-		return nil, &submissionError{http.StatusUnprocessableEntity, "entry too short for preamble"}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity, "entry too short for preamble")
 	}
 	protocolVersion := binary.BigEndian.Uint16(raw[0:2])
 	if protocolVersion != envelope.CurrentProtocolVersion() {
-		return nil, &submissionError{
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
 			http.StatusUnprocessableEntity,
-			fmt.Sprintf("unsupported protocol version %d (expected %d)",
-				protocolVersion, envelope.CurrentProtocolVersion()),
-		}
+			"unsupported protocol version %d (expected %d)",
+			protocolVersion, envelope.CurrentProtocolVersion())
 	}
 
 	// ── Step 2: Deserialize wire bytes, validate algo ID ───────────
 	entry, err := envelope.Deserialize(raw)
 	if err != nil {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("deserialize: %s", err)}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity, "deserialize: %s", err)
 	}
 	algoID := entry.Signatures[0].AlgoID
 	sigBytes := entry.Signatures[0].Bytes
 	if err := envelope.ValidateAlgorithmID(algoID); err != nil {
-		return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+		return nil, submissionFail(apitypes.ErrorClassSignatureInvalid,
+			http.StatusUnauthorized, "%s", err)
 	}
 
 	// ── Step 3a: Re-apply NewEntry's write-time invariants ─────────
 	if err := entry.Validate(); err != nil {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("entry validation: %s", err)}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity, "entry validation: %s", err)
 	}
 	// ── Step 3a-NFC ────────────────────────────────────────────────
 	if err := admission.CheckNFC(entry); err != nil {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("NFC: %s", err)}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity, "NFC: %s", err)
 	}
 	// ── Step 3b: Destination binding ───────────────────────────────
 	if entry.Header.Destination != deps.LogDID {
-		return nil, &submissionError{http.StatusForbidden,
-			fmt.Sprintf("entry destination %q does not match log %q",
-				entry.Header.Destination, deps.LogDID)}
+		return nil, submissionFail(apitypes.ErrorClassDestinationMismatch,
+			http.StatusForbidden,
+			"entry destination %q does not match log %q",
+			entry.Header.Destination, deps.LogDID)
 	}
 	// ── Step 3c: Late-replay freshness ─────────────────────────────
 	if err := policy.CheckFreshness(entry, time.Now().UTC(), freshness); err != nil {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("freshness: %s", err)}
+		return nil, submissionFail(apitypes.ErrorClassFreshnessExpired,
+			http.StatusUnprocessableEntity, "freshness: %s", err)
 	}
 
 	// ── Step 4: Signature verification ─────────────────────────────
 	if entry.Header.SignerDID == "" {
-		return nil, &submissionError{http.StatusUnprocessableEntity, "empty signer DID"}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity, "empty signer DID")
 	}
 	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
 		switch {
 		case errors.Is(err, admission.ErrSignerDIDResolution),
 			errors.Is(err, admission.ErrSignatureInvalid):
-			return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+			return nil, submissionFail(apitypes.ErrorClassSignatureInvalid,
+				http.StatusUnauthorized, "%s", err)
 		default:
 			deps.Logger.Error("signature verification path failed", "error", err)
-			return nil, &submissionError{http.StatusInternalServerError, "signature verification failed"}
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "signature verification failed")
 		}
 	}
 
@@ -342,36 +359,34 @@ func prepareSubmission(
 	// (peer-anchor entries, witness commentary, cross-log proofs),
 	// the BLSQuorumVerifier routes through cosign.Verify against
 	// the deployment's witness key set + K-of-N quorum.
-	//
-	// EntryEmbedsTreeHead is currently a closed-set predicate that
-	// returns false for every schema, so this check is a no-op for
-	// the v7.75 entry surface. Wiring it now means the moment a
-	// schema starts embedding tree heads, the chain check fires
-	// without an additional code change.
 	if deps.BLSQuorumVerifier != nil {
 		if err := deps.BLSQuorumVerifier.VerifyEntry(entry); err != nil {
 			switch {
 			case errors.Is(err, admission.ErrWitnessQuorumInsufficient),
 				errors.Is(err, admission.ErrWitnessKeySetUnavailable):
-				return nil, &submissionError{http.StatusUnauthorized, err.Error()}
+				return nil, submissionFail(apitypes.ErrorClassSignatureInvalid,
+					http.StatusUnauthorized, "%s", err)
 			default:
 				deps.Logger.Error("embedded tree head verification failed", "error", err)
-				return nil, &submissionError{http.StatusInternalServerError, "tree head verification failed"}
+				return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+					http.StatusInternalServerError, "tree head verification failed")
 			}
 		}
 	}
 
 	// ── Step 5: Entry size ─────────────────────────────────────────
 	if int64(len(raw)) > deps.MaxEntrySize {
-		return nil, &submissionError{http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("canonical bytes %d exceed max %d", len(raw), deps.MaxEntrySize)}
+		return nil, submissionFail(apitypes.ErrorClassBodyTooLarge,
+			http.StatusRequestEntityTooLarge,
+			"canonical bytes %d exceed max %d", len(raw), deps.MaxEntrySize)
 	}
 
 	// ── Step 6: Evidence_Pointers cap ──────────────────────────────
 	if !middleware.CheckEvidenceCap(entry) {
-		return nil, &submissionError{http.StatusUnprocessableEntity,
-			fmt.Sprintf("Evidence_Pointers %d exceeds cap %d (non-snapshot)",
-				len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)}
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity,
+			"Evidence_Pointers %d exceeds cap %d (non-snapshot)",
+			len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)
 	}
 
 	// ── Step 7: Admission mode (Mode B stamp verify; auth probe) ───
@@ -380,8 +395,9 @@ func prepareSubmission(
 	if !authenticated {
 		h := &entry.Header
 		if h.AdmissionProof == nil {
-			return nil, &submissionError{http.StatusForbidden,
-				"unauthenticated submission requires compute stamp"}
+			return nil, submissionFail(apitypes.ErrorClassAdmissionProofInvalid,
+				http.StatusForbidden,
+				"unauthenticated submission requires compute stamp")
 		}
 		apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
 		canonicalHash := envelope.EntryIdentity(entry)
@@ -402,8 +418,8 @@ func prepareSubmission(
 			sdkadmission.CurrentEpoch(uint64(deps.Admission.EpochWindowSeconds)),
 			uint64(deps.Admission.EpochAcceptanceWindow),
 		); err != nil {
-			return nil, &submissionError{http.StatusForbidden,
-				fmt.Sprintf("stamp verification failed: %s", err)}
+			return nil, submissionFail(apitypes.ErrorClassAdmissionProofInvalid,
+				http.StatusForbidden, "stamp verification failed: %s", err)
 		}
 	}
 
@@ -515,7 +531,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		// ── Steps 1-9 (validation + early-dup + log_time) ──────────────
 		prep, errResp := prepareSubmission(ctx, deps, w, r, freshness)
 		if errResp != nil {
-			writeError(w, errResp.Status, errResp.Message)
+			writeTypedError(ctx, w, errResp.Class, errResp.Status, errResp.Message)
 			return
 		}
 
@@ -528,7 +544,8 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
 			if err != nil {
 				deps.Logger.Error("SignSCT (idempotent replay)", "error", err)
-				writeError(w, http.StatusInternalServerError, "SCT signing failed")
+				writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,
+					http.StatusInternalServerError, "SCT signing failed")
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -544,11 +561,13 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		//   - transient DB error   → 500
 		if err := deductCreditModeA(ctx, deps, prep.authenticated, prep.exchangeDID); err != nil {
 			if errors.Is(err, apitypes.ErrInsufficientCredits) {
-				writeError(w, http.StatusPaymentRequired, "insufficient write credits")
+				writeTypedError(ctx, w, apitypes.ErrorClassInsufficientCredits,
+					http.StatusPaymentRequired, "insufficient write credits")
 				return
 			}
 			deps.Logger.Error("credit deduction", "error", err)
-			writeError(w, http.StatusInternalServerError, "credit deduction failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassCreditDeductFailed,
+				http.StatusInternalServerError, "credit deduction failed")
 			return
 		}
 
@@ -556,12 +575,14 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		if err := deps.Storage.WAL.Submit(ctx, prep.canonicalHash, prep.raw, prep.logTime.UnixMicro()); err != nil {
 			if errors.Is(err, wal.ErrQueueFull) {
 				w.Header().Set("Retry-After", "5")
-				writeError(w, http.StatusServiceUnavailable,
+				writeTypedError(ctx, w, apitypes.ErrorClassWALBackpressure,
+					http.StatusServiceUnavailable,
 					"backpressure: WAL queue full, retry shortly")
 				return
 			}
 			deps.Logger.Error("wal submit", "error", err)
-			writeError(w, http.StatusInternalServerError, "WAL persist failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassWALPersistFailed,
+				http.StatusInternalServerError, "WAL persist failed")
 			return
 		}
 
@@ -571,7 +592,8 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
 		if err != nil {
 			deps.Logger.Error("SignSCT", "error", err)
-			writeError(w, http.StatusInternalServerError, "SCT signing failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,
+				http.StatusInternalServerError, "SCT signing failed")
 			return
 		}
 

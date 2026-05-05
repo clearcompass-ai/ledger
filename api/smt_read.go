@@ -20,6 +20,8 @@ import (
 	"net/http"
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 const maxLeafBatchSize = 100
@@ -45,10 +47,12 @@ func positionToResponse(pos types.LogPosition) *PositionResponse {
 
 func NewSMTLeafHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		keyHex := r.PathValue("key")
 		keyBytes, err := hex.DecodeString(keyHex)
 		if err != nil || len(keyBytes) != 32 {
-			writeError(w, http.StatusBadRequest, "key must be 64 hex characters (32 bytes)")
+			writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+				http.StatusBadRequest, "key must be 64 hex characters (32 bytes)")
 			return
 		}
 		var key [32]byte
@@ -57,7 +61,8 @@ func NewSMTLeafHandler(deps *SMTDeps) http.HandlerFunc {
 		leaf, err := deps.LeafStore.Get(key)
 		if err != nil {
 			deps.Logger.Error("smt leaf get", "key", keyHex[:16], "error", err)
-			writeError(w, http.StatusInternalServerError, "leaf lookup failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+				http.StatusInternalServerError, "leaf lookup failed")
 			return
 		}
 
@@ -68,20 +73,24 @@ func NewSMTLeafHandler(deps *SMTDeps) http.HandlerFunc {
 
 func NewSMTLeafBatchHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "read body failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedBody,
+				http.StatusBadRequest, "read body failed")
 			return
 		}
 		var req struct {
 			Keys []string `json:"keys"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedJSON,
+				http.StatusBadRequest, "invalid JSON")
 			return
 		}
 		if len(req.Keys) == 0 || len(req.Keys) > maxLeafBatchSize {
-			writeError(w, http.StatusBadRequest, "keys count must be 1-100")
+			writeTypedError(ctx, w, apitypes.ErrorClassBatchTooLarge,
+				http.StatusBadRequest, "keys count must be 1-100")
 			return
 		}
 
@@ -89,7 +98,8 @@ func NewSMTLeafBatchHandler(deps *SMTDeps) http.HandlerFunc {
 		for _, keyHex := range req.Keys {
 			keyBytes, err := hex.DecodeString(keyHex)
 			if err != nil || len(keyBytes) != 32 {
-				writeError(w, http.StatusBadRequest, "each key must be 64 hex characters")
+				writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+					http.StatusBadRequest, "each key must be 64 hex characters")
 				return
 			}
 			var key [32]byte
@@ -97,7 +107,8 @@ func NewSMTLeafBatchHandler(deps *SMTDeps) http.HandlerFunc {
 			leaf, err := deps.LeafStore.Get(key)
 			if err != nil {
 				deps.Logger.Error("smt leaf batch get", "error", err)
-				writeError(w, http.StatusInternalServerError, "leaf lookup failed")
+				writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+					http.StatusInternalServerError, "leaf lookup failed")
 				return
 			}
 			responses = append(responses, smtLeafToResponse(key, leaf))

@@ -61,6 +61,8 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,28 +156,33 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		schemaID := r.PathValue("schema_id")
 		hexStr := r.PathValue("hex")
 
 		if schemaID == "" {
-			writeError(w, http.StatusBadRequest, "schema_id path segment required")
+			writeTypedError(ctx, w, apitypes.ErrorClassMissingPathParam,
+				http.StatusBadRequest, "schema_id path segment required")
 			return
 		}
 		if _, ok := allowedCommitmentSchemas[schemaID]; !ok {
-			writeError(w, http.StatusBadRequest,
+			writeTypedError(ctx, w, apitypes.ErrorClassUnsupportedSchema,
+				http.StatusBadRequest,
 				fmt.Sprintf("unsupported schema_id %q", schemaID))
 			return
 		}
 
 		// SplitID is exactly 32 bytes ⇒ exactly 64 hex chars.
 		if len(hexStr) != 64 {
-			writeError(w, http.StatusBadRequest,
+			writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+				http.StatusBadRequest,
 				fmt.Sprintf("split_id hex must be 64 chars, got %d", len(hexStr)))
 			return
 		}
 		raw, err := hex.DecodeString(hexStr)
 		if err != nil {
-			writeError(w, http.StatusBadRequest,
+			writeTypedError(ctx, w, apitypes.ErrorClassBadHexEncoding,
+				http.StatusBadRequest,
 				fmt.Sprintf("split_id hex decode: %s", err))
 			return
 		}
@@ -188,7 +195,8 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 				"schema_id", schemaID,
 				"split_id_prefix", hexStr[:16],
 				"error", err)
-			writeError(w, http.StatusInternalServerError,
+			writeTypedError(ctx, w, apitypes.ErrorClassFetcherFailed,
+				http.StatusInternalServerError,
 				"commitment lookup failed")
 			return
 		}
@@ -198,7 +206,8 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 		// treat 404 as "no commitment on log" — a normal recovery
 		// outcome.
 		if len(entries) == 0 {
-			writeError(w, http.StatusNotFound,
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound,
 				"no commitment for this (schema_id, split_id)")
 			return
 		}

@@ -51,6 +51,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // EscrowOverrideRequest is the JSON request body shape.
@@ -82,35 +84,42 @@ func EscrowOverrideHandler(service EscrowOverrideProcessor, logger *slog.Logger)
 		logger = slog.Default()
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "read body: "+err.Error())
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassMalformedBody,
+				http.StatusBadRequest, "read body: "+err.Error())
 			return
 		}
 		var req EscrowOverrideRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassMalformedJSON,
+				http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
 
 		var escrowID, decisionHash [32]byte
 		if err := decodeHex32(req.EscrowID, &escrowID); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "escrow_id: "+err.Error())
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassBadHexEncoding,
+				http.StatusBadRequest, "escrow_id: "+err.Error())
 			return
 		}
 		if err := decodeHex32(req.DecisionHash, &decisionHash); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "decision_hash: "+err.Error())
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassBadHexEncoding,
+				http.StatusBadRequest, "decision_hash: "+err.Error())
 			return
 		}
 		if req.Effective == 0 {
-			writeJSONError(w, http.StatusBadRequest, "effective must be non-zero")
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "effective must be non-zero")
 			return
 		}
 
-		result, err := service.ProcessOverride(r.Context(), escrowID, decisionHash, req.Effective)
+		result, err := service.ProcessOverride(ctx, escrowID, decisionHash, req.Effective)
 		if err != nil {
 			logger.Warn("escrow override failed", "error", err)
-			writeJSONError(w, http.StatusBadGateway, "process override: "+err.Error())
+			writeTypedJSONError(ctx, w, apitypes.ErrorClassEscrowOverrideFailed,
+				http.StatusBadGateway, "process override: "+err.Error())
 			return
 		}
 

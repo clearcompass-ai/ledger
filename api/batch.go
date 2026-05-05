@@ -67,11 +67,12 @@ type preparedEntry struct {
 type preflightError struct {
 	status int
 	msg    string
+	class  apitypes.ErrorClass
 }
 
 func (e *preflightError) Error() string { return e.msg }
-func preflightFail(status int, format string, args ...any) *preflightError {
-	return &preflightError{status: status, msg: fmt.Sprintf(format, args...)}
+func preflightFail(class apitypes.ErrorClass, status int, format string, args ...any) *preflightError {
+	return &preflightError{status: status, msg: fmt.Sprintf(format, args...), class: class}
 }
 
 // computeEffectiveBatchPayloadCap derives the io.LimitReader cap
@@ -122,20 +123,25 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		ctx := r.Context()
 		body, err := io.ReadAll(io.LimitReader(r.Body, effectiveBatchPayloadCap))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "failed to read request body")
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedBody,
+				http.StatusBadRequest, "failed to read request body")
 			return
 		}
 		var req BatchSubmissionRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %s", err))
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedJSON,
+				http.StatusBadRequest, fmt.Sprintf("invalid JSON: %s", err))
 			return
 		}
 		if len(req.Entries) == 0 {
-			writeError(w, http.StatusBadRequest, "empty batch")
+			writeTypedError(ctx, w, apitypes.ErrorClassEmptyBatch,
+				http.StatusBadRequest, "empty batch")
 			return
 		}
 		if len(req.Entries) > MaxBatchSize {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("batch size %d exceeds max %d", len(req.Entries), MaxBatchSize))
+			writeTypedError(ctx, w, apitypes.ErrorClassBatchTooLarge,
+				http.StatusBadRequest,
+				fmt.Sprintf("batch size %d exceeds max %d", len(req.Entries), MaxBatchSize))
 			return
 		}
 
@@ -149,17 +155,20 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		for i, be := range req.Entries {
 			rawWire, decodeErr := hex.DecodeString(be.WireBytesHex)
 			if decodeErr != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("entry %d: hex decode: %s", i, decodeErr))
+				writeTypedError(ctx, w, apitypes.ErrorClassBadHexEncoding,
+					http.StatusBadRequest, fmt.Sprintf("entry %d: hex decode: %s", i, decodeErr))
 				return
 			}
 			pe, perr := preflightEntry(ctx, rawWire, deps, freshness)
 			if perr != nil {
-				writeError(w, perr.status, fmt.Sprintf("entry %d: %s", i, perr.msg))
+				writeTypedError(ctx, w, perr.class,
+					perr.status, fmt.Sprintf("entry %d: %s", i, perr.msg))
 				return
 			}
 			// In-batch dedup.
 			if firstIdx, dup := seen[pe.canonicalHash]; dup {
-				writeError(w, http.StatusConflict,
+				writeTypedError(ctx, w, apitypes.ErrorClassDuplicateEntry,
+					http.StatusConflict,
 					fmt.Sprintf("entry %d duplicates entry %d in same batch", i, firstIdx))
 				return
 			}
@@ -168,7 +177,8 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 			// always provides one. Mirrors api/submission.go step 8a.
 			if deps.Storage.EntryStore != nil {
 				if existingSeq, found, fetchErr := deps.Storage.EntryStore.FetchByHash(ctx, pe.canonicalHash); fetchErr == nil && found {
-					writeError(w, http.StatusConflict,
+					writeTypedError(ctx, w, apitypes.ErrorClassDuplicateEntry,
+						http.StatusConflict,
 						fmt.Sprintf("entry %d duplicate entry: existing sequence %d", i, existingSeq))
 					return
 				}
@@ -181,29 +191,38 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		for i, pe := range prepared {
 			if err := deductCreditModeA(ctx, deps, middleware.IsAuthenticated(ctx), middleware.ExchangeDID(ctx)); err != nil {
 				if errors.Is(err, apitypes.ErrInsufficientCredits) {
-					writeError(w, http.StatusPaymentRequired, fmt.Sprintf("insufficient write credits at entry %d/%d", i, len(prepared)))
+					writeTypedError(ctx, w, apitypes.ErrorClassInsufficientCredits,
+						http.StatusPaymentRequired,
+						fmt.Sprintf("insufficient write credits at entry %d/%d", i, len(prepared)))
 					return
 				}
 				deps.Logger.Error("batch credit deduction failed", "index", i, "error", err)
-				writeError(w, http.StatusInternalServerError, "credit deduction failed")
+				writeTypedError(ctx, w, apitypes.ErrorClassCreditDeductFailed,
+					http.StatusInternalServerError, "credit deduction failed")
 				return
 			}
 
 			if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical, pe.logTime.UnixMicro()); err != nil {
 				if errors.Is(err, wal.ErrQueueFull) {
 					w.Header().Set("Retry-After", "5")
-					writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("backpressure at entry %d/%d: WAL queue full", i, len(prepared)))
+					writeTypedError(ctx, w, apitypes.ErrorClassWALBackpressure,
+						http.StatusServiceUnavailable,
+						fmt.Sprintf("backpressure at entry %d/%d: WAL queue full", i, len(prepared)))
 					return
 				}
 				deps.Logger.Error("batch wal submit failed", "index", i, "error", err)
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))
+				writeTypedError(ctx, w, apitypes.ErrorClassWALPersistFailed,
+					http.StatusInternalServerError,
+					fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))
 				return
 			}
 
 			sct, signErr := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, pe.canonicalHash, pe.logTime)
 			if signErr != nil {
 				deps.Logger.Error("batch SCT signing failed", "index", i, "error", signErr)
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))
+				writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,
+					http.StatusInternalServerError,
+					fmt.Sprintf("batch admission failed at entry %d/%d", i, len(prepared)))
 				return
 			}
 			results = append(results, BatchResultEntry{SCT: *sct})
@@ -217,58 +236,58 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 
 func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, freshness time.Duration) (*preparedEntry, *preflightError) {
 	if len(rawWire) < 6 {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "entry too short for preamble")
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "entry too short for preamble")
 	}
 	protocolVersion := binary.BigEndian.Uint16(rawWire[0:2])
 	if protocolVersion != envelope.CurrentProtocolVersion() {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "unsupported protocol version %d (expected %d)", protocolVersion, envelope.CurrentProtocolVersion())
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "unsupported protocol version %d (expected %d)", protocolVersion, envelope.CurrentProtocolVersion())
 	}
 	entry, err := envelope.Deserialize(rawWire)
 	if err != nil {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "deserialize: %s", err)
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "deserialize: %s", err)
 	}
 	canonical := rawWire
 	algoID := entry.Signatures[0].AlgoID
 	sigBytes := entry.Signatures[0].Bytes
 	if err := envelope.ValidateAlgorithmID(algoID); err != nil {
-		return nil, preflightFail(http.StatusUnauthorized, "%s", err)
+		return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
 	}
 	if err := entry.Validate(); err != nil {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "entry validation: %s", err)
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "entry validation: %s", err)
 	}
 	if err := admission.CheckNFC(entry); err != nil {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "NFC: %s", err)
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "NFC: %s", err)
 	}
 	if entry.Header.Destination != deps.LogDID {
-		return nil, preflightFail(http.StatusForbidden, "entry destination %q does not match log %q", entry.Header.Destination, deps.LogDID)
+		return nil, preflightFail(apitypes.ErrorClassDestinationMismatch, http.StatusForbidden, "entry destination %q does not match log %q", entry.Header.Destination, deps.LogDID)
 	}
 	if err := policy.CheckFreshness(entry, time.Now().UTC(), freshness); err != nil {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "freshness: %s", err)
+		return nil, preflightFail(apitypes.ErrorClassFreshnessExpired, http.StatusUnprocessableEntity, "freshness: %s", err)
 	}
 	if entry.Header.SignerDID == "" {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "empty signer DID")
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "empty signer DID")
 	}
 	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
 		switch {
 		case errors.Is(err, admission.ErrSignerDIDResolution):
-			return nil, preflightFail(http.StatusUnauthorized, "%s", err)
+			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
 		case errors.Is(err, admission.ErrSignatureInvalid):
-			return nil, preflightFail(http.StatusUnauthorized, "%s", err)
+			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
 		default:
-			return nil, preflightFail(http.StatusInternalServerError, "signature verification path failed")
+			return nil, preflightFail(apitypes.ErrorClassDBQueryFailed, http.StatusInternalServerError, "signature verification path failed")
 		}
 	}
 	if int64(len(canonical)) > deps.MaxEntrySize {
-		return nil, preflightFail(http.StatusRequestEntityTooLarge, "canonical bytes %d exceed max %d", len(canonical), deps.MaxEntrySize)
+		return nil, preflightFail(apitypes.ErrorClassBodyTooLarge, http.StatusRequestEntityTooLarge, "canonical bytes %d exceed max %d", len(canonical), deps.MaxEntrySize)
 	}
 	if !middleware.CheckEvidenceCap(entry) {
-		return nil, preflightFail(http.StatusUnprocessableEntity, "Evidence_Pointers %d exceeds cap %d (non-snapshot)", len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "Evidence_Pointers %d exceeds cap %d (non-snapshot)", len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)
 	}
 	canonicalHash := envelope.EntryIdentity(entry)
 	if !middleware.IsAuthenticated(ctx) {
 		h := &entry.Header
 		if h.AdmissionProof == nil {
-			return nil, preflightFail(http.StatusForbidden, "unauthenticated submission requires compute stamp")
+			return nil, preflightFail(apitypes.ErrorClassAdmissionProofInvalid, http.StatusForbidden, "unauthenticated submission requires compute stamp")
 		}
 		apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
 		currentDifficulty := deps.Admission.DiffController.CurrentDifficulty()
@@ -283,7 +302,7 @@ func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, f
 		currentEpoch := sdkadmission.CurrentEpoch(uint64(deps.Admission.EpochWindowSeconds))
 		acceptanceWindow := uint64(deps.Admission.EpochAcceptanceWindow)
 		if err := sdkadmission.VerifyStamp(apiProof, canonicalHash, deps.LogDID, currentDifficulty, hashFunc, nil, currentEpoch, acceptanceWindow); err != nil {
-			return nil, preflightFail(http.StatusForbidden, "stamp verification failed: %s", err)
+			return nil, preflightFail(apitypes.ErrorClassAdmissionProofInvalid, http.StatusForbidden, "stamp verification failed: %s", err)
 		}
 	}
 	logTime := time.Now().UTC()

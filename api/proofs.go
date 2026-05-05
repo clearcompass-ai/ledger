@@ -21,6 +21,8 @@ import (
 	"net/http"
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // SMTDeps holds dependencies for SMT proof handlers.
@@ -33,10 +35,12 @@ type SMTDeps struct {
 // NewSMTProofHandler creates GET /v1/smt/proof/{key}.
 func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		keyHex := r.PathValue("key")
 		keyBytes, err := hex.DecodeString(keyHex)
 		if err != nil || len(keyBytes) != 32 {
-			writeError(w, http.StatusBadRequest, "key must be 64 hex characters (32 bytes)")
+			writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+				http.StatusBadRequest, "key must be 64 hex characters (32 bytes)")
 			return
 		}
 
@@ -47,7 +51,8 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 		if leaf != nil {
 			proof, err := deps.Tree.GenerateMembershipProof(key)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "proof generation failed")
+				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+					http.StatusInternalServerError, "proof generation failed")
 				deps.Logger.Error("membership proof", "error", err)
 				return
 			}
@@ -61,7 +66,8 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 
 		proof, err := deps.Tree.GenerateNonMembershipProof(key)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "non-membership proof failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "non-membership proof failed")
 			deps.Logger.Error("non-membership proof", "error", err)
 			return
 		}
@@ -76,9 +82,11 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 // NewSMTBatchProofHandler creates POST /v1/smt/batch_proof.
 func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "failed to read body")
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedBody,
+				http.StatusBadRequest, "failed to read body")
 			return
 		}
 
@@ -86,11 +94,13 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 			Keys []string `json:"keys"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
+			writeTypedError(ctx, w, apitypes.ErrorClassMalformedJSON,
+				http.StatusBadRequest, "invalid JSON")
 			return
 		}
 		if len(req.Keys) == 0 || len(req.Keys) > 1000 {
-			writeError(w, http.StatusBadRequest, "keys count must be 1-1000")
+			writeTypedError(ctx, w, apitypes.ErrorClassBatchTooLarge,
+				http.StatusBadRequest, "keys count must be 1-1000")
 			return
 		}
 
@@ -98,7 +108,8 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 		for i, kHex := range req.Keys {
 			kb, err := hex.DecodeString(kHex)
 			if err != nil || len(kb) != 32 {
-				writeError(w, http.StatusBadRequest, "each key must be 64 hex characters")
+				writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+					http.StatusBadRequest, "each key must be 64 hex characters")
 				return
 			}
 			copy(keys[i][:], kb)
@@ -106,7 +117,8 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 
 		proof, err := deps.Tree.GenerateBatchProof(keys)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "batch proof generation failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "batch proof generation failed")
 			deps.Logger.Error("batch proof", "error", err)
 			return
 		}
@@ -119,9 +131,11 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 // NewSMTRootHandler creates GET /v1/smt/root.
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		root, err := deps.Tree.Root()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "root computation failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "root computation failed")
 			deps.Logger.Error("smt root", "error", err)
 			return
 		}

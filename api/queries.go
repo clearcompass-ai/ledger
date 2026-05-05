@@ -45,6 +45,7 @@ import (
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -147,25 +148,30 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 	const maxRange = 1000
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		fromStr := r.URL.Query().Get("from")
 		toStr := r.URL.Query().Get("to")
 		from, err := strconv.ParseUint(fromStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'from' parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid 'from' parameter")
 			return
 		}
 		to, err := strconv.ParseUint(toStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'to' parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid 'to' parameter")
 			return
 		}
 		if to < from {
-			writeError(w, http.StatusBadRequest, "'to' must be >= 'from'")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "'to' must be >= 'from'")
 			return
 		}
 		span := to - from + 1
 		if span > maxRange {
-			writeError(w, http.StatusBadRequest,
+			writeTypedError(ctx, w, apitypes.ErrorClassBatchTooLarge,
+				http.StatusBadRequest,
 				fmt.Sprintf("range %d exceeds max %d", span, maxRange))
 			return
 		}
@@ -173,7 +179,8 @@ func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 		entries, err := deps.QueryAPI.ScanFromPosition(from, int(span))
 		if err != nil {
 			deps.Logger.Error("range query failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 
@@ -227,7 +234,8 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 		hashHex := r.URL.Path[len("/v1/entries-hash/"):]
 		hashBytes, err := hex.DecodeString(hashHex)
 		if err != nil || len(hashBytes) != 32 {
-			writeError(w, http.StatusBadRequest, "invalid canonical hash")
+			writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
+				http.StatusBadRequest, "invalid canonical hash")
 			return
 		}
 		var hash [32]byte
@@ -272,7 +280,8 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 				// not, 404.
 			default:
 				deps.Logger.Error("hash lookup: WAL probe", "error", walErr)
-				writeError(w, http.StatusInternalServerError, "WAL probe failed")
+				writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+					http.StatusInternalServerError, "WAL probe failed")
 				return
 			}
 		}
@@ -281,18 +290,21 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 		seq, found, err := deps.EntryStore.FetchByHash(ctx, hash)
 		if err != nil {
 			deps.Logger.Error("hash lookup failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		if !found {
-			writeError(w, http.StatusNotFound, "entry not found")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "entry not found")
 			return
 		}
 
 		entries, err := deps.QueryAPI.ScanFromPosition(seq, 1)
 		if err != nil || len(entries) == 0 || entries[0].Position.Sequence != seq {
 			deps.Logger.Error("hash lookup hydrate", "seq", seq, "got", len(entries), "err", err)
-			writeError(w, http.StatusInternalServerError, "fetch failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "fetch failed")
 			return
 		}
 
@@ -323,15 +335,18 @@ func NewHashLookupHandler(deps *QueryDeps) http.HandlerFunc {
 // {pos} encodes a LogPosition as "did:sequence".
 func NewQueryCosignatureOfHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		pos, err := parseLogPosition(r.PathValue("pos"))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, err.Error())
 			return
 		}
 		entries, err := deps.QueryAPI.QueryByCosignatureOf(pos)
 		if err != nil {
 			deps.Logger.Error("query cosignature_of", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		writeEntriesJSON(w, entries)
@@ -341,15 +356,18 @@ func NewQueryCosignatureOfHandler(deps *QueryDeps) http.HandlerFunc {
 // NewQueryTargetRootHandler — GET /v1/query/target_root/{pos}.
 func NewQueryTargetRootHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		pos, err := parseLogPosition(r.PathValue("pos"))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, err.Error())
 			return
 		}
 		entries, err := deps.QueryAPI.QueryByTargetRoot(pos)
 		if err != nil {
 			deps.Logger.Error("query target_root", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		writeEntriesJSON(w, entries)
@@ -360,15 +378,18 @@ func NewQueryTargetRootHandler(deps *QueryDeps) http.HandlerFunc {
 // {did} is the URL-encoded signer DID string.
 func NewQuerySignerDIDHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		did := r.PathValue("did")
 		if did == "" {
-			writeError(w, http.StatusBadRequest, "signer DID required")
+			writeTypedError(ctx, w, apitypes.ErrorClassMissingPathParam,
+				http.StatusBadRequest, "signer DID required")
 			return
 		}
 		entries, err := deps.QueryAPI.QueryBySignerDID(did)
 		if err != nil {
 			deps.Logger.Error("query signer_did", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		writeEntriesJSON(w, entries)
@@ -378,15 +399,18 @@ func NewQuerySignerDIDHandler(deps *QueryDeps) http.HandlerFunc {
 // NewQuerySchemaRefHandler — GET /v1/query/schema_ref/{pos}.
 func NewQuerySchemaRefHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		pos, err := parseLogPosition(r.PathValue("pos"))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, err.Error())
 			return
 		}
 		entries, err := deps.QueryAPI.QueryBySchemaRef(pos)
 		if err != nil {
 			deps.Logger.Error("query schema_ref", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		writeEntriesJSON(w, entries)
@@ -397,18 +421,21 @@ func NewQuerySchemaRefHandler(deps *QueryDeps) http.HandlerFunc {
 // Flat scan from sequence N returning up to M entries (capped at MaxScanCount).
 func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		startStr := r.URL.Query().Get("start")
 		countStr := r.URL.Query().Get("count")
 		start, err := strconv.ParseUint(startStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid start parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid start parameter")
 			return
 		}
 		count := defaultScanCount
 		if countStr != "" {
 			parsed, err := strconv.Atoi(countStr)
 			if err != nil || parsed <= 0 {
-				writeError(w, http.StatusBadRequest, "invalid count parameter")
+				writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+					http.StatusBadRequest, "invalid count parameter")
 				return
 			}
 			count = parsed
@@ -416,7 +443,8 @@ func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 		entries, err := deps.QueryAPI.ScanFromPosition(start, count)
 		if err != nil {
 			deps.Logger.Error("query scan", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		writeEntriesJSON(w, entries)
@@ -433,7 +461,8 @@ func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 func NewDifficultyHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.DiffController == nil {
-			writeError(w, http.StatusServiceUnavailable,
+			writeTypedError(r.Context(), w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusServiceUnavailable,
 				"difficulty controller not configured")
 			return
 		}

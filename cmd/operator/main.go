@@ -1039,6 +1039,19 @@ func main() {
 		}
 		otel.SetMeterProvider(mpResult.Provider)
 		gossipMeter = mpResult.Provider.Meter("github.com/clearcompass-ai/ortholog-operator/gossip")
+
+		// PT-6 — Install the api/ error counter so every
+		// writeTypedError / writeTypedJSONError site emits a
+		// typed error_class attribute. Idempotent on the same
+		// meter; no-op if already installed.
+		apiMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ortholog-operator/api")
+		if installed := api.InstallErrorCounter(apiMeter); !installed {
+			logger.Warn("metrics: api error counter not installed (already wired?)")
+		} else {
+			logger.Info("metrics: api error counter installed",
+				"metric", "ortholog_api_errors_total")
+		}
+
 		metricsHandler = mpResult.PrometheusHandler
 		meterShutdown = mpResult.Shutdown
 		defer func() {
