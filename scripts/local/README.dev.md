@@ -109,7 +109,7 @@ wiped); orphaned objects in GCS get rewritten by sequence number.
 
 ```bash
 make dev-status     # `docker compose ps`
-make dev-logs       # tail both operators (Ctrl-C to stop)
+make dev-logs       # tail both ledgers (Ctrl-C to stop)
 ```
 
 ### Why real GCS for dev (not fake-gcs-server)
@@ -129,7 +129,7 @@ where deterministic offline runs matter more than GCS realism.
 | `dev-preflight` fails: bucket env unset | Forgot to `export LEDGER_DEV_BUCKET_*` | Export both, then re-run `make dev-up`. |
 | Ledger startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
 | Ledger startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
-| `dev-up` hangs at "waiting for both operators" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
+| `dev-up` hangs at "waiting for both ledgers" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
 | `/healthz` returns 503 from `ledger-coa` | `attesta_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
 | `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2. |
 
@@ -146,7 +146,7 @@ without GCS credentials. Uses `fake-gcs-server`
 ```bash
 make integration-up
 
-# Once both operators are healthy:
+# Once both ledgers are healthy:
 curl -fsS http://localhost:8080/healthz   # → ok
 curl -fsS http://localhost:8081/healthz   # → ok
 curl -fsS http://localhost:4443/storage/v1/b   # GCS-shape JSON

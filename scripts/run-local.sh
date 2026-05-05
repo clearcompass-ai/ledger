@@ -127,7 +127,7 @@ export LEDGER_WITNESS_QUORUM_K="${LEDGER_WITNESS_QUORUM_K:-1}"
 # LEDGER_WITNESS_KEY_FILE intentionally unset → ephemeral. Set
 # this if you want a stable witness identity across restarts.
 
-# Ledger entry signer — ephemeral did:key. cfg.OperatorDID is
+# Ledger entry signer — ephemeral did:key. cfg.LedgerDID is
 # overridden to match. Set LEDGER_SIGNER_KEY_FILE for a stable
 # DID across restarts.
 

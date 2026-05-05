@@ -187,7 +187,7 @@ func (p *EquivocationPublisher) Publish(ctx context.Context, verified *findings.
 
 	p.logger.Error("EQUIVOCATION PUBLISHED",
 		"verified_quorum", verified.VerifiedAtQuorum(),
-		"ledger_endpoint", verified.OperatorEndpoint(),
+		"ledger_endpoint", verified.LedgerEndpoint(),
 		"lamport", nextLamport,
 	)
 }

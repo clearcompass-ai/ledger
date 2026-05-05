@@ -188,7 +188,7 @@ func TestScale_QueryIndex(t *testing.T) {
 	}
 
 	// Benchmark raw Postgres index speed (no byte hydration — bytes are in Tessera).
-	// This measures the INDEX, not the full OperatorQueryAPI pipeline.
+	// This measures the INDEX, not the full LedgerQueryAPI pipeline.
 
 	// SignerDID index hit.
 	start := time.Now()

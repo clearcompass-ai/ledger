@@ -278,7 +278,7 @@ const (
 	// 404
 	ErrorClassNotFound
 
-	// 5xx — ledger infrastructure (PAGE THE OPERATOR)
+	// 5xx — ledger infrastructure (PAGE THE LEDGER OWNER)
 	ErrorClassWALBackpressure
 	ErrorClassWALPersistFailed
 	ErrorClassSCTSigningFailed

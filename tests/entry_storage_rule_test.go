@@ -236,7 +236,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		entryBytes.WriteEntry(ctx, i, hash, wire)
 	}
 
-	// Query via OperatorQueryAPI.
+	// Query via LedgerQueryAPI.
 	qapi := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
 	results, err := qapi.QueryBySignerDID("did:example:query-rule-signer")
 	if err != nil {

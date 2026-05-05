@@ -1,7 +1,7 @@
 /*
 FILE PATH: store/indexes/query_api.go
 
-PostgresQueryAPI satisfies sdk log.OperatorQueryAPI. Methods are spread
+PostgresQueryAPI satisfies sdk log.LedgerQueryAPI. Methods are spread
 across the package files — each file provides one method's SQL query.
 
 DESIGN RULE: Postgres is an index. Tessera is the source of truth for
@@ -38,7 +38,7 @@ const MaxScanCount = 10000
 // DefaultScanCount is the default page size when count is not specified.
 const DefaultScanCount = 100
 
-// PostgresQueryAPI implements sdk log.OperatorQueryAPI.
+// PostgresQueryAPI implements sdk log.LedgerQueryAPI.
 // Metadata from entry_index (Postgres). Bytes from EntryReader (Tessera).
 type PostgresQueryAPI struct {
 	db     *pgxpool.Pool
