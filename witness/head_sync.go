@@ -60,6 +60,14 @@ import (
 	"github.com/clearcompass-ai/ortholog-operator/store"
 )
 
+// CosignedHeadPublisher is the interface HeadSync calls after a
+// successful K-of-N collection to fan out a KindCosignedTreeHead
+// gossip event. nil is acceptable — when no publisher is wired,
+// HeadSync skips the publish step.
+type CosignedHeadPublisher interface {
+	PublishCosignedHead(ctx context.Context, head types.CosignedTreeHead)
+}
+
 // HeadSyncConfig configures witness cosignature collection.
 type HeadSyncConfig struct {
 	// WitnessEndpoints is the set of peer witness base URLs (one
@@ -86,6 +94,15 @@ type HeadSyncConfig struct {
 	// signatures produced under one NetworkID never satisfy quorum
 	// under another.
 	NetworkID cosign.NetworkID
+
+	// GossipPublisher, when non-nil, is invoked after each
+	// successful K-of-N collection with the assembled
+	// CosignedTreeHead. The publisher is responsible for signing
+	// the event as a KindCosignedTreeHead and broadcasting it to
+	// peers via the gossip Sink. Optional; nil disables the
+	// publish step (useful for read-only operators or trimmed
+	// test rigs).
+	GossipPublisher CosignedHeadPublisher
 }
 
 // HeadSync manages tree head cosignature collection.
@@ -96,6 +113,7 @@ type HeadSync struct {
 	endpoints []string // parallel to collector's clients; for persistence labels
 	store     *store.TreeHeadStore
 	logger    *slog.Logger
+	publisher CosignedHeadPublisher
 }
 
 // NewHeadSync constructs the head sync manager. Returns an error
@@ -143,6 +161,7 @@ func NewHeadSync(cfg HeadSyncConfig, treeStore *store.TreeHeadStore, logger *slo
 		endpoints: append([]string{}, cfg.WitnessEndpoints...),
 		store:     treeStore,
 		logger:    logger,
+		publisher: cfg.GossipPublisher,
 	}, nil
 }
 
@@ -187,6 +206,19 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 		"quorum_k", hs.cfg.QuorumK,
 		"quorum_n", len(hs.endpoints),
 	)
+
+	// Gossip publish (best-effort; never fails the commit path).
+	// Composing the CosignedTreeHead here from the just-collected
+	// signatures keeps the publish payload synchronized with the
+	// persisted state — both rows in tree_head_sigs and the gossip
+	// finding's body carry the same K-of-N evidence.
+	if hs.publisher != nil {
+		cosignedHead := types.CosignedTreeHead{
+			TreeHead:   head,
+			Signatures: result.Signatures,
+		}
+		hs.publisher.PublishCosignedHead(ctx, cosignedHead)
+	}
 	return nil
 }
 

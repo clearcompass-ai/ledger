@@ -966,13 +966,98 @@ func main() {
 	// OPERATOR_WITNESS_QUORUM_K=1 + OPERATOR_WITNESS_KEY_FILE — the
 	// operator becomes its own witness, exercising the same code
 	// paths as production K=N deployments.
+	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
+	//
+	// Co-tenants the WAL's Badger handle under a distinct keyspace
+	// prefix (gossipstore/keyspace.go uses 0x07 vs WAL's 0x01..0x06).
+	// Mounted iff:
+	//   - OPERATOR_GOSSIP_DISABLE != "true", and
+	//   - NetworkID is non-zero (witness mode active OR the operator
+	//     has loaded a network bootstrap document).
+	//
+	// Built BEFORE the witness cosigner so HeadSync can reference
+	// the gossip Sink as its CosignedHeadPublisher (W6 — fan out
+	// every K-of-N tree head as a KindCosignedTreeHead event).
+	var (
+		gossipBundle    *gossipnet.Bundle
+		gossipBStore    *gossipstore.BadgerStore
+		gossipPostH     http.Handler
+		gossipFeedH     http.Handler
+		gossipPublisher *gossipnet.STHPublisher
+	)
+	var zeroNetID cosign.NetworkID
+	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
+		gossipBStore, err = gossipstore.New(gossipstore.Config{DB: walDB})
+		if err != nil {
+			logger.Error("gossipstore open", "error", err)
+			os.Exit(1)
+		}
+		gossipBundle, err = gossipnet.Build(gossipnet.Config{
+			Store:         gossipBStore,
+			NetworkID:     cfg.NetworkID,
+			PeerEndpoints: cfg.GossipPeerEndpoints,
+			Logger:        logger,
+		})
+		if err != nil {
+			logger.Error("gossipnet build", "error", err)
+			os.Exit(1)
+		}
+		gossipPostH = gossipBundle.PostHandler
+		gossipFeedH = gossipBundle.FeedHandler
+
+		// STH publisher: signs KindCosignedTreeHead events under the
+		// operator's own DID + signing key (the same key used to
+		// sign admitted entries; cosign Purpose separation keeps
+		// these signing roles non-replayable across one another).
+		gossipPublisher, err = gossipnet.NewSTHPublisher(gossipnet.PublisherConfig{
+			Store:            gossipBStore,
+			Sink:             gossipBundle.Sink,
+			Signer:           cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+			NetworkID:        cfg.NetworkID,
+			Originator:       cfg.OperatorDID,
+			OperatorEndpoint: cfg.ServerAddr,
+			Logger:           logger,
+		})
+		if err != nil {
+			logger.Error("gossip STH publisher", "error", err)
+			os.Exit(1)
+		}
+
+		// Shutdown ordering: drain sink → close handlers → close
+		// store. The underlying *badger.DB is owned by wal.Open
+		// (the existing defer above closes it last).
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, c := range gossipBundle.Closeables {
+				_ = c.Close(ctx)
+			}
+			_ = gossipBStore.Close(ctx)
+		}()
+
+		logger.Info("gossip endpoints mounted",
+			"post_path", "/v1/gossip",
+			"feed_path_prefix", "/v1/gossip/",
+			"peers", len(cfg.GossipPeerEndpoints),
+		)
+	} else if cfg.GossipDisable {
+		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
+	} else {
+		logger.Info("gossip disabled (NetworkID unset; load network bootstrap)")
+	}
+
 	var cosigner builder.WitnessCosigner
 	if len(cfg.WitnessEndpoints) > 0 {
+		var pub witness.CosignedHeadPublisher
+		if gossipPublisher != nil {
+			pub = gossipPublisher
+		}
 		hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
 			WitnessEndpoints:  cfg.WitnessEndpoints,
 			QuorumK:           cfg.WitnessQuorumK,
 			PerWitnessTimeout: 30 * time.Second,
 			NetworkID:         cfg.NetworkID,
+			GossipPublisher:   pub,
 		}, treeHeadStore, logger)
 		if err != nil {
 			logger.Error("witness cosigner construction failed", "error", err)
@@ -982,6 +1067,7 @@ func main() {
 		logger.Info("witness cosigner: HeadSync requester enabled",
 			"endpoints", cfg.WitnessEndpoints,
 			"quorum_k", cfg.WitnessQuorumK,
+			"gossip_publisher", gossipPublisher != nil,
 		)
 	} else {
 		logger.Info("witness cosigner: disabled (OPERATOR_WITNESS_ENDPOINTS unset)")
@@ -1120,67 +1206,6 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
-	}
-
-	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
-	//
-	// Co-tenants the WAL's Badger handle under a distinct keyspace
-	// prefix (gossipstore/keyspace.go uses 0x07 vs WAL's 0x01..0x06).
-	// Mounted iff:
-	//   - OPERATOR_GOSSIP_DISABLE != "true", and
-	//   - NetworkID is non-zero (witness mode active OR the operator
-	//     has loaded a network bootstrap document).
-	//
-	// Gossip is a peer-network primitive; an operator that doesn't
-	// know its NetworkID can't verify inbound events and shouldn't
-	// publish outbound either, so we gate on bootstrap presence.
-	var (
-		gossipBundle  *gossipnet.Bundle
-		gossipBStore  *gossipstore.BadgerStore
-		gossipPostH   http.Handler
-		gossipFeedH   http.Handler
-	)
-	var zeroNetID cosign.NetworkID
-	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
-		gossipBStore, err = gossipstore.New(gossipstore.Config{DB: walDB})
-		if err != nil {
-			logger.Error("gossipstore open", "error", err)
-			os.Exit(1)
-		}
-		gossipBundle, err = gossipnet.Build(gossipnet.Config{
-			Store:         gossipBStore,
-			NetworkID:     cfg.NetworkID,
-			PeerEndpoints: cfg.GossipPeerEndpoints,
-			Logger:        logger,
-		})
-		if err != nil {
-			logger.Error("gossipnet build", "error", err)
-			os.Exit(1)
-		}
-		gossipPostH = gossipBundle.PostHandler
-		gossipFeedH = gossipBundle.FeedHandler
-
-		// Shutdown ordering: drain sink → close handlers → close
-		// store. The underlying *badger.DB is owned by wal.Open
-		// (the existing defer above closes it last).
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			for _, c := range gossipBundle.Closeables {
-				_ = c.Close(ctx)
-			}
-			_ = gossipBStore.Close(ctx)
-		}()
-
-		logger.Info("gossip endpoints mounted",
-			"post_path", "/v1/gossip",
-			"feed_path_prefix", "/v1/gossip/",
-			"peers", len(cfg.GossipPeerEndpoints),
-		)
-	} else if cfg.GossipDisable {
-		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
-	} else {
-		logger.Info("gossip disabled (NetworkID unset; load network bootstrap)")
 	}
 
 	handlers := api.Handlers{
