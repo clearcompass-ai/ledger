@@ -49,6 +49,7 @@ import (
 	"time"
 
 	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	"github.com/clearcompass-ai/ortholog-sdk/types"
@@ -136,7 +137,7 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d (%s), want 202\nbody: %s", rr.Code, http.StatusText(rr.Code), rr.Body.String())
 	}
-	var sct SignedCertificateTimestamp
+	var sct sdksct.SignedCertificateTimestamp
 	if err := json.NewDecoder(rr.Body).Decode(&sct); err != nil {
 		t.Fatalf("decode SCT: %v", err)
 	}
@@ -146,14 +147,112 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if sct.SignerDID != deps.OperatorDID {
 		t.Errorf("SCT.SignerDID = %q, want %q", sct.SignerDID, deps.OperatorDID)
 	}
-	if sct.Version != SCTVersion {
-		t.Errorf("SCT.Version = %d, want %d", sct.Version, SCTVersion)
+	if sct.Version != sdksct.Version {
+		t.Errorf("SCT.Version = %d, want %d", sct.Version, sdksct.Version)
 	}
-	if err := VerifySCT(&opSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sct); err != nil {
 		t.Errorf("SCT signature does not verify: %v", err)
 	}
 	if len(walFake.submitted) != 1 {
 		t.Errorf("WAL.Submit calls = %d, want 1", len(walFake.submitted))
+	}
+}
+
+// TestV1Handler_SemanticIdempotency pins P5: byte-identical
+// resubmission absorbs the retry as SEMANTIC idempotency (not
+// byte idempotency — ECDSA k-randomness + HSM compatibility
+// preclude byte-identical signatures without coupling the
+// operator to RFC 6979 / non-HSM keys).
+//
+// The full SLA-correctness assertion chain:
+//
+//   Claim equivalency:
+//     1. SCT_A.SignerDID     == SCT_B.SignerDID
+//     2. SCT_A.CanonicalHash == SCT_B.CanonicalHash
+//     3. SCT_A.LogTime       == SCT_B.LogTime
+//        (clamping the LogTime is what makes MMD honor the
+//        original admission moment — a fresh LogTime on retry
+//        would reset the MMD clock = SLA violation)
+//     4. SCT_A.LogDID        == SCT_B.LogDID
+//
+//   Cryptographic validity (both bytes-distinct, both valid):
+//     5. Verify(opPubKey, SCT_A) == nil
+//     6. Verify(opPubKey, SCT_B) == nil
+//
+//   State isolation (load-bearing "no double-write"):
+//     7. WAL.SubmitCount(after) == WAL.SubmitCount(before) + 1
+//        (exactly one durable write for two semantically-equivalent
+//        retries)
+//     8. Credit deduction is reachable ONLY in the
+//        non-replay path. The handler's idempotentReplay branch
+//        returns BEFORE deductCreditModeA — structurally
+//        guaranteed in api/submission.go. Mode B test path skips
+//        deduct entirely (unauthenticated stamps); a Mode A
+//        credit-isolation test would require a CreditStore stub
+//        and is left as a follow-up if/when authenticated tests
+//        ship.
+func TestV1Handler_SemanticIdempotency(t *testing.T) {
+	opSignerPriv, _ := signatures.GenerateKey()
+	wire, _, signerPriv := signedEntryModeB(t, "did:test:log", []byte("idempotent"), 1, 3600)
+	walFake := &stubSubmissionWAL{}
+	deps := makeSubmissionDeps(t, opSignerPriv, &signerPriv.PublicKey, walFake)
+	h := NewSubmissionHandler(deps)
+
+	submitOnce := func(label string) sdksct.SignedCertificateTimestamp {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("%s submission: status = %d, want 202\nbody: %s",
+				label, rr.Code, rr.Body.String())
+		}
+		var sct sdksct.SignedCertificateTimestamp
+		if err := json.Unmarshal(rr.Body.Bytes(), &sct); err != nil {
+			t.Fatalf("%s decode: %v", label, err)
+		}
+		return sct
+	}
+
+	// Snapshot WAL state before the first call.
+	walSubmitsBefore := len(walFake.submitted)
+
+	sctA := submitOnce("first")
+	sctB := submitOnce("replay")
+
+	// ── Claim equivalency ────────────────────────────────────
+	if sctA.SignerDID != sctB.SignerDID {
+		t.Errorf("SignerDID differs: A=%q B=%q", sctA.SignerDID, sctB.SignerDID)
+	}
+	if sctA.CanonicalHash != sctB.CanonicalHash {
+		t.Errorf("CanonicalHash differs: A=%q B=%q",
+			sctA.CanonicalHash, sctB.CanonicalHash)
+	}
+	if sctA.LogTimeMicros != sctB.LogTimeMicros {
+		t.Errorf("LogTimeMicros differs: A=%d B=%d (MMD-clock reset = SLA violation)",
+			sctA.LogTimeMicros, sctB.LogTimeMicros)
+	}
+	if sctA.LogTime != sctB.LogTime {
+		t.Errorf("LogTime differs: A=%q B=%q",
+			sctA.LogTime, sctB.LogTime)
+	}
+	if sctA.LogDID != sctB.LogDID {
+		t.Errorf("LogDID differs: A=%q B=%q", sctA.LogDID, sctB.LogDID)
+	}
+
+	// ── Cryptographic validity ───────────────────────────────
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sctA); err != nil {
+		t.Errorf("Verify(SCT_A): %v", err)
+	}
+	if err := sdksct.Verify(&opSignerPriv.PublicKey, &sctB); err != nil {
+		t.Errorf("Verify(SCT_B): %v", err)
+	}
+
+	// ── State isolation: WAL no-double-write ─────────────────
+	walSubmitsAfter := len(walFake.submitted)
+	if delta := walSubmitsAfter - walSubmitsBefore; delta != 1 {
+		t.Errorf("WAL.Submit delta across two resubmissions = %d, want 1 (no-double-write)",
+			delta)
 	}
 }
 

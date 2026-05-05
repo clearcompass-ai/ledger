@@ -23,9 +23,12 @@ CHANGES:
   - v7.75 Wave 1 (C3): Added commitment_split_id table + index for
     cryptographic-commitment lookup; BTREE not UNIQUE per Decision 3
     (equivocation evidence preservation).
-  - v7.75 Wave 1 (S2): Added commitment_equivocation_proofs table for
-    persisting cryptographic evidence of dealer equivocation
-    (multiple commitment entries under one SplitID, ADR-005 §3).
+  - v7.75 Wave 1 (S2): Equivocation evidence persisted via
+    commitment_equivocation_proofs Postgres table — DROPPED in
+    v0.9.6. Entry-level equivocation now lives in the gossipstore
+    BadgerDB projection 0x0B (gossipnet.EquivocationScanner
+    detects + projects + publishes; FetchEquivocationByBinding
+    serves zero-trust reads).
 */
 package store
 
@@ -292,57 +295,16 @@ var schemaDDL = []string{
 	`CREATE INDEX IF NOT EXISTS idx_commitment_split_id
 		ON commitment_split_id (schema_id, split_id)`,
 
-	// ── Commitment equivocation proofs (v7.75 — Wave 1 S2) ───────────
-	// Persists cryptographic evidence of dealer equivocation: when
-	// two or more pre-grant-commitment-v1 or escrow-split-commitment-v1
-	// entries are admitted under the same (schema_id, split_id) tuple,
-	// the witness/commitment_equivocation_monitor.go background loop
-	// detects the collision via the commitment_split_id index and
-	// records evidence here for downstream governance action
-	// (ADR-005 §3 + Wave 1 v3 §S2).
-	//
-	// Schema rationale:
-	//
-	//   - One row per (schema_id, split_id) incident. The UNIQUE
-	//     constraint makes the upsert pattern safe: when a 3rd or 4th
-	//     equivocating entry shows up, the monitor uses
-	//     ON CONFLICT (schema_id, split_id) DO UPDATE to append the
-	//     new sequence to entry_seqs rather than inserting a duplicate
-	//     evidence row.
-	//
-	//   - entry_seqs is a Postgres BIGINT[] holding every sequence
-	//     number that has been seen under this SplitID. Encoded as
-	//     a typed array so order and uniqueness can be enforced at
-	//     the application layer without splitting the row.
-	//
-	//   - first_detected_at / last_observed_at distinguish "when the
-	//     monitor first noticed equivocation" from "when the most
-	//     recent equivocating entry landed", supporting forensics
-	//     across long-lived incidents.
-	//
-	//   - alert_dispatched_at is nullable — set by the S3 alert
-	//     callback when the webhook publication succeeds, so the
-	//     S3 publisher can be re-run safely (alerted incidents
-	//     skip republishing) and operators can audit which incidents
-	//     have been escalated to governance.
-	//
-	// Append-only invariant: rows are NEVER deleted. Equivocation
-	// evidence is permanent — even after governance resolution, the
-	// historical record stays so future audits can reconstruct what
-	// the operator observed.
-	`CREATE TABLE IF NOT EXISTS commitment_equivocation_proofs (
-		id                  SERIAL      PRIMARY KEY,
-		schema_id           TEXT        NOT NULL,
-		split_id            BYTEA       NOT NULL,
-		entry_seqs          BIGINT[]    NOT NULL,
-		first_detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		last_observed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		alert_dispatched_at TIMESTAMPTZ,
-		UNIQUE (schema_id, split_id)
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_commitment_equivocation_unalerted
-		ON commitment_equivocation_proofs (first_detected_at)
-		WHERE alert_dispatched_at IS NULL`,
+	// Equivocation evidence persistence moved to the gossipstore
+	// BadgerDB projection (prefix 0x0B) per the v0.9.6 design.
+	// Detection runs in gossipnet.EquivocationScanner (independent
+	// goroutine subscribed to the splitid index 0x0A); verified
+	// findings are persisted as KindEntryCommitmentEquivocation
+	// gossip events + projected to 0x0B for O(1) /by-binding lookup.
+	// The previous commitment_equivocation_proofs Postgres table +
+	// idx_commitment_equivocation_unalerted partial index were
+	// dropped — no Postgres surface owns equivocation evidence
+	// anymore.
 
 	// Sequence numbers are assigned by the embedded Tessera library
 	// (the c2sp.org/tlog-tiles integrator), not by Postgres. The

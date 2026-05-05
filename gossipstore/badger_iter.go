@@ -70,6 +70,25 @@ func (s *BadgerStore) Iterate(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Filter.Binding takes the binding-index (0x09) fast path when
+	// set — point lookup keyed by the 32-byte hash. Other filters
+	// (Kind, Originator, SinceLamport) intersect in-memory
+	// against the binding result set.
+	if f.Binding != nil {
+		hits, err := s.collectByBinding(*f.Binding, f)
+		if err != nil {
+			return err
+		}
+		for _, ev := range hits {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := fn(ev); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	hits, err := s.collect(f.Originator, f.Kind, f.SinceLamport, 0)
 	if err != nil {
 		return err
@@ -83,6 +102,49 @@ func (s *BadgerStore) Iterate(
 		}
 	}
 	return nil
+}
+
+// collectByBinding scans the binding inverted index (0x09) for
+// the supplied 32-byte hash, dereferences each suffix-eventID
+// against the byID index (0x01), and applies the residual
+// filters (Kind, Originator, SinceLamport) in memory.
+//
+// Time complexity: O(N_at_binding + log N_total) — point
+// lookups on Badger LSM are sub-millisecond regardless of total
+// event count.
+func (s *BadgerStore) collectByBinding(
+	binding [32]byte, f gossip.Filter,
+) ([]gossip.SignedEvent, error) {
+	var hits []gossip.SignedEvent
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = bindingIndexPrefix(binding)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			eventID, kerr := eventIDFromBindingIndexKey(it.Item().KeyCopy(nil))
+			if kerr != nil {
+				return kerr
+			}
+			ev, gerr := getEvent(txn, eventID)
+			if gerr != nil {
+				return gerr
+			}
+			if f.Kind != nil && ev.Kind != *f.Kind {
+				continue
+			}
+			if f.Originator != nil && ev.Originator != *f.Originator {
+				continue
+			}
+			if f.SinceLamport > 0 && ev.LamportTime <= f.SinceLamport {
+				continue
+			}
+			hits = append(hits, ev)
+		}
+		return nil
+	})
+	return hits, err
 }
 
 // IterSince implements gossip.Store.

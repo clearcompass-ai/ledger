@@ -78,6 +78,53 @@ const (
 	subSTHIndex    byte = 0x05 // per-originator STH reverse index
 	subStats       byte = 0x06 // singleton stats record
 	subOrigExists  byte = 0x07 // existence marker for originator count
+
+	// subBindingIndex holds the inverted index from a 32-byte
+	// binding hash to the eventID(s) of every event whose
+	// SignedEvent.Bindings slice contains that hash. Powers
+	// /v1/gossip/by-binding/{hash} at near-O(1).
+	//
+	//   Key:   0x07 0x09 <binding:32> <eventID:32>
+	//   Value: empty (existence marker)
+	//
+	// Multi-event hits at the same binding produce distinct
+	// keys (binding-suffix-by-eventID). A prefix scan on
+	// (0x07 0x09 binding) returns every event matching.
+	subBindingIndex byte = 0x09
+
+	// subSplitIDIndex is the operator-side splitid index that
+	// the EquivocationScanner subscribes to. Populated by the
+	// sequencer at Phase 2 commit-time. The scanner sees every
+	// PUT under this prefix and prefix-scans for collisions at
+	// the same (schema_id, split_id).
+	//
+	//   Key:   0x07 0x0A <slen:2><schema><spid:32><seq:8>
+	//   Value: SplitIDIndexEntry JSON (originator DID +
+	//          canonical hash + signature)
+	//
+	// The 8-byte big-endian seq suffix orders entries within
+	// one (schema_id, split_id) by sequence; a collision is
+	// >= 2 entries sharing the (schema, split_id) prefix.
+	subSplitIDIndex byte = 0x0A
+
+	// subEquivProj is the read-side projection of verified
+	// entry-commitment-equivocation findings. Keyed by the
+	// content-derived binding hash so /v1/commitments/by-split-id
+	// reads in O(1) without touching Postgres.
+	//
+	//   Key:   0x07 0x0B <binding:32>
+	//   Value: SignedEvent JSON (the verified gossip event
+	//          carrying the equivocation evidence)
+	//
+	// Written by:
+	//   - EquivocationScanner when it locally detects a
+	//     collision and emits the gossip event.
+	//   - gossip handler's post-Append hook when an inbound
+	//     KindEntryCommitmentEquivocation event verifies — so
+	//     equivocations from peer operators are projected here
+	//     too, and our own /by-split-id endpoint surfaces the
+	//     full network's view, not just our own observations.
+	subEquivProj byte = 0x0B
 )
 
 // MaxOriginatorLen mirrors gossip.MaxOriginatorLen. Lengths are

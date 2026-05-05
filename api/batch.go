@@ -13,6 +13,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
 
 	"github.com/clearcompass-ai/ortholog-operator/admission"
@@ -49,7 +50,7 @@ type BatchSubmissionRequest struct {
 }
 
 type BatchResultEntry struct {
-	SCT SignedCertificateTimestamp `json:"sct"`
+	SCT sdksct.SignedCertificateTimestamp `json:"sct"`
 }
 
 type BatchSubmissionResponse struct {
@@ -188,7 +189,7 @@ func NewBatchSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical); err != nil {
+			if err := deps.Storage.WAL.Submit(ctx, pe.canonicalHash, pe.canonical, pe.logTime.UnixMicro()); err != nil {
 				if errors.Is(err, wal.ErrQueueFull) {
 					w.Header().Set("Retry-After", "5")
 					writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("backpressure at entry %d/%d: WAL queue full", i, len(prepared)))

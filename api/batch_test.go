@@ -29,6 +29,8 @@ import (
 	"strings"
 	"testing"
 
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
+
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
 )
 
@@ -70,7 +72,7 @@ func TestBatchHandler_HappyPath_ReturnsSCTArray(t *testing.T) {
 		t.Fatalf("results length = %d, want 2", len(resp.Results))
 	}
 	for i, r := range resp.Results {
-		if err := VerifySCT(&opSignerPriv.PublicKey, &r.SCT); err != nil {
+		if err := sdksct.Verify(&opSignerPriv.PublicKey, &r.SCT); err != nil {
 			t.Errorf("result %d: SCT does not verify: %v", i, err)
 		}
 	}

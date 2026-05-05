@@ -87,6 +87,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/clearcompass-ai/ortholog-operator/admission"
 	"github.com/clearcompass-ai/ortholog-operator/anchor"
 	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
@@ -1126,6 +1127,16 @@ func main() {
 			_ = gossipBStore.Close(ctx)
 		}()
 
+		// gossipWG drains the async goroutines (anti-entropy,
+		// equivocation monitor, equivocation scanner) BEFORE
+		// the store close defer above fires. Defer-LIFO
+		// guarantees the order: cancels signal first → Wait
+		// blocks until goroutines exit → store closes safely.
+		// Without this, gossipBStore.Close could race a still-
+		// running scanner.SubscribeSplitIDIndex callback.
+		var gossipWG sync.WaitGroup
+		defer gossipWG.Wait()
+
 		logger.Info("gossip endpoints mounted",
 			"post_path", "/v1/gossip",
 			"feed_path_prefix", "/v1/gossip/",
@@ -1155,7 +1166,9 @@ func main() {
 				os.Exit(1)
 			}
 			aeCtx, aeCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
 			go func() {
+				defer gossipWG.Done()
 				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("anti-entropy: exited with error", "error", rerr)
 				}
@@ -1228,7 +1241,9 @@ func main() {
 				os.Exit(1)
 			}
 			eqCtx, eqCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
 			go func() {
+				defer gossipWG.Done()
 				if rerr := eqMon.Run(eqCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation monitor: exited with error", "error", rerr)
 				}
@@ -1246,6 +1261,46 @@ func main() {
 				"peer_endpoints", len(cfg.GossipPeerEndpoints),
 				"publisher_wired", gossipPublisher != nil,
 			)
+		}
+
+		// ── EquivocationScanner (entry-level, v0.9.6) ────────────────
+		//
+		// Independent goroutine subscribed to the splitid index
+		// (Badger prefix 0x0A). The sequencer writes one entry
+		// per Phase 2 commit; the scanner detects collisions
+		// (≥ 2 entries at the same (schema_id, split_id)) and
+		// publishes a verified KindEntryCommitmentEquivocation
+		// event.
+		//
+		// Hot-path isolation: this runs on its OWN goroutine,
+		// never on the admission or sequencer pools. Detection
+		// adds zero overhead to the SCT-return latency.
+		if gossipBStore != nil && gossipBundle != nil {
+			scanner, scerr := gossipnet.NewEquivocationScanner(
+				gossipnet.EquivocationScannerConfig{
+					Store:       gossipBStore,
+					GossipStore: gossipBStore,
+					Sink:        gossipBundle.Sink,
+					Signer:      cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+					NetworkID:   cfg.NetworkID,
+					Originator:  cfg.OperatorDID,
+					Logger:      logger,
+				})
+			if scerr != nil {
+				logger.Error("equivocation scanner construction", "error", scerr)
+				os.Exit(1)
+			}
+			scanCtx, scanCancel := context.WithCancel(ctx)
+			gossipWG.Add(1)
+			go func() {
+				defer gossipWG.Done()
+				if rerr := scanner.Run(scanCtx); rerr != nil &&
+					!errors.Is(rerr, context.Canceled) {
+					logger.Warn("equivocation scanner: exited with error", "error", rerr)
+				}
+			}()
+			defer scanCancel()
+			logger.Info("equivocation scanner: enabled (subscribed to splitid index 0x0A)")
 		}
 	} else if cfg.GossipDisable {
 		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
@@ -1344,6 +1399,38 @@ func main() {
 	// SubmissionDeps is shared between both endpoints: same fast-path
 	// validation via prepareSubmission. v1 polls WAL for the
 	// Sequencer to advance; v2 returns an SCT immediately.
+	// Embedded-tree-head BLS quorum verifier (Wave 1 v3 §S1).
+	// Wired iff the genesis witness set is loaded (witness mode
+	// active). Today the EntryEmbedsTreeHead detector returns
+	// false for every v7.75 schema, so this verifier is a no-op
+	// on the entry surface; wiring it now means the moment a
+	// schema starts embedding tree heads the K-of-N check fires
+	// without an additional code change.
+	var blsQuorumVerifier *admission.BLSQuorumVerifier
+	if len(cfg.GenesisWitnessSet) > 0 && cfg.NetworkID != zeroNetID {
+		witKeys, wkErr := gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+		if wkErr != nil {
+			logger.Error("admission BLS verifier: witness key resolution",
+				"error", wkErr)
+			os.Exit(1)
+		}
+		keySet, ksErr := admission.NewStaticWitnessKeySet(witKeys, cfg.WitnessQuorumK)
+		if ksErr != nil {
+			logger.Error("admission BLS verifier: build keyset",
+				"error", ksErr)
+			os.Exit(1)
+		}
+		blsQuorumVerifier = admission.NewBLSQuorumVerifier(
+			keySet,
+			cosign.NewProductionBLSVerifier(),
+			cfg.NetworkID,
+		)
+		logger.Info("admission: embedded-tree-head BLS verifier enabled",
+			"witness_set_size", len(witKeys),
+			"quorum_k", cfg.WitnessQuorumK,
+		)
+	}
+
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
 			DB:         pool,
@@ -1366,6 +1453,7 @@ func main() {
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
+		BLSQuorumVerifier:  blsQuorumVerifier, // nil ⇒ check skipped
 	}
 	submitHandler := api.NewSubmissionHandler(submissionDeps)
 	batchSubmitHandler := api.NewBatchSubmissionHandler(submissionDeps)
@@ -1510,10 +1598,22 @@ func main() {
 		MaxInFlight:  cfg.SequencerMaxInFlight,
 		Logger:       logger,
 	})
+	if gossipBStore != nil {
+		// Wire the v0.9.6 splitid index writer. Sequencer
+		// continues to write Postgres commitment_split_id
+		// (existing read-path consumers); ALSO writes the
+		// Badger 0x0A index that the EquivocationScanner
+		// subscribes to. Migration of the read path to
+		// gossipstore.GetEquivProjection (0x0B) is a
+		// separate cleanup commit on this branch.
+		seq = seq.WithSplitIDIndex(
+			gossipnet.NewSequencerSplitIDAdapter(gossipBStore))
+	}
 	logger.Info("sequencer ready",
 		"poll_interval", cfg.SequencerInterval,
 		"max_in_flight", cfg.SequencerMaxInFlight,
 		"mmd", cfg.MMD,
+		"splitid_index", gossipBStore != nil,
 	)
 
 	// ── Shipper ──────────────────────────────────────────────────────

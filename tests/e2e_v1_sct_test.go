@@ -51,8 +51,8 @@ import (
 	"time"
 
 	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -70,7 +70,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if status != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202\nbody: %s", status, body)
 	}
-	var sct api.SignedCertificateTimestamp
+	var sct sdksct.SignedCertificateTimestamp
 	if err := json.Unmarshal(body, &sct); err != nil {
 		t.Fatalf("decode SCT: %v\nbody: %s", err, body)
 	}
@@ -80,7 +80,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if sct.CanonicalHash != hex.EncodeToString(canonicalHash[:]) {
 		t.Errorf("SCT.CanonicalHash mismatch:\n  got  %s\n  want %x", sct.CanonicalHash, canonicalHash[:])
 	}
-	if err := api.VerifySCT(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
 		t.Errorf("SCT signature does not verify: %v", err)
 	}
 }
@@ -230,18 +230,18 @@ func TestE2E_V1_SCTTamperResistance(t *testing.T) {
 	if status != http.StatusAccepted {
 		t.Fatalf("submit: %d %s", status, body)
 	}
-	var sct api.SignedCertificateTimestamp
+	var sct sdksct.SignedCertificateTimestamp
 	if err := json.Unmarshal(body, &sct); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	// Sanity: clean verify passes.
-	if err := api.VerifySCT(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
 		t.Fatalf("clean verify failed: %v", err)
 	}
 	// Tamper canonical_hash → must fail.
 	orig := sct.CanonicalHash
 	sct.CanonicalHash = "ff" + orig[2:]
-	if err := api.VerifySCT(&op.OperatorSignerPriv.PublicKey, &sct); err == nil {
+	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err == nil {
 		t.Error("expected verification failure on tampered hash")
 	}
 }
