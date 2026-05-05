@@ -68,6 +68,7 @@ import (
 
 	"github.com/clearcompass-ai/ortholog-sdk/types"
 
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 	"github.com/clearcompass-ai/ortholog-operator/wal"
 )
 
@@ -130,10 +131,12 @@ const maxBatchSize = 1000
 // subroute.
 func NewEntryBySequenceHandler(deps *EntryReadDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		seqStr := r.PathValue("sequence")
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid sequence number")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid sequence number")
 			return
 		}
 
@@ -141,11 +144,13 @@ func NewEntryBySequenceHandler(deps *EntryReadDeps) http.HandlerFunc {
 		entry, err := deps.Fetcher.Fetch(pos)
 		if err != nil {
 			deps.Logger.Error("entry fetch", "sequence", seq, "error", err)
-			writeError(w, http.StatusInternalServerError, "fetch failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassFetcherFailed,
+				http.StatusInternalServerError, "fetch failed")
 			return
 		}
 		if entry == nil {
-			writeError(w, http.StatusNotFound, "entry not found")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "entry not found")
 			return
 		}
 
@@ -161,21 +166,25 @@ func NewEntryBySequenceHandler(deps *EntryReadDeps) http.HandlerFunc {
 
 func NewEntryBatchHandler(deps *EntryReadDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		startStr := r.URL.Query().Get("start")
 		countStr := r.URL.Query().Get("count")
 		if startStr == "" || countStr == "" {
-			writeError(w, http.StatusBadRequest, "start and count parameters required")
+			writeTypedError(ctx, w, apitypes.ErrorClassMissingQueryParam,
+				http.StatusBadRequest, "start and count parameters required")
 			return
 		}
 
 		start, err := strconv.ParseUint(startStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid start parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid start parameter")
 			return
 		}
 		count, err := strconv.ParseUint(countStr, 10, 64)
 		if err != nil || count == 0 {
-			writeError(w, http.StatusBadRequest, "invalid count parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid count parameter")
 			return
 		}
 		if count > maxBatchSize {
@@ -185,7 +194,8 @@ func NewEntryBatchHandler(deps *EntryReadDeps) http.HandlerFunc {
 		entries, err := deps.QueryAPI.ScanFromPosition(start, int(count))
 		if err != nil {
 			deps.Logger.Error("batch entry fetch", "start", start, "count", count, "error", err)
-			writeError(w, http.StatusInternalServerError, "batch fetch failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "batch fetch failed")
 			return
 		}
 
@@ -214,14 +224,16 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		// it manually here for portability).
 		path := r.URL.Path
 		if !strings.HasPrefix(path, "/v1/entries/") {
-			writeError(w, http.StatusNotFound, "invalid path")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "invalid path")
 			return
 		}
 		rest := strings.TrimPrefix(path, "/v1/entries/")
 		rest = strings.TrimSuffix(rest, "/raw")
 		seq, err := strconv.ParseUint(rest, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid sequence")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid sequence")
 			return
 		}
 
@@ -229,11 +241,13 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		hash, logTime, found, err := deps.EntryStore.FetchHashBySeq(ctx, seq)
 		if err != nil {
 			deps.Logger.Error("raw entry: seq lookup", "seq", seq, "error", err)
-			writeError(w, http.StatusInternalServerError, "lookup failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "lookup failed")
 			return
 		}
 		if !found {
-			writeError(w, http.StatusNotFound, "entry not found")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "entry not found")
 			return
 		}
 
@@ -258,7 +272,8 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			}
 			deps.Logger.Error("raw entry: WAL meta probe",
 				"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]), "error", metaErr)
-			writeError(w, http.StatusInternalServerError, "WAL probe failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+				http.StatusInternalServerError, "WAL probe failed")
 			return
 		}
 
@@ -272,7 +287,8 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		default:
 			deps.Logger.Error("raw entry: unknown WAL state",
 				"seq", seq, "state", meta.State)
-			writeError(w, http.StatusInternalServerError, "WAL state machine corrupted")
+			writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+				http.StatusInternalServerError, "WAL state machine corrupted")
 		}
 	}
 }
@@ -307,7 +323,8 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 			return
 		}
 		deps.Logger.Error("raw entry: WAL read", "seq", seq, "error", err)
-		writeError(w, http.StatusInternalServerError, "WAL read failed")
+		writeTypedError(r.Context(), w, apitypes.ErrorClassReadProjectionFailed,
+			http.StatusInternalServerError, "WAL read failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -328,7 +345,8 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 	if deps.Presigner == nil {
 		deps.Logger.Error("raw entry: shipped entry but no Presigner configured",
 			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]))
-		writeError(w, http.StatusInternalServerError,
+		writeTypedError(r.Context(), w, apitypes.ErrorClassFetcherFailed,
+			http.StatusInternalServerError,
 			"byte store redirect not configured")
 		return
 	}
@@ -336,7 +354,8 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 	if err != nil {
 		deps.Logger.Error("raw entry: PresignGet",
 			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]), "error", err)
-		writeError(w, http.StatusInternalServerError, "presign failed")
+		writeTypedError(r.Context(), w, apitypes.ErrorClassFetcherFailed,
+			http.StatusInternalServerError, "presign failed")
 		return
 	}
 	w.Header().Set("Location", url)

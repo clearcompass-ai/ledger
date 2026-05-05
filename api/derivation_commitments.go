@@ -17,6 +17,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+
+	"github.com/clearcompass-ai/ortholog-operator/apitypes"
 )
 
 // DerivationCommitmentDeps groups the derivation-commitment query handler
@@ -31,25 +33,30 @@ type DerivationCommitmentDeps struct {
 // /v1/derivation-commitments?seq=N HTTP handler.
 func NewDerivationCommitmentQueryHandler(deps *DerivationCommitmentDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		seqStr := r.URL.Query().Get("seq")
 		if seqStr == "" {
-			writeError(w, http.StatusBadRequest, "seq parameter required")
+			writeTypedError(ctx, w, apitypes.ErrorClassMissingQueryParam,
+				http.StatusBadRequest, "seq parameter required")
 			return
 		}
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid seq parameter")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid seq parameter")
 			return
 		}
 
-		row, err := deps.CommitmentStore.QueryBySequence(r.Context(), seq)
+		row, err := deps.CommitmentStore.QueryBySequence(ctx, seq)
 		if err != nil {
 			deps.Logger.Error("derivation commitment query", "seq", seq, "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
 			return
 		}
 		if row == nil {
-			writeError(w, http.StatusNotFound, "no derivation commitment covers this sequence")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "no derivation commitment covers this sequence")
 			return
 		}
 

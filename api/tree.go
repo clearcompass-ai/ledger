@@ -46,6 +46,7 @@ type TreeDeps struct {
 // With ?size=N: returns tree head at that specific size via GetBySize().
 func NewTreeHeadHandler(deps *TreeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		var head *apitypes.CosignedTreeHead
 		var err error
 
@@ -54,23 +55,26 @@ func NewTreeHeadHandler(deps *TreeDeps) http.HandlerFunc {
 		if sizeStr != "" {
 			size, parseErr := strconv.ParseUint(sizeStr, 10, 64)
 			if parseErr != nil {
-				writeError(w, http.StatusBadRequest, "invalid size parameter")
+				writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+					http.StatusBadRequest, "invalid size parameter")
 				return
 			}
 			// GetBySize exists in store/tree_heads.go — returns tree head
 			// at specific size, used by equivocation monitor and fraud proofs.
-			head, err = deps.TreeHeadStore.GetBySize(r.Context(), size)
+			head, err = deps.TreeHeadStore.GetBySize(ctx, size)
 		} else {
-			head, err = deps.TreeHeadStore.Latest(r.Context())
+			head, err = deps.TreeHeadStore.Latest(ctx)
 		}
 
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to fetch tree head")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "failed to fetch tree head")
 			deps.Logger.Error("tree head fetch", "error", err)
 			return
 		}
 		if head == nil {
-			writeError(w, http.StatusNotFound, "no cosigned tree head available")
+			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
+				http.StatusNotFound, "no cosigned tree head available")
 			return
 		}
 
@@ -99,27 +103,32 @@ func NewTreeHeadHandler(deps *TreeDeps) http.HandlerFunc {
 // NewTreeInclusionHandler creates GET /v1/tree/inclusion/{seq}.
 func NewTreeInclusionHandler(deps *TreeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		seqStr := r.PathValue("seq")
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid sequence number")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid sequence number")
 			return
 		}
 
-		head, err := deps.TreeHeadStore.Latest(r.Context())
+		head, err := deps.TreeHeadStore.Latest(ctx)
 		if err != nil || head == nil {
-			writeError(w, http.StatusServiceUnavailable, "no tree head available")
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusServiceUnavailable, "no tree head available")
 			return
 		}
 
 		if deps.Inclusion == nil {
-			writeError(w, http.StatusServiceUnavailable, "inclusion proofs not available")
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusServiceUnavailable, "inclusion proofs not available")
 			return
 		}
 
 		proof, err := deps.Inclusion.RawInclusionProof(seq, head.TreeSize)
 		if err != nil {
-			writeError(w, http.StatusNotFound,
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusNotFound,
 				fmt.Sprintf("inclusion proof: %s", err))
 			return
 		}
@@ -132,27 +141,32 @@ func NewTreeInclusionHandler(deps *TreeDeps) http.HandlerFunc {
 // NewTreeConsistencyHandler creates GET /v1/tree/consistency/{old}/{new}.
 func NewTreeConsistencyHandler(deps *TreeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		oldStr := r.PathValue("old")
 		newStr := r.PathValue("new")
 		oldSize, err1 := strconv.ParseUint(oldStr, 10, 64)
 		newSize, err2 := strconv.ParseUint(newStr, 10, 64)
 		if err1 != nil || err2 != nil {
-			writeError(w, http.StatusBadRequest, "invalid tree sizes")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "invalid tree sizes")
 			return
 		}
 		if oldSize >= newSize {
-			writeError(w, http.StatusBadRequest, "old size must be less than new size")
+			writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
+				http.StatusBadRequest, "old size must be less than new size")
 			return
 		}
 
 		if deps.Consistency == nil {
-			writeError(w, http.StatusServiceUnavailable, "consistency proofs not available")
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusServiceUnavailable, "consistency proofs not available")
 			return
 		}
 
 		proof, err := deps.Consistency.ConsistencyProof(oldSize, newSize)
 		if err != nil {
-			writeError(w, http.StatusNotFound,
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusNotFound,
 				fmt.Sprintf("consistency proof: %s", err))
 			return
 		}
