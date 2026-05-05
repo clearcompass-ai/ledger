@@ -2,16 +2,17 @@
 FILE PATH: store/tree_heads.go
 
 Cosigned tree head persistence. Normalized into two tables:
-  tree_heads:     "at this size, the root was X (computed with hash_algo Y)"
-  tree_head_sigs: "I (signer) vouch for this root (signed with sig_algo Z)"
 
-DESIGN RULE: One row per attestation. Witnesses, operator seals, and
+	tree_heads:     "at this size, the root was X (computed with hash_algo Y)"
+	tree_head_sigs: "I (signer) vouch for this root (signed with sig_algo Z)"
+
+DESIGN RULE: One row per attestation. Witnesses, ledger seals, and
 rehash attestations are all rows in tree_head_sigs. Append-only.
 
 30-YEAR EXTENSIBILITY:
   - New hash algorithm: new hash_algo value, new tree_heads row at same tree_size.
   - New signature algorithm: new sig_algo value, new tree_head_sigs row.
-  - Seal: operator signs existing root with stronger key. One INSERT.
+  - Seal: ledger signs existing root with stronger key. One INSERT.
   - Rehash seal: compute new root with new hash, INSERT head + sig.
 */
 package store
@@ -37,8 +38,8 @@ import (
 // CQRS). Re-exported as type aliases here for backwards
 // compatibility with existing in-package call sites.
 type (
-	CosignedTreeHead   = apitypes.CosignedTreeHead
-	TreeHeadSignature  = apitypes.TreeHeadSignature
+	CosignedTreeHead  = apitypes.CosignedTreeHead
+	TreeHeadSignature = apitypes.TreeHeadSignature
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

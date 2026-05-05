@@ -5,17 +5,17 @@ Evidence-based tests for the /v1/entries/{seq}/raw routing decision
 matrix. The handler's correctness is encoded entirely in the
 "which source serves the bytes?" decision, so tests focus on that:
 
-  WAL state                 Presigner       Outcome
-  ────────────────────────  ──────────────  ─────────────────────────
-  StateSequenced            (any)           200 OK + WAL bytes inline
-  StateManual               (any)           200 OK + WAL bytes inline
-  StatePending              (any)           200 OK + WAL bytes inline (defensive)
-  StateShipped              configured      302 + presigned URL
-  StateShipped              nil             500 (loud misconfig)
-  wal.ErrNotFound           configured      302 + presigned URL (post-GC path)
-  wal.ErrNotFound           nil             500
-  Postgres "no row at seq"  —               404
-  Invalid seq in path       —               400
+	WAL state                 Presigner       Outcome
+	────────────────────────  ──────────────  ─────────────────────────
+	StateSequenced            (any)           200 OK + WAL bytes inline
+	StateManual               (any)           200 OK + WAL bytes inline
+	StatePending              (any)           200 OK + WAL bytes inline (defensive)
+	StateShipped              configured      302 + presigned URL
+	StateShipped              nil             500 (loud misconfig)
+	wal.ErrNotFound           configured      302 + presigned URL (post-GC path)
+	wal.ErrNotFound           nil             500
+	Postgres "no row at seq"  —               404
+	Invalid seq in path       —               400
 
 Tests bypass HTTP middleware by constructing http.Request directly
 against the handler closure. Postgres is faked; WAL is faked; the
@@ -275,12 +275,12 @@ func TestRawEntry_PostGC_RedirectViaPresigner(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 5) Read-only operator (WAL=nil) → always redirects
+// 5) Read-only ledger (WAL=nil) → always redirects
 // ─────────────────────────────────────────────────────────────────────
 
 func TestRawEntry_NilWAL_AlwaysRedirects(t *testing.T) {
 	deps, store, _, _ := newDeps(t)
-	deps.WAL = nil // read-only operator
+	deps.WAL = nil // read-only ledger
 
 	hash := hashFor("entry-readonly")
 	store.hashesBySeq[42] = hash
@@ -464,7 +464,7 @@ func TestRawEntry_Redirect_StampsXSequenceAndXLogTime(t *testing.T) {
 }
 
 // X-Log-Time is omitted (not stamped as zero-valued string) when
-// the operator does not have a log_time on file. The SDK fetcher
+// the ledger does not have a log_time on file. The SDK fetcher
 // tolerates absence with a zero LogTime; the worst possible
 // regression would be stamping "0001-01-01T00:00:00Z" which the
 // fetcher would parse as a valid (but bogus) timestamp.

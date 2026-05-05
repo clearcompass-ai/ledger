@@ -146,7 +146,7 @@ func discardReplayLog() *slog.Logger {
 func buildReplayEntry(t *testing.T, payload string) (wire []byte, hash [32]byte) {
 	t.Helper()
 	hdr := envelope.ControlHeader{
-		SignerDID:   "did:test:operator",
+		SignerDID:   "did:test:ledger",
 		Destination: "did:test:log",
 		EventTime:   1714659120_000000,
 	}
@@ -288,7 +288,7 @@ func TestReplayer_applyOne_HappyPath(t *testing.T) {
 			Reader:       reader,
 			SplitIDIndex: splitW,
 			EntryLookup:  lookupW,
-			LogDID:       "did:web:operator",
+			LogDID:       "did:web:ledger",
 		},
 		logger: discardReplayLog(),
 	}
@@ -297,7 +297,7 @@ func TestReplayer_applyOne_HappyPath(t *testing.T) {
 		seq:      42,
 		schemaID: "schema-x",
 		splitID:  [32]byte{0xab, 0xcd},
-		signer:   "did:test:operator",
+		signer:   "did:test:ledger",
 		hash:     hash,
 		logTime:  1714659120_000000,
 	}
@@ -342,8 +342,8 @@ func TestReplayer_applyOne_HappyPath(t *testing.T) {
 	if l.entry.LogTimeMicros != row.logTime {
 		t.Errorf("LogTimeMicros = %d, want %d", l.entry.LogTimeMicros, row.logTime)
 	}
-	if l.entry.LogDID != "did:web:operator" {
-		t.Errorf("LogDID = %q, want did:web:operator", l.entry.LogDID)
+	if l.entry.LogDID != "did:web:ledger" {
+		t.Errorf("LogDID = %q, want did:web:ledger", l.entry.LogDID)
 	}
 }
 

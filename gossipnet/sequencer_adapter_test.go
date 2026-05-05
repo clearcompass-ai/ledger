@@ -10,18 +10,18 @@ read serving (0x0C).
 
 Coverage:
 
-  SequencerSplitIDAdapter
-    - nil store → nil adapter (sequencer's nil-tolerant path)
-    - nil adapter is callable (no-op)
-    - write round-trips through gossipstore.ListSplitIDIndexEntriesAt
-    - field mapping: EquivocatorDID, CanonicalHash, SigBytes preserved
+	SequencerSplitIDAdapter
+	  - nil store → nil adapter (sequencer's nil-tolerant path)
+	  - nil adapter is callable (no-op)
+	  - write round-trips through gossipstore.ListSplitIDIndexEntriesAt
+	  - field mapping: EquivocatorDID, CanonicalHash, SigBytes preserved
 
-  SequencerEntryLookupAdapter
-    - nil store → nil adapter
-    - nil adapter is callable (no-op)
-    - write round-trips through gossipstore.ListEntryLookupEntriesAt
-    - field mapping: CanonicalBytes, LogTimeMicros, LogDID preserved
-    - static interface check (var _ ... = ...)
+	SequencerEntryLookupAdapter
+	  - nil store → nil adapter
+	  - nil adapter is callable (no-op)
+	  - write round-trips through gossipstore.ListEntryLookupEntriesAt
+	  - field mapping: CanonicalBytes, LogTimeMicros, LogDID preserved
+	  - static interface check (var _ ... = ...)
 */
 package gossipnet
 
@@ -100,7 +100,7 @@ func TestSequencerSplitIDAdapter_RoundTripsFields(t *testing.T) {
 	want := sequencer.SplitIDIndexEntry{
 		EquivocatorDID: "did:web:op",
 		CanonicalHash:  [32]byte{0x01, 0x02, 0x03},
-		SigBytes:       []byte("operator-signature"),
+		SigBytes:       []byte("ledger-signature"),
 	}
 
 	if err := a.WriteSplitIDIndexEntry(
@@ -144,7 +144,7 @@ func TestSequencerEntryLookupAdapter_RoundTripsFields(t *testing.T) {
 	want := sequencer.EntryLookupIndexEntry{
 		CanonicalBytes: []byte("canonical-wire-bytes"),
 		LogTimeMicros:  1714659120_000000,
-		LogDID:         "did:web:operator.example",
+		LogDID:         "did:web:ledger.example",
 	}
 
 	if err := a.WriteEntryLookupEntry(

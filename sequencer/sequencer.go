@@ -5,8 +5,8 @@ Sequencer — the asynchronous pipeline worker that drains
 StatePending entries from the WAL into Tessera + Postgres
 entry_index. The companion to the Shipper:
 
-  Shipper:    StateSequenced → bytestore.WriteEntry → StateShipped
-  Sequencer:  StatePending   → tessera.AppendLeaf  → StateSequenced
+	Shipper:    StateSequenced → bytestore.WriteEntry → StateShipped
+	Sequencer:  StatePending   → tessera.AppendLeaf  → StateSequenced
 
 Together they keep entries flowing from "durable in WAL" all the
 way through to "served via 302 redirect" without blocking the
@@ -14,13 +14,13 @@ HTTP admission path.
 
 ROLE IN THE SCT/MMD ARCHITECTURE:
 
-  POST /v1/entries returns a SignedCertificateTimestamp (SCT)
-  immediately after wal.Submit fsync. The Sequencer is what
-  redeems that promise — it pulls each pending entry, calls
-  tessera.AppendLeaf (antispam-idempotent), INSERTs the
-  metadata into entry_index, and transitions the WAL state to
-  Sequenced. The Maximum Merge Delay (OPERATOR_MMD, default 24h)
-  is the SLA on Sequencer drain latency.
+	POST /v1/entries returns a SignedCertificateTimestamp (SCT)
+	immediately after wal.Submit fsync. The Sequencer is what
+	redeems that promise — it pulls each pending entry, calls
+	tessera.AppendLeaf (antispam-idempotent), INSERTs the
+	metadata into entry_index, and transitions the WAL state to
+	Sequenced. The Maximum Merge Delay (LEDGER_MMD, default 24h)
+	is the SLA on Sequencer drain latency.
 
 WHY A SEPARATE PACKAGE:
 
@@ -36,25 +36,25 @@ WHY A SEPARATE PACKAGE:
 
 INTERFACES:
 
-  WAL          — minimal surface needed for drain (IterateInflight,
-                 Read, MetaState, Sequence, MarkRetry, MarkManual).
-                 *wal.Committer satisfies it.
-  Tessera      — AppendLeaf only. *tessera.EmbeddedAppender's
-                 backend satisfies it.
-  EntryInserter — INSERTs the entry_index row inside a Postgres
-                 transaction. *store.EntryStore satisfies it.
+	WAL          — minimal surface needed for drain (IterateInflight,
+	               Read, MetaState, Sequence, MarkRetry, MarkManual).
+	               *wal.Committer satisfies it.
+	Tessera      — AppendLeaf only. *tessera.EmbeddedAppender's
+	               backend satisfies it.
+	EntryInserter — INSERTs the entry_index row inside a Postgres
+	               transaction. *store.EntryStore satisfies it.
 
 CONFIG:
 
-  PollInterval  — drain wakeup cadence (default 1s, override via
-                  OPERATOR_SEQUENCER_INTERVAL).
-  MaxInFlight   — bounded concurrency for per-entry processing
-                  (default 4, override via
-                  OPERATOR_SEQUENCER_MAX_INFLIGHT).
-  MaxAttempts   — per-entry retry cap before transition to
-                  StateManual (default 10).
-  BackoffBase   — initial backoff between retries (default 1s).
-  BackoffMax    — backoff ceiling (default 60s).
+	PollInterval  — drain wakeup cadence (default 1s, override via
+	                LEDGER_SEQUENCER_INTERVAL).
+	MaxInFlight   — bounded concurrency for per-entry processing
+	                (default 4, override via
+	                LEDGER_SEQUENCER_MAX_INFLIGHT).
+	MaxAttempts   — per-entry retry cap before transition to
+	                StateManual (default 10).
+	BackoffBase   — initial backoff between retries (default 1s).
+	BackoffMax    — backoff ceiling (default 60s).
 
 The drain itself lives in loop.go.
 */
@@ -114,11 +114,11 @@ const (
 // Metrics is the atomic counter snapshot the supervisor scrapes.
 // Concurrency-safe: every field is touched only via sync/atomic.
 type Metrics struct {
-	drainCycles  atomic.Uint64
-	processed    atomic.Uint64
-	failures     atomic.Uint64
-	manualCount  atomic.Uint64
-	currentLag   atomic.Int64 // pending entries observed at last drain
+	drainCycles atomic.Uint64
+	processed   atomic.Uint64
+	failures    atomic.Uint64
+	manualCount atomic.Uint64
+	currentLag  atomic.Int64 // pending entries observed at last drain
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
@@ -142,7 +142,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	}
 }
 
-// SplitIDIndexWriter is the operator-internal hook the
+// SplitIDIndexWriter is the ledger-internal hook the
 // Sequencer invokes after a successful Phase 2 commit to
 // populate the splitid index (Badger prefix 0x0A) — the
 // gossipnet.EquivocationScanner subscribes to this index and
@@ -174,7 +174,7 @@ type SplitIDIndexEntry struct {
 	SigBytes       []byte
 }
 
-// EntryLookupWriter is the operator-internal hook the Sequencer
+// EntryLookupWriter is the ledger-internal hook the Sequencer
 // invokes after a successful Phase 2 commit to populate the
 // entry-lookup projection (Badger prefix 0x0C) that backs
 // /v1/commitments/by-split-id under the Pure CQRS principle (P8).
@@ -271,7 +271,7 @@ func NewSequencer(
 }
 
 // WithSplitIDIndex wires the gossipstore-backed splitid index
-// writer. Optional; called once at startup by cmd/operator/main.go
+// writer. Optional; called once at startup by cmd/ledger/main.go
 // after the gossipstore is constructed. When nil, the Sequencer
 // runs without the splitid write.
 //
@@ -284,7 +284,7 @@ func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
 }
 
 // WithEntryLookup wires the gossipstore-backed entry-lookup
-// projection writer (Badger prefix 0x0C). The operator's log DID
+// projection writer (Badger prefix 0x0C). The ledger's log DID
 // is captured at wiring time and stamped into every 0x0C row so
 // the read endpoint can return it verbatim.
 //
@@ -318,7 +318,7 @@ func (s *Sequencer) Metrics() MetricsSnapshot {
 // Run starts the pipeline and blocks until ctx is cancelled.
 //
 // Boot drain: the first cycle catches every entry left in
-// StatePending across operator restarts. There is no separate
+// StatePending across ledger restarts. There is no separate
 // "Reconcile" entry point — the polling loop IS the
 // reconciliation, and on a quiet log it idles cheaply.
 //
@@ -356,7 +356,7 @@ func (s *Sequencer) Run(ctx context.Context) error {
 	}
 
 	// First drain immediately on Run start so a freshly-booted
-	// operator picks up crash-recovered entries before the first
+	// ledger picks up crash-recovered entries before the first
 	// tick. The PollInterval gates only steady-state pacing.
 	s.drainOnce(ctx)
 
@@ -390,4 +390,3 @@ func (s *Sequencer) resetAttempts(hash [32]byte) {
 	defer s.attemptsMu.Unlock()
 	delete(s.attempts, hash)
 }
-

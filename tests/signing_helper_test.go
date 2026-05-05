@@ -4,22 +4,22 @@ FILE PATH: tests/signing_helper_test.go
 The v7.75 signed-entry test helper. Replaces the v0.3.0 NewEntry +
 MustAppendSignature flow with the canonical post-Wave-1 signing path:
 
-  1. envelope.NewUnsignedEntry(hdr, payload)
-       structural validation; Signatures left nil per the v7.75 builder
-       contract.
-  2. hash := sha256.Sum256(envelope.SigningPayload(entry))
-       SigningPayload is the canonical bytes WITHOUT the signatures
-       section (using envelope.EntryIdentity here would panic — that
-       function calls Serialize on an unsigned entry).
-  3. signatures.SignEntry(hash, priv)
-       SDK ECDSA primitive over secp256k1.
-  4. entry.Signatures = []envelope.Signature{{...}}
-       Caller-side append, mirroring builder/entry_builders.go's
-       documented "produce → sign → append" sequence.
-  5. entry.Validate()
-       Enforces the full invariant set: Signatures[0].SignerDID ==
-       Header.SignerDID, signature length / algoID, primary-cosigner
-       ordering, etc.
+ 1. envelope.NewUnsignedEntry(hdr, payload)
+    structural validation; Signatures left nil per the v7.75 builder
+    contract.
+ 2. hash := sha256.Sum256(envelope.SigningPayload(entry))
+    SigningPayload is the canonical bytes WITHOUT the signatures
+    section (using envelope.EntryIdentity here would panic — that
+    function calls Serialize on an unsigned entry).
+ 3. signatures.SignEntry(hash, priv)
+    SDK ECDSA primitive over secp256k1.
+ 4. entry.Signatures = []envelope.Signature{{...}}
+    Caller-side append, mirroring builder/entry_builders.go's
+    documented "produce → sign → append" sequence.
+ 5. entry.Validate()
+    Enforces the full invariant set: Signatures[0].SignerDID ==
+    Header.SignerDID, signature length / algoID, primary-cosigner
+    ordering, etc.
 
 After (5), entry.Serialize is total — passing the entry to
 envelope.Serialize, envelope.EntryIdentity, or any tile-leaf
@@ -36,7 +36,7 @@ WHY A DEDICATED HELPER:
     entry" is.
   - github.com/clearcompass-ai/attesta/internal/testkeys is not
     importable from this module (Go's internal/ rule), so the
-    operator's test tree carries its own thin wrapper.
+    ledger's test tree carries its own thin wrapper.
 
 OUT OF SCOPE FOR THIS HELPER:
   - Tests that DELIBERATELY forge malformed entries (bypass

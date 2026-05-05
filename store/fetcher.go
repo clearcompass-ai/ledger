@@ -7,45 +7,45 @@ where the entry currently lives.
 
 WHY HERE (NOT IN wal/ OR bytestore/):
 
-  Per the locked architectural decision, neither package may import
-  the other. wal/ stays a pure local-disk primitive; bytestore/
-  stays a pure network primitive. The composite lives at the next
-  layer up — store/ owns metadata-aware coordination of the two
-  byte sources, mirroring how PostgresEntryFetcher already
-  coordinates Postgres metadata with the byte source.
+	Per the locked architectural decision, neither package may import
+	the other. wal/ stays a pure local-disk primitive; bytestore/
+	stays a pure network primitive. The composite lives at the next
+	layer up — store/ owns metadata-aware coordination of the two
+	byte sources, mirroring how PostgresEntryFetcher already
+	coordinates Postgres metadata with the byte source.
 
 ROUTING RULES:
 
-  Step 1: Try the WAL first.
-    Pending and Sequenced entries always live there. Shipped
-    entries also live there until the GC retention buffer
-    (HWM - retention) kicks in.
+	Step 1: Try the WAL first.
+	  Pending and Sequenced entries always live there. Shipped
+	  entries also live there until the GC retention buffer
+	  (HWM - retention) kicks in.
 
-  Step 2: On wal.ErrNotFound (the cache-miss signal), fall through
-    to bytestore.
-    This is the post-retention path: the entry has been shipped
-    and the WAL has GC'd its local copy. Fetch from the production
-    byte vault.
+	Step 2: On wal.ErrNotFound (the cache-miss signal), fall through
+	  to bytestore.
+	  This is the post-retention path: the entry has been shipped
+	  and the WAL has GC'd its local copy. Fetch from the production
+	  byte vault.
 
-  Step 3: Any non-NotFound WAL error short-circuits.
-    Transport / decode failures from Badger are not "ask the
-    network instead" signals; they're operational alarms. Return
-    the error rather than masking it with a bytestore call.
+	Step 3: Any non-NotFound WAL error short-circuits.
+	  Transport / decode failures from Badger are not "ask the
+	  network instead" signals; they're operational alarms. Return
+	  the error rather than masking it with a bytestore call.
 
 INTERFACE COMPATIBILITY:
 
-  CompositeByteReader satisfies bytestore.Reader so existing
-  fetchers (PostgresEntryFetcher, PostgresCommitmentFetcher,
-  PostgresQueryAPI) need no signature change — the composition
-  root in cmd/operator/main.go injects a *CompositeByteReader
-  where it previously injected a bytestore.GCS / bytestore.S3
-  directly. The fetcher code path is untouched.
+	CompositeByteReader satisfies bytestore.Reader so existing
+	fetchers (PostgresEntryFetcher, PostgresCommitmentFetcher,
+	PostgresQueryAPI) need no signature change — the composition
+	root in cmd/ledger/main.go injects a *CompositeByteReader
+	where it previously injected a bytestore.GCS / bytestore.S3
+	directly. The fetcher code path is untouched.
 
 WIRE FORMAT:
 
-  Both sources return the same v7.75 wire bytes (single blob,
-  signatures section embedded). The composite is opaque w.r.t.
-  envelope structure — it just routes byte slices.
+	Both sources return the same v7.75 wire bytes (single blob,
+	signatures section embedded). The composite is opaque w.r.t.
+	envelope structure — it just routes byte slices.
 */
 package store
 
@@ -94,8 +94,8 @@ func NewCompositeByteReader(w WALByteReader, bs bytestore.Reader, logger *slog.L
 // ReadEntry returns wire bytes for the entry at (seq, hash).
 //
 // Lookup order:
-//   1. WAL (when configured). Returns immediately on hit.
-//   2. bytestore (when configured) on wal.ErrNotFound.
+//  1. WAL (when configured). Returns immediately on hit.
+//  2. bytestore (when configured) on wal.ErrNotFound.
 //
 // Errors:
 //   - WAL transport/decode error → returned (do not fall through)

@@ -3,21 +3,21 @@ FILE PATH: tests/e2e_graceful_shutdown_test.go
 
 Validates graceful-shutdown semantics for the WAL + Shipper:
 
-  TestE2E_ShutdownDuringShipping_Drains
-    Submits N entries, lets the Shipper start consuming, then
-    cancels ctx mid-flight. After full harness shutdown, the WAL
-    must be in a consistent state:
-      - HWM is some value H ≤ N (monotonic, never overruns).
-      - Every entry with seq ≤ HWM is StateShipped.
-      - Every entry with seq > HWM is StateSequenced (not half-shipped:
-        the Shipper guarantees bytestore.WriteEntry completes BEFORE
-        wal.MarkShipped runs, so a half-state is impossible).
+	TestE2E_ShutdownDuringShipping_Drains
+	  Submits N entries, lets the Shipper start consuming, then
+	  cancels ctx mid-flight. After full harness shutdown, the WAL
+	  must be in a consistent state:
+	    - HWM is some value H ≤ N (monotonic, never overruns).
+	    - Every entry with seq ≤ HWM is StateShipped.
+	    - Every entry with seq > HWM is StateSequenced (not half-shipped:
+	      the Shipper guarantees bytestore.WriteEntry completes BEFORE
+	      wal.MarkShipped runs, so a half-state is impossible).
 
-  TestE2E_RestartCompletesShipping
-    Continuation of the same WAL volume + bytestore: spawns a fresh
-    harness pointed at the persisted WAL path and the same Memory
-    backend instance. The new Shipper picks up the leftover
-    Sequenced entries, ships them, and HWM converges to N.
+	TestE2E_RestartCompletesShipping
+	  Continuation of the same WAL volume + bytestore: spawns a fresh
+	  harness pointed at the persisted WAL path and the same Memory
+	  backend instance. The new Shipper picks up the leftover
+	  Sequenced entries, ships them, and HWM converges to N.
 
 BOTH TESTS USE A FILE-BACKED WAL (t.TempDir()) so the close-and-
 reopen path actually exercises Badger persistence. The harness in

@@ -12,28 +12,33 @@ The wire is identical across these so one adapter covers them all.
 Switching providers is a config change, not a code change.
 
 CREDENTIALS:
-  Default credential chain (config.LoadDefaultConfig). Picks up:
-    - explicit AccessKey/SecretKey passed via S3Config (RustFS)
-    - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
-    - ~/.aws/credentials profile
-    - IRSA / ECS task role / EC2 instance role
-  In production on AWS, prefer IAM roles — never put keys in env.
+
+	Default credential chain (config.LoadDefaultConfig). Picks up:
+	  - explicit AccessKey/SecretKey passed via S3Config (RustFS)
+	  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
+	  - ~/.aws/credentials profile
+	  - IRSA / ECS task role / EC2 instance role
+	In production on AWS, prefer IAM roles — never put keys in env.
 
 PATH-STYLE vs VIRTUAL-HOST URLS:
-  AWS S3 uses virtual-host style (bucket.s3.region.amazonaws.com).
-  RustFS uses path-style (host:port/bucket/key). The PathStyle
-  config field selects between them.
+
+	AWS S3 uses virtual-host style (bucket.s3.region.amazonaws.com).
+	RustFS uses path-style (host:port/bucket/key). The PathStyle
+	config field selects between them.
 
 OBJECT LAYOUT:
-  Same layoutKey as GCS: <prefix>/<seq:016x>/<hash_hex>. A bucket
-  written by GCS can be read by S3 and vice versa.
+
+	Same layoutKey as GCS: <prefix>/<seq:016x>/<hash_hex>. A bucket
+	written by GCS can be read by S3 and vice versa.
 
 PRESIGNED URLS:
-  SigV4 via s3.PresignClient.PresignGetObject. TTL clamped to 7 days
-  (the AWS SigV4 ceiling). Local SigV4 — no remote round-trip.
+
+	SigV4 via s3.PresignClient.PresignGetObject. TTL clamped to 7 days
+	(the AWS SigV4 ceiling). Local SigV4 — no remote round-trip.
 
 CACHING:
-  LRU cache, identical model to the GCS adapter.
+
+	LRU cache, identical model to the GCS adapter.
 */
 package bytestore
 

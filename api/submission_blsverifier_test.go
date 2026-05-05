@@ -6,20 +6,20 @@ admission handler — the R1 fix.
 
 Two pieces of evidence:
 
-  1. The api package compiles a reference to
-     deps.BLSQuorumVerifier.VerifyEntry from the prepareSubmission
-     hot path. A regression that drops the field or the call
-     would fail compilation of these tests.
+ 1. The api package compiles a reference to
+    deps.BLSQuorumVerifier.VerifyEntry from the prepareSubmission
+    hot path. A regression that drops the field or the call
+    would fail compilation of these tests.
 
-  2. The wiring contract is honored: SubmissionDeps.BLSQuorumVerifier
-     accepts a *admission.BLSQuorumVerifier (not some shim type).
-     A future refactor that swaps the field type would break this
-     test, forcing the same swap to happen in cmd/operator/main.go.
+ 2. The wiring contract is honored: SubmissionDeps.BLSQuorumVerifier
+    accepts a *admission.BLSQuorumVerifier (not some shim type).
+    A future refactor that swaps the field type would break this
+    test, forcing the same swap to happen in cmd/ledger/main.go.
 
 # WHY NOT GO/TOOLS CALLGRAPH
 
 Importing golang.org/x/tools/go/callgraph would pull a multi-MB
-dependency tree into the operator's go.mod for one assertion.
+dependency tree into the ledger's go.mod for one assertion.
 A static-reference compile-time test is the same evidence with
 zero dep cost.
 */

@@ -1,8 +1,8 @@
 /*
 FILE PATH: gossipstore/badger_store.go
 
-BadgerDB-backed gossip.Store for the operator. Co-tenants the
-operator's existing Badger handle (wal/) under a distinct key
+BadgerDB-backed gossip.Store for the ledger. Co-tenants the
+ledger's existing Badger handle (wal/) under a distinct key
 prefix (0x07); shares the LSM tree, value log, and WAL.
 
 # WHY CO-TENANT WITH WAL
@@ -32,13 +32,13 @@ and stats counter all advance together or not at all.
 
 # 8M-11M ENTRIES, 700-1K TPS PEAK
 
-Capacity targets reflect the operator's primary gossip workload:
+Capacity targets reflect the ledger's primary gossip workload:
 witness cosignatures (≤ N peers × commit rate) + equivocation
 findings (rare) + originator rotations (very rare). Per-entry
 size is dominated by the JSON SignedEvent body (~800-1200 bytes
 typical for a cosigned tree head + sigs); 11M × 1200 ≈ 13 GB
 which fits comfortably in Badger's LSM + value log architecture
-on production NVMe (typical operator ≥ 200 GB local disk).
+on production NVMe (typical ledger ≥ 200 GB local disk).
 
 Write throughput at 700-1000 TPS:
 
@@ -379,7 +379,7 @@ func (s *BadgerStore) Get(ctx context.Context, eventID [32]byte) (gossip.SignedE
 // Close implements gossip.Store. Cancels the GC ticker and drains
 // in-flight Appends by acquiring + releasing every shard lock.
 // The underlying *badger.DB is NOT closed — its lifecycle is owned
-// by the caller (the operator's WAL package), which closes it
+// by the caller (the ledger's WAL package), which closes it
 // after every package has released its references.
 func (s *BadgerStore) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

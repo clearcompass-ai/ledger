@@ -24,9 +24,9 @@ PER-ENTRY PIPELINE:
 ERROR HANDLING:
 
 	Per-entry errors don't abort the iteration. Each entry tracks a
-	retry counter (in-memory; resets on operator restart). After
+	retry counter (in-memory; resets on ledger restart). After
 	cfg.MaxAttempts (default 10) the entry transitions to
-	StateManual and the Sequencer stops attempting it; operators
+	StateManual and the Sequencer stops attempting it; ledgers
 	inspect WAL state and take action.
 
 	Transient failures (Tessera transport blip, Postgres lock
@@ -267,13 +267,13 @@ func (s *Sequencer) insertEntryIndex(
 	}
 
 	// Postgres committed. Now write the splitid index entry to
-	// the operator-local Badger store (prefix 0x0A) so the
+	// the ledger-local Badger store (prefix 0x0A) so the
 	// gossipnet.EquivocationScanner's db.Subscribe wakes and
 	// detects collisions. AFTER the Postgres commit so a
 	// rollback never leaves a stale index entry.
 	//
 	// Best-effort: a write failure here doesn't block the commit
-	// path. Postgres still has the durable record; on operator
+	// path. Postgres still has the durable record; on ledger
 	// restart the splitid index is rebuilt by replaying
 	// entry_index (future migration — not in this PR's scope).
 	if extractedSplitID != nil && s.splitIDIndex != nil && len(entry.Signatures) > 0 {

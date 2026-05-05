@@ -5,8 +5,9 @@ SMT leaf data endpoints. Returns OriginTip and AuthorityTip for a given
 subject key. Distinct from /v1/smt/proof/{key} which returns Merkle proofs.
 
 Routes:
-  GET  /v1/smt/leaf/{key}   → single LeafResponse
-  POST /v1/smt/leaves       → []LeafResponse (batch)
+
+	GET  /v1/smt/leaf/{key}   → single LeafResponse
+	POST /v1/smt/leaves       → []LeafResponse (batch)
 
 Delegates to PostgresLeafStore.Get() which returns *types.SMTLeaf
 (store/smt_state.go). Reuses SMTDeps from proofs.go.

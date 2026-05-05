@@ -4,35 +4,35 @@ FILE PATH: wal/dedup.go
 TesseraDedup — a Badger-backed implementation of the upstream
 Tessera library's deduplicator interface. Backed by the SAME Badger
 DB as the WAL itself (separate keyspace prefix), so dedup state
-shares the operator's single durability medium with the WAL: same
+shares the ledger's single durability medium with the WAL: same
 fsync, same backup, same recovery story.
 
 THE TESSERA-DEDUP CONTRACT:
 
-  Tessera invokes Get(identity) before each Add to detect previously
-  integrated entries. On a hit, Tessera returns the existing index
-  to the caller — no new sequence assigned. On a miss, integration
-  proceeds normally and Tessera invokes Set(identity, idx) to record
-  the assignment.
+	Tessera invokes Get(identity) before each Add to detect previously
+	integrated entries. On a hit, Tessera returns the existing index
+	to the caller — no new sequence assigned. On a miss, integration
+	proceeds normally and Tessera invokes Set(identity, idx) to record
+	the assignment.
 
-  Identity is the SHA-256 of the entry's serialized form
-  (envelope.EntryIdentity = sha256(envelope.Serialize(entry))).
-  Both Get and Set are called in Tessera's hot path; this adapter
-  uses single-row Badger ops with no extra synchronization.
+	Identity is the SHA-256 of the entry's serialized form
+	(envelope.EntryIdentity = sha256(envelope.Serialize(entry))).
+	Both Get and Set are called in Tessera's hot path; this adapter
+	uses single-row Badger ops with no extra synchronization.
 
 WHY SAME BADGER:
 
-  Reconciliation re-Adds inflight entries on boot (the integrity
-  package owns this loop). For Re-Add to be idempotent, Tessera must
-  return the previously-assigned index for any hash it has seen.
-  That requires the dedup to survive the same crashes the WAL does.
-  Sharing the BadgerDB instance ensures this — both go through the
-  same fsync, both restore together, no chance of a state-mismatch
-  window between two databases.
+	Reconciliation re-Adds inflight entries on boot (the integrity
+	package owns this loop). For Re-Add to be idempotent, Tessera must
+	return the previously-assigned index for any hash it has seen.
+	That requires the dedup to survive the same crashes the WAL does.
+	Sharing the BadgerDB instance ensures this — both go through the
+	same fsync, both restore together, no chance of a state-mismatch
+	window between two databases.
 
 KEY SHAPE:
 
-  See keyspace.go: tessera_dedup:<identity:32> → <seq:8 bigendian>.
+	See keyspace.go: tessera_dedup:<identity:32> → <seq:8 bigendian>.
 */
 package wal
 

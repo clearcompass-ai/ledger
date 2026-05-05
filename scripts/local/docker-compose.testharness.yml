@@ -1,11 +1,11 @@
-# Wave 1 v3 §CI2 — Operator integration test harness.
+# Wave 1 v3 §CI2 — Ledger integration test harness.
 #
 # v3 changelog item "CI2 Database Emulator Fixed" replaces the v1/v2
-# Spanner emulator with a Postgres container so the operator's
+# Spanner emulator with a Postgres container so the ledger's
 # native pgxpool connections, embedded schemaDDL queries, and
 # pg_advisory_lock builder exclusivity all work without protocol
 # adapters. Tessera storage is fronted by fake-gcs-server because
-# the operator currently writes Tessera tiles to GCS-shaped object
+# the ledger currently writes Tessera tiles to GCS-shaped object
 # storage; in production this is real GCS, in CI it is the local
 # emulator.
 #
@@ -34,7 +34,7 @@ version: "3.9"
 
 services:
   # ─────────────────────────────────────────────────────────────────
-  # Postgres — operator's metadata + index store
+  # Postgres — ledger's metadata + index store
   # ─────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -61,7 +61,7 @@ services:
       - "-scheme=http"
       - "-port=4443"
       - "-public-host=localhost:4443"
-      # The bucket the operator writes tiles to. Created at
+      # The bucket the ledger writes tiles to. Created at
       # startup so tests don't have to provision it.
       - "-data=/data"
     ports:

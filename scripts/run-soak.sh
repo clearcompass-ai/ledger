@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/run-soak.sh
 #
-# Runs the build-tag-isolated operator soak test (tests/soak_test.go).
+# Runs the build-tag-isolated ledger soak test (tests/soak_test.go).
 # Default: 1M entries against real GCS, ~3 min sustained throughput.
 # Lower the count via ATTESTA_SOAK_ENTRIES for quick iteration.
 #
@@ -63,7 +63,7 @@ CONCURRENCY="${ATTESTA_SOAK_CONCURRENCY:-8}"
 SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
 P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
 
-echo "== attesta operator soak =="
+echo "== attesta ledger soak =="
 echo "   dsn:          (set, omitted)"
 echo "   bucket:       ${ATTESTA_TEST_GCS_BUCKET}"
 echo "   creds:        ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"

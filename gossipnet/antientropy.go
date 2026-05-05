@@ -1,7 +1,7 @@
 /*
 FILE PATH: gossipnet/antientropy.go
 
-Anti-entropy catchup loop for the operator's gossip Store.
+Anti-entropy catchup loop for the ledger's gossip Store.
 
 # WHY ANTI-ENTROPY
 
@@ -12,19 +12,19 @@ out of sync without a pull-side recovery primitive.
 
 Anti-entropy closes that gap. Each tick the loop:
 
-  1. For each configured peer, reads our Store's Head(peerDID).
-     The Head's Lamport is the highest event from that peer we've
-     successfully Append'd locally.
-  2. Calls peer.IterSince(originator=peerDID, lamport=headLamport,
-     limit=BatchSize) to fetch any events the peer has emitted
-     since.
-  3. Append's each returned event into our Store. The Store's
-     idempotency contract (I9) makes re-receives a no-op, so even
-     if a peer redundantly serves events we already have, the
-     loop converges.
-  4. Honors ErrRateLimited: when a peer's rate limiter throttles
-     us, sleep for the parsed Retry-After and continue with the
-     next peer. The loop never blocks indefinitely on one peer.
+ 1. For each configured peer, reads our Store's Head(peerDID).
+    The Head's Lamport is the highest event from that peer we've
+    successfully Append'd locally.
+ 2. Calls peer.IterSince(originator=peerDID, lamport=headLamport,
+    limit=BatchSize) to fetch any events the peer has emitted
+    since.
+ 3. Append's each returned event into our Store. The Store's
+    idempotency contract (I9) makes re-receives a no-op, so even
+    if a peer redundantly serves events we already have, the
+    loop converges.
+ 4. Honors ErrRateLimited: when a peer's rate limiter throttles
+    us, sleep for the parsed Retry-After and continue with the
+    next peer. The loop never blocks indefinitely on one peer.
 
 # CURSOR PERSISTENCE — VIA STORE HEAD
 
@@ -37,7 +37,7 @@ of truth (the Store), one progress signal (Head).
 # 30 LOC GOAL
 
 The SDK's plan-document budget for anti-entropy was ~30 LOC
-operator-side. The actual code is closer to 50 because of error
+ledger-side. The actual code is closer to 50 because of error
 classification + per-peer logging. Still small relative to its
 correctness contribution.
 
@@ -76,7 +76,7 @@ const DefaultAntiEntropyBatchSize = 100
 
 // AntiEntropyPeer identifies one peer the loop pulls from.
 type AntiEntropyPeer struct {
-	// DID is the peer operator's originator DID. Used as the
+	// DID is the peer ledger's originator DID. Used as the
 	// IterCursor.Originator field — we fetch events authored by
 	// this DID specifically.
 	DID string
@@ -191,7 +191,7 @@ func (a *AntiEntropy) Run(ctx context.Context) error {
 	defer t.Stop()
 
 	// Run one tick immediately so a fresh boot doesn't wait the
-	// first interval before catching up. Common when an operator
+	// first interval before catching up. Common when an ledger
 	// crashes + restarts mid-divergence.
 	a.tick(ctx)
 

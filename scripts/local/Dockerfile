@@ -12,14 +12,14 @@ RUN go mod download
 
 # Copy source code and build
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /operator ./cmd/operator
+RUN CGO_ENABLED=0 GOOS=linux go build -o /ledger ./cmd/ledger
 
 # Minimal runtime image
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /
-COPY --from=builder /operator /operator
+COPY --from=builder /ledger /ledger
 
 EXPOSE 8080
-ENTRYPOINT ["/operator"]
+ENTRYPOINT ["/ledger"]

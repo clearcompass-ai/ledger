@@ -6,33 +6,33 @@ End-to-end happy-path validation for the WAL → Tessera → bytestore
 
 WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 
-  unit tests (wal/, shipper/, integrity/, store/) prove each box
-  in isolation. http_integration_test.go exercises submission +
-  query against the testserver harness but uses Presigner=nil
-  (testserver_test.go:212 says any redirect attempt indicates an
-  unexpected state transition). Neither suite exercises the
-  cross-component sequence:
+	unit tests (wal/, shipper/, integrity/, store/) prove each box
+	in isolation. http_integration_test.go exercises submission +
+	query against the testserver harness but uses Presigner=nil
+	(testserver_test.go:212 says any redirect attempt indicates an
+	unexpected state transition). Neither suite exercises the
+	cross-component sequence:
 
-    1. POST /v1/entries lands in the WAL durably (state=Sequenced).
-    2. The Shipper migrates bytes from WAL → bytestore + flips the
-       state to Shipped + advances HWM.
-    3. GET /v1/entries/{seq}/raw returns 302 with a Location URL
-       containing the entry's hash (static-verifiability invariant).
-    4. Following the URL fetches the same wire bytes the producer
-       submitted.
+	  1. POST /v1/entries lands in the WAL durably (state=Sequenced).
+	  2. The Shipper migrates bytes from WAL → bytestore + flips the
+	     state to Shipped + advances HWM.
+	  3. GET /v1/entries/{seq}/raw returns 302 with a Location URL
+	     containing the entry's hash (static-verifiability invariant).
+	  4. Following the URL fetches the same wire bytes the producer
+	     submitted.
 
-  This file builds a parallel harness (startE2EOperator) — separate
-  from startTestOperator — that wires a Presigner-aware bytestore
-  and runs the Shipper. The harness omits builder/anchor/witness
-  pieces because those are exercised elsewhere and would only add
-  flake surface.
+	This file builds a parallel harness (startE2EOperator) — separate
+	from startTestOperator — that wires a Presigner-aware bytestore
+	and runs the Shipper. The harness omits builder/anchor/witness
+	pieces because those are exercised elsewhere and would only add
+	flake surface.
 
 TEST GATES:
 
-  All tests Skip when ATTESTA_TEST_DSN is unset. No GCS/S3 needed —
-  the local presign backend is an httptest.Server backed by an
-  in-memory bytestore.Memory, so the redirect path is fully exercised
-  without cloud dependencies.
+	All tests Skip when ATTESTA_TEST_DSN is unset. No GCS/S3 needed —
+	the local presign backend is an httptest.Server backed by an
+	in-memory bytestore.Memory, so the redirect path is fully exercised
+	without cloud dependencies.
 */
 package tests
 
@@ -146,9 +146,9 @@ type e2eOperator struct {
 	Shipper *shipper.Shipper
 
 	// SCT/MMD additions
-	OperatorSignerPriv *ecdsa.PrivateKey
-	LogDID             string
-	MMD                time.Duration
+	LedgerSignerPriv *ecdsa.PrivateKey
+	LogDID           string
+	MMD              time.Duration
 
 	cancel context.CancelFunc
 }
@@ -227,15 +227,15 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
-	// Operator signer key — secp256k1 ECDSA, used to sign SCTs.
-	// Tests get a fresh ephemeral key per operator boot.
+	// Ledger signer key — secp256k1 ECDSA, used to sign SCTs.
+	// Tests get a fresh ephemeral key per ledger boot.
 	opSignerPriv, err := signatures.GenerateKey()
 	if err != nil {
 		_ = walc.Close()
 		_ = walDB.Close()
 		pool.Close()
 		cancel()
-		t.Fatalf("operator signer key: %v", err)
+		t.Fatalf("ledger signer key: %v", err)
 	}
 
 	// ── HTTP handlers ───────────────────────────────────────────────
@@ -254,11 +254,11 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 			Credits:     creditStore,
 			DIDResolver: nil,
 		},
-		LogDID:             testLogDID,
-		OperatorDID:        testOperatorDID,
-		OperatorSignerPriv: opSignerPriv,
-		MaxEntrySize:       1 << 20,
-		Logger:             logger,
+		LogDID:           testLogDID,
+		LedgerDID:        testOperatorDID,
+		LedgerSignerPriv: opSignerPriv,
+		MaxEntrySize:     1 << 20,
+		Logger:           logger,
 	}
 	queryDeps := &api.QueryDeps{
 		QueryAPI:       queryAPI,
@@ -323,15 +323,15 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	go func() { _ = ship.Run(ctx) }()
 
 	op := &e2eOperator{
-		BaseURL:            baseURL,
-		Pool:               pool,
-		WAL:                walc,
-		Backend:            backend,
-		Shipper:            ship,
-		OperatorSignerPriv: opSignerPriv,
-		LogDID:             testLogDID,
-		MMD:                testMMD,
-		cancel:             cancel,
+		BaseURL:          baseURL,
+		Pool:             pool,
+		WAL:              walc,
+		Backend:          backend,
+		Shipper:          ship,
+		LedgerSignerPriv: opSignerPriv,
+		LogDID:           testLogDID,
+		MMD:              testMMD,
+		cancel:           cancel,
 	}
 
 	t.Cleanup(func() {
@@ -355,7 +355,7 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("e2e operator did not become ready in 2.5s")
+	t.Fatal("e2e ledger did not become ready in 2.5s")
 	return nil
 }
 

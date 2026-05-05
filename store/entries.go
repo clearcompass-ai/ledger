@@ -170,8 +170,8 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 	// construct the bytestore object key; log_time populates the
 	// EntryWithMetadata response.
 	var (
-		logTime  time.Time
-		hashCol  []byte
+		logTime time.Time
+		hashCol []byte
 	)
 	err := f.db.QueryRow(ctx, `
 		SELECT log_time, canonical_hash

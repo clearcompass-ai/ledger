@@ -8,7 +8,7 @@ This file is NOT about v7.75 cryptographic Pedersen commitments
 (escrow_split_commitments.go and pre_grant_commitments.go cover those).
 The word "commitment" is overloaded across two distinct concepts:
 
-  - DERIVATION commitments (this file): operator-published commentary
+  - DERIVATION commitments (this file): ledger-published commentary
     that pins the (range_start, range_end, prior_smt_root, post_smt_root,
     mutations_json) tuple for a builder batch. Used by fraud-proof
     verifiers to attest that a specific run of the builder against

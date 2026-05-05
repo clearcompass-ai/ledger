@@ -5,15 +5,16 @@ Verifier — read-only surface that returns the leaf hash at a given
 sequence from Tessera's tiles. Used by Detector.SampleVerify.
 
 DESIGN:
-  Tile-backed: tessera/tile_reader.go's ReadEntryTile already does
-  the heavy lifting (LRU-cached fetch + c2sp.org/tlog-tiles parsing).
-  This Verifier wraps it with the seq → (tile, offset) arithmetic
-  and the 32-byte hash extractor.
 
-  Hash-only tiles (Phase 1B): each entry tile carries 32-byte SHA-256
-  identities, so HashAt is one tile fetch + one slice. No envelope
-  deserialization happens at this layer; the operator only checks
-  hashes here.
+	Tile-backed: tessera/tile_reader.go's ReadEntryTile already does
+	the heavy lifting (LRU-cached fetch + c2sp.org/tlog-tiles parsing).
+	This Verifier wraps it with the seq → (tile, offset) arithmetic
+	and the 32-byte hash extractor.
+
+	Hash-only tiles (Phase 1B): each entry tile carries 32-byte SHA-256
+	identities, so HashAt is one tile fetch + one slice. No envelope
+	deserialization happens at this layer; the ledger only checks
+	hashes here.
 */
 package integrity
 

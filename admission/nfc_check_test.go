@@ -56,7 +56,7 @@ func TestCheckNFC_RejectsNFDDelegateDID(t *testing.T) {
 func TestCheckNFC_RejectsNFDAuthoritySetKey(t *testing.T) {
 	e := nfcEntry()
 	e.Header.AuthoritySet = map[string]struct{}{
-		"did:web:alice.example":                  {},
+		"did:web:alice.example":                    {},
 		"did:web:bob-caf" + nfdEAcute + ".example": {},
 	}
 	if err := CheckNFC(e); !errors.Is(err, ErrIngressNotNFC) {

@@ -4,42 +4,42 @@
 /*
 FILE PATH: tests/soak_test.go
 
-High-volume operator soak test against a real cloud bytestore.
+High-volume ledger soak test against a real cloud bytestore.
 Build-tag-isolated so the default `go test ./...` run never invokes
 it — soak runs are minutes-long and cost real cloud spend. Opt-in via:
 
-  ATTESTA_TEST_DSN=postgres://...                        \
-  ATTESTA_TEST_GCS_BUCKET=attesta-soak-<your-instance>  \
-  GOOGLE_APPLICATION_CREDENTIALS=...                      \
-  go test -tags=soak ./tests/ -run TestSoak -v -count=1 -timeout 30m
+	ATTESTA_TEST_DSN=postgres://...                        \
+	ATTESTA_TEST_GCS_BUCKET=attesta-soak-<your-instance>  \
+	GOOGLE_APPLICATION_CREDENTIALS=...                      \
+	go test -tags=soak ./tests/ -run TestSoak -v -count=1 -timeout 30m
 
 OR via scripts/run-soak.sh which sets the env wrappers up and reports
 a JSON summary at the end.
 
 WHAT IT MEASURES:
 
-  Throughput: aggregate entries/sec sustained across N concurrent
-  submitter goroutines.
+	Throughput: aggregate entries/sec sustained across N concurrent
+	submitter goroutines.
 
-  Backlog drain: at the end of the submission burst, time-to-drain
-  the shipper's StateSequenced backlog to zero. This is the
-  load-bearing property the WAL+Shipper architecture promises —
-  admission stays fast under sustained load because the slow part
-  (bytestore upload) is asynchronous.
+	Backlog drain: at the end of the submission burst, time-to-drain
+	the shipper's StateSequenced backlog to zero. This is the
+	load-bearing property the WAL+Shipper architecture promises —
+	admission stays fast under sustained load because the slow part
+	(bytestore upload) is asynchronous.
 
-  Admission p50/p99: per-request HTTP-layer latency. p99 must stay
-  under a configurable bound (default 100ms); regressions surface
-  as p99 inflation even when p50 is unchanged.
+	Admission p50/p99: per-request HTTP-layer latency. p99 must stay
+	under a configurable bound (default 100ms); regressions surface
+	as p99 inflation even when p50 is unchanged.
 
-  Final integrity: a random sample of submitted (seq, hash) pairs is
-  reachable via GET /v1/entries/{seq}/raw → 302 → bytes match canonical.
+	Final integrity: a random sample of submitted (seq, hash) pairs is
+	reachable via GET /v1/entries/{seq}/raw → 302 → bytes match canonical.
 
 CONFIG VIA ENV (with defaults):
 
-  ATTESTA_SOAK_ENTRIES        total entries to submit (default 1_000_000)
-  ATTESTA_SOAK_CONCURRENCY    concurrent submitters    (default 8)
-  ATTESTA_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
-  ATTESTA_SOAK_P99_BOUND_MS   HTTP admission p99 ceiling, ms (default 100)
+	ATTESTA_SOAK_ENTRIES        total entries to submit (default 1_000_000)
+	ATTESTA_SOAK_CONCURRENCY    concurrent submitters    (default 8)
+	ATTESTA_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
+	ATTESTA_SOAK_P99_BOUND_MS   HTTP admission p99 ceiling, ms (default 100)
 
 The defaults model a 1M-entry soak. Smaller numbers are useful for
 quick iteration; the same tests are valid at any size.
@@ -235,7 +235,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("soak operator did not become ready in 2.5s")
+	t.Fatal("soak ledger did not become ready in 2.5s")
 	return nil
 }
 

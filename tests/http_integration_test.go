@@ -1,7 +1,7 @@
 /*
 FILE PATH: tests/http_integration_test.go
 
-HTTP integration tests. Every test makes real HTTP calls to a real operator
+HTTP integration tests. Every test makes real HTTP calls to a real ledger
 server backed by real Postgres. No interface mocks.
 
 POST-WAVE-1.5 CHANGES:
@@ -67,7 +67,7 @@ import (
 // mode) per testserver_test.go:166, so the signature is not crypto-
 // verified end-to-end; we just need it to be structurally well-formed
 // so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
-// gives us exactly that. The operator now wires
+// gives us exactly that. The ledger now wires
 // did.NewECDSAKeyResolver (SDK), so signatures are verified
 // cryptographically against the resolved public key — we route
 // through makeAdmissibleEntry which translates synthetic
@@ -87,17 +87,17 @@ func buildWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte)
 // IMPORTANT: header.AdmissionProof is *envelope.AdmissionProofBody (the wire
 // format type), NOT *types.AdmissionProof (the API form). The two types are
 // deliberately distinct — wire format omits TargetLog (implicit) and includes
-// Hash; API form has TargetLog and omits Hash. The operator translates between
+// Hash; API form has TargetLog and omits Hash. The ledger translates between
 // them via admission.ProofFromWire.
 func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte, logDID string, difficulty uint32) []byte {
 	t.Helper()
 
-	// Use the test epoch so the operator (which computes the same epoch
+	// Use the test epoch so the ledger (which computes the same epoch
 	// via currentTestEpoch math) accepts our stamp. If we used time.Now
 	// directly, a tick across the hour boundary could cause flaky failures.
 	stampEpoch := currentTestEpoch()
 
-	// Wire-format type. Operator deserializes this from entry header bytes.
+	// Wire-format type. Ledger deserializes this from entry header bytes.
 	// Wire bytes come from the SDK's exported aliases (v0.1.1+) — locked
 	// against typed-constant drift by wire_encoding_test.go in the SDK.
 	header.AdmissionProof = &envelope.AdmissionProofBody{
@@ -144,7 +144,7 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 		canonical := envelope.Serialize(entry)
 		entryHash := sha256.Sum256(canonical)
 
-		// Translate wire→API for verification (same path the operator
+		// Translate wire→API for verification (same path the ledger
 		// takes at request handling time).
 		apiProof := admission.ProofFromWire(header.AdmissionProof, logDID)
 
@@ -489,17 +489,17 @@ func TestHTTP_Middleware_MalformedBody_422(t *testing.T) {
 	}
 }
 
-// TestHTTP_Middleware_WrongProtocolVersion_422 verifies the operator rejects
+// TestHTTP_Middleware_WrongProtocolVersion_422 verifies the ledger rejects
 // any wire protocol version other than v5 (current, post-Wave-1.5).
 //
 // Wire format protocol version is stored in bytes 0-1 of the entry as a
-// big-endian uint16. The operator's submission handler reads this in Step 1
+// big-endian uint16. The ledger's submission handler reads this in Step 1
 // and rejects with 422 if it does not equal 5.
 func TestHTTP_Middleware_WrongProtocolVersion_422(t *testing.T) {
 	op := startTestOperator(t)
 
 	// Build a valid v5 wire entry then overwrite protocol version to v2
-	// (a value the operator will refuse).
+	// (a value the ledger will refuse).
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:v2"}, []byte("v2"))
 	wire[0] = 0x00
 	wire[1] = 0x02 // Protocol version 2 instead of v5 — must be rejected.
@@ -516,7 +516,7 @@ func TestHTTP_Middleware_WrongProtocolVersion_422(t *testing.T) {
 
 // TestHTTP_Middleware_FutureProtocolVersion_422 confirms forward-compatibility
 // rejection: a v6 entry (which doesn't exist yet) must also be refused.
-// Catches the failure mode where the operator might silently accept anything
+// Catches the failure mode where the ledger might silently accept anything
 // "5 or higher" instead of strict equality.
 func TestHTTP_Middleware_FutureProtocolVersion_422(t *testing.T) {
 	op := startTestOperator(t)
@@ -842,7 +842,7 @@ func TestHTTP_HealthCheck(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 // TestHTTP_Submission_ModeB_StaleEpoch_403 mints a stamp with an epoch many
-// windows in the past, then submits it. The operator's VerifyStamp must
+// windows in the past, then submits it. The ledger's VerifyStamp must
 // reject it because its currentEpoch math will compute a much higher number,
 // putting the stamp outside the [current-window, current+window] band.
 //
@@ -867,7 +867,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 
 	// Brute force a valid nonce against the stale epoch. Same v7.75
 	// chicken-and-egg as buildModeBWireEntry — sign per iteration so
-	// EntryIdentity reflects the stamp target the operator computes.
+	// EntryIdentity reflects the stamp target the ledger computes.
 	//
 	// Resolve the SignerDID label once before the loop so admission's
 	// DIDResolver returns the matching public key.
@@ -894,7 +894,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 		entryHash := sha256.Sum256(canonical)
 
 		// Verify against the stale epoch with window=0 (exact match) to
-		// confirm the nonce is valid for THAT epoch — not the operator's.
+		// confirm the nonce is valid for THAT epoch — not the ledger's.
 		apiProof := admission.ProofFromWire(header.AdmissionProof, testLogDID)
 		if admission.VerifyStamp(
 			apiProof, entryHash, testLogDID, 8,
@@ -914,7 +914,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 	resp := doRequest(t, req)
 	defer resp.Body.Close()
 
-	// Operator should reject as out-of-window.
+	// Ledger should reject as out-of-window.
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("stale-epoch stamp: expected 403, got %d: %s", resp.StatusCode, body)

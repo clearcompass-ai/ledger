@@ -3,19 +3,21 @@ FILE PATH: bytestore/factory.go
 
 Factory for the hexagonal bytestore: one entry point that constructs
 the right Backend implementation based on Config.Backend. The
-operator's composition root passes the config through unchanged;
+ledger's composition root passes the config through unchanged;
 swapping providers is a config change, not a code change.
 
 PRODUCTION VS TEST:
-  Backend="memory" returns a wrapper that satisfies Store but NOT
-  Backend (no Presigner). NewFromConfig refuses to return a
-  memory-only Store via the Backend type. Tests that need just a
-  Store call NewMemory directly.
+
+	Backend="memory" returns a wrapper that satisfies Store but NOT
+	Backend (no Presigner). NewFromConfig refuses to return a
+	memory-only Store via the Backend type. Tests that need just a
+	Store call NewMemory directly.
 
 CONFIG SHAPE:
-  See Config docstring below. Required fields per backend are
-  validated here so the composition root gets a single fail-closed
-  error path.
+
+	See Config docstring below. Required fields per backend are
+	validated here so the composition root gets a single fail-closed
+	error path.
 */
 package bytestore
 
@@ -38,7 +40,7 @@ type Config struct {
 	Bucket string
 
 	// Prefix is prepended to every object name. Optional. Default
-	// "entries". Useful for sharing a bucket across multiple operator
+	// "entries". Useful for sharing a bucket across multiple ledger
 	// instances.
 	Prefix string
 

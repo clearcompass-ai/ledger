@@ -76,7 +76,7 @@ var _ bytestore.Reader = (*fakeEntryReader)(nil)
 // Test fixtures
 // ─────────────────────────────────────────────────────────────────────
 
-const testLogDID = "did:web:test-operator.example"
+const testLogDID = "did:web:test-ledger.example"
 
 // requireDB returns a connected pool or skips the test if no DSN
 // is provided. The Wave 1 v3 CI2 harness sets ATTESTA_TEST_DSN to

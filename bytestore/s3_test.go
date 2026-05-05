@@ -22,15 +22,15 @@ Coverage mirrors gcs_test.go so the two adapters stay at parity:
 
 Env vars:
 
-  ATTESTA_TEST_S3_ENDPOINT     e.g. http://localhost:9000
-  ATTESTA_TEST_S3_BUCKET       e.g. attesta-test-bytes
-  ATTESTA_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
-  ATTESTA_TEST_S3_SECRET_KEY   e.g. rustfsadmin
-  ATTESTA_TEST_S3_REGION       e.g. us-east-1 (default)
-  ATTESTA_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
-  ATTESTA_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
-                                 credential chain, virtual-host style,
-                                 no endpoint override)
+	ATTESTA_TEST_S3_ENDPOINT     e.g. http://localhost:9000
+	ATTESTA_TEST_S3_BUCKET       e.g. attesta-test-bytes
+	ATTESTA_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
+	ATTESTA_TEST_S3_SECRET_KEY   e.g. rustfsadmin
+	ATTESTA_TEST_S3_REGION       e.g. us-east-1 (default)
+	ATTESTA_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
+	ATTESTA_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
+	                               credential chain, virtual-host style,
+	                               no endpoint override)
 
 The docker-compose harness creates the bucket at startup; tests
 that need a clean state delete + recreate per-test via the
@@ -478,7 +478,7 @@ func TestS3_PresignGet_FetchesBytes(t *testing.T) {
 // level here; full cross-protocol round-trip in a single bucket
 // requires a backend that speaks both wire protocols (e.g.,
 // real GCS with S3 interoperability mode), which is out of
-// scope for the operator's CI.
+// scope for the ledger's CI.
 func TestS3_GCS_KeyCompat(t *testing.T) {
 	hash := sha256.Sum256([]byte("interop"))
 	gcs := &GCS{objectPrefix: "entries"}

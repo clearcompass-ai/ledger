@@ -4,14 +4,14 @@ FILE PATH: cmd/seed-session/main.go
 seed-session — local-dev / CI helper that mints a Mode A session
 token + credit balance for an exchange DID.
 
-The operator's admission middleware (api/middleware/auth.go)
+The ledger's admission middleware (api/middleware/auth.go)
 validates Bearer tokens against the `sessions` table; the credits
 table tracks per-exchange balances that are deducted atomically
 inside admission's transaction.
 
 Production deployments mint sessions through an exchange-side
 service (or a thin admin API surface). This CLI is the test-mode
-equivalent: a single command does both inserts so an operator
+equivalent: a single command does both inserts so an ledger
 running locally can `POST /v1/entries` with Bearer auth without
 hand-crafting SQL.
 
@@ -26,7 +26,7 @@ Usage:
 
 Flags fall back to env:
 
-	-dsn     → OPERATOR_DATABASE_URL
+	-dsn     → LEDGER_DATABASE_URL
 	-did     → if empty, a fresh did:key is generated and printed
 	            (caller must capture it for the matching submit
 	            client; ephemeral keys are never persisted here).
@@ -54,7 +54,7 @@ import (
 
 func main() {
 	var (
-		dsn     = flag.String("dsn", os.Getenv("OPERATOR_DATABASE_URL"), "Postgres DSN (defaults to $OPERATOR_DATABASE_URL)")
+		dsn     = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
 		token   = flag.String("token", "", "session token to mint (required)")
 		didStr  = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
 		credits = flag.Int64("credits", 100, "initial credit balance to seed")
@@ -63,7 +63,7 @@ func main() {
 	flag.Parse()
 
 	if *dsn == "" {
-		log.Fatal("seed-session: -dsn required (or set OPERATOR_DATABASE_URL)")
+		log.Fatal("seed-session: -dsn required (or set LEDGER_DATABASE_URL)")
 	}
 	if *token == "" {
 		log.Fatal("seed-session: -token required")

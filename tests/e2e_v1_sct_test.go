@@ -8,31 +8,31 @@ wires the Sequencer + unified /v1 handler + MMD endpoint).
 
 WHAT'S COVERED:
 
-  POST /v1/entries happy path:
-    - Returns 202 + SCT.
-    - SCT signature verifies against the operator's public key
-      (cfg.OperatorSignerPriv.PublicKey from the test harness).
-    - WAL.Submit lands the entry in StatePending.
+	POST /v1/entries happy path:
+	  - Returns 202 + SCT.
+	  - SCT signature verifies against the ledger's public key
+	    (cfg.LedgerSignerPriv.PublicKey from the test harness).
+	  - WAL.Submit lands the entry in StatePending.
 
-  Sequencer drain → state transition:
-    - Within seconds (sequencer poll = 10ms), the entry advances
-      from StatePending → StateSequenced and an entry_index row
-      lands in Postgres.
+	Sequencer drain → state transition:
+	  - Within seconds (sequencer poll = 10ms), the entry advances
+	    from StatePending → StateSequenced and an entry_index row
+	    lands in Postgres.
 
-  GET /v1/entries-hash/{hash} during the inflight window:
-    - Returns 200 {state:"pending"} immediately after the POST.
-    - After Sequencer drain, returns full metadata (sequence_number).
+	GET /v1/entries-hash/{hash} during the inflight window:
+	  - Returns 200 {state:"pending"} immediately after the POST.
+	  - After Sequencer drain, returns full metadata (sequence_number).
 
-  GET /v1/admission/mmd:
-    - Returns the configured MMD as both seconds and human form.
+	GET /v1/admission/mmd:
+	  - Returns the configured MMD as both seconds and human form.
 
-  Multi-entry drain:
-    - 5 submissions all get distinct SCTs, all sequence within
-      the test budget, entry_index has 5 rows post-drain.
+	Multi-entry drain:
+	  - 5 submissions all get distinct SCTs, all sequence within
+	    the test budget, entry_index has 5 rows post-drain.
 
-  Tamper resistance (sanity, alongside api/sct_test.go):
-    - Mutating an SCT field after receipt invalidates the
-      signature.
+	Tamper resistance (sanity, alongside api/sct_test.go):
+	  - Mutating an SCT field after receipt invalidates the
+	    signature.
 
 GATING: ATTESTA_TEST_DSN required (Postgres). Skips otherwise.
 */
@@ -80,7 +80,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 	if sct.CanonicalHash != hex.EncodeToString(canonicalHash[:]) {
 		t.Errorf("SCT.CanonicalHash mismatch:\n  got  %s\n  want %x", sct.CanonicalHash, canonicalHash[:])
 	}
-	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&op.LedgerSignerPriv.PublicKey, &sct); err != nil {
 		t.Errorf("SCT signature does not verify: %v", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
 	op := startE2EOperator(t)
 	const N = 5
 	// Resolve difficulty once outside the loop — every submission
-	// in this test stamps against the same operator state.
+	// in this test stamps against the same ledger state.
 	difficulty := liveDifficulty(t, op)
 
 	hashes := make([][32]byte, N)
@@ -235,13 +235,13 @@ func TestE2E_V1_SCTTamperResistance(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	// Sanity: clean verify passes.
-	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err != nil {
+	if err := sdksct.Verify(&op.LedgerSignerPriv.PublicKey, &sct); err != nil {
 		t.Fatalf("clean verify failed: %v", err)
 	}
 	// Tamper canonical_hash → must fail.
 	orig := sct.CanonicalHash
 	sct.CanonicalHash = "ff" + orig[2:]
-	if err := sdksct.Verify(&op.OperatorSignerPriv.PublicKey, &sct); err == nil {
+	if err := sdksct.Verify(&op.LedgerSignerPriv.PublicKey, &sct); err == nil {
 		t.Error("expected verification failure on tampered hash")
 	}
 }
@@ -287,15 +287,15 @@ func postV1(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
 	return body, resp.StatusCode
 }
 
-// liveDifficulty queries the operator's GET /v1/admission/difficulty
-// endpoint and returns the difficulty the operator is currently
+// liveDifficulty queries the ledger's GET /v1/admission/difficulty
+// endpoint and returns the difficulty the ledger is currently
 // advertising. Stamping at exactly that difficulty is the most
 // realistic and robust way to admit Mode B entries — the same
 // pattern cmd/submit-stamp/main.go uses for live submissions.
 //
-// Mirrors what a production client would do: ask the operator
+// Mirrors what a production client would do: ask the ledger
 // what work is required and produce exactly that, rather than
-// hard-coding a value that might drift from the operator's
+// hard-coding a value that might drift from the ledger's
 // dynamic DiffController.
 func liveDifficulty(t *testing.T, op *e2eOperator) uint32 {
 	t.Helper()
@@ -322,12 +322,12 @@ func liveDifficulty(t *testing.T, op *e2eOperator) uint32 {
 }
 
 // buildAdmissibleWire produces a Mode B-stamped wire entry whose
-// stamp matches the operator's currently-advertised difficulty.
+// stamp matches the ledger's currently-advertised difficulty.
 // Use this in lieu of buildWireEntry when the test path is
 // unauthenticated — postV1 doesn't include a Bearer token, so the
 // admission middleware demands a valid PoW stamp.
 //
-// Sets the Destination + EventTime fields the operator's freshness
+// Sets the Destination + EventTime fields the ledger's freshness
 // + binding checks require; buildModeBWireEntry doesn't fill these
 // in for the caller.
 func buildAdmissibleWire(t *testing.T, op *e2eOperator, signerDID string, payload []byte) []byte {

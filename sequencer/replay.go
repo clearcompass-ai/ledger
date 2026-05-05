@@ -8,7 +8,7 @@ detection index + 0x0C entry-lookup projection (PT-4).
 
 The 0x0A and 0x0C Badger writes are best-effort, AFTER the
 Postgres entry_index + commitment_split_id INSERTs commit. If the
-operator crashes between the Postgres commit and the Badger
+ledger crashes between the Postgres commit and the Badger
 write — or if the Badger DB is restored from a snapshot lagging
 Postgres — the projections drift below the source of truth.
 Without a replay path, equivocation detection (0x0A → scanner →
@@ -17,15 +17,15 @@ historical rows.
 
 The replayer closes that gap on every boot:
 
-  1. Read HWM from Badger 0x0D singleton.
-  2. SELECT FROM commitment_split_id ⨝ entry_index WHERE
-     sequence_number > HWM ORDER BY sequence_number ASC LIMIT N.
-  3. For each row: read canonical bytes from bytestore.Reader,
-     deserialize via envelope.Deserialize, extract signer_did +
-     signature, write 0x0A + 0x0C (idempotent on identical
-     inputs).
-  4. Advance HWM = max(seq) in this batch.
-  5. Loop until SELECT returns < N rows.
+ 1. Read HWM from Badger 0x0D singleton.
+ 2. SELECT FROM commitment_split_id ⨝ entry_index WHERE
+    sequence_number > HWM ORDER BY sequence_number ASC LIMIT N.
+ 3. For each row: read canonical bytes from bytestore.Reader,
+    deserialize via envelope.Deserialize, extract signer_did +
+    signature, write 0x0A + 0x0C (idempotent on identical
+    inputs).
+ 4. Advance HWM = max(seq) in this batch.
+ 5. Loop until SELECT returns < N rows.
 
 # CQRS DISCIPLINE (P8)
 
@@ -93,7 +93,7 @@ type SplitIDReplayCursor interface {
 
 // ReplayConfig groups Replayer dependencies.
 type ReplayConfig struct {
-	// DB is the operator's Postgres pool. The replayer SELECTs
+	// DB is the ledger's Postgres pool. The replayer SELECTs
 	// from commitment_split_id ⨝ entry_index.
 	DB *pgxpool.Pool
 
@@ -312,7 +312,7 @@ func (r *Replayer) fetchBatch(ctx context.Context, hwm uint64) ([]replayRow, err
 }
 
 // applyOne reads canonical bytes from bytestore, extracts the
-// operator's entry-signature, and writes both 0x0A + 0x0C.
+// ledger's entry-signature, and writes both 0x0A + 0x0C.
 func (r *Replayer) applyOne(ctx context.Context, row replayRow) error {
 	wire, err := r.cfg.Reader.ReadEntry(ctx, row.seq, row.hash)
 	if err != nil {

@@ -2,7 +2,7 @@
 FILE PATH: api/server.go
 
 HTTP server initialization and route registration. All Attesta
-operator endpoints live under /v1/. Health checks at /healthz and
+ledger endpoints live under /v1/. Health checks at /healthz and
 /readyz.
 
 KEY ARCHITECTURAL DECISIONS:
@@ -12,24 +12,24 @@ KEY ARCHITECTURAL DECISIONS:
   - Readiness flag is atomic for thread-safe shutdown signaling.
   - Optional endpoints (WitnessCosign, read endpoints, batch
     submission) are nil-guarded so binaries that don't serve them
-    (cmd/operator-reader, lightweight test harnesses) can omit
+    (cmd/ledger-reader, lightweight test harnesses) can omit
     the wiring without producing a 500 or panicking through a
     nil HandlerFunc.
 
 ROUTE TABLE (write side, with middleware):
   - POST /v1/entries          — single-entry SCT/MMD admission.
   - POST /v1/entries/batch    — async batch admission; returns SCT
-                                array. Bounded at
-                                AbsoluteMaxBatchPayloadBytes.
+    array. Bounded at
+    AbsoluteMaxBatchPayloadBytes.
 
 ROUTE TABLE (read side, no middleware):
   - GET  /v1/entries/{seq}            — JSON metadata
   - GET  /v1/entries/{seq}/raw        — wire bytes (200 inline /
-                                        302 redirect to bytestore)
+    302 redirect to bytestore)
   - GET  /v1/entries/batch?...        — JSON list of metadata
   - GET  /v1/entries-hash/{hashHex}   — hash-keyed lookup; surfaces
-                                        the SCT inflight state
-  - GET  /v1/admission/mmd            — operator's promised MMD
+    the SCT inflight state
+  - GET  /v1/admission/mmd            — ledger's promised MMD
   - GET  /v1/admission/difficulty     — Mode B PoW difficulty
   - GET  /v1/tree/head[?size=N]       — cosigned tree head
   - GET  /v1/tree/inclusion/{seq}     — Merkle inclusion proof
@@ -46,10 +46,10 @@ ROUTE TABLE (read side, no middleware):
   - GET  /v1/query/scan?start&count
   - GET  /v1/commitments?seq=N        — derivation commitment lookup
   - GET  /v1/commitments/by-split-id/{schema_id}/{hex}
-                                      — v7.75 cryptographic commitment
-                                        lookup (Pure CQRS — Badger 0x0C)
+    — v7.75 cryptographic commitment
+    lookup (Pure CQRS — Badger 0x0C)
   - POST /v1/cosign                   — witness cosign endpoint
-                                        (only when WitnessCosign set)
+    (only when WitnessCosign set)
 */
 package api
 
@@ -93,7 +93,7 @@ func DefaultServerConfig() ServerConfig {
 // 2) Server
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Server is the operator HTTP server.
+// Server is the ledger HTTP server.
 type Server struct {
 	httpServer *http.Server
 	ready      atomic.Bool
@@ -101,8 +101,8 @@ type Server struct {
 }
 
 // Handlers holds all registered handler functions. Nil fields
-// suppress route registration — fine for read-only operators
-// (cmd/operator-reader) and trimmed-down test harnesses.
+// suppress route registration — fine for read-only ledgers
+// (cmd/ledger-reader) and trimmed-down test harnesses.
 type Handlers struct {
 	// ── Admission (write) ───────────────────────────────────────────
 	Submission      http.HandlerFunc // POST /v1/entries        — single-entry SCT
@@ -139,7 +139,7 @@ type Handlers struct {
 	GossipPost http.Handler
 
 	// GossipFeed mounts at GET /v1/gossip/{since,sth/latest,event,
-	// by-kind,by-binding}. Audit consumers + peer operators pull
+	// by-kind,by-binding}. Audit consumers + peer ledgers pull
 	// catchup events here. /by-binding/{hash} (v0.9.6) is the
 	// zero-trust audit primitive — content-keyed lookup that
 	// powers findings.FetchEquivocationByBinding. nil disables
@@ -156,7 +156,7 @@ type Handlers struct {
 	EscrowOverride http.HandlerFunc
 
 	// Metrics mounts at GET /metrics — the Prometheus scrape
-	// endpoint. nil disables the endpoint (OPERATOR_METRICS_ENABLE
+	// endpoint. nil disables the endpoint (LEDGER_METRICS_ENABLE
 	// is false; default).
 	Metrics http.Handler
 
@@ -235,7 +235,7 @@ func NewServer(
 	}
 
 	// ── SCT/MMD: MMD info ───────────────────────────────────────────
-	// Consumers verify the operator's promised redemption window
+	// Consumers verify the ledger's promised redemption window
 	// against this endpoint before trusting an SCT.
 	if handlers.MMD != nil {
 		mux.HandleFunc("GET /v1/admission/mmd", handlers.MMD)
@@ -322,7 +322,7 @@ func NewServer(
 		mux.Handle("GET /metrics", handlers.Metrics)
 	}
 
-	// ── Entry read endpoints (nil-guarded for read-only operators) ─────
+	// ── Entry read endpoints (nil-guarded for read-only ledgers) ─────
 	// GET /v1/entries/{sequence} — single entry by position.
 	// GET /v1/entries/batch — batch read for fraud-proof replay.
 	// Method+path routing guarantees these don't collide with

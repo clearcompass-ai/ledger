@@ -1,16 +1,16 @@
 # Storage
 
-The operator has four distinct storage media. Lines below resolve to
+The ledger has four distinct storage media. Lines below resolve to
 the file that owns each.
 
 ## Storage media
 
 | Medium | Path / DSN | Owns | File of record |
 |---|---|---|---|
-| WAL (Badger) | `OPERATOR_WAL_PATH` | Bytes-of-record between `wal.Submit` and `MarkShipped`; admission durability for the 202 promise | `wal/keyspace.go`, `wal/committer.go` |
-| Tessera POSIX | `OPERATOR_TESSERA_STORAGE_DIR` + `OPERATOR_TESSERA_ANTISPAM_PATH` | Tile data + checkpoint + antispam dedup map | `tessera/embedded_appender.go` |
-| Postgres | `OPERATOR_DATABASE_URL` | `entry_index`, `commitment_split_id`, `sessions`, `credits`, `tree_heads`, `tree_head_sigs`, `derivation_commitments`, witness keys | `store/*.go` |
-| Bytestore (GCS or S3) | `OPERATOR_BYTE_STORE_*` | Long-term entry-byte storage after the Shipper migrates them out of the WAL | `bytestore/*.go` |
+| WAL (Badger) | `LEDGER_WAL_PATH` | Bytes-of-record between `wal.Submit` and `MarkShipped`; admission durability for the 202 promise | `wal/keyspace.go`, `wal/committer.go` |
+| Tessera POSIX | `LEDGER_TESSERA_STORAGE_DIR` + `LEDGER_TESSERA_ANTISPAM_PATH` | Tile data + checkpoint + antispam dedup map | `tessera/embedded_appender.go` |
+| Postgres | `LEDGER_DATABASE_URL` | `entry_index`, `commitment_split_id`, `sessions`, `credits`, `tree_heads`, `tree_head_sigs`, `derivation_commitments`, witness keys | `store/*.go` |
+| Bytestore (GCS or S3) | `LEDGER_BYTE_STORE_*` | Long-term entry-byte storage after the Shipper migrates them out of the WAL | `bytestore/*.go` |
 | Gossipstore (Badger, co-tenant of WAL DB) | same Badger handle, distinct prefix `0x07` | Gossip events + read projections | `gossipstore/keyspace.go` |
 
 ## WAL state machine
@@ -135,7 +135,7 @@ guarantees a single builder process per log DID.
 <prefix>/<seq:016x>/<hash_hex>
 ```
 
-`<prefix>` = `OPERATOR_BYTE_STORE_PREFIX` (default `entries`).
+`<prefix>` = `LEDGER_BYTE_STORE_PREFIX` (default `entries`).
 `<seq>` is zero-padded to 16 hex characters so lexicographic ordering
 matches sequence ordering.
 `<hash_hex>` is the canonical hash, 64 hex chars.
@@ -148,13 +148,13 @@ bytes before fetching.
 
 | Volume | What's lost | Recovery |
 |---|---|---|
-| `OPERATOR_WAL_PATH` (post-Submit, pre-Ship) | Wire bytes for in-flight entries; orphan `entry_index` rows | Reads 404 or post-GC redirect to a 404. Sequencer's boot replay catches up via 0x0D HWM cursor |
-| `OPERATOR_TESSERA_ANTISPAM_PATH` | Hash → seq dedup map | Tessera re-Add becomes non-idempotent; boot reconciliation could integrate same entry under fresh seq |
-| `OPERATOR_TESSERA_STORAGE_DIR` | Tile data + checkpoint | Tessera cannot reconstruct the tree; tree-head signing offline. Use `cmd/rebuild-tiles` |
-| Postgres | `entry_index`, etc. | Full operator outage. Restore from backup |
+| `LEDGER_WAL_PATH` (post-Submit, pre-Ship) | Wire bytes for in-flight entries; orphan `entry_index` rows | Reads 404 or post-GC redirect to a 404. Sequencer's boot replay catches up via 0x0D HWM cursor |
+| `LEDGER_TESSERA_ANTISPAM_PATH` | Hash → seq dedup map | Tessera re-Add becomes non-idempotent; boot reconciliation could integrate same entry under fresh seq |
+| `LEDGER_TESSERA_STORAGE_DIR` | Tile data + checkpoint | Tessera cannot reconstruct the tree; tree-head signing offline. Use `cmd/rebuild-tiles` |
+| Postgres | `entry_index`, etc. | Full ledger outage. Restore from backup |
 | Bytestore | Shipped entry bytes | `/raw` redirect targets miss; reads return 404 from the bucket |
 
 Co-tenanting WAL + gossipstore on the same Badger handle means losing
-`OPERATOR_WAL_PATH` also wipes the 0x0A-0x0D projections. The
+`LEDGER_WAL_PATH` also wipes the 0x0A-0x0D projections. The
 sequencer's boot replayer re-builds 0x0A + 0x0C from Postgres on the
 next boot.

@@ -4,12 +4,12 @@ FILE PATH: api/errors.go
 PT-6 — A10 (Strict Error Dimensionality) + P10 (SRE-grade
 Observability):
 
-  Every api/ error-emission site funnels through writeTypedError,
-  which increments a single OpenTelemetry Int64Counter with two
-  bounded-cardinality attributes (error_class + http_status) AND
-  writes the JSON error body. SREs distinguish hostile traffic
-  (signature_invalid) from network noise (malformed_json) at
-  alert time without parsing log lines.
+	Every api/ error-emission site funnels through writeTypedError,
+	which increments a single OpenTelemetry Int64Counter with two
+	bounded-cardinality attributes (error_class + http_status) AND
+	writes the JSON error body. SREs distinguish hostile traffic
+	(signature_invalid) from network noise (malformed_json) at
+	alert time without parsing log lines.
 
 # PACKAGE-LEVEL COUNTER
 
@@ -19,7 +19,7 @@ idioms (otel.GetMeterProvider() is global) and avoids threading
 the counter through 9 Deps structs across 7 handler files.
 
   - Default: an unset counter is a NO-OP. Tests pass; api/ never
-    panics on missing metrics. OPERATOR_METRICS_ENABLE=true wires
+    panics on missing metrics. LEDGER_METRICS_ENABLE=true wires
     a real counter at boot.
   - Idempotent install: re-calling InstallErrorCounter with the
     same meter is a no-op. A second meter (operationally a bug)
@@ -28,11 +28,11 @@ the counter through 9 Deps structs across 7 handler files.
 
 # CARDINALITY BUDGET
 
-  ErrorClass values:    ~30 (apitypes.ErrorClass enum)
-  HTTP statuses:        ~10 (4xx + 5xx + 404 in practice)
-  Total time-series:    ~30 × ~10 = ~300
+	ErrorClass values:    ~30 (apitypes.ErrorClass enum)
+	HTTP statuses:        ~10 (4xx + 5xx + 404 in practice)
+	Total time-series:    ~30 × ~10 = ~300
 
-  Well under Prometheus's recommended ~10k/metric ceiling.
+	Well under Prometheus's recommended ~10k/metric ceiling.
 */
 package api
 
@@ -63,10 +63,10 @@ var errorCounterState struct {
 
 // InstallErrorCounter wires the package-level error counter
 // from an OTel meter. Idempotent on the same meter; safe to
-// call from cmd/operator/main.go after MeterProvider construction.
+// call from cmd/ledger/main.go after MeterProvider construction.
 //
 // nil meter is honored — the counter remains a no-op. Returns
-// false when a counter is already installed (operator wiring
+// false when a counter is already installed (ledger wiring
 // bug — re-install is rejected to keep the metric stable across
 // scrape windows).
 func InstallErrorCounter(meter metric.Meter) bool {
@@ -86,8 +86,8 @@ func InstallErrorCounter(meter metric.Meter) bool {
 	)
 	if err != nil {
 		// Downgrade silently rather than crash: a metric
-		// registration failure should never take the operator
-		// offline. The counter stays a no-op; the operator
+		// registration failure should never take the ledger
+		// offline. The counter stays a no-op; the ledger
 		// logs at the construction site.
 		return false
 	}

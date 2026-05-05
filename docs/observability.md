@@ -2,8 +2,8 @@
 
 ## OpenTelemetry meter provider
 
-Constructed at boot when `OPERATOR_METRICS_ENABLE=true`
-(`cmd/operator/main.go::1029`). Exporter: Prometheus, scraped via
+Constructed at boot when `LEDGER_METRICS_ENABLE=true`
+(`cmd/ledger/main.go::1029`). Exporter: Prometheus, scraped via
 `GET /metrics`.
 
 ```
@@ -97,7 +97,7 @@ budget never grows from caller-controlled strings.
 |---|---|---|
 | `not_found` | No row matches the requested key | 404 |
 
-### Operator infrastructure (page the operator)
+### Ledger infrastructure (page the ledger)
 
 | Class | When | HTTP |
 |---|---|---|
@@ -132,7 +132,7 @@ sum by (error_class) (
   rate(attesta_api_errors_total{error_class=~"signature_invalid|admission_proof_invalid|destination_mismatch"}[5m])
 )
 
-# Operator infrastructure — page on any uptick
+# Ledger infrastructure — page on any uptick
 rate(attesta_api_errors_total{error_class=~"wal_backpressure|wal_persist_failed|sct_signing_failed|db_query_failed"}[1m])
 
 # Tenant state — informational dashboard, not paging

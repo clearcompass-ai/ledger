@@ -12,7 +12,7 @@ Smoke tests for the gossipnet.Build wiring helper. Verifies:
 
 Round-trip and protocol correctness live in the SDK's own
 gossip + middleware test suites. This file pins only the
-operator-side wiring assembly.
+ledger-side wiring assembly.
 */
 package gossipnet
 

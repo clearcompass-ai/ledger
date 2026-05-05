@@ -5,7 +5,7 @@ Meta record encoding for entry state.
 
 Wire format (binary, fixed-prefix):
 
-  [1 byte state] [8 bytes seq big-endian] [4 bytes attempts] [8 bytes lastErrTs unix-nano] [8 bytes logTimeMicros big-endian]
+	[1 byte state] [8 bytes seq big-endian] [4 bytes attempts] [8 bytes lastErrTs unix-nano] [8 bytes logTimeMicros big-endian]
 
 Total: 29 bytes. Fixed-width so iterators can decode without bounds-
 checking in the hot path. The format is internal — Badger keys + values
@@ -46,8 +46,8 @@ const (
 	StateShipped EntryState = 3
 
 	// StateManual: Shipper has retried N times and given up; bytes
-	// stay in the WAL pending operator intervention. Reads still
-	// succeed via the WAL (no DLQ — the operator's manual-intervention
+	// stay in the WAL pending ledger intervention. Reads still
+	// succeed via the WAL (no DLQ — the ledger's manual-intervention
 	// queue is metric-only).
 	StateManual EntryState = 4
 )
@@ -71,11 +71,11 @@ func (s EntryState) String() string {
 // Meta is the in-memory representation of meta:<hash>. The disk
 // encoding is fixed-width binary (see metaEncodedSize).
 type Meta struct {
-	State          EntryState
-	Sequence       uint64    // valid iff State >= StateSequenced
-	Attempts       uint32    // shipper retry counter
-	LastErrTs      time.Time // wall-clock of last error; zero on success
-	LogTimeMicros  int64     // unix-micros log_time assigned at first Submit (v0.9.6)
+	State         EntryState
+	Sequence      uint64    // valid iff State >= StateSequenced
+	Attempts      uint32    // shipper retry counter
+	LastErrTs     time.Time // wall-clock of last error; zero on success
+	LogTimeMicros int64     // unix-micros log_time assigned at first Submit (v0.9.6)
 }
 
 // metaEncodedSize is the on-disk size of a Meta record.
@@ -98,7 +98,7 @@ func encodeMeta(m Meta) []byte {
 	// negative values (clock skew during early-1970 testing) without
 	// a sentinel collision against the 0-means-unset semantics —
 	// 0 is a valid log_time (the unix epoch instant) but in practice
-	// the operator's logTime = time.Now().UTC().UnixMicro() is always
+	// the ledger's logTime = time.Now().UTC().UnixMicro() is always
 	// strictly positive at runtime.
 	binary.BigEndian.PutUint64(buf[21:29], uint64(m.LogTimeMicros))
 	return buf

@@ -2,7 +2,7 @@
 FILE PATH: witness/serve.go
 
 Witness cosignature endpoint construction. Wraps the SDK's universal
-cosign handler (cosign.NewWitnessHandler) with the operator-side
+cosign handler (cosign.NewWitnessHandler) with the ledger-side
 monotonicity guard that refuses to cosign a tree head smaller than
 the largest tree head this process has previously signed.
 
@@ -10,10 +10,10 @@ the largest tree head this process has previously signed.
 
 The SDK ships a wire-complete cosign handler — JSON parsing,
 network/purpose/hash-algo validation, payload decoding, signing,
-response encoding. It does not encode operator-policy rules like
+response encoding. It does not encode ledger-policy rules like
 "refuse rollbacks" because such rules are deployment-specific.
 
-The operator's witness role enforces:
+The ledger's witness role enforces:
 
   - Monotonicity (this file): never cosign a tree_size strictly
     smaller than this process's lastSignedSize. Per-process state;
@@ -52,7 +52,7 @@ malformed payload), lastSignedSize stays advanced — a rollback
 attempt at exactly the rejected size becomes a no-op next time.
 This matches the previous hand-rolled behavior and is acceptable
 because the SDK rejections fire on structurally invalid requests
-that an honest operator never sends.
+that an honest ledger never sends.
 */
 package witness
 
@@ -77,13 +77,13 @@ type ServeConfig struct {
 	WitnessKey *ecdsa.PrivateKey
 
 	// NetworkID is the deployment's 32-byte cosign-domain identifier,
-	// derived at boot from the operator's network bootstrap document.
+	// derived at boot from the ledger's network bootstrap document.
 	// Witnesses for the same network share the same value; signatures
 	// produced under one NetworkID never verify under another.
 	NetworkID cosign.NetworkID
 
 	// AllowedPurposes optionally narrows the signing surface. nil ⇒
-	// accept any registered Purpose. Operators wishing to deploy a
+	// accept any registered Purpose. Ledgers wishing to deploy a
 	// "tree-head-only" witness pass {cosign.PurposeTreeHead: {}}.
 	AllowedPurposes map[cosign.Purpose]struct{}
 
@@ -112,7 +112,7 @@ func BuildCosignHandler(cfg ServeConfig) (http.Handler, error) {
 }
 
 // BuildCosignHandlerSigner is the BLS-or-custom-signer variant.
-// Operators with HSM-backed BLS witnesses construct a custom
+// Ledgers with HSM-backed BLS witnesses construct a custom
 // cosign.WitnessSigner and pass it here.
 func BuildCosignHandlerSigner(signer cosign.WitnessSigner, cfg ServeConfig) (http.Handler, error) {
 	if signer == nil {

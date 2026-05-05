@@ -1,16 +1,16 @@
 /*
-FILE PATH: cmd/operator/main.go
+FILE PATH: cmd/ledger/main.go
 
 DESCRIPTION:
 
-	Operator binary entry point. Wires config → Postgres → stores → byte
+	Ledger binary entry point. Wires config → Postgres → stores → byte
 	store → Tessera personality → builder deps → HTTP handlers → goroutines.
 	Runs the admission HTTP server, builder loop, and (optional) anchor
 	publisher under a shared cancellable context.
 
 SDK v0.3.0 WIRING CHANGES (addressed in this rewrite):
  1. anchor.PublisherConfig requires LogDID — threaded from cfg.LogDID.
- 2. builder.NewCommitmentPublisher is (operatorDID, logDID, cfg, submitFn,
+ 2. builder.NewCommitmentPublisher is (ledgerDID, logDID, cfg, submitFn,
     logger) — both DIDs passed explicitly.
  3. api.SubmissionDeps has FreshnessTolerance (defaults to
     policy.FreshnessInteractive = 5 min if zero). Explicit here for
@@ -28,7 +28,7 @@ OPERATOR INTERNAL SIGNATURES (the ones the last attempt got wrong):
     *ReadOnlyAppender; both satisfy AppenderBackend.
   - tessera.NewInMemoryEntryStore() → *InMemoryEntryStore. The only
     byte-store implementation shipped today. A persistent backend is the
-    operator's responsibility to swap in.
+    ledger's responsibility to swap in.
   - store.NewPostgresNodeCache(pool, cacheSize) → *PostgresNodeCache.
     Cache size MUST be passed; zero would be a pathological no-cache path.
   - builder.NewDeltaBufferStore(pool, windowSize, logger) → *DeltaBufferStore.
@@ -43,8 +43,8 @@ OPERATOR INTERNAL SIGNATURES (the ones the last attempt got wrong):
 INVARIANTS:
   - cfg.LogDID MUST be non-empty: submission handler panics at
     construction otherwise (destination-binding enforcement gate).
-  - cfg.OperatorDID defaults to cfg.LogDID for single-exchange
-    deployments where the operator IS the exchange.
+  - cfg.LedgerDID defaults to cfg.LogDID for single-exchange
+    deployments where the ledger IS the exchange.
   - ByteStore here is NewInMemoryEntryStore() — bytes are lost on
     restart. Production deployments MUST replace this with a
     persistent implementation of tessera.EntryReader + EntryWriter.
@@ -145,52 +145,52 @@ func loadOrGenerateTesseraSigner(keyFile, origin, logDID string, logger *slog.Lo
 	return signer, vkey, nil
 }
 
-// loadOrGenerateOperatorSigner resolves the operator's entry
-// signing key. The operator signs its own entries (anchor
+// loadOrGenerateLedgerSigner resolves the ledger's entry
+// signing key. The ledger signs its own entries (anchor
 // commentary, commitment commentary) before submitting them to
 // admission, which then verifies the signature via
 // did.NewECDSAKeyResolver (SDK). Returns the private key plus the
 // computed did:key:z... identifier — that string becomes
-// cfg.OperatorDID at the composition root.
+// cfg.LedgerDID at the composition root.
 //
 // Priority:
 //   - keyFile non-empty: PEM-decode + x509.ParseECPrivateKey.
-//     Production deployments MUST use this so the operator's DID
+//     Production deployments MUST use this so the ledger's DID
 //     is stable across restarts.
 //   - keyFile empty: generate an ephemeral secp256k1 key and log a
 //     warning. Local-dev only — entry consumers that pin the
-//     operator's DID will see a different DID on every restart.
-func loadOrGenerateOperatorSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, string, error) {
+//     ledger's DID will see a different DID on every restart.
+func loadOrGenerateLedgerSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, string, error) {
 	if keyFile != "" {
 		data, err := os.ReadFile(keyFile)
 		if err != nil {
-			return nil, "", fmt.Errorf("read operator signer key %q: %w", keyFile, err)
+			return nil, "", fmt.Errorf("read ledger signer key %q: %w", keyFile, err)
 		}
 		block, _ := pem.Decode(data)
 		if block == nil {
-			return nil, "", fmt.Errorf("operator signer key %q: PEM decode failed", keyFile)
+			return nil, "", fmt.Errorf("ledger signer key %q: PEM decode failed", keyFile)
 		}
 		priv, err := x509.ParseECPrivateKey(block.Bytes)
 		if err != nil {
-			return nil, "", fmt.Errorf("parse operator signer key %q: %w", keyFile, err)
+			return nil, "", fmt.Errorf("parse ledger signer key %q: %w", keyFile, err)
 		}
 		didKey, err := didKeyFromSecp256k1Priv(priv)
 		if err != nil {
 			return nil, "", fmt.Errorf("encode did:key from %q: %w", keyFile, err)
 		}
-		logger.Info("operator signer loaded from file", "key_file", keyFile, "did", didKey)
+		logger.Info("ledger signer loaded from file", "key_file", keyFile, "did", didKey)
 		return priv, didKey, nil
 	}
 	// Ephemeral fallback for local dev.
 	priv, err := sdkcryptosigs.GenerateKey()
 	if err != nil {
-		return nil, "", fmt.Errorf("generate operator signer: %w", err)
+		return nil, "", fmt.Errorf("generate ledger signer: %w", err)
 	}
 	didKey, err := didKeyFromSecp256k1Priv(priv)
 	if err != nil {
 		return nil, "", fmt.Errorf("encode did:key for ephemeral signer: %w", err)
 	}
-	logger.Warn("operator signer is ephemeral — NOT for production",
+	logger.Warn("ledger signer is ephemeral — NOT for production",
 		"did", didKey,
 	)
 	return priv, didKey, nil
@@ -199,7 +199,7 @@ func loadOrGenerateOperatorSigner(keyFile string, logger *slog.Logger) (*ecdsa.P
 // didKeyFromSecp256k1Priv composes a did:key:z... identifier from
 // a secp256k1 private key. Same multibase + multicodec encoding
 // the SDK's did.GenerateDIDKeySecp256k1 produces internally; this
-// helper exists because the operator threads in keys loaded from
+// helper exists because the ledger threads in keys loaded from
 // disk rather than generating them via the SDK constructor.
 func didKeyFromSecp256k1Priv(priv *ecdsa.PrivateKey) (string, error) {
 	uncompressed := sdkcryptosigs.PubKeyBytes(&priv.PublicKey)
@@ -211,9 +211,9 @@ func didKeyFromSecp256k1Priv(priv *ecdsa.PrivateKey) (string, error) {
 }
 
 // loadOrGenerateWitnessSigner resolves the witness cosign-server
-// signing key. Distinct from the operator's entry signer — this
+// signing key. Distinct from the ledger's entry signer — this
 // key signs cosign responses (witness/serve.go), and its public
-// key fingerprint is what peer operators pin in their
+// key fingerprint is what peer ledgers pin in their
 // HeadSync.WitnessEndpoints set.
 //
 // Priority:
@@ -254,9 +254,9 @@ func loadOrGenerateWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.Pr
 type Config struct {
 	ServerAddr            string
 	DatabaseURL           string
-	PgMaxConns            int32 // OPERATOR_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
+	PgMaxConns            int32  // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
 	LogDID                string // Destination for self-published entries (anchors, commitments).
-	OperatorDID           string // Signer DID for operator-authored commentary.
+	LedgerDID             string // Signer DID for ledger-authored commentary.
 	MaxEntrySize          int64
 	BatchSize             int
 	PollInterval          time.Duration
@@ -269,14 +269,14 @@ type Config struct {
 	// drains StatePending entries asynchronously; v2 admission
 	// returns an SCT immediately after WAL fsync and the
 	// Sequencer redeems the promise within MMD.
-	SequencerInterval    time.Duration // default 1s; OPERATOR_SEQUENCER_INTERVAL
-	SequencerMaxInFlight int           // default 4; OPERATOR_SEQUENCER_MAX_INFLIGHT
-	MMD                  time.Duration // default 24h; OPERATOR_MMD
+	SequencerInterval    time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
+	SequencerMaxInFlight int           // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
+	MMD                  time.Duration // default 24h; LEDGER_MMD
 	// Tessera embedding — Phase 1B replaces the standalone
 	// tessera-personality binary with in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
 	// Tessera POSIX driver writes tiles, entry bundles, and the
-	// checkpoint to. Operator-reader and operator-writer must
+	// checkpoint to. Ledger-reader and ledger-writer must
 	// agree on this path.
 	// TesseraSignerKeyFile is the path to a note.Signer private
 	// key file. When empty, an ephemeral key is generated at boot
@@ -287,18 +287,18 @@ type Config struct {
 	TesseraStorageDir    string
 	TesseraSignerKeyFile string
 	TesseraOrigin        string
-	// OperatorSignerKeyFile is the path to a PEM-encoded
-	// secp256k1 ECDSA private key the operator uses to sign its
+	// LedgerSignerKeyFile is the path to a PEM-encoded
+	// secp256k1 ECDSA private key the ledger uses to sign its
 	// own entries (anchor publisher, commitment publisher). When
 	// empty, an ephemeral key is generated at boot — fine for
 	// local dev, never for production. The corresponding did:key
 	// is computed from the public key and used as
-	// cfg.OperatorDID; OPERATOR_DID is ignored if it doesn't
+	// cfg.LedgerDID; LEDGER_DID is ignored if it doesn't
 	// match. The same key is what admission's
 	// did.NewECDSAKeyResolver verifies signatures against, so
-	// the operator's self-published anchors and commitments
+	// the ledger's self-published anchors and commitments
 	// satisfy the sig-verification path.
-	OperatorSignerKeyFile string
+	LedgerSignerKeyFile string
 	// TesseraAntispamPath is the BadgerDB directory backing
 	// Tessera's antispam (dedup) layer. Required so re-Add via
 	// integrity.Reasserter on boot returns the previously-assigned
@@ -309,7 +309,7 @@ type Config struct {
 	TesseraAntispamPath string
 
 	// Byte store backend (Phase 2 + 3+4). Selects where the
-	// operator's entry bytes live. The composition root passes
+	// ledger's entry bytes live. The composition root passes
 	// these directly to bytestore.NewFromConfig; per-backend
 	// validation lives in the factory.
 	//
@@ -349,9 +349,9 @@ type Config struct {
 	// signed checkpoints unwitnessed.
 	//
 	// Local-dev "self-witness K=1" pattern: set this to the
-	// operator's own server addr (e.g. http://localhost:8080)
-	// and OPERATOR_WITNESS_QUORUM_K=1 plus
-	// OPERATOR_WITNESS_KEY_FILE — same code paths as production
+	// ledger's own server addr (e.g. http://localhost:8080)
+	// and LEDGER_WITNESS_QUORUM_K=1 plus
+	// LEDGER_WITNESS_KEY_FILE — same code paths as production
 	// K=N witnesses, no test-mode flag.
 	WitnessEndpoints []string
 	WitnessQuorumK   int
@@ -360,9 +360,9 @@ type Config struct {
 	// ECDSA private key the witness cosign endpoint
 	// (POST /v1/cosign) signs tree heads with. When set, the
 	// endpoint is mounted; when empty, the endpoint is absent
-	// from the route table (this operator does not act as a
+	// from the route table (this ledger does not act as a
 	// witness for anyone). Distinct from
-	// OPERATOR_SIGNER_KEY_FILE — that key signs the operator's
+	// LEDGER_SIGNER_KEY_FILE — that key signs the ledger's
 	// own admitted entries; this key signs cosign responses.
 	WitnessKeyFile string
 
@@ -373,7 +373,7 @@ type Config struct {
 	// rejects a zero NetworkID, so a witness signing or verifying
 	// without one fails at runtime. The same document MUST be
 	// loaded by every component participating in the network
-	// (other operators, JN composer, peer witnesses); cross-
+	// (other ledgers, JN composer, peer witnesses); cross-
 	// component signature verification depends on byte-identical
 	// bootstrap inputs.
 	NetworkBootstrapFile string
@@ -399,14 +399,14 @@ type Config struct {
 	WALPath string
 
 	// GossipPeerEndpoints is the comma-separated list of peer
-	// operator base URLs whose /v1/gossip endpoints this operator
+	// ledger base URLs whose /v1/gossip endpoints this ledger
 	// fans out to. Empty (default) → no fan-out (NopSink); the
 	// gossip handler still accepts inbound publishes and serves
 	// the read-side feed.
 	GossipPeerEndpoints []string
 
 	// GossipPeerDIDs is parallel to GossipPeerEndpoints — the DID
-	// at index i is the peer operator's originator DID for the
+	// at index i is the peer ledger's originator DID for the
 	// endpoint at index i. Required (non-empty) for the
 	// anti-entropy loop to know who to ask for events from. If
 	// empty, anti-entropy is disabled (the publish + feed paths
@@ -414,7 +414,7 @@ type Config struct {
 	GossipPeerDIDs []string
 
 	// GossipDisable, when true, disables gossip endpoint mounting
-	// and publisher wiring. Useful for read-only operators or
+	// and publisher wiring. Useful for read-only ledgers or
 	// trimmed-down test rigs.
 	GossipDisable bool
 
@@ -424,7 +424,7 @@ type Config struct {
 	// gossip handler/sink for received_total, published_total,
 	// verify_duration_seconds, queue_depth, and drops_total
 	// observability. Off by default (zero overhead) — enable
-	// per-deployment via OPERATOR_METRICS_ENABLE=true.
+	// per-deployment via LEDGER_METRICS_ENABLE=true.
 	MetricsEnable bool
 
 	// MetricsEnvironment is the deployment-context tag used by
@@ -440,83 +440,83 @@ type Config struct {
 
 func loadConfig() (*Config, error) {
 	cfg := &Config{
-		ServerAddr:            envOr("OPERATOR_ADDR", ":8080"),
-		DatabaseURL:           os.Getenv("OPERATOR_DATABASE_URL"),
-		LogDID:                os.Getenv("OPERATOR_LOG_DID"),
-		OperatorDID:           os.Getenv("OPERATOR_DID"),
+		ServerAddr:            envOr("LEDGER_ADDR", ":8080"),
+		DatabaseURL:           os.Getenv("LEDGER_DATABASE_URL"),
+		LogDID:                os.Getenv("LEDGER_LOG_DID"),
+		LedgerDID:             os.Getenv("LEDGER_DID"),
 		MaxEntrySize:          1 << 20, // 1 MB, matches SDK-D11.
 		BatchSize:             1000,
 		PollInterval:          100 * time.Millisecond,
 		EpochWindowSeconds:    3600, // 1h — matches testEpochWindowSeconds.
 		EpochAcceptanceWindow: 1,
 		AnchorInterval:        1 * time.Hour,
-		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/attesta/tessera"),
-		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
-		OperatorSignerKeyFile: os.Getenv("OPERATOR_SIGNER_KEY_FILE"),
-		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
-		ByteStoreBackend:      os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
-		ByteStorePrefix:       envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
+		TesseraStorageDir:     envOr("LEDGER_TESSERA_STORAGE_DIR", "/var/lib/attesta/tessera"),
+		TesseraSignerKeyFile:  os.Getenv("LEDGER_TESSERA_SIGNER_KEY_FILE"),
+		LedgerSignerKeyFile:   os.Getenv("LEDGER_SIGNER_KEY_FILE"),
+		TesseraOrigin:         os.Getenv("LEDGER_TESSERA_ORIGIN"), // defaults to LogDID below
+		ByteStoreBackend:      os.Getenv("LEDGER_BYTE_STORE_BACKEND"),
+		ByteStorePrefix:       envOr("LEDGER_BYTE_STORE_PREFIX", "entries"),
 		ByteStoreCacheSize:    4096,
 		// GCS family.
-		ByteStoreGCSBucket:   os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
-		ByteStoreGCSEndpoint: os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
-		ByteStoreGCSAnon:     os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSBucket:   os.Getenv("LEDGER_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint: os.Getenv("LEDGER_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:     os.Getenv("LEDGER_BYTE_STORE_GCS_ANONYMOUS") == "true",
 		// S3 family.
-		ByteStoreS3Bucket:    os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
-		ByteStoreS3Endpoint:  os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
-		ByteStoreS3Region:    os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
-		ByteStoreS3AccessKey: os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
-		ByteStoreS3SecretKey: os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
-		ByteStoreS3PathStyle: os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
+		ByteStoreS3Bucket:    os.Getenv("LEDGER_BYTE_STORE_S3_BUCKET"),
+		ByteStoreS3Endpoint:  os.Getenv("LEDGER_BYTE_STORE_S3_ENDPOINT"),
+		ByteStoreS3Region:    os.Getenv("LEDGER_BYTE_STORE_S3_REGION"),
+		ByteStoreS3AccessKey: os.Getenv("LEDGER_BYTE_STORE_S3_ACCESS_KEY"),
+		ByteStoreS3SecretKey: os.Getenv("LEDGER_BYTE_STORE_S3_SECRET_KEY"),
+		ByteStoreS3PathStyle: os.Getenv("LEDGER_BYTE_STORE_S3_PATH_STYLE") == "true",
 		TileCacheSize:        10_000,
 		SMTNodeCacheSize:     100_000,
 		DeltaWindow:          10,
-		WitnessEndpoints:     parseCSV(os.Getenv("OPERATOR_WITNESS_ENDPOINTS")),
-		WitnessQuorumK:       envIntOr("OPERATOR_WITNESS_QUORUM_K", 1),
-		WitnessKeyFile:       os.Getenv("OPERATOR_WITNESS_KEY_FILE"),
-		NetworkBootstrapFile: os.Getenv("OPERATOR_NETWORK_BOOTSTRAP_FILE"),
-		GossipPeerEndpoints:  parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_ENDPOINTS")),
-		GossipPeerDIDs:       parseCSV(os.Getenv("OPERATOR_GOSSIP_PEER_DIDS")),
-		GossipDisable:        os.Getenv("OPERATOR_GOSSIP_DISABLE") == "true",
-		MetricsEnable:        os.Getenv("OPERATOR_METRICS_ENABLE") == "true",
-		MetricsEnvironment:   envOr("OPERATOR_METRICS_ENVIRONMENT", "dev"),
-		ServiceVersion:       envOr("OPERATOR_SERVICE_VERSION", "dev"),
-		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/attesta/wal"),
-		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
+		WitnessEndpoints:     parseCSV(os.Getenv("LEDGER_WITNESS_ENDPOINTS")),
+		WitnessQuorumK:       envIntOr("LEDGER_WITNESS_QUORUM_K", 1),
+		WitnessKeyFile:       os.Getenv("LEDGER_WITNESS_KEY_FILE"),
+		NetworkBootstrapFile: os.Getenv("LEDGER_NETWORK_BOOTSTRAP_FILE"),
+		GossipPeerEndpoints:  parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_ENDPOINTS")),
+		GossipPeerDIDs:       parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_DIDS")),
+		GossipDisable:        os.Getenv("LEDGER_GOSSIP_DISABLE") == "true",
+		MetricsEnable:        os.Getenv("LEDGER_METRICS_ENABLE") == "true",
+		MetricsEnvironment:   envOr("LEDGER_METRICS_ENVIRONMENT", "dev"),
+		ServiceVersion:       envOr("LEDGER_SERVICE_VERSION", "dev"),
+		WALPath:              envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
+		TesseraAntispamPath:  envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
 
-		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
-		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
-		MMD:                  envDurationOr("OPERATOR_MMD", 24*time.Hour),
+		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
+		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
+		MMD:                  envDurationOr("LEDGER_MMD", 24*time.Hour),
 
 		// Pool size: env override OR derived from MaxInFlight (set
 		// after we know the final MaxInFlight value below).
-		PgMaxConns: int32(envIntOr("OPERATOR_PG_MAX_CONNS", 0)),
+		PgMaxConns: int32(envIntOr("LEDGER_PG_MAX_CONNS", 0)),
 	}
 	if cfg.PgMaxConns == 0 {
 		cfg.PgMaxConns = defaultPgMaxConns(cfg.SequencerMaxInFlight)
 	}
 	if cfg.DatabaseURL == "" {
-		return nil, fmt.Errorf("OPERATOR_DATABASE_URL required")
+		return nil, fmt.Errorf("LEDGER_DATABASE_URL required")
 	}
 	if cfg.LogDID == "" {
-		return nil, fmt.Errorf("OPERATOR_LOG_DID required (destination-binding)")
+		return nil, fmt.Errorf("LEDGER_LOG_DID required (destination-binding)")
 	}
-	if cfg.OperatorDID == "" {
-		cfg.OperatorDID = cfg.LogDID
+	if cfg.LedgerDID == "" {
+		cfg.LedgerDID = cfg.LogDID
 	}
 	switch cfg.ByteStoreBackend {
 	case "":
-		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (gcs|s3)")
+		return nil, fmt.Errorf("LEDGER_BYTE_STORE_BACKEND required (gcs|s3)")
 	case "gcs":
 		if cfg.ByteStoreGCSBucket == "" {
-			return nil, fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+			return nil, fmt.Errorf("LEDGER_BYTE_STORE_GCS_BUCKET required when LEDGER_BYTE_STORE_BACKEND=gcs")
 		}
 	case "s3":
 		if cfg.ByteStoreS3Bucket == "" {
-			return nil, fmt.Errorf("OPERATOR_BYTE_STORE_S3_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=s3")
+			return nil, fmt.Errorf("LEDGER_BYTE_STORE_S3_BUCKET required when LEDGER_BYTE_STORE_BACKEND=s3")
 		}
 	default:
-		return nil, fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
+		return nil, fmt.Errorf("LEDGER_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
 	}
 	if err := validatePgPoolSizing(cfg.PgMaxConns, cfg.SequencerMaxInFlight); err != nil {
 		return nil, err
@@ -526,13 +526,13 @@ func loadConfig() (*Config, error) {
 	// canonical-message preamble rejects a zero NetworkID; a witness
 	// signing or verifying without one fails at runtime. Load + derive
 	// at config-load so any error surfaces with a clear cause before
-	// the operator advances any further.
+	// the ledger advances any further.
 	witnessActive := cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0
 	if witnessActive {
 		if cfg.NetworkBootstrapFile == "" {
 			return nil, fmt.Errorf(
-				"OPERATOR_NETWORK_BOOTSTRAP_FILE required when witness mode is active " +
-					"(OPERATOR_WITNESS_KEY_FILE or OPERATOR_WITNESS_ENDPOINTS set)")
+				"LEDGER_NETWORK_BOOTSTRAP_FILE required when witness mode is active " +
+					"(LEDGER_WITNESS_KEY_FILE or LEDGER_WITNESS_ENDPOINTS set)")
 		}
 		raw, err := os.ReadFile(cfg.NetworkBootstrapFile)
 		if err != nil {
@@ -565,7 +565,7 @@ const pgPoolHeadroom = 8
 // defaultPgMaxConns returns the default Postgres pool size derived
 // from sequencerMaxInFlight. Floor at 20 so light-load deployments
 // have headroom for HTTP + auth + builder + shipper concurrency
-// without operator tuning. Otherwise pick MaxInFlight*4 so the
+// without ledger tuning. Otherwise pick MaxInFlight*4 so the
 // sequencer can't exceed a quarter of the pool during a drain
 // burst.
 func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
@@ -582,8 +582,8 @@ func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
 
 // validatePgPoolSizing enforces the boot-time invariant that the
 // configured pool has enough connections to support the sequencer
-// plus headroom for the rest of the operator. Returns a clear
-// error if the operator was misconfigured — better to refuse to
+// plus headroom for the rest of the ledger. Returns a clear
+// error if the ledger was misconfigured — better to refuse to
 // start than to have HTTP admission hang on connection acquisition
 // under load.
 func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
@@ -594,17 +594,17 @@ func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 	required := int32(mif) + pgPoolHeadroom
 	if maxConns < required {
 		return fmt.Errorf(
-			"OPERATOR_PG_MAX_CONNS=%d is below the minimum %d "+
+			"LEDGER_PG_MAX_CONNS=%d is below the minimum %d "+
 				"(SequencerMaxInFlight=%d + headroom=%d). "+
-				"Raise OPERATOR_PG_MAX_CONNS, lower OPERATOR_SEQUENCER_MAX_INFLIGHT, "+
-				"or unset OPERATOR_PG_MAX_CONNS to use the safe default",
+				"Raise LEDGER_PG_MAX_CONNS, lower LEDGER_SEQUENCER_MAX_INFLIGHT, "+
+				"or unset LEDGER_PG_MAX_CONNS to use the safe default",
 			maxConns, required, mif, pgPoolHeadroom,
 		)
 	}
 	return nil
 }
 
-// toBytestoreConfig flattens the operator config's bytestore-related
+// toBytestoreConfig flattens the ledger config's bytestore-related
 // fields into the bytestore.Config the factory expects. Per-backend
 // required-field validation already happened in loadConfig; the factory
 // applies the remaining defaults (prefix=entries, cache_size, region).
@@ -668,7 +668,7 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 
 // parseCSV splits a comma-separated env value into a slice of
 // trimmed non-empty entries. Empty input → nil. Used for
-// OPERATOR_WITNESS_ENDPOINTS.
+// LEDGER_WITNESS_ENDPOINTS.
 func parseCSV(s string) []string {
 	if s == "" {
 		return nil
@@ -699,22 +699,22 @@ func main() {
 
 	// Fail-fast sanity check on LogDID before we touch Postgres.
 	if valErr := envelope.ValidateDestination(cfg.LogDID); valErr != nil {
-		logger.Error("invalid OPERATOR_LOG_DID", "error", valErr)
+		logger.Error("invalid LEDGER_LOG_DID", "error", valErr)
 		os.Exit(1)
 	}
 
-	logger.Info("operator starting",
+	logger.Info("ledger starting",
 		"log_did", cfg.LogDID,
-		"operator_did", cfg.OperatorDID,
+		"ledger_did", cfg.LedgerDID,
 		"addr", cfg.ServerAddr,
 		"tessera_storage_dir", cfg.TesseraStorageDir,
 	)
 
 	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
-	// v0.8.0 wiring. When OPERATOR_ETH_RPC_ENABLED=true the operator
+	// v0.8.0 wiring. When LEDGER_ETH_RPC_ENABLED=true the ledger
 	// constructs an HTTPEthereumRPC client and is ready to pass it
 	// into did.DefaultVerifierRegistryWithRPC at the Phase 4 verifier-
-	// registry seam. When disabled (the default) the operator runs
+	// registry seam. When disabled (the default) the ledger runs
 	// EOA-only and pulls zero network surface — same behavior as
 	// pre-v0.8.0. Endpoint URL is NEVER logged (typically embeds an
 	// API key); the audit channel is secret-management.
@@ -729,7 +729,7 @@ func main() {
 		os.Exit(1)
 	}
 	if ethRPC == nil {
-		logger.Info("eip-1271 verification disabled (OPERATOR_ETH_RPC_ENABLED unset)")
+		logger.Info("eip-1271 verification disabled (LEDGER_ETH_RPC_ENABLED unset)")
 	} else {
 		logger.Info("eip-1271 verification enabled",
 			"timeout_ms", ethRPCCfg.Timeout.Milliseconds(),
@@ -746,7 +746,7 @@ func main() {
 	// Pool is sized at max(20, SequencerMaxInFlight*4) by default so
 	// the Sequencer can drain at full MaxInFlight without starving
 	// the HTTP admission path for connections. Override via
-	// OPERATOR_PG_MAX_CONNS; validatePgPoolSizing rejects anything
+	// LEDGER_PG_MAX_CONNS; validatePgPoolSizing rejects anything
 	// below SequencerMaxInFlight + pgPoolHeadroom at boot.
 	pgPool, err := store.InitPool(ctx, store.PoolConfig{
 		DSN:             cfg.DatabaseURL,
@@ -784,7 +784,7 @@ func main() {
 	// 202 promise. Group commit + fsync semantics live in wal/committer.go.
 	// The same Badger DB also backs Tessera's deduplicator (commit 12
 	// wires tessera.WithDeduplication) so dedup state shares the
-	// operator's single durability medium.
+	// ledger's single durability medium.
 	walDB, err := wal.Open(cfg.WALPath, logger)
 	if err != nil {
 		logger.Error("wal open", "error", err, "path", cfg.WALPath)
@@ -806,7 +806,7 @@ func main() {
 	// ── Byte store ────────────────────────────────────────────────────
 	//
 	// Construct the production bytestore via the hexagonal factory.
-	// OPERATOR_BYTE_STORE_BACKEND selects between "gcs" and "s3";
+	// LEDGER_BYTE_STORE_BACKEND selects between "gcs" and "s3";
 	// loadConfig has already enforced the per-backend required fields.
 	// The returned bytestore.Backend is the union of Store + Presigner —
 	// composite reader, shipper, and the 302 redirect path all use it
@@ -857,23 +857,23 @@ func main() {
 		tesseraOrigin = cfg.LogDID
 	}
 
-	// ── Operator entry-signing key + DID ──────────────────────────────
-	// The operator self-publishes anchor commentary and commitment
+	// ── Ledger entry-signing key + DID ──────────────────────────────
+	// The ledger self-publishes anchor commentary and commitment
 	// commentary. Both go through admission, which now verifies
 	// signatures via did.NewECDSAKeyResolver (SDK). Load (or generate)
 	// the secp256k1 signing key, compute its did:key, and override
-	// cfg.OperatorDID so the resolver can find the matching public
+	// cfg.LedgerDID so the resolver can find the matching public
 	// key for the entries we ourselves submit.
-	operatorSignerPriv, operatorSignerDID, err := loadOrGenerateOperatorSigner(cfg.OperatorSignerKeyFile, logger)
+	ledgerSignerPriv, ledgerSignerDID, err := loadOrGenerateLedgerSigner(cfg.LedgerSignerKeyFile, logger)
 	if err != nil {
-		logger.Error("operator signer", "error", err)
+		logger.Error("ledger signer", "error", err)
 		os.Exit(1)
 	}
-	if envOpDID := os.Getenv("OPERATOR_DID"); envOpDID != "" && envOpDID != operatorSignerDID {
-		logger.Warn("OPERATOR_DID env var ignored — overridden to match signer key",
-			"env_value", envOpDID, "signer_did", operatorSignerDID)
+	if envOpDID := os.Getenv("LEDGER_DID"); envOpDID != "" && envOpDID != ledgerSignerDID {
+		logger.Warn("LEDGER_DID env var ignored — overridden to match signer key",
+			"env_value", envOpDID, "signer_did", ledgerSignerDID)
 	}
-	cfg.OperatorDID = operatorSignerDID
+	cfg.LedgerDID = ledgerSignerDID
 
 	// ── Tessera antispam (dedup) ──────────────────────────────────────
 	// Persistent BadgerDB-backed dedup. Required so
@@ -962,21 +962,21 @@ func main() {
 
 	// ── Self-submit pipeline ──────────────────────────────────────────
 	// The anchor and commitment publishers self-publish commentary
-	// entries to this operator's own admission endpoint. Both must be
+	// entries to this ledger's own admission endpoint. Both must be
 	// signed before submit so admission's ECDSAKeyResolver returns the
 	// matching public key. SignAndSubmit closes that gap by wrapping
 	// the transport-only SubmitViaHTTP with the per-entry ECDSA
 	// signing step.
 	selfSubmitURL := fmt.Sprintf("http://localhost%s", cfg.ServerAddr)
 	signedSelfSubmit := anchor.SignAndSubmit(
-		operatorSignerPriv,
-		operatorSignerDID,
+		ledgerSignerPriv,
+		ledgerSignerDID,
 		anchor.SubmitViaHTTP(selfSubmitURL),
 	)
 
 	// ── Commitment publisher ──────────────────────────────────────────
 	commitPub := builder.NewCommitmentPublisher(
-		cfg.OperatorDID,
+		cfg.LedgerDID,
 		cfg.LogDID,
 		builder.CommitmentPublisherConfig{
 			IntervalEntries: 1000,
@@ -998,7 +998,7 @@ func main() {
 
 	// ── Witness cosigner (optional) ───────────────────────────────────
 	//
-	// When OPERATOR_WITNESS_ENDPOINTS is set, the builder loop's
+	// When LEDGER_WITNESS_ENDPOINTS is set, the builder loop's
 	// post-commit cosignature step posts to each peer witness and
 	// collects K-of-N signatures over the new tree head. With no
 	// endpoints configured, BuilderLoop tolerates a nil cosigner —
@@ -1006,9 +1006,9 @@ func main() {
 	// are published unwitnessed.
 	//
 	// Local-dev "self-witness K=1" pattern: set
-	// OPERATOR_WITNESS_ENDPOINTS=http://localhost:<port> +
-	// OPERATOR_WITNESS_QUORUM_K=1 + OPERATOR_WITNESS_KEY_FILE — the
-	// operator becomes its own witness, exercising the same code
+	// LEDGER_WITNESS_ENDPOINTS=http://localhost:<port> +
+	// LEDGER_WITNESS_QUORUM_K=1 + LEDGER_WITNESS_KEY_FILE — the
+	// ledger becomes its own witness, exercising the same code
 	// paths as production K=N deployments.
 	// ── OpenTelemetry MeterProvider (optional) ─────────────────────
 	//
@@ -1018,13 +1018,13 @@ func main() {
 	// struct downstream (Handlers.Metrics).
 	//
 	// Off by default (zero overhead). Opt-in via
-	// OPERATOR_METRICS_ENABLE=true. Production deployments scrape
+	// LEDGER_METRICS_ENABLE=true. Production deployments scrape
 	// /metrics from the same port as the data-plane endpoints —
 	// no second listener.
 	var (
-		meterShutdown    func(ctx context.Context) error
-		gossipMeter      metric.Meter
-		metricsHandler   http.Handler
+		meterShutdown  func(ctx context.Context) error
+		gossipMeter    metric.Meter
+		metricsHandler http.Handler
 	)
 	if cfg.MetricsEnable {
 		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
@@ -1067,7 +1067,7 @@ func main() {
 			"service_version", cfg.ServiceVersion,
 		)
 	} else {
-		logger.Info("metrics: disabled (OPERATOR_METRICS_ENABLE=false)")
+		logger.Info("metrics: disabled (LEDGER_METRICS_ENABLE=false)")
 	}
 
 	// ── Gossip wiring (BadgerStore + handler + feed + sink) ──────────
@@ -1075,8 +1075,8 @@ func main() {
 	// Co-tenants the WAL's Badger handle under a distinct keyspace
 	// prefix (gossipstore/keyspace.go uses 0x07 vs WAL's 0x01..0x06).
 	// Mounted iff:
-	//   - OPERATOR_GOSSIP_DISABLE != "true", and
-	//   - NetworkID is non-zero (witness mode active OR the operator
+	//   - LEDGER_GOSSIP_DISABLE != "true", and
+	//   - NetworkID is non-zero (witness mode active OR the ledger
 	//     has loaded a network bootstrap document).
 	//
 	// Built BEFORE the witness cosigner so HeadSync can reference
@@ -1111,17 +1111,17 @@ func main() {
 		gossipFeedH = gossipBundle.FeedHandler
 
 		// STH publisher: signs KindCosignedTreeHead events under the
-		// operator's own DID + signing key (the same key used to
+		// ledger's own DID + signing key (the same key used to
 		// sign admitted entries; cosign Purpose separation keeps
 		// these signing roles non-replayable across one another).
 		gossipPublisher, err = gossipnet.NewSTHPublisher(gossipnet.PublisherConfig{
-			Store:            gossipBStore,
-			Sink:             gossipBundle.Sink,
-			Signer:           cosign.NewECDSAWitnessSigner(operatorSignerPriv),
-			NetworkID:        cfg.NetworkID,
-			Originator:       cfg.OperatorDID,
-			OperatorEndpoint: cfg.ServerAddr,
-			Logger:           logger,
+			Store:          gossipBStore,
+			Sink:           gossipBundle.Sink,
+			Signer:         cosign.NewECDSAWitnessSigner(ledgerSignerPriv),
+			NetworkID:      cfg.NetworkID,
+			Originator:     cfg.LedgerDID,
+			LedgerEndpoint: cfg.ServerAddr,
+			Logger:         logger,
 		})
 		if err != nil {
 			logger.Error("gossip STH publisher", "error", err)
@@ -1159,8 +1159,8 @@ func main() {
 		// ── Anti-entropy catchup loop (optional) ─────────────────────
 		//
 		// Pulls peer events we missed via the read-side feed.
-		// Disabled when OPERATOR_GOSSIP_PEER_DIDS is empty or
-		// length-mismatched against OPERATOR_GOSSIP_PEER_ENDPOINTS.
+		// Disabled when LEDGER_GOSSIP_PEER_DIDS is empty or
+		// length-mismatched against LEDGER_GOSSIP_PEER_ENDPOINTS.
 		if len(cfg.GossipPeerDIDs) > 0 && len(cfg.GossipPeerDIDs) == len(cfg.GossipPeerEndpoints) {
 			peers := make([]gossipnet.AntiEntropyPeer, 0, len(cfg.GossipPeerDIDs))
 			for i, did := range cfg.GossipPeerDIDs {
@@ -1223,9 +1223,9 @@ func main() {
 			equivPub, perr := gossipnet.NewEquivocationPublisher(gossipnet.EquivocationPublisherConfig{
 				Store:      gossipBStore,
 				Sink:       gossipBundle.Sink,
-				Signer:     cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+				Signer:     cosign.NewECDSAWitnessSigner(ledgerSignerPriv),
 				NetworkID:  cfg.NetworkID,
-				Originator: cfg.OperatorDID,
+				Originator: cfg.LedgerDID,
 				Logger:     logger,
 			})
 			if perr != nil {
@@ -1294,9 +1294,9 @@ func main() {
 					Store:       gossipBStore,
 					GossipStore: gossipBStore,
 					Sink:        gossipBundle.Sink,
-					Signer:      cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+					Signer:      cosign.NewECDSAWitnessSigner(ledgerSignerPriv),
 					NetworkID:   cfg.NetworkID,
-					Originator:  cfg.OperatorDID,
+					Originator:  cfg.LedgerDID,
 					Logger:      logger,
 				})
 			if scerr != nil {
@@ -1316,7 +1316,7 @@ func main() {
 			logger.Info("equivocation scanner: enabled (subscribed to splitid index 0x0A)")
 		}
 	} else if cfg.GossipDisable {
-		logger.Info("gossip disabled (OPERATOR_GOSSIP_DISABLE=true)")
+		logger.Info("gossip disabled (LEDGER_GOSSIP_DISABLE=true)")
 	} else {
 		logger.Info("gossip disabled (NetworkID unset; load network bootstrap)")
 	}
@@ -1345,7 +1345,7 @@ func main() {
 			"gossip_publisher", gossipPublisher != nil,
 		)
 	} else {
-		logger.Info("witness cosigner: disabled (OPERATOR_WITNESS_ENDPOINTS unset)")
+		logger.Info("witness cosigner: disabled (LEDGER_WITNESS_ENDPOINTS unset)")
 	}
 
 	// ── Escrow override service (optional) ──────────────────────────
@@ -1364,9 +1364,9 @@ func main() {
 				Collector:  hs.Collector(),
 				Store:      gossipBStore,
 				Sink:       gossipBundle.Sink,
-				Signer:     cosign.NewECDSAWitnessSigner(operatorSignerPriv),
+				Signer:     cosign.NewECDSAWitnessSigner(ledgerSignerPriv),
 				NetworkID:  cfg.NetworkID,
-				Originator: cfg.OperatorDID,
+				Originator: cfg.LedgerDID,
 				Logger:     logger,
 			})
 			if eerr != nil {
@@ -1398,7 +1398,7 @@ func main() {
 	// ── Anchor publisher (v0.3.0: LogDID threaded) ────────────────────
 	anchorPub := anchor.NewPublisher(
 		anchor.PublisherConfig{
-			OperatorDID:   cfg.OperatorDID,
+			LedgerDID:     cfg.LedgerDID,
 			LogDID:        cfg.LogDID,
 			Interval:      cfg.AnchorInterval,
 			AnchorSources: cfg.AnchorSources,
@@ -1459,9 +1459,9 @@ func main() {
 			Credits:     creditStore,
 			DIDResolver: sdkdid.NewECDSAKeyResolver(),
 		},
-		OperatorDID:        cfg.OperatorDID,
+		LedgerDID:          cfg.LedgerDID,
 		LogDID:             cfg.LogDID,
-		OperatorSignerPriv: operatorSignerPriv,
+		LedgerSignerPriv:   ledgerSignerPriv,
 		MaxEntrySize:       cfg.MaxEntrySize,
 		Logger:             logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
@@ -1528,7 +1528,7 @@ func main() {
 
 	// ── Witness cosign endpoint (optional) ────────────────────────────
 	//
-	// Mounted only when OPERATOR_WITNESS_KEY_FILE is set (or for local-
+	// Mounted only when LEDGER_WITNESS_KEY_FILE is set (or for local-
 	// dev when no key is configured but the self-witness loop is
 	// active — keeping things simple, we treat the file as the
 	// gate). Peers POSTing to /v1/cosign get a signed tree head
@@ -1545,7 +1545,7 @@ func main() {
 			logger.Error("witness signer", "error", err)
 			os.Exit(1)
 		}
-		// Tree-head-only signing surface: the operator's witness
+		// Tree-head-only signing surface: the ledger's witness
 		// role refuses to cosign rotation or escrow-override
 		// payloads even though the SDK handler can serve them. A
 		// dedicated rotation/override witness is a separate
@@ -1566,32 +1566,32 @@ func main() {
 	}
 
 	handlers := api.Handlers{
-		Submission:      submitHandler,
-		BatchSubmission: batchSubmitHandler,
-		TreeHead:        api.NewTreeHeadHandler(treeDeps),
-		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
-		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
-		SMTProof:        api.NewSMTProofHandler(smtDeps),
-		SMTBatchProof:   api.NewSMTBatchProofHandler(smtDeps),
-		SMTRoot:         api.NewSMTRootHandler(smtDeps),
-		CosignatureOf:   api.NewQueryCosignatureOfHandler(queryDeps),
-		TargetRoot:      api.NewQueryTargetRootHandler(queryDeps),
-		SignerDID:       api.NewQuerySignerDIDHandler(queryDeps),
-		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
-		Scan:            api.NewQueryScanHandler(queryDeps),
-		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		MMD:             mmdHandler,
-		EntryByHash:     api.NewHashLookupHandler(queryDeps),
-		WitnessCosign:   witnessHandler, // nil unless OPERATOR_WITNESS_KEY_FILE / endpoints configured
-		GossipPost:      gossipPostH,    // nil unless gossip enabled + NetworkID set
-		GossipFeed:      gossipFeedH,
-		EscrowOverride:  escrowOverrideHandler, // nil unless witness mode + gossip both wired
-		Metrics:         metricsHandler,        // nil unless OPERATOR_METRICS_ENABLE=true
-		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
-		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
-		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
-		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
-		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
+		Submission:       submitHandler,
+		BatchSubmission:  batchSubmitHandler,
+		TreeHead:         api.NewTreeHeadHandler(treeDeps),
+		TreeInclusion:    api.NewTreeInclusionHandler(treeDeps),
+		TreeConsistency:  api.NewTreeConsistencyHandler(treeDeps),
+		SMTProof:         api.NewSMTProofHandler(smtDeps),
+		SMTBatchProof:    api.NewSMTBatchProofHandler(smtDeps),
+		SMTRoot:          api.NewSMTRootHandler(smtDeps),
+		CosignatureOf:    api.NewQueryCosignatureOfHandler(queryDeps),
+		TargetRoot:       api.NewQueryTargetRootHandler(queryDeps),
+		SignerDID:        api.NewQuerySignerDIDHandler(queryDeps),
+		SchemaRef:        api.NewQuerySchemaRefHandler(queryDeps),
+		Scan:             api.NewQueryScanHandler(queryDeps),
+		Difficulty:       api.NewDifficultyHandler(queryDeps),
+		MMD:              mmdHandler,
+		EntryByHash:      api.NewHashLookupHandler(queryDeps),
+		WitnessCosign:    witnessHandler, // nil unless LEDGER_WITNESS_KEY_FILE / endpoints configured
+		GossipPost:       gossipPostH,    // nil unless gossip enabled + NetworkID set
+		GossipFeed:       gossipFeedH,
+		EscrowOverride:   escrowOverrideHandler, // nil unless witness mode + gossip both wired
+		Metrics:          metricsHandler,        // nil unless LEDGER_METRICS_ENABLE=true
+		EntryBySequence:  api.NewEntryBySequenceHandler(entryReadDeps),
+		EntryBatch:       api.NewEntryBatchHandler(entryReadDeps),
+		EntryRaw:         api.NewRawEntryHandler(entryReadDeps),
+		SMTLeaf:          api.NewSMTLeafHandler(smtDeps),
+		SMTLeafBatch:     api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery:  api.NewDerivationCommitmentQueryHandler(commitDeps),
 		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
 	}
@@ -1601,7 +1601,7 @@ func main() {
 	// Read-only verifier: samples random sequences below HWM and
 	// compares WAL.HashAt to Tessera.HashAt. On disagreement
 	// (ErrDiverged) returns; the supervisor below converts that to
-	// panic so the operator stops serving before consumers see
+	// panic so the ledger stops serving before consumers see
 	// corrupt proofs.
 	//
 	// Boot recovery used to live here (Reconcile) but the Sequencer
@@ -1785,7 +1785,7 @@ func main() {
 	case <-ctx.Done():
 		logger.Info("shutdown initiated (graceful)")
 	case fatalErr = <-fatal:
-		logger.Error("FATAL: operator must terminate", "error", fatalErr)
+		logger.Error("FATAL: ledger must terminate", "error", fatalErr)
 		// Cancel ctx so other goroutines see the shutdown signal
 		// and unwind. The panic below is what actually terminates
 		// the process.
@@ -1801,7 +1801,7 @@ func main() {
 	wg.Wait()
 
 	b, e, errs := bl.Stats()
-	logger.Info("operator stopped",
+	logger.Info("ledger stopped",
 		"batches", b, "entries", e, "errors", errs,
 	)
 
@@ -1810,6 +1810,6 @@ func main() {
 		// panic in the entire codebase. The orchestrator (k8s,
 		// systemd, bare metal) sees a non-zero exit and decides
 		// what's next.
-		panic(fmt.Errorf("operator FATAL: %w", fatalErr))
+		panic(fmt.Errorf("ledger FATAL: %w", fatalErr))
 	}
 }

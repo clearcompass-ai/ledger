@@ -202,12 +202,12 @@ func makeSubmissionDeps(t *testing.T, opSignerPriv *ecdsa.PrivateKey, signerPub 
 			Credits:     nil, // tests use authenticated=false → no credit deduction
 			DIDResolver: &fakeDIDResolver{pub: signerPub},
 		},
-		OperatorDID:        "did:test:operator",
+		LedgerDID:          "did:test:ledger",
 		LogDID:             "did:test:log",
 		MaxEntrySize:       1 << 20,
 		Logger:             discardLogger(),
 		FreshnessTolerance: 5 * time.Minute,
-		OperatorSignerPriv: opSignerPriv,
+		LedgerSignerPriv:   opSignerPriv,
 	}
 }
 

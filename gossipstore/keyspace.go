@@ -1,7 +1,7 @@
 /*
 FILE PATH: gossipstore/keyspace.go
 
-BadgerDB keyspace layout for the operator-side gossip Store.
+BadgerDB keyspace layout for the ledger-side gossip Store.
 
 # DESIGN
 
@@ -10,18 +10,18 @@ The second byte is a sub-prefix tag identifying the index. This
 co-tenants gossip data with the existing WAL keyspace (prefixes
 0x01..0x06 reserved by wal/keyspace.go) without colliding.
 
-  0x07 0x01 <eventID:32>                              → SignedEvent JSON
-  0x07 0x02 <olen:2><orig><lamport:8>                 → eventID:32
-  0x07 0x03 <klen:2><kind><lamport:8><olen:2><orig>   → eventID:32
-  0x07 0x04 <olen:2><orig>                            → headRecord (40 bytes)
-  0x07 0x05 <olen:2><orig><lamport:8>                 → eventID:32
-  0x07 0x06                                           → statsCounter (16 bytes)
-  0x07 0x07 <olen:2><orig>                            → empty (existence marker)
-  0x07 0x09 <binding:32><eventID:32>                  → empty (binding inverted index)
-  0x07 0x0A <slen:2><schema><spid:32><seq:8>          → SplitIDIndexEntry JSON
-  0x07 0x0B <binding:32>                              → SignedEvent JSON (equiv projection)
-  0x07 0x0C <slen:2><schema><spid:32><seq:8>          → EntryLookupIndexEntry JSON
-  0x07 0x0D                                           → uint64 BE (splitid replay HWM)
+	0x07 0x01 <eventID:32>                              → SignedEvent JSON
+	0x07 0x02 <olen:2><orig><lamport:8>                 → eventID:32
+	0x07 0x03 <klen:2><kind><lamport:8><olen:2><orig>   → eventID:32
+	0x07 0x04 <olen:2><orig>                            → headRecord (40 bytes)
+	0x07 0x05 <olen:2><orig><lamport:8>                 → eventID:32
+	0x07 0x06                                           → statsCounter (16 bytes)
+	0x07 0x07 <olen:2><orig>                            → empty (existence marker)
+	0x07 0x09 <binding:32><eventID:32>                  → empty (binding inverted index)
+	0x07 0x0A <slen:2><schema><spid:32><seq:8>          → SplitIDIndexEntry JSON
+	0x07 0x0B <binding:32>                              → SignedEvent JSON (equiv projection)
+	0x07 0x0C <slen:2><schema><spid:32><seq:8>          → EntryLookupIndexEntry JSON
+	0x07 0x0D                                           → uint64 BE (splitid replay HWM)
 
 # SCALE NOTES
 
@@ -76,13 +76,13 @@ const prefixGossipRoot byte = 0x07
 // Sub-prefix tags. Single bytes chosen so all of one index's keys
 // are contiguous in Badger's sort order.
 const (
-	subEvent       byte = 0x01 // by-eventID
-	subChain       byte = 0x02 // per-originator chain
-	subKindIndex   byte = 0x03 // per-kind global
-	subHead        byte = 0x04 // per-originator head pointer
-	subSTHIndex    byte = 0x05 // per-originator STH reverse index
-	subStats       byte = 0x06 // singleton stats record
-	subOrigExists  byte = 0x07 // existence marker for originator count
+	subEvent      byte = 0x01 // by-eventID
+	subChain      byte = 0x02 // per-originator chain
+	subKindIndex  byte = 0x03 // per-kind global
+	subHead       byte = 0x04 // per-originator head pointer
+	subSTHIndex   byte = 0x05 // per-originator STH reverse index
+	subStats      byte = 0x06 // singleton stats record
+	subOrigExists byte = 0x07 // existence marker for originator count
 
 	// subBindingIndex holds the inverted index from a 32-byte
 	// binding hash to the eventID(s) of every event whose
@@ -97,7 +97,7 @@ const (
 	// (0x07 0x09 binding) returns every event matching.
 	subBindingIndex byte = 0x09
 
-	// subSplitIDIndex is the operator-side splitid index that
+	// subSplitIDIndex is the ledger-side splitid index that
 	// the EquivocationScanner subscribes to. Populated by the
 	// sequencer at Phase 2 commit-time. The scanner sees every
 	// PUT under this prefix and prefix-scans for collisions at
@@ -126,7 +126,7 @@ const (
 	//     collision and emits the gossip event.
 	//   - gossip handler's post-Append hook when an inbound
 	//     KindEntryCommitmentEquivocation event verifies — so
-	//     equivocations from peer operators are projected here
+	//     equivocations from peer ledgers are projected here
 	//     too, and our own /by-split-id endpoint surfaces the
 	//     full network's view, not just our own observations.
 	subEquivProj byte = 0x0B
@@ -145,7 +145,7 @@ const (
 	//
 	// The 8-byte big-endian seq suffix orders multiple admissions
 	// at the same (schema_id, split_id) in admission order. A
-	// prefix scan returns every entry the operator has admitted
+	// prefix scan returns every entry the ledger has admitted
 	// at that tuple — len 0 → 404, len 1 → normal, len ≥ 2 →
 	// surfaces as cryptographic equivocation evidence per
 	// Decision 4. The detection trigger (0x0A) and the
@@ -168,7 +168,7 @@ const (
 	// after each batch's writes are durable in Badger.
 	//
 	// Why singleton: there is exactly one replayer running per
-	// operator binary, and the HWM is a single uint64. The empty
+	// ledger binary, and the HWM is a single uint64. The empty
 	// suffix matches the same singleton pattern subStats (0x06)
 	// uses.
 	//

@@ -3,7 +3,7 @@ FILE PATH: tessera/embedded_appender.go
 
 EmbeddedAppender — wraps the upstream Tessera library in-process,
 replacing the HTTP-based *Client. Phase 1B's load-bearing change:
-the operator no longer talks HTTP to a separate
+the ledger no longer talks HTTP to a separate
 tessera-personality binary; it imports
 github.com/transparency-dev/tessera directly and holds an
 *tessera.Appender + tessera.LogReader for the lifetime of the
@@ -12,63 +12,63 @@ process.
 WHY EMBEDDED:
 
   - Eliminates the standalone tessera-personality binary
-    (deleted in commit 7/7) and the network hop between operator
+    (deleted in commit 7/7) and the network hop between ledger
     and personality. One process, one cgroup, one set of
     failure modes.
-  - Preserves the operator's existing MerkleAppender interface
+  - Preserves the ledger's existing MerkleAppender interface
     (AppendLeaf + Head). The builder loop and proof_adapter.go
     keep their existing API surface — only the construction site
-    in cmd/operator/main.go changes.
+    in cmd/ledger/main.go changes.
   - Tessera's storage driver is the only thing that varies
     between deployments (POSIX for local dev, GCP for
-    production). The operator passes a tessera.Driver into
+    production). The ledger passes a tessera.Driver into
     NewEmbeddedAppender; the wrapper itself is driver-agnostic.
 
 CONTRACT:
 
-  AppendLeaf(data []byte) (uint64, error)
-    - Requires len(data) == 32 (SHA-256 entry identity per the
-      v0.3.0-tessera SDK alignment). Hash-only tiles: Tessera
-      sees only the 32-byte identity, never the full wire bytes.
-    - Blocks until Tessera's batching logic assigns a sequence
-      number and the IndexFuture resolves. Typical latency
-      depends on WithCheckpointInterval / WithBatching options
-      passed to upstream NewAppender at construction.
+	AppendLeaf(data []byte) (uint64, error)
+	  - Requires len(data) == 32 (SHA-256 entry identity per the
+	    v0.3.0-tessera SDK alignment). Hash-only tiles: Tessera
+	    sees only the 32-byte identity, never the full wire bytes.
+	  - Blocks until Tessera's batching logic assigns a sequence
+	    number and the IndexFuture resolves. Typical latency
+	    depends on WithCheckpointInterval / WithBatching options
+	    passed to upstream NewAppender at construction.
 
-  Head() (types.TreeHead, error)
-    - Reads the latest signed checkpoint via LogReader and
-      parses it. Returns os.ErrNotExist (wrapped) before the
-      first checkpoint is published — the cmd-side wiring at
-      startup tolerates this and re-tries.
+	Head() (types.TreeHead, error)
+	  - Reads the latest signed checkpoint via LogReader and
+	    parses it. Returns os.ErrNotExist (wrapped) before the
+	    first checkpoint is published — the cmd-side wiring at
+	    startup tolerates this and re-tries.
 
-  Close(ctx context.Context) error
-    - Calls the shutdown function returned by upstream
-      NewAppender. Ensures any IndexFuture this appender has
-      handed out resolves before returning. MUST be called at
-      operator shutdown to avoid losing entries that were
-      Add'd but not yet integrated.
+	Close(ctx context.Context) error
+	  - Calls the shutdown function returned by upstream
+	    NewAppender. Ensures any IndexFuture this appender has
+	    handed out resolves before returning. MUST be called at
+	    ledger shutdown to avoid losing entries that were
+	    Add'd but not yet integrated.
 
 INTEGRATION WITH proof_adapter.go:
 
-  The existing TesseraAdapter wraps a *Client + *TileReader.
-  After Phase 1B, cmd/operator/main.go constructs:
+	The existing TesseraAdapter wraps a *Client + *TileReader.
+	After Phase 1B, cmd/ledger/main.go constructs:
 
-    backend, _   := NewPOSIXTileBackend(storageDir)
-    tileReader   := NewTileReader(backend, cacheSize)
-    embedded, _  := NewEmbeddedAppender(ctx, driver, opts)
-    adapter      := NewEmbeddedTesseraAdapter(embedded, tileReader, logger)
+	  backend, _   := NewPOSIXTileBackend(storageDir)
+	  tileReader   := NewTileReader(backend, cacheSize)
+	  embedded, _  := NewEmbeddedAppender(ctx, driver, opts)
+	  adapter      := NewEmbeddedTesseraAdapter(embedded, tileReader, logger)
 
-  EmbeddedTesseraAdapter mirrors TesseraAdapter's surface
-  (AppendLeaf, Head, RawInclusionProof, etc.) but holds an
-  *EmbeddedAppender instead of a *Client.
+	EmbeddedTesseraAdapter mirrors TesseraAdapter's surface
+	(AppendLeaf, Head, RawInclusionProof, etc.) but holds an
+	*EmbeddedAppender instead of a *Client.
 
 DRIVER CHOICE (out of scope for THIS commit):
 
-  This file does NOT instantiate the storage driver. The caller
-  (cmd/operator/main.go in commit 5/7) builds either:
-    - posix.New(ctx, posix.Config{Path: dir})  — local dev
-    - gcp.New(ctx, gcp.Config{...})            — production
-  and passes the resulting tessera.Driver to NewEmbeddedAppender.
+	This file does NOT instantiate the storage driver. The caller
+	(cmd/ledger/main.go in commit 5/7) builds either:
+	  - posix.New(ctx, posix.Config{Path: dir})  — local dev
+	  - gcp.New(ctx, gcp.Config{...})            — production
+	and passes the resulting tessera.Driver to NewEmbeddedAppender.
 */
 package tessera
 
@@ -92,7 +92,7 @@ import (
 	"github.com/clearcompass-ai/attesta/types"
 )
 
-// AppenderOptions bundles the knobs cmd/operator/main.go threads
+// AppenderOptions bundles the knobs cmd/ledger/main.go threads
 // into NewEmbeddedAppender. Holds tunables that the upstream
 // AppendOptions builder pattern requires; isolated here so the
 // cmd-side wiring stays small and the defaults are documented in
@@ -100,7 +100,7 @@ import (
 type AppenderOptions struct {
 	// Origin is the c2sp.org/tlog-tiles "origin" line written
 	// to every checkpoint. SHOULD be a stable identifier for
-	// this log (e.g., the operator's LogDID). Defaults to
+	// this log (e.g., the ledger's LogDID). Defaults to
 	// "attesta-local-dev" when empty — fine for tests, never
 	// for production.
 	Origin string
@@ -119,14 +119,14 @@ type AppenderOptions struct {
 
 	// Signer is the Ed25519 note.Signer that signs checkpoints.
 	// REQUIRED — Tessera refuses to construct an Appender
-	// without one. cmd/operator/main.go loads this from a key
+	// without one. cmd/ledger/main.go loads this from a key
 	// file in production or generates an ephemeral one for
 	// local dev (with a logged warning).
 	Signer note.Signer
 
 	// Antispam is the upstream Tessera Antispam (dedup) adapter.
 	// nil = no dedup (every Add allocates a fresh seq, even for
-	// duplicates). Production operators MUST wire one — without
+	// duplicates). Production ledgers MUST wire one — without
 	// it, integrity.Reasserter on boot would re-Add inflight
 	// entries and get NEW seqs instead of the original ones,
 	// polluting the log. See README.md "Antispam" for the
@@ -183,7 +183,7 @@ type EmbeddedAppender struct {
 // requires explicit cleanup at process shutdown).
 //
 // REQUIRES opts.Signer to be non-nil. Returns an error rather
-// than panicking so cmd/operator/main.go's failed-construction
+// than panicking so cmd/ledger/main.go's failed-construction
 // path stays log-and-exit-1 instead of panic-trace.
 func NewEmbeddedAppender(
 	ctx context.Context,
@@ -252,7 +252,7 @@ func (e *EmbeddedAppender) AppendLeaf(data []byte) (uint64, error) {
 	// Background context: the upstream future will resolve when
 	// Tessera's batcher includes this entry in its next
 	// integration cycle. Caller-supplied ctx would be safe to
-	// thread here, but the operator's call site (builder/loop.go)
+	// thread here, but the ledger's call site (builder/loop.go)
 	// doesn't currently. Adding it later is a one-line change.
 	idx, err := e.appender.Add(context.Background(), uptessera.NewEntry(data))()
 	if err != nil {
@@ -280,7 +280,7 @@ func (e *EmbeddedAppender) Head() (types.TreeHead, error) {
 
 // Reader exposes the upstream LogReader so cmd-side wiring can
 // pass it to other subsystems (e.g., a future LogReader-backed
-// TileBackend that bridges to TileReader). Operator code should
+// TileBackend that bridges to TileReader). Ledger code should
 // prefer the high-level methods (AppendLeaf, Head) over reaching
 // into the LogReader directly.
 func (e *EmbeddedAppender) Reader() uptessera.LogReader {
@@ -331,7 +331,7 @@ func GenerateEphemeralSigner(name string) (note.Signer, string, error) {
 
 // Compile-time pin: *EmbeddedAppender satisfies the same shape
 // as *Client did on the AppendLeaf+Head surface. The shape
-// itself is the operator's MerkleAppender interface (defined in
+// itself is the ledger's MerkleAppender interface (defined in
 // builder/loop.go); we don't import it here to avoid an import
 // cycle, but the duck-typed compatibility is the load-bearing
 // guarantee.
@@ -343,18 +343,18 @@ func GenerateEphemeralSigner(name string) (note.Signer, string, error) {
 var _ AppenderBackend = (*EmbeddedAppender)(nil)
 
 // ─────────────────────────────────────────────────────────────────
-// ReadOnlyAppender — read-only AppenderBackend for cmd/operator-reader
+// ReadOnlyAppender — read-only AppenderBackend for cmd/ledger-reader
 // ─────────────────────────────────────────────────────────────────
 
 // ErrReadOnly is returned by ReadOnlyAppender.AppendLeaf. The
-// read-only operator never appends; if any code path reaches
+// read-only ledger never appends; if any code path reaches
 // AppendLeaf, that's a programming error and surfaces as a
 // loud rejection rather than silently dropping the entry.
 var ErrReadOnly = errors.New("tessera: read-only appender — writes not permitted")
 
 // ReadOnlyAppender satisfies AppenderBackend by reading the
 // checkpoint from a POSIX directory shared with the writer
-// operator. Used by cmd/operator-reader so the reader process
+// ledger. Used by cmd/ledger-reader so the reader process
 // can serve TreeHead and proof requests against the same
 // storage the writer holds open via tessera.NewAppender.
 //
@@ -366,7 +366,7 @@ type ReadOnlyAppender struct {
 
 // NewReadOnlyAppender constructs a read-only appender over the
 // supplied POSIX tile backend. The backend's rootDir must point
-// at the same directory the writer operator's embedded Tessera
+// at the same directory the writer ledger's embedded Tessera
 // is configured for (k8s shared volume, same host, etc.).
 func NewReadOnlyAppender(backend *POSIXTileBackend) *ReadOnlyAppender {
 	return &ReadOnlyAppender{backend: backend}
@@ -402,13 +402,13 @@ var _ AppenderBackend = (*ReadOnlyAppender)(nil)
 // parseSignedNoteCheckpoint parses a c2sp.org/tlog-tiles
 // checkpoint produced by upstream Tessera. The format is:
 //
-//	line 0: origin string (e.g., the operator's LogDID)
+//	line 0: origin string (e.g., the ledger's LogDID)
 //	line 1: tree size as decimal
 //	line 2: base64-encoded root hash (32 bytes decoded)
 //	line 3: empty (separator before signature block)
 //	line 4+: "— <signer> <base64 sig>" (Ed25519 signatures —
 //	         tlog-tiles ecosystem consumers verify these; the
-//	         operator does not)
+//	         ledger does not)
 //
 // Lifted from the deleted tessera/client.go in Phase 1B
 // (commit 7/7) so the parser stays available after the HTTP

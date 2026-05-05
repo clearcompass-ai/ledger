@@ -20,11 +20,11 @@ Coverage:
   - Custom ObjectPrefix isolates two stores in the same bucket.
   - PresignGet returns a URL whose HTTP GET fetches the bytes.
 
-Env vars (mirrors the operator's production OPERATOR_BYTE_STORE_*
+Env vars (mirrors the ledger's production LEDGER_BYTE_STORE_*
 naming so tests and prod stay in sync):
 
-  ATTESTA_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
-  ATTESTA_TEST_GCS_BUCKET     e.g. attesta-test-bytes
+	ATTESTA_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
+	ATTESTA_TEST_GCS_BUCKET     e.g. attesta-test-bytes
 
 The docker-compose harness creates the bucket at startup; tests
 that need a clean state delete + recreate per-test via the

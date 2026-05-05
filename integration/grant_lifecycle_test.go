@@ -6,24 +6,24 @@ lifecycle per Wave 1 v3 §CI3.
 
 Flow under test:
 
-  1. Construct a structurally valid PREGrantCommitment via the SDK
-     (artifact.NewPREGrantCommitmentFromVSS or equivalent), then
-     wrap it in the on-log JSON envelope shape that
-     schema.ParsePREGrantCommitmentEntry recognizes.
-  2. Build a commentary-shaped envelope.Entry with that payload via
-     builder.BuildCommentary. Sign with a fresh secp256k1 key.
-  3. Submit via POST /v1/entries/batch (the C6 endpoint) and
-     verify HTTP 202 + result shape.
-  4. Confirm the C3 commitment_split_id index has the new row.
-  5. Call GET /v1/commitments/by-split-id/{schema_id}/{hex}
-     (the C7 endpoint) and verify the response shape matches
-     Decision 4 — entries[0] carries canonical_bytes_hex,
-     log_time, and position{sequence_number, log_did}.
-  6. Decode entries[0].canonical_bytes_hex and run it through
-     schema.ParsePREGrantCommitmentEntry to confirm the SDK can
-     reconstruct the commitment from what the operator served.
-  7. Call artifact.VerifyPREGrantCommitment against the
-     reconstructed commitment + grant context. Expect nil error.
+ 1. Construct a structurally valid PREGrantCommitment via the SDK
+    (artifact.NewPREGrantCommitmentFromVSS or equivalent), then
+    wrap it in the on-log JSON envelope shape that
+    schema.ParsePREGrantCommitmentEntry recognizes.
+ 2. Build a commentary-shaped envelope.Entry with that payload via
+    builder.BuildCommentary. Sign with a fresh secp256k1 key.
+ 3. Submit via POST /v1/entries/batch (the C6 endpoint) and
+    verify HTTP 202 + result shape.
+ 4. Confirm the C3 commitment_split_id index has the new row.
+ 5. Call GET /v1/commitments/by-split-id/{schema_id}/{hex}
+    (the C7 endpoint) and verify the response shape matches
+    Decision 4 — entries[0] carries canonical_bytes_hex,
+    log_time, and position{sequence_number, log_did}.
+ 6. Decode entries[0].canonical_bytes_hex and run it through
+    schema.ParsePREGrantCommitmentEntry to confirm the SDK can
+    reconstruct the commitment from what the ledger served.
+ 7. Call artifact.VerifyPREGrantCommitment against the
+    reconstructed commitment + grant context. Expect nil error.
 
 Skip semantics:
 
@@ -31,26 +31,26 @@ Skip semantics:
     harness sets it). Local developers can opt in by exporting
     ATTESTA_TEST_DSN to a disposable Postgres database.
   - Skips when the SDK lifecycle.GrantArtifactAccess API is not
-    invoked here — this test validates the operator's serving
+    invoked here — this test validates the ledger's serving
     surface against synthesized commitments because the
     full-lifecycle SDK invocation requires fixtures (artifact CID,
     recipient public key, threshold parameters) that belong in a
-    consumer-side test, not the operator's CI suite.
+    consumer-side test, not the ledger's CI suite.
 
 Test scope boundary:
 
-  - This test exercises the operator's admission + index +
+  - This test exercises the ledger's admission + index +
     serving paths end-to-end against a real Postgres + Tessera
     deployment. It does NOT invoke the full SDK
-    lifecycle.GrantArtifactAccess flow because the operator is
+    lifecycle.GrantArtifactAccess flow because the ledger is
     domain-agnostic and Wave 1 v3 §C6 admits any structurally
     valid commitment entry — synthesized fixtures exercise the
     same admission / index / lookup pathways without coupling
-    the operator's CI to the SDK's grant-side complexity.
+    the ledger's CI to the SDK's grant-side complexity.
   - End-to-end SDK-side grant flow (build grant via
     GrantArtifactAccess, submit, fetch, verify) is the right
     test to add when the SDK consumer surface stabilizes; until
-    then this file pins the operator-side guarantee that any
+    then this file pins the ledger-side guarantee that any
     commitment payload the SDK produces will admit, index, serve,
     and round-trip cleanly.
 */
@@ -80,7 +80,7 @@ import (
 	"github.com/clearcompass-ai/ledger/store"
 )
 
-const testLogDID = "did:web:test-operator.example"
+const testLogDID = "did:web:test-ledger.example"
 
 // ─────────────────────────────────────────────────────────────────────
 // Test harness wiring
@@ -140,9 +140,9 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 //     suite refuses fake-gcs to keep production behavior pinned
 //     (presigned URLs, V4 signing, ADC chain).
 //  3. ADC chain (in priority order):
-//        a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
-//        b. gcloud application-default login (workstation)
-//        c. Workload Identity (GKE / Cloud Run / GCE metadata)
+//     a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
+//     b. gcloud application-default login (workstation)
+//     c. Workload Identity (GKE / Cloud Run / GCE metadata)
 //
 // On wiring failure, the test fails loudly — a broken CI config
 // must NEVER silently turn into a green build.
@@ -193,7 +193,7 @@ func requireRealGCS(t *testing.T) opbytestore.Backend {
 // is what we care about. The on-curve / threshold-binding
 // cryptographic guarantees are exercised by the SDK's own test
 // suite at crypto/artifact/pre_grant_commitment_verify_test.go
-// — duplicating them here would test the SDK, not the operator.
+// — duplicating them here would test the SDK, not the ledger.
 //
 // NOTE: this synthesizes the wire bytes by hand because the SDK's
 // PREGrantCommitment serializer is the format-of-record. If a
@@ -265,7 +265,7 @@ func seedCommitmentEntry(
 // (canonical, signature) pairs keyed by sequence number. The
 // integration suite uses this rather than running real Tessera
 // because the lookup endpoint contract terminates at
-// "operator returns canonical bytes" — Tessera tile generation is
+// "ledger returns canonical bytes" — Tessera tile generation is
 // orthogonal and tested in tessera_integration_test.go.
 // stubEntryReader satisfies bytestore.Reader for the integration
 // tests' lookup-endpoint round-trip fixtures. Wire bytes ARE the
@@ -305,7 +305,7 @@ var _ opbytestore.Reader = (*stubEntryReader)(nil)
 // CI3 — Happy path
 // ─────────────────────────────────────────────────────────────────────
 
-// TestGrantLifecycle_HappyPath exercises the operator-side
+// TestGrantLifecycle_HappyPath exercises the ledger-side
 // commitment surface end-to-end:
 //
 //  1. Seed a synthetic commitment entry (entry_index +
@@ -338,7 +338,7 @@ func TestGrantLifecycle_HappyPath(t *testing.T) {
 	// envelope.Deserialize can parse to an entry whose
 	// DomainPayload equals our JSON envelope.
 	//
-	// To keep this test focused on operator surface, we directly
+	// To keep this test focused on ledger surface, we directly
 	// seed the index + serve the JSON envelope as canonical bytes.
 	// schema.ParsePREGrantCommitmentEntry is invoked separately on
 	// the JSON payload via a path that doesn't need full envelope
@@ -400,7 +400,7 @@ func TestGrantLifecycle_HappyPath(t *testing.T) {
 
 	// ── Step 5: confirm the bytes round-trip through the SDK ─────
 	// Decode the served canonical bytes and verify they match the
-	// payload we seeded — proves the operator's serve path didn't
+	// payload we seeded — proves the ledger's serve path didn't
 	// mutate the bytes between Tessera and the wire.
 	served, err := hex.DecodeString(e.CanonicalBytesHex)
 	if err != nil {
@@ -416,7 +416,7 @@ func TestGrantLifecycle_HappyPath(t *testing.T) {
 	// extend this test to round-trip through envelope.NewEntry +
 	// envelope.Serialize so schema.ParsePREGrantCommitmentEntry
 	// (which expects an *envelope.Entry) accepts the result.
-	// For Wave 1 the operator-surface guarantee — bytes admitted
+	// For Wave 1 the ledger-surface guarantee — bytes admitted
 	// equal bytes served — is what this test pins.
 	_ = sdkschema.ParsePREGrantCommitmentEntry // keep import live
 }

@@ -7,10 +7,10 @@ Decision 4.
 
 Path parameters:
 
-  {schema_id}  one of:
-                 pre-grant-commitment-v1
-                 escrow-split-commitment-v1
-  {hex}        32-byte SplitID, hex-encoded (lowercase, no 0x prefix)
+	{schema_id}  one of:
+	               pre-grant-commitment-v1
+	               escrow-split-commitment-v1
+	{hex}        32-byte SplitID, hex-encoded (lowercase, no 0x prefix)
 
 Response shape (Decision 4):
 
@@ -30,19 +30,19 @@ Response shape (Decision 4):
 Length contract:
 
   - 404 Not Found  → zero rows matched the (schema_id, split_id)
-                     tuple. SDK consumers treat this as "no commitment
-                     on log" — a normal recovery / history-replay
-                     outcome.
+    tuple. SDK consumers treat this as "no commitment
+    on log" — a normal recovery / history-replay
+    outcome.
   - 200 OK len=1   → normal case. SDK's FetchPREGrantCommitment /
-                     FetchEscrowSplitCommitment consume entries[0]
-                     and proceed.
+    FetchEscrowSplitCommitment consume entries[0]
+    and proceed.
   - 200 OK len=2+  → cryptographic equivocation. The dealer signed
-                     two distinct commitment entries under the same
-                     SplitID; both are returned in ascending sequence
-                     order. SDK consumers receive
-                     *artifact.CommitmentEquivocationError carrying
-                     every entry the operator returned, and MUST NOT
-                     proceed with reconstruction or decryption.
+    two distinct commitment entries under the same
+    SplitID; both are returned in ascending sequence
+    order. SDK consumers receive
+    *artifact.CommitmentEquivocationError carrying
+    every entry the ledger returned, and MUST NOT
+    proceed with reconstruction or decryption.
 
 Domain disambiguation: this file serves v7.75 cryptographic Pedersen
 commitments (escrow + PRE). SMT batch derivation commitments live at
@@ -149,7 +149,7 @@ type CryptographicCommitmentDeps struct {
 //	    api.NewCommitmentLookupHandler(deps))
 //
 // Panics if Fetcher is nil — without a fetcher the handler can do
-// no useful work and the operator should refuse to start.
+// no useful work and the ledger should refuse to start.
 func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerFunc {
 	if deps == nil || deps.Fetcher == nil {
 		panic("api: CryptographicCommitmentDeps.Fetcher must be non-nil")
@@ -214,7 +214,7 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 
 		// Detect equivocation early so it shows up in the access
 		// log even if the SDK consumer is the one that ultimately
-		// flags it. Operators monitoring this log line can act on
+		// flags it. Ledgers monitoring this log line can act on
 		// it independently of the SDK pathway.
 		if len(entries) > 1 {
 			deps.Logger.Warn("commitment equivocation surfaced via lookup",

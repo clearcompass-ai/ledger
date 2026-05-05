@@ -1,31 +1,34 @@
 /*
 FILE PATH:
-    cmd/operator-reader/main.go
+
+	cmd/ledger-reader/main.go
 
 DESCRIPTION:
-    Read-only Attesta log operator. Serves all GET endpoints.
-    Does NOT run the builder loop, accept submissions, or write anything.
+
+	Read-only Attesta log ledger. Serves all GET endpoints.
+	Does NOT run the builder loop, accept submissions, or write anything.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Hash-only tiles: TesseraEntryReader removed because entry tiles now contain
-      32-byte SHA-256 hashes, not full wire bytes. The reader needs access to the
-      same byte store as the writer for full entry bytes.
-    - Production: shared persistent byte store (DiskEntryStore, GCS-backed, etc.).
-      The reader and writer operator both access the same backing store.
-    - Local dev: InMemoryEntryStore — the reader process has an EMPTY byte store
-      unless it shares the writer's process or backing directory. Entry byte
-      hydration will fail for entries not in the store. This is acceptable for
-      local dev where the read-write operator is the primary deployment.
-    - All GET endpoints remain functional for Postgres-only queries (tree head,
-      SMT proofs, difficulty). Entry byte hydration endpoints (entry fetch, query
-      results with canonical_bytes) require the shared byte store.
+  - Hash-only tiles: TesseraEntryReader removed because entry tiles now contain
+    32-byte SHA-256 hashes, not full wire bytes. The reader needs access to the
+    same byte store as the writer for full entry bytes.
+  - Production: shared persistent byte store (DiskEntryStore, GCS-backed, etc.).
+    The reader and writer ledger both access the same backing store.
+  - Local dev: InMemoryEntryStore — the reader process has an EMPTY byte store
+    unless it shares the writer's process or backing directory. Entry byte
+    hydration will fail for entries not in the store. This is acceptable for
+    local dev where the read-write ledger is the primary deployment.
+  - All GET endpoints remain functional for Postgres-only queries (tree head,
+    SMT proofs, difficulty). Entry byte hydration endpoints (entry fetch, query
+    results with canonical_bytes) require the shared byte store.
 
 OVERVIEW:
-    Same startup as the read-write operator, minus:
-    - No builder loop (no advisory lock, no queue drain).
-    - No submission handler (POST /v1/entries returns 404).
-    - No witness cosign endpoint.
-    - Entry byte store: InMemoryEntryStore (empty on start — production uses shared persistent).
+
+	Same startup as the read-write ledger, minus:
+	- No builder loop (no advisory lock, no queue drain).
+	- No submission handler (POST /v1/entries returns 404).
+	- No witness cosign endpoint.
+	- Entry byte store: InMemoryEntryStore (empty on start — production uses shared persistent).
 */
 package main
 
@@ -54,7 +57,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
-		logger.Error("operator-reader fatal", "error", err)
+		logger.Error("ledger-reader fatal", "error", err)
 		os.Exit(1)
 	}
 }
@@ -87,7 +90,7 @@ func run(logger *slog.Logger) error {
 	// ── Tessera (read-only) ─────────────────────────────────────
 	// Phase 1B: the reader binary no longer talks HTTP to a
 	// separate personality. Instead it reads tiles + checkpoint
-	// directly off the POSIX directory the writer operator's
+	// directly off the POSIX directory the writer ledger's
 	// embedded Tessera writes to (shared volume in k8s, same
 	// host in single-node deployments). ReadOnlyAppender's
 	// AppendLeaf returns ErrReadOnly — a loud rejection if any
@@ -102,23 +105,23 @@ func run(logger *slog.Logger) error {
 	logger.Info("tessera initialized (read-only)", "storage_dir", cfg.TesseraStorageDir)
 
 	// ── Entry byte store ──────────────────────────────────────────────
-	// Reader points at the same backend + prefix the writer operator
+	// Reader points at the same backend + prefix the writer ledger
 	// uses, so byte hydration on GET requests returns the same bytes
-	// the writer admitted. Backend selected via OPERATOR_BYTE_STORE_BACKEND
+	// the writer admitted. Backend selected via LEDGER_BYTE_STORE_BACKEND
 	// (gcs|s3); the factory enforces per-backend required fields.
 	switch cfg.ByteStoreBackend {
 	case "":
-		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND required (gcs|s3)")
+		return fmt.Errorf("LEDGER_BYTE_STORE_BACKEND required (gcs|s3)")
 	case "gcs":
 		if cfg.ByteStoreGCSBucket == "" {
-			return fmt.Errorf("OPERATOR_BYTE_STORE_GCS_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=gcs")
+			return fmt.Errorf("LEDGER_BYTE_STORE_GCS_BUCKET required when LEDGER_BYTE_STORE_BACKEND=gcs")
 		}
 	case "s3":
 		if cfg.ByteStoreS3Bucket == "" {
-			return fmt.Errorf("OPERATOR_BYTE_STORE_S3_BUCKET required when OPERATOR_BYTE_STORE_BACKEND=s3")
+			return fmt.Errorf("LEDGER_BYTE_STORE_S3_BUCKET required when LEDGER_BYTE_STORE_BACKEND=s3")
 		}
 	default:
-		return fmt.Errorf("OPERATOR_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
+		return fmt.Errorf("LEDGER_BYTE_STORE_BACKEND=%q not supported (gcs|s3)", cfg.ByteStoreBackend)
 	}
 	entryBytes, gerr := bytestore.NewFromConfig(ctx, cfg.toBytestoreConfig())
 	if gerr != nil {
@@ -131,7 +134,7 @@ func run(logger *slog.Logger) error {
 			}
 		}
 	}()
-	logger.Info("operator-reader byte store ready",
+	logger.Info("ledger-reader byte store ready",
 		"backend", cfg.ByteStoreBackend,
 		"prefix", cfg.ByteStorePrefix,
 		"cache_size", cfg.ByteStoreCacheSize,
@@ -179,7 +182,7 @@ func run(logger *slog.Logger) error {
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
 		EntryStore: entryStore,
-		// Read-only operator has no WAL — the /raw handler degrades
+		// Read-only ledger has no WAL — the /raw handler degrades
 		// to "always 302 to byte store". Un-shipped entries surface
 		// as bytestore 404; consumers retry against the writer.
 		WAL:       nil,
@@ -239,7 +242,7 @@ func run(logger *slog.Logger) error {
 	_ = server.Shutdown(shutdownCtx)
 	cancel()
 	wg.Wait()
-	logger.Info("operator-reader stopped cleanly")
+	logger.Info("ledger-reader stopped cleanly")
 	return nil
 }
 
@@ -254,7 +257,7 @@ type readerConfig struct {
 	MaxConns          int
 	MinConns          int
 	ServerAddr        string
-	TesseraStorageDir string // shared POSIX dir with the writer operator
+	TesseraStorageDir string // shared POSIX dir with the writer ledger
 	TileCacheSize     int
 	WarmTopLevels     int
 	SMTCacheSize      int
@@ -266,10 +269,10 @@ type readerConfig struct {
 	// Byte store (Phase 2 + 3+4). Reader and writer must agree on
 	// backend + bucket + prefix so reads return the same bytes
 	// the writer admitted. Backend selection mirrors the writer
-	// operator: "gcs" or "s3" via OPERATOR_BYTE_STORE_BACKEND.
-	ByteStoreBackend     string
-	ByteStorePrefix      string
-	ByteStoreCacheSize   int
+	// ledger: "gcs" or "s3" via LEDGER_BYTE_STORE_BACKEND.
+	ByteStoreBackend   string
+	ByteStorePrefix    string
+	ByteStoreCacheSize int
 	// GCS-specific.
 	ByteStoreGCSBucket   string
 	ByteStoreGCSEndpoint string
@@ -285,7 +288,7 @@ type readerConfig struct {
 
 func loadConfig() readerConfig {
 	return readerConfig{
-		LogDID:            envOr("ATTESTA_LOG_DID", "did:attesta:operator:001"),
+		LogDID:            envOr("ATTESTA_LOG_DID", "did:attesta:ledger:001"),
 		PostgresDSN:       envOr("ATTESTA_POSTGRES_DSN", "postgres://attesta:attesta@localhost:5432/attesta?sslmode=disable"),
 		ReplicaDSN:        envOr("ATTESTA_REPLICA_DSN", ""),
 		MaxConns:          20,
@@ -300,25 +303,25 @@ func loadConfig() readerConfig {
 		MaxDifficulty:     24,
 		HashFunction:      "sha256",
 
-		ByteStoreBackend:     os.Getenv("OPERATOR_BYTE_STORE_BACKEND"),
-		ByteStorePrefix:      envOr("OPERATOR_BYTE_STORE_PREFIX", "entries"),
-		ByteStoreCacheSize:   4096,
+		ByteStoreBackend:   os.Getenv("LEDGER_BYTE_STORE_BACKEND"),
+		ByteStorePrefix:    envOr("LEDGER_BYTE_STORE_PREFIX", "entries"),
+		ByteStoreCacheSize: 4096,
 		// GCS family.
-		ByteStoreGCSBucket:   os.Getenv("OPERATOR_BYTE_STORE_GCS_BUCKET"),
-		ByteStoreGCSEndpoint: os.Getenv("OPERATOR_BYTE_STORE_GCS_ENDPOINT"),
-		ByteStoreGCSAnon:     os.Getenv("OPERATOR_BYTE_STORE_GCS_ANONYMOUS") == "true",
+		ByteStoreGCSBucket:   os.Getenv("LEDGER_BYTE_STORE_GCS_BUCKET"),
+		ByteStoreGCSEndpoint: os.Getenv("LEDGER_BYTE_STORE_GCS_ENDPOINT"),
+		ByteStoreGCSAnon:     os.Getenv("LEDGER_BYTE_STORE_GCS_ANONYMOUS") == "true",
 		// S3 family.
-		ByteStoreS3Bucket:    os.Getenv("OPERATOR_BYTE_STORE_S3_BUCKET"),
-		ByteStoreS3Endpoint:  os.Getenv("OPERATOR_BYTE_STORE_S3_ENDPOINT"),
-		ByteStoreS3Region:    os.Getenv("OPERATOR_BYTE_STORE_S3_REGION"),
-		ByteStoreS3AccessKey: os.Getenv("OPERATOR_BYTE_STORE_S3_ACCESS_KEY"),
-		ByteStoreS3SecretKey: os.Getenv("OPERATOR_BYTE_STORE_S3_SECRET_KEY"),
-		ByteStoreS3PathStyle: os.Getenv("OPERATOR_BYTE_STORE_S3_PATH_STYLE") == "true",
+		ByteStoreS3Bucket:    os.Getenv("LEDGER_BYTE_STORE_S3_BUCKET"),
+		ByteStoreS3Endpoint:  os.Getenv("LEDGER_BYTE_STORE_S3_ENDPOINT"),
+		ByteStoreS3Region:    os.Getenv("LEDGER_BYTE_STORE_S3_REGION"),
+		ByteStoreS3AccessKey: os.Getenv("LEDGER_BYTE_STORE_S3_ACCESS_KEY"),
+		ByteStoreS3SecretKey: os.Getenv("LEDGER_BYTE_STORE_S3_SECRET_KEY"),
+		ByteStoreS3PathStyle: os.Getenv("LEDGER_BYTE_STORE_S3_PATH_STYLE") == "true",
 	}
 }
 
 // toBytestoreConfig flattens the reader config into the bytestore
-// factory's Config. Mirrors cmd/operator/main.go's helper so the
+// factory's Config. Mirrors cmd/ledger/main.go's helper so the
 // reader and writer pick identical backends from identical env vars.
 func (c readerConfig) toBytestoreConfig() bytestore.Config {
 	bc := bytestore.Config{

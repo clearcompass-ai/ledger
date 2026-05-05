@@ -37,7 +37,7 @@ When cursor.Kind is set + cursor.Originator is empty, we scan the
 kind index which is ordered (kind, lamport, originator). That
 gives lamport-then-originator order, NOT the contract's
 originator-then-lamport order. We sort the resulting slice in
-memory before truncating. For the operator's bounded result-set
+memory before truncating. For the ledger's bounded result-set
 sizes (limit ≤ DefaultFeedListLimit = 100, MaxFeedListLimit =
 1000) this is O(limit log limit) at worst.
 
@@ -396,7 +396,7 @@ func (s *BadgerStore) Stats(ctx context.Context) (gossip.StoreStats, error) {
 // prefix. Returns gossip.ErrEventNotFound when absent — callers
 // in collect() treat that as a fatal inconsistency (an index
 // pointed at a missing event), but propagate the error verbatim
-// so the operator notices.
+// so the ledger notices.
 func getEvent(txn *badger.Txn, eventID [32]byte) (gossip.SignedEvent, error) {
 	item, err := txn.Get(eventKey(eventID))
 	if errors.Is(err, badger.ErrKeyNotFound) {

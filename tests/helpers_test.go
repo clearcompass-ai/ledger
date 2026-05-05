@@ -1,7 +1,7 @@
 /*
 FILE PATH: tests/helpers_test.go
 
-Shared test infrastructure for the operator integration suite.
+Shared test infrastructure for the ledger integration suite.
 
 Provides:
   - In-memory SDK harness (testHarness) that wraps the SDK builder with
@@ -36,8 +36,8 @@ import (
 	"github.com/clearcompass-ai/attesta/did"
 	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ledger/store"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ const testLogDID = "did:attesta:test:integration"
 // and is wired into testserver_test.go's SubmissionDeps.Admission.
 const testEpochWindowSeconds = 3600
 
-// testEpochAcceptanceWindow matches the operator-side default. window=1
+// testEpochAcceptanceWindow matches the ledger-side default. window=1
 // accepts stamps from [current-1, current+1], tolerating clock skew.
 const testEpochAcceptanceWindow = 1
 
@@ -112,7 +112,7 @@ type synSigner struct {
 // 'did:example:alice' as a SignerDID get a stable did:key:z... for
 // 'alice' that distinguishes them from other labels — fanout
 // queries continue to work — and the matching private key is used
-// to sign so the signature verifies under the operator's
+// to sign so the signature verifies under the ledger's
 // did.NewECDSAKeyResolver (SDK).
 //
 // The label is used as the cache key verbatim. Tests don't need to
@@ -189,7 +189,7 @@ func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope
 	}
 	// EventTime is microseconds since Unix epoch — matches the SDK's
 	// exchange/policy.CheckFreshness unit. A zero EventTime causes
-	// the operator to reject the entry as 56-years-stale (Unix epoch).
+	// the ledger to reject the entry as 56-years-stale (Unix epoch).
 	if h.EventTime == 0 {
 		h.EventTime = time.Now().UTC().UnixMicro()
 	}
@@ -214,7 +214,7 @@ func makeEntry(t *testing.T, h envelope.ControlHeader, payload []byte) *envelope
 }
 
 // makeAdmissibleEntry builds a signed entry whose Signatures[0]
-// verifies against the operator's admission DIDResolver. Use this
+// verifies against the ledger's admission DIDResolver. Use this
 // for tests that POST through HTTP — `buildWireEntry` and
 // destination-binding fixtures.
 //
@@ -265,7 +265,7 @@ func canonicalHashBytes(entry *envelope.Entry) [32]byte {
 // SDK admission helpers (post-Wave-1.5 API)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// currentTestEpoch returns the epoch index the operator's verifier will
+// currentTestEpoch returns the epoch index the ledger's verifier will
 // compute for "now" given testEpochWindowSeconds. Test fixtures must use
 // this exact value, otherwise VerifyStamp rejects the stamp as out-of-window.
 func currentTestEpoch() uint64 {
@@ -276,7 +276,7 @@ func currentTestEpoch() uint64 {
 // expects. Keeps test call sites readable instead of repeating six fields.
 //
 // Caller is responsible for the entry hash, log DID, and difficulty.
-// Hash function defaults to SHA-256 (operator default) and Argon2id params
+// Hash function defaults to SHA-256 (ledger default) and Argon2id params
 // to nil. Submitter commit is left absent (Mode B without rate-limit binding).
 func buildStampParams(entryHash [32]byte, logDID string, difficulty uint32) admission.StampParams {
 	return admission.StampParams{
@@ -292,9 +292,9 @@ func buildStampParams(entryHash [32]byte, logDID string, difficulty uint32) admi
 // + nonce and runs VerifyStamp with the test epoch and acceptance window.
 // Returns the verification error (or nil on success).
 //
-// This is the canonical test-side equivalent of the operator's Step 5
+// This is the canonical test-side equivalent of the ledger's Step 5
 // admission verification — uses ProofFromWire's API form, the same hash
-// function, and the same epoch/window the operator uses at runtime.
+// function, and the same epoch/window the ledger uses at runtime.
 func verifyStampForTest(p admission.StampParams, nonce uint64, expectedLog string, minDifficulty uint32) error {
 	apiProof := &types.AdmissionProof{
 		Mode:            types.AdmissionModeB,
@@ -687,9 +687,9 @@ var _ = fmt.Sprintf
 //     (presigned URLs, V4 signing, ADC chain). Set the variable
 //     to fail the test loudly.
 //  3. ADC chain (in priority order):
-//        a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
-//        b. gcloud application-default login (developer workstation)
-//        c. Workload Identity (GKE / Cloud Run / GCE metadata server)
+//     a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
+//     b. gcloud application-default login (developer workstation)
+//     c. Workload Identity (GKE / Cloud Run / GCE metadata server)
 //
 // The bucket must grant the test identity:
 //

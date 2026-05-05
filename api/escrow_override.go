@@ -1,35 +1,35 @@
 /*
 FILE PATH: api/escrow_override.go
 
-POST /v1/escrow-override — operator endpoint accepting an escrow
+POST /v1/escrow-override — ledger endpoint accepting an escrow
 override request, collecting K-of-N witness cosignatures, and
 broadcasting the cosigned authorization as a
 KindEscrowOverrideAuth gossip event.
 
 # REQUEST SHAPE
 
-  POST /v1/escrow-override HTTP/1.1
-  Content-Type: application/json
+	POST /v1/escrow-override HTTP/1.1
+	Content-Type: application/json
 
-  {
-    "escrow_id":     "<64 hex chars (32 bytes)>",
-    "decision_hash": "<64 hex chars (32 bytes)>",
-    "effective":     <unix-seconds; uint64>
-  }
+	{
+	  "escrow_id":     "<64 hex chars (32 bytes)>",
+	  "decision_hash": "<64 hex chars (32 bytes)>",
+	  "effective":     <unix-seconds; uint64>
+	}
 
 # RESPONSE SHAPES
 
-  200 OK   — the override was authorized; body carries the gossip
-             event ID + the K signatures' aggregate count.
-  400      — malformed request (bad JSON / non-hex / wrong length).
-  502      — K-of-N collection or gossip publish failed; details
-             in the body. The HTTP layer treats this as a
-             retriable upstream failure.
+	200 OK   — the override was authorized; body carries the gossip
+	           event ID + the K signatures' aggregate count.
+	400      — malformed request (bad JSON / non-hex / wrong length).
+	502      — K-of-N collection or gossip publish failed; details
+	           in the body. The HTTP layer treats this as a
+	           retriable upstream failure.
 
 # AUTH
 
 This endpoint must NOT be exposed unauthenticated in production.
-The current implementation is the operator-internal mechanism;
+The current implementation is the ledger-internal mechanism;
 caller authentication / rate-limiting is the responsibility of
 the deployment's reverse-proxy / mTLS layer or future
 api/middleware additions. Documenting here so a casual reader

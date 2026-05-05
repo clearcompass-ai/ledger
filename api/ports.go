@@ -10,23 +10,23 @@ imports zero pgx packages because it depends on these interfaces
 
 Compliance test:
 
-    go list -deps ./api/ | grep -E 'pgx|database/sql' | wc -l == 0
+	go list -deps ./api/ | grep -E 'pgx|database/sql' | wc -l == 0
 
 # WHY THIS LIVES IN api/
 
 Two reasons:
 
-  1. Each interface lists EXACTLY the methods api/ needs — no more,
-     no less. Defining these in store/ would over-expose its public
-     API surface (Add/Insert/etc. are write-side concerns api/
-     doesn't touch).
+ 1. Each interface lists EXACTLY the methods api/ needs — no more,
+    no less. Defining these in store/ would over-expose its public
+    API surface (Add/Insert/etc. are write-side concerns api/
+    doesn't touch).
 
-  2. The interface set is the api/ "stable contract" — alternate
-     read-side implementations (Badger projections, in-memory test
-     fakes) plug in via these interfaces without recompiling api/.
-     gossipstore.BadgerCommitmentFetcher (PT-1+PT-2) is the
-     canonical example: it implements types.CommitmentFetcher (SDK
-     side) and serves /by-split-id with zero pgx in api/.
+ 2. The interface set is the api/ "stable contract" — alternate
+    read-side implementations (Badger projections, in-memory test
+    fakes) plug in via these interfaces without recompiling api/.
+    gossipstore.BadgerCommitmentFetcher (PT-1+PT-2) is the
+    canonical example: it implements types.CommitmentFetcher (SDK
+    side) and serves /by-split-id with zero pgx in api/.
 
 # DESIGN NOTES
 
@@ -66,7 +66,7 @@ import (
 type EntryStore interface {
 	// FetchByHash returns the sequence number of the entry with
 	// the given canonical hash, or (0, false, nil) if the entry
-	// is not on the operator's log.
+	// is not on the ledger's log.
 	FetchByHash(ctx context.Context, hash [32]byte) (uint64, bool, error)
 
 	// FetchHashBySeq returns the canonical hash + admission

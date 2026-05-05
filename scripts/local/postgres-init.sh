@@ -3,8 +3,8 @@
 # the postgres container (mounted at /docker-entrypoint-initdb.d/).
 #
 # Creates the additional databases this dev topology needs:
-#   attesta_davidson  (default; owned by the davidson operator)
-#   attesta_coa       (owned by the coa operator)
+#   attesta_davidson  (default; owned by the davidson ledger)
+#   attesta_coa       (owned by the coa ledger)
 #   court_tools        (owned by judicial-network's court-tools +
 #                       provider-tools binaries)
 #

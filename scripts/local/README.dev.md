@@ -16,10 +16,10 @@ integration-tests topology, jump to [§ Integration topology](#integration-topol
 
 | Service | Port (host) | Purpose |
 |---|---|---|
-| `operator-davidson` | `:8080` | Trial-court operator, `LogDID = did:web:state:tn:davidson` |
-| `operator-coa` | `:8081` | Appellate-court operator, `LogDID = did:web:state:tn:coa` |
+| `ledger-davidson` | `:8080` | Trial-court ledger, `LogDID = did:web:state:tn:davidson` |
+| `ledger-coa` | `:8081` | Appellate-court ledger, `LogDID = did:web:state:tn:coa` |
 | `postgres` | `:5432` | Shared Postgres 18 with two databases (`attesta_davidson`, `attesta_coa`) |
-| (no GCS service) | — | Each operator hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
+| (no GCS service) | — | Each ledger hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
 
 This is the runtime the **judicial-network walkthrough** runs
 against. It mirrors production: same GCS adapter code path, same
@@ -33,7 +33,7 @@ You need three things on your laptop **before** `make dev-up`:
 1. A Google Cloud project where you can create buckets.
 2. `gcloud auth application-default login` completed (writes
    `~/.config/gcloud/application_default_credentials.json`,
-   which the compose mounts read-only into both operator
+   which the compose mounts read-only into both ledger
    containers).
 3. Two GCS buckets created:
 
@@ -53,8 +53,8 @@ You need three things on your laptop **before** `make dev-up`:
    `make dev-up`:
 
    ```bash
-   export OPERATOR_DEV_BUCKET_DAVIDSON=yourname-davidson-entries
-   export OPERATOR_DEV_BUCKET_COA=yourname-coa-entries
+   export LEDGER_DEV_BUCKET_DAVIDSON=yourname-davidson-entries
+   export LEDGER_DEV_BUCKET_COA=yourname-coa-entries
    ```
 
 Persist them in your shell rc if you'll be doing this often.
@@ -80,8 +80,8 @@ $ curl -fsS http://localhost:8081/healthz   # → ok
 Inspect your real GCS buckets with `gcloud` or `gsutil`:
 
 ```bash
-gcloud storage ls gs://$OPERATOR_DEV_BUCKET_DAVIDSON
-gcloud storage cat gs://$OPERATOR_DEV_BUCKET_DAVIDSON/<object>
+gcloud storage ls gs://$LEDGER_DEV_BUCKET_DAVIDSON
+gcloud storage cat gs://$LEDGER_DEV_BUCKET_DAVIDSON/<object>
 ```
 
 (Empty until walkthrough or your own client submits entries.)
@@ -126,11 +126,11 @@ where deterministic offline runs matter more than GCS realism.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `dev-preflight` fails: missing ADC | Never ran `gcloud auth application-default login` | Run it; ADC lands at `~/.config/gcloud/application_default_credentials.json`. |
-| `dev-preflight` fails: bucket env unset | Forgot to `export OPERATOR_DEV_BUCKET_*` | Export both, then re-run `make dev-up`. |
-| Operator startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
-| Operator startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
+| `dev-preflight` fails: bucket env unset | Forgot to `export LEDGER_DEV_BUCKET_*` | Export both, then re-run `make dev-up`. |
+| Ledger startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
+| Ledger startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
 | `dev-up` hangs at "waiting for both operators" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
-| `/healthz` returns 503 from `operator-coa` | `attesta_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
+| `/healthz` returns 503 from `ledger-coa` | `attesta_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
 | `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2. |
 
 ---

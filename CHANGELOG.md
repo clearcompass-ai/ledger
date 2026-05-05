@@ -29,11 +29,11 @@ POST /v1/entries response body needs to update. Two recipes:
    construction).
 
 Both recipes preserve the v0.5 invariant that an SCT is the
-operator's binding promise to sequence within MMD.
+ledger's binding promise to sequence within MMD.
 
 ### Removed env vars
 
-- **`OPERATOR_V1_TIMEOUT`** — gone with the polling facade.
+- **`LEDGER_V1_TIMEOUT`** — gone with the polling facade.
 
 ### Architectural changes
 
@@ -51,9 +51,9 @@ operator's binding promise to sequence within MMD.
   domain payloads inline.
 - **`api/server.go`** drops the `SubmissionV2` Handlers field and
   the `/v2/entries` route registration.
-- **`cmd/operator/main.go`** drops the `SubmissionV2Deps`
-  construction; `submissionDeps.OperatorSignerPriv` and
-  `OperatorDID` are set directly.
+- **`cmd/ledger/main.go`** drops the `SubmissionV2Deps`
+  construction; `submissionDeps.LedgerSignerPriv` and
+  `LedgerDID` are set directly.
 
 ### CLI updates
 
@@ -98,7 +98,7 @@ operator's binding promise to sequence within MMD.
 ### Migration steps from v0.5
 
 1. Update HTTP clients per the breaking-change recipes above.
-2. Remove `OPERATOR_V1_TIMEOUT` from your operator deployment env
+2. Remove `LEDGER_V1_TIMEOUT` from your ledger deployment env
    if it was set; the variable no longer exists.
 3. If any tooling still hits POST /v2/entries, switch to /v1/entries
    (same SCT response shape).
@@ -116,25 +116,25 @@ entry_index INSERT are deferred to a background Sequencer worker.
 ### Wire-protocol changes
 
 - **NEW: POST /v2/entries.** Returns a `SignedCertificateTimestamp`
-  (SCT) — a cryptographic promise that the operator has the
+  (SCT) — a cryptographic promise that the ledger has the
   bytes durably (WAL fsync) and will sequence them within the
   Maximum Merge Delay. RFC-6962-aligned. The SCT is signed with
-  the operator's secp256k1 ECDSA key
-  (`OPERATOR_SIGNER_KEY_FILE`) and verifiable against the
-  operator's public key (reachable via `cfg.OperatorDID`, a
+  the ledger's secp256k1 ECDSA key
+  (`LEDGER_SIGNER_KEY_FILE`) and verifiable against the
+  ledger's public key (reachable via `cfg.LedgerDID`, a
   did:key:z…).
 - **POST /v1/entries** keeps its synchronous `{sequence_number,
   canonical_hash, log_time}` JSON contract via a polling facade.
   The handler waits on WAL.MetaState until the background
   Sequencer transitions the entry to StateSequenced or
-  `OPERATOR_V1_TIMEOUT` elapses (default 30s). On timeout the
+  `LEDGER_V1_TIMEOUT` elapses (default 30s). On timeout the
   caller gets HTTP 504 with `{error:"sequencer_lag", hash,
   wal_state, follow_up, timeout_seconds}` pointing at
   GET /v1/entries-hash/{hash} for follow-up. The handler is
   strictly bound to `r.Context().Done()` so a client TCP
   disconnect exits the poll loop within one tick.
-- **NEW: GET /v1/admission/mmd.** Publishes the operator's
-  promised maximum merge delay (`OPERATOR_MMD`, default 24h) so
+- **NEW: GET /v1/admission/mmd.** Publishes the ledger's
+  promised maximum merge delay (`LEDGER_MMD`, default 24h) so
   consumers can verify the SLA before trusting an SCT.
 - **GET /v1/entries-hash/{hashHex}** is now WAL-aware. Returns
   `{state:"pending"}` for entries durable in WAL but not yet in
@@ -145,17 +145,17 @@ entry_index INSERT are deferred to a background Sequencer worker.
 
 ### New env vars
 
-- **`OPERATOR_MMD`** — Maximum merge delay published via
+- **`LEDGER_MMD`** — Maximum merge delay published via
   GET /v1/admission/mmd. Default `24h`. The Sequencer must
   drain entries within this window or the SCT promise is
   broken; alert on `sequencer_lag > 0.8 * MMD`.
-- **`OPERATOR_V1_TIMEOUT`** — Per-request cap on the v1 facade's
+- **`LEDGER_V1_TIMEOUT`** — Per-request cap on the v1 facade's
   poll loop. Default `30s`. Set lower for low-latency clients;
   set higher for clients that prefer waiting over the 504+
   follow-up dance.
-- **`OPERATOR_SEQUENCER_INTERVAL`** — Background drain cadence.
+- **`LEDGER_SEQUENCER_INTERVAL`** — Background drain cadence.
   Default `1s` in production; tests override to `10ms`.
-- **`OPERATOR_SEQUENCER_MAX_INFLIGHT`** — Bounded concurrency in
+- **`LEDGER_SEQUENCER_MAX_INFLIGHT`** — Bounded concurrency in
   the Sequencer. Default 4.
 
 ### Architectural changes
@@ -193,8 +193,8 @@ entry_index INSERT are deferred to a background Sequencer worker.
 ### CLI updates
 
 - **`cmd/submit-stamp`** gains `-v2` (default `true`) and
-  `-operator-did`. v2 mode parses the SCT response and, when
-  `-operator-did` is supplied, cryptographically verifies the
+  `-ledger-did`. v2 mode parses the SCT response and, when
+  `-ledger-did` is supplied, cryptographically verifies the
   signature against the resolved public key. The CLI mirrors
   api.SignedCertificateTimestamp's JSON shape and re-implements
   the canonical packing locally so the binary stays free of an
@@ -227,16 +227,16 @@ entry_index INSERT are deferred to a background Sequencer worker.
 ### Migration steps from v0.4
 
 1. Provision two new env vars with defaults: set
-   `OPERATOR_MMD` if the default 24h doesn't fit your SLA;
-   `OPERATOR_V1_TIMEOUT` if 30s is too generous or too tight.
+   `LEDGER_MMD` if the default 24h doesn't fit your SLA;
+   `LEDGER_V1_TIMEOUT` if 30s is too generous or too tight.
 2. Update v1 clients that depend on `sequence_number` being
    immediately available — under load + sequencer lag the v1
    path can return 504 sequencer_lag instead. Either retry on
    504 (the WAL is durable; the entry will eventually sequence)
    or migrate to v2 + SCT verification.
 3. Migrate latency-sensitive clients to POST /v2/entries.
-   Verify SCT signatures against the operator's public key (the
-   did:key:z… in cfg.OperatorDID, parsed via did.ParseDIDKey
+   Verify SCT signatures against the ledger's public key (the
+   did:key:z… in cfg.LedgerDID, parsed via did.ParseDIDKey
    from the SDK).
 
 ---
@@ -245,22 +245,22 @@ entry_index INSERT are deferred to a background Sequencer worker.
 
 ### Required infra additions before deploy
 
-The operator now consults three on-disk volumes plus one cloud
+The ledger now consults three on-disk volumes plus one cloud
 bucket. All four MUST be provisioned before the v0.4 binary boots:
 
-- **`OPERATOR_WAL_PATH`** — BadgerDB directory for the durable WAL.
+- **`LEDGER_WAL_PATH`** — BadgerDB directory for the durable WAL.
   Admission writes wire bytes to disk + fsync before returning HTTP
   202. Sustained throughput is bounded by this volume's IOPS;
   provision NVMe-class storage.
-- **`OPERATOR_TESSERA_ANTISPAM_PATH`** — Tessera antispam dedup
+- **`LEDGER_TESSERA_ANTISPAM_PATH`** — Tessera antispam dedup
   directory. Required for idempotent re-Add under concurrent
   admission of the same content.
-- **`OPERATOR_TESSERA_STORAGE_DIR`** — Tessera tile + checkpoint
+- **`LEDGER_TESSERA_STORAGE_DIR`** — Tessera tile + checkpoint
   storage. Existed in earlier releases.
-- **`OPERATOR_BYTE_STORE_BACKEND`** — `gcs` or `s3`. Selects the
+- **`LEDGER_BYTE_STORE_BACKEND`** — `gcs` or `s3`. Selects the
   production bytestore adapter; the factory enforces per-backend
   required fields.
-- **`OPERATOR_BYTE_STORE_GCS_BUCKET`** / **`_S3_BUCKET`** —
+- **`LEDGER_BYTE_STORE_GCS_BUCKET`** / **`_S3_BUCKET`** —
   production bucket name (one or the other, matching the
   selected backend). The WAL → bytestore migration is
   asynchronous; the bucket receives every entry's wire bytes
@@ -299,9 +299,9 @@ See `docs/CONFIG.md` for the full env-var matrix and
 - Object key shape: `<prefix>/<seq:016x>/<hash_hex>`. The
   hash-suffix shape is the static-verifiability invariant the 302
   redirect path relies on: a consumer can verify that a presigned
-  URL points at the bytes the operator promised before fetching.
+  URL points at the bytes the ledger promised before fetching.
 - Production selects between two adapters via
-  `OPERATOR_BYTE_STORE_BACKEND={gcs,s3}`. The composition root
+  `LEDGER_BYTE_STORE_BACKEND={gcs,s3}`. The composition root
   passes the config through `bytestore.NewFromConfig`, which
   enforces per-backend required fields and rejects anything else.
   RustFS / R2 / AWS S3 / any S3-compatible target is reachable
@@ -328,8 +328,8 @@ See `docs/CONFIG.md` for the full env-var matrix and
   - `Detector.Reconcile` — boot reconciliation (permissive).
   - `Detector.Loop` — periodic sample-verify (fatal on
     mismatch).
-- Composition root in `cmd/operator/main.go` PANICS on
-  `ErrDiverged` with wrap `operator FATAL: integrity detector: %w`.
+- Composition root in `cmd/ledger/main.go` PANICS on
+  `ErrDiverged` with wrap `ledger FATAL: integrity detector: %w`.
   This is the only deliberate panic in the codebase.
 
 ### Migration steps
@@ -338,15 +338,15 @@ See `docs/CONFIG.md` for the full env-var matrix and
    Tessera storage volume.
 2. Provision a bucket on the chosen backend:
    - GCS: grant `storage.objects.{create,get,list}` (+ `delete`
-     for soak / conformance) to the operator's ADC identity.
+     for soak / conformance) to the ledger's ADC identity.
    - S3 / RustFS / R2: `s3:PutObject`, `s3:GetObject`,
      `s3:ListBucket` (+ `s3:DeleteObject` for soak /
      conformance). Prefer IAM roles on AWS; static creds for
      RustFS / on-prem.
-3. Drain the previous operator release (let any pre-existing
+3. Drain the previous ledger release (let any pre-existing
    `builder_queue` empty and Tessera integrate the last entries).
-4. Update the manifests to set `OPERATOR_WAL_PATH`,
-   `OPERATOR_TESSERA_ANTISPAM_PATH`, `OPERATOR_BYTE_STORE_BACKEND`
+4. Update the manifests to set `LEDGER_WAL_PATH`,
+   `LEDGER_TESSERA_ANTISPAM_PATH`, `LEDGER_BYTE_STORE_BACKEND`
    (`gcs` or `s3`), and the matching bucket / S3 family vars.
 5. Boot the v0.4 binary. Migrations run automatically; any
    pre-existing `builder_queue` table is left in place but unused —

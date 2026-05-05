@@ -1,6 +1,6 @@
 # Architecture
 
-End-to-end runtime layout of `cmd/operator`. Every claim resolves to a
+End-to-end runtime layout of `cmd/ledger`. Every claim resolves to a
 specific file:line in the repo.
 
 ## Package layout
@@ -8,8 +8,8 @@ specific file:line in the repo.
 ```
 ledger/
 ├── cmd/
-│   ├── operator/         # main binary; loadConfig + wiring
-│   ├── operator-reader/  # read-only sibling (no admission)
+│   ├── ledger/         # main binary; loadConfig + wiring
+│   ├── ledger-reader/  # read-only sibling (no admission)
 │   ├── submit-stamp/     # CLI: build + sign + POST a v7.75 entry
 │   ├── seed-session/     # dev: create a sessions row
 │   ├── rebuild-tiles/    # ops: replay entry_index → Tessera
@@ -89,7 +89,7 @@ sequencer goroutine (next section).
 
 ## Sequencer pipeline
 
-`sequencer/loop.go` drains the WAL on a ticker (`OPERATOR_SEQUENCER_INTERVAL`,
+`sequencer/loop.go` drains the WAL on a ticker (`LEDGER_SEQUENCER_INTERVAL`,
 default 1s):
 
 ```
@@ -204,18 +204,18 @@ GET /v1/gossip/by-binding/{hash}     ← zero-trust audit primitive
 ## Trust split
 
 ```
-Operator       Postgres + Tessera + WAL + bytestore. No artifact decryption keys.
+Ledger       Postgres + Tessera + WAL + bytestore. No artifact decryption keys.
                 Signs SCTs + tree heads. Detects equivocation.
 
 Witnesses      Hold cosign keys. Sign tree heads (K-of-N). Pull-based: each
-                witness scrapes the operator's /v1/gossip/* feeds independently.
+                witness scrapes the ledger's /v1/gossip/* feeds independently.
 
 Auditors       Pull /v1/gossip/* + Static-CT tiles. Recompute Merkle + SMT
                 roots locally. Fetch /v1/gossip/by-binding/{hash} to verify
-                equivocation findings without trusting the operator's word.
+                equivocation findings without trusting the ledger's word.
 ```
 
-The Operator never possesses artifact decryption keys. Domain-level
+The Ledger never possesses artifact decryption keys. Domain-level
 artifact encryption + key management lives outside this binary.
 
 ## What guarantees what
@@ -229,7 +229,7 @@ artifact encryption + key management lives outside this binary.
 | Boot reconciliation | `sequencer.Replayer` back-populates 0x0A + 0x0C from Postgres on every boot |
 | Equivocation detection | `gossipnet/equivocation_scanner.go` subscribes to Badger 0x0A |
 | Drift-free projection key | `findings.EntryCommitmentBinding` (SDK) used by both producer + consumer |
-| Graceful shutdown | `sync.WaitGroup` drains every goroutine (`sequencer/sequencer.go:Run`, `cmd/operator/main.go gossipWG`) |
+| Graceful shutdown | `sync.WaitGroup` drains every goroutine (`sequencer/sequencer.go:Run`, `cmd/ledger/main.go gossipWG`) |
 | Single-writer invariant | Postgres advisory lock at boot (`store/postgres.go`) |
 | OTel error dimensionality | Every `writeTypedError` increments `attesta_api_errors_total{error_class, http_status}` |
 
@@ -239,7 +239,7 @@ artifact encryption + key management lives outside this binary.
 go.mod:  github.com/clearcompass-ai/attesta v1.0.0
 ```
 
-The operator never re-implements SDK validation logic. Every signed
+The ledger never re-implements SDK validation logic. Every signed
 artifact goes through SDK primitives:
 
 - `envelope.Deserialize` / `envelope.NewEntry` / `envelope.Validate`

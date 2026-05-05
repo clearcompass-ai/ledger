@@ -1,34 +1,34 @@
 /*
-FILE PATH: gossipnet/cross_operator_test.go
+FILE PATH: gossipnet/cross_ledger_test.go
 
-C15 — Cross-component CT integration test (operator-side
+C15 — Cross-component CT integration test (ledger-side
 scaffolding).
 
 # WHAT THIS TEST PINS
 
-Two operators A and B running in the same process, fully wired
-through the gossip plumbing the operator deploys in production
+Two ledgers A and B running in the same process, fully wired
+through the gossip plumbing the ledger deploys in production
 (POST /v1/gossip + GET /v1/gossip/{since,sth/latest,event,by-kind}
 + BufferedSink + DIDOriginatorVerifier + InMemoryKeyManager).
 
 Round-trip:
 
-  1. Operator A signs a KindCosignedTreeHead event (the STH
-     emission shape STHPublisher produces in the commit hot path).
-  2. A's BufferedSink → MultiSink → HTTPSink → B's POST /v1/gossip.
-     Inbound verification succeeds against A's did:key (resolved
-     from the wire's `originator` field by B's DIDOriginatorVerifier).
-  3. B's gossip Handler appends the event to B's local Store.
-  4. An external auditor queries B's GET /v1/gossip/event/{eventID}
-     via gossip.FeedClient.Event and receives the same SignedEvent
-     bytes A originally published.
+ 1. Ledger A signs a KindCosignedTreeHead event (the STH
+    emission shape STHPublisher produces in the commit hot path).
+ 2. A's BufferedSink → MultiSink → HTTPSink → B's POST /v1/gossip.
+    Inbound verification succeeds against A's did:key (resolved
+    from the wire's `originator` field by B's DIDOriginatorVerifier).
+ 3. B's gossip Handler appends the event to B's local Store.
+ 4. An external auditor queries B's GET /v1/gossip/event/{eventID}
+    via gossip.FeedClient.Event and receives the same SignedEvent
+    bytes A originally published.
 
-# WHY THIS LIVES IN THE OPERATOR REPO
+# WHY THIS LIVES IN THE LEDGER REPO
 
-The full cross-component test (operator + JN composer + auditor +
-witness daemon) spans repos. The operator's portion — proving
-that a SignedEvent emitted by one operator round-trips through
-another operator's gossip endpoints — is the operator-side
+The full cross-component test (ledger + JN composer + auditor +
+witness daemon) spans repos. The ledger's portion — proving
+that a SignedEvent emitted by one ledger round-trips through
+another ledger's gossip endpoints — is the ledger-side
 scaffold. Cross-repo tests compose this fixture with
 JN-composer and auditor harnesses landed elsewhere.
 
@@ -62,20 +62,20 @@ import (
 	"github.com/clearcompass-ai/attesta/types"
 )
 
-// operatorFixture bundles one operator's gossip stack: the
+// ledgerFixture bundles one ledger's gossip stack: the
 // in-memory store + the bundle (handlers + verifier) + the
 // httptest.Server exposing the bundle's endpoints.
-type operatorFixture struct {
+type ledgerFixture struct {
 	store  *sdkgossip.InMemoryStore
 	bundle *Bundle
 	server *httptest.Server
 	url    string
 }
 
-// newOperatorFixture builds one operator's gossip stack with no
+// newLedgerFixture builds one ledger's gossip stack with no
 // peer fan-out (it's a pure receiver in this test). PostHandler
 // + FeedHandler are mounted on a single httptest.Server.
-func newOperatorFixture(t *testing.T, networkID cosign.NetworkID) *operatorFixture {
+func newLedgerFixture(t *testing.T, networkID cosign.NetworkID) *ledgerFixture {
 	t.Helper()
 	store := sdkgossip.NewInMemoryStore()
 	bundle, err := Build(Config{
@@ -102,7 +102,7 @@ func newOperatorFixture(t *testing.T, networkID cosign.NetworkID) *operatorFixtu
 			_ = c.Close(ctx)
 		}
 	})
-	return &operatorFixture{
+	return &ledgerFixture{
 		store:  store,
 		bundle: bundle,
 		server: srv,
@@ -110,9 +110,9 @@ func newOperatorFixture(t *testing.T, networkID cosign.NetworkID) *operatorFixtu
 	}
 }
 
-// TestCrossOperator_STHRoundTrip — C15 happy path.
+// TestCrossLedger_STHRoundTrip — C15 happy path.
 //
-//  1. Build operator A (publisher) + operator B (receiver) in
+//  1. Build ledger A (publisher) + ledger B (receiver) in
 //     the same process, sharing one NetworkID.
 //  2. A signs a KindCosignedTreeHead event under its did:key.
 //  3. A publishes via gossip.HTTPSink pointing at B's POST
@@ -120,11 +120,11 @@ func newOperatorFixture(t *testing.T, networkID cosign.NetworkID) *operatorFixtu
 //  4. Assert B's local Store has the appended event.
 //  5. As an auditor, retrieve the event by EventID via
 //     gossip.FeedClient.Event from B and confirm round-trip.
-func TestCrossOperator_STHRoundTrip(t *testing.T) {
+func TestCrossLedger_STHRoundTrip(t *testing.T) {
 	netID := nonZeroNetworkID()
 
 	// B is the receiver. A's publishes target B's URL.
-	opB := newOperatorFixture(t, netID)
+	opB := newLedgerFixture(t, netID)
 
 	// A is the publisher. We don't need A to host any HTTP
 	// surface — A's stack is just the publisher + signer +
@@ -198,7 +198,7 @@ func TestCrossOperator_STHRoundTrip(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if bStats.EventCount != 1 {
-		t.Fatalf("operator B EventCount = %d, want 1 (publish did not propagate)",
+		t.Fatalf("ledger B EventCount = %d, want 1 (publish did not propagate)",
 			bStats.EventCount)
 	}
 
@@ -208,7 +208,7 @@ func TestCrossOperator_STHRoundTrip(t *testing.T) {
 	// FeedClient and confirm round-trip.
 	aHeadStats, _ := aStore.Stats(context.Background())
 	if aHeadStats.EventCount != 1 {
-		t.Fatalf("operator A EventCount = %d, want 1 (local Append did not happen)",
+		t.Fatalf("ledger A EventCount = %d, want 1 (local Append did not happen)",
 			aHeadStats.EventCount)
 	}
 	// Iterate A's store to recover the EventID.
@@ -226,7 +226,7 @@ func TestCrossOperator_STHRoundTrip(t *testing.T) {
 	}
 
 	// External auditor: an http.Client + FeedClient pointed at
-	// B's URL. No operator privileges required.
+	// B's URL. No ledger privileges required.
 	auditor, err := sdkgossip.NewFeedClient(opB.url, &http.Client{Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -270,12 +270,12 @@ func TestCrossOperator_STHRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCrossOperator_LatestSTH — confirms the auditor can ask
+// TestCrossLedger_LatestSTH — confirms the auditor can ask
 // "what's B's latest view of A's STH?" via the LatestSTH
 // endpoint after a publish round-trip.
-func TestCrossOperator_LatestSTH(t *testing.T) {
+func TestCrossLedger_LatestSTH(t *testing.T) {
 	netID := nonZeroNetworkID()
-	opB := newOperatorFixture(t, netID)
+	opB := newLedgerFixture(t, netID)
 
 	aKP, err := did.GenerateDIDKeySecp256k1()
 	if err != nil {
@@ -339,7 +339,7 @@ func TestCrossOperator_LatestSTH(t *testing.T) {
 
 // decodeAuditorBody decodes a SignedEvent's body as a
 // WireCosignedTreeHeadBody and converts to a typed
-// CosignedTreeHeadFinding. Mirrors the operator's
+// CosignedTreeHeadFinding. Mirrors the ledger's
 // gossipnet/equivocation_monitor.go decodeSTHFromEvent helper.
 func decodeAuditorBody(ev sdkgossip.SignedEvent) (*findings.CosignedTreeHeadFinding, error) {
 	if ev.Kind != sdkgossip.KindCosignedTreeHead {

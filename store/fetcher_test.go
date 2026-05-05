@@ -4,14 +4,14 @@ FILE PATH: store/fetcher_test.go
 Evidence-based tests for the CompositeByteReader. Establishes the
 load-bearing routing invariants:
 
-  1. WAL hit → bytestore not consulted.
-  2. WAL miss (ErrNotFound) → bytestore consulted.
-  3. WAL transport error → returned, NOT silently masked by bytestore.
-  4. WAL absent + bytestore-only → all reads go through bytestore.
-  5. Bytestore absent + WAL miss → error (no silent partial state).
-  6. Batch ordering preserved across mixed WAL/bytestore hits.
-  7. Batch failure on any single read fails the whole batch.
-  8. Context cancel respected per-read and across batches.
+ 1. WAL hit → bytestore not consulted.
+ 2. WAL miss (ErrNotFound) → bytestore consulted.
+ 3. WAL transport error → returned, NOT silently masked by bytestore.
+ 4. WAL absent + bytestore-only → all reads go through bytestore.
+ 5. Bytestore absent + WAL miss → error (no silent partial state).
+ 6. Batch ordering preserved across mixed WAL/bytestore hits.
+ 7. Batch failure on any single read fails the whole batch.
+ 8. Context cancel respected per-read and across batches.
 
 The composite's interface compatibility (it satisfies bytestore.Reader)
 is statically pinned by the var-decl in fetcher.go; the tests focus
@@ -38,10 +38,10 @@ import (
 // or wal.ErrNotFound for unknown hashes; an injected non-NotFound
 // error path exercises the alarm-don't-mask invariant.
 type fakeWALReader struct {
-	wires    map[[32]byte][]byte
-	hardErr  error           // returned for ANY hash read (transport-fail simulation)
-	missedHash *[32]byte     // returned as ErrNotFound; used to force fallback
-	calls    map[[32]byte]int
+	wires      map[[32]byte][]byte
+	hardErr    error     // returned for ANY hash read (transport-fail simulation)
+	missedHash *[32]byte // returned as ErrNotFound; used to force fallback
+	calls      map[[32]byte]int
 }
 
 func newFakeWALReader() *fakeWALReader {

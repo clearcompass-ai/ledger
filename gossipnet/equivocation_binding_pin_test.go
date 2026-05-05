@@ -3,14 +3,14 @@ FILE PATH: gossipnet/equivocation_binding_pin_test.go
 
 Drift-pin tests for the 0x0B equivocation-projection key: every
 producer (the EquivocationScanner) and every consumer (the SDK's
-findings.FetchEquivocationByBinding, the operator's
+findings.FetchEquivocationByBinding, the ledger's
 GetEquivProjection callers) MUST compute the binding identically.
 
-Before PT-3 the operator re-implemented findings.EntryCommitmentBinding
+Before PT-3 the ledger re-implemented findings.EntryCommitmentBinding
 locally as sha256SchemaSplit, "to avoid an import cycle." That
 duplication is exactly the kind of silent drift this file pins —
 if the SDK ever adds a domain separator to gossip.BindingHash,
-this test fails loudly and the operator follows.
+this test fails loudly and the ledger follows.
 
 The tests do not exercise the network path; they pin the wire
 contract at the byte level.
@@ -24,13 +24,13 @@ import (
 	"github.com/clearcompass-ai/attesta/gossip/findings"
 )
 
-// TestEquivocationBinding_OperatorMatchesSDK pins the byte-level
+// TestEquivocationBinding_LedgerMatchesSDK pins the byte-level
 // equivalence between the SDK helper and the raw SHA-256 of
-// (schemaID || splitID) the operator previously open-coded. If the
+// (schemaID || splitID) the ledger previously open-coded. If the
 // SDK changes BindingHash to add a domain separator, this test
-// fails — and the operator's projection key needs the same
+// fails — and the ledger's projection key needs the same
 // migration.
-func TestEquivocationBinding_OperatorMatchesSDK(t *testing.T) {
+func TestEquivocationBinding_LedgerMatchesSDK(t *testing.T) {
 	cases := []struct {
 		name     string
 		schemaID string
@@ -50,24 +50,24 @@ func TestEquivocationBinding_OperatorMatchesSDK(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Operator-side construction (was sha256SchemaSplit
+			// Ledger-side construction (was sha256SchemaSplit
 			// pre-PT-3): raw SHA-256(schemaID || splitID).
 			var input []byte
 			input = append(input, []byte(tc.schemaID)...)
 			input = append(input, tc.splitID[:]...)
-			operatorWay := sha256.Sum256(input)
+			ledgerWay := sha256.Sum256(input)
 
 			// SDK-side construction.
 			sdkWay := findings.EntryCommitmentBinding(tc.schemaID, tc.splitID)
 
-			if operatorWay != sdkWay {
+			if ledgerWay != sdkWay {
 				t.Errorf(
-					"binding drift: operator-bytes=%x sdk-bytes=%x — "+
+					"binding drift: ledger-bytes=%x sdk-bytes=%x — "+
 						"the SDK helper now adds a domain separator or "+
 						"changed its hash; the 0x0B projection key MUST "+
 						"track the SDK to keep peer-published findings "+
 						"and locally-detected findings sharing one key",
-					operatorWay, sdkWay)
+					ledgerWay, sdkWay)
 			}
 		})
 	}

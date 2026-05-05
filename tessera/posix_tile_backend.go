@@ -4,22 +4,23 @@ FILE PATH: tessera/posix_tile_backend.go
 POSIXTileBackend — filesystem-backed TileBackend.
 
 WHY THIS EXISTS:
-  Phase 1B of the operator's CT-native consolidation embeds the
-  Tessera library in-process (eliminating the standalone
-  tessera-personality binary). When Tessera is configured with
-  the POSIX storage driver, it writes tiles, entry bundles, and
-  the checkpoint file into a directory tree following the
-  c2sp.org/tlog-tiles layout EXACTLY:
 
-    <root>/checkpoint
-    <root>/tile/<level>/<index_groups>/<final>
-    <root>/tile/entries/<index_groups>/<final>
+	Phase 1B of the ledger's CT-native consolidation embeds the
+	Tessera library in-process (eliminating the standalone
+	tessera-personality binary). When Tessera is configured with
+	the POSIX storage driver, it writes tiles, entry bundles, and
+	the checkpoint file into a directory tree following the
+	c2sp.org/tlog-tiles layout EXACTLY:
 
-  The path scheme is identical to what the personality's
-  http.FileServer used to expose. So the operator can read the
-  same files directly from the local filesystem, bypassing HTTP
-  entirely. Same correctness, lower latency, no network failure
-  modes.
+	  <root>/checkpoint
+	  <root>/tile/<level>/<index_groups>/<final>
+	  <root>/tile/entries/<index_groups>/<final>
+
+	The path scheme is identical to what the personality's
+	http.FileServer used to expose. So the ledger can read the
+	same files directly from the local filesystem, bypassing HTTP
+	entirely. Same correctness, lower latency, no network failure
+	modes.
 
 INVARIANTS:
   - rootDir is the Tessera storage directory passed to
@@ -33,20 +34,21 @@ INVARIANTS:
     surface it to the user without crashing.
 
 THREAD SAFETY:
-  os.ReadFile is goroutine-safe. No state in *POSIXTileBackend.
-  Multiple TileReader instances or concurrent reads from the
-  same instance are safe.
+
+	os.ReadFile is goroutine-safe. No state in *POSIXTileBackend.
+	Multiple TileReader instances or concurrent reads from the
+	same instance are safe.
 
 ALTERNATIVES CONSIDERED:
   - Using upstream tessera.LogReader (returned from NewAppender)
     instead of reading files directly. LogReader provides
     ReadTile / ReadEntryBundle keyed by (level, index, p uint8)
-    instead of paths. Bridging to the operator's path-based
+    instead of paths. Bridging to the ledger's path-based
     TileBackend interface would require parsing the c2sp.org
     path back into the (level, index, p) tuple — a detour that
     adds no value while POSIX is the only Tessera backend. Once
     a remote Tessera storage driver (GCS / S3) is wired
-    (Phase 2-extension, out of scope for now), the operator can
+    (Phase 2-extension, out of scope for now), the ledger can
     switch to a LogReader-backed TileBackend without touching
     proof_adapter.go's call sites.
 */

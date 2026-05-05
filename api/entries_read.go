@@ -3,46 +3,46 @@ FILE PATH: api/entries_read.go
 
 Entry fetch-by-position endpoints. Three routes:
 
-  GET /v1/entries/{seq}             → JSON metadata (no bytes)
-  GET /v1/entries/batch?start&count → JSON list of metadata
-  GET /v1/entries/{seq}/raw         → wire bytes
-                                       200 OK inline (un-shipped)
-                                       302 Found redirect (shipped)
+	GET /v1/entries/{seq}             → JSON metadata (no bytes)
+	GET /v1/entries/batch?start&count → JSON list of metadata
+	GET /v1/entries/{seq}/raw         → wire bytes
+	                                     200 OK inline (un-shipped)
+	                                     302 Found redirect (shipped)
 
 THE 302 ROUTE — design summary:
 
-  Under WAL-first admission, an entry's wire bytes live in one of
-  two places at any moment:
-    - the WAL (local NVMe, fast) — for pending/sequenced/manual
-      states AND for shipped entries within the GC retention window
-    - the byte store (network, GCS/S3) — for shipped entries past
-      the GC retention window
+	Under WAL-first admission, an entry's wire bytes live in one of
+	two places at any moment:
+	  - the WAL (local NVMe, fast) — for pending/sequenced/manual
+	    states AND for shipped entries within the GC retention window
+	  - the byte store (network, GCS/S3) — for shipped entries past
+	    the GC retention window
 
-  Serving inline from the operator (proxy-mode) for shipped entries
-  doubles the egress bandwidth — the operator reads from GCS, then
-  re-streams to the consumer. At 10B+ entries × ~1 MB each, this is
-  petabytes of pointless re-transfer. The 302 redirect cuts the
-  operator out of the byte path entirely: the consumer's HTTP client
-  follows Location: <presigned URL> and fetches directly from the
-  byte store, validated by SigV4 / V4 signatures bound to the
-  hash-suffixed key.
+	Serving inline from the ledger (proxy-mode) for shipped entries
+	doubles the egress bandwidth — the ledger reads from GCS, then
+	re-streams to the consumer. At 10B+ entries × ~1 MB each, this is
+	petabytes of pointless re-transfer. The 302 redirect cuts the
+	ledger out of the byte path entirely: the consumer's HTTP client
+	follows Location: <presigned URL> and fetches directly from the
+	byte store, validated by SigV4 / V4 signatures bound to the
+	hash-suffixed key.
 
-  Routing decision matrix (computed inside the handler):
+	Routing decision matrix (computed inside the handler):
 
-    Postgres entry_index        WAL meta state      Outcome
-    ─────────────────────────   ─────────────────   ──────────────────
-    no row at seq                —                   404
-    row at seq                   StateSequenced      200 + wal.Read
-    row at seq                   StateManual         200 + wal.Read
-    row at seq                   StatePending        200 + wal.Read   *defensive*
-    row at seq                   StateShipped        302 + presigned
-    row at seq                   wal.ErrNotFound     302 + presigned   *post-GC*
-    row at seq                   transport error     500
-    no Presigner configured + StateShipped/post-GC   500   *misconfig*
+	  Postgres entry_index        WAL meta state      Outcome
+	  ─────────────────────────   ─────────────────   ──────────────────
+	  no row at seq                —                   404
+	  row at seq                   StateSequenced      200 + wal.Read
+	  row at seq                   StateManual         200 + wal.Read
+	  row at seq                   StatePending        200 + wal.Read   *defensive*
+	  row at seq                   StateShipped        302 + presigned
+	  row at seq                   wal.ErrNotFound     302 + presigned   *post-GC*
+	  row at seq                   transport error     500
+	  no Presigner configured + StateShipped/post-GC   500   *misconfig*
 
-  The handler is opaque to envelope structure — wire bytes go out
-  raw. Consumers feed the response body to envelope.Deserialize and
-  recover signatures via entry.Signatures.
+	The handler is opaque to envelope structure — wire bytes go out
+	raw. Consumers feed the response body to envelope.Deserialize and
+	recover signatures via entry.Signatures.
 
 KEY ARCHITECTURAL DECISIONS:
   - JSON-metadata endpoint (NewEntryBySequenceHandler) keeps its
@@ -252,7 +252,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		}
 
 		// Step 2: probe WAL meta to decide route.
-		// Read-only operator (cmd/operator-reader) has no WAL —
+		// Read-only ledger (cmd/ledger-reader) has no WAL —
 		// serve everything via 302 redirect to the byte store.
 		// Un-shipped entries surface as bytestore 404; consumers
 		// retry against the writer or wait for the Shipper to
@@ -295,12 +295,12 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 
 // setRawHeaders writes the SDK-canonical /raw response headers:
 // X-Sequence (uint64 decimal) and X-Log-Time (RFC-3339Nano UTC). The
-// SDK's log.HTTPEntryFetcher reads both; pre-this-fix the operator
+// SDK's log.HTTPEntryFetcher reads both; pre-this-fix the ledger
 // only stamped X-Sequence, so consumers that needed LogTime had to
 // round-trip to the JSON metadata endpoint (Tier-2 alignment).
 //
 // X-Log-Time is omitted (rather than stamping a zero-time string)
-// when the operator does not have a log_time on file — older
+// when the ledger does not have a log_time on file — older
 // entry_index rows pre-dating the column population may exist; the
 // SDK fetcher tolerates absence with a zero-valued LogTime.
 func setRawHeaders(w http.ResponseWriter, seq uint64, logTime time.Time) {
@@ -375,7 +375,7 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 // SeqHashLookup is satisfied by api.EntryStore (see ports.go);
 // the EntryStore interface declares FetchHashBySeq so any
 // implementation that implements it satisfies SeqHashLookup
-// transitively. The wire-time pin lives at cmd/operator/main.go
+// transitively. The wire-time pin lives at cmd/ledger/main.go
 // where *store.EntryStore is assigned into the api EntryStore
 // interface field — drift in either side surfaces there.
 var _ SeqHashLookup = EntryStore(nil)

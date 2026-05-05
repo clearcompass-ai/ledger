@@ -8,23 +8,28 @@ tests run against the docker-compose harness without changing this
 file.
 
 OBJECT LAYOUT:
-  All adapters share layoutKey: <prefix>/<seq:016x>/<hash_hex>
+
+	All adapters share layoutKey: <prefix>/<seq:016x>/<hash_hex>
 
 CACHING:
-  GCS object reads are 50-200ms. The store fronts GCS with an LRU
-  cache keyed by the canonical layout key. Writes are write-through.
+
+	GCS object reads are 50-200ms. The store fronts GCS with an LRU
+	cache keyed by the canonical layout key. Writes are write-through.
 
 CREDENTIALS:
-  cloud.google.com/go/storage's NewClient honors ADC by default.
-  fake-gcs-server requires Endpoint + Anonymous=true.
+
+	cloud.google.com/go/storage's NewClient honors ADC by default.
+	fake-gcs-server requires Endpoint + Anonymous=true.
 
 PRESIGNED URLS:
-  V4 signed URLs via storage.SignedURL. Service-account-key sites
-  sign locally; workload-identity sites use the IAM signBlob API.
-  TTL is clamped to 7 days (the GCS V4 ceiling).
+
+	V4 signed URLs via storage.SignedURL. Service-account-key sites
+	sign locally; workload-identity sites use the IAM signBlob API.
+	TTL is clamped to 7 days (the GCS V4 ceiling).
 
 CONCURRENCY:
-  GCS client is goroutine-safe; the LRU cache is mutex-guarded.
+
+	GCS client is goroutine-safe; the LRU cache is mutex-guarded.
 */
 package bytestore
 
@@ -65,7 +70,7 @@ type GCSConfig struct {
 
 	// ObjectPrefix is the first path segment under the bucket.
 	// Defaults to "entries". Useful for sharing a bucket across
-	// multiple operator instances (one prefix per log).
+	// multiple ledger instances (one prefix per log).
 	ObjectPrefix string
 
 	// WriteTimeout caps a single WriteEntry call. Defaults to 30s.

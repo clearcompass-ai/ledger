@@ -2,7 +2,7 @@
 FILE PATH: builder/delta_buffer.go
 
 Postgres persistence of the delta-window authority history buffer.
-Survives operator restarts. Empty on cold start → strict OCC (SDK-D9).
+Survives ledger restarts. Empty on cold start → strict OCC (SDK-D9).
 
 KEY ARCHITECTURAL DECISIONS:
   - Load/Save symmetry: Load → sdk DeltaWindowBuffer, Save → Postgres.

@@ -1,6 +1,6 @@
 /*
 Package integrity is the cryptographic-agreement layer between the
-operator's local WAL and the embedded Tessera log. Two surfaces:
+ledger's local WAL and the embedded Tessera log. Two surfaces:
 
   - Verifier (read-only): point-in-time checks that the hash at a
     given sequence number in Tessera matches what the WAL recorded.
@@ -14,47 +14,48 @@ operator's local WAL and the embedded Tessera log. Two surfaces:
 
 DESIGN: WHY RE-ADD INSTEAD OF LOOKUP?
 
-  The naive boot reconciliation is "for each WAL inflight breadcrumb,
-  ask Tessera 'do you have this hash?'". That is unsafe because the
-  Add → integrate → dedup-record sequence is not atomic in upstream
-  Tessera — there's a window where Add has accepted the entry but
-  the dedup hasn't yet recorded the index. A boot in that window
-  would see "Tessera doesn't know this hash" and incorrectly GC the
-  bytes; Tessera would then integrate the entry against a hash whose
-  bytes no longer exist.
+	The naive boot reconciliation is "for each WAL inflight breadcrumb,
+	ask Tessera 'do you have this hash?'". That is unsafe because the
+	Add → integrate → dedup-record sequence is not atomic in upstream
+	Tessera — there's a window where Add has accepted the entry but
+	the dedup hasn't yet recorded the index. A boot in that window
+	would see "Tessera doesn't know this hash" and incorrectly GC the
+	bytes; Tessera would then integrate the entry against a hash whose
+	bytes no longer exist.
 
-  Re-Add closes the race because it's idempotent. If Tessera already
-  has the entry, dedup returns the existing index. If Tessera doesn't
-  have it (true phantom), Add inserts it and returns a fresh index.
-  Either way, the entry ends up properly recorded; reconciliation
-  converges.
+	Re-Add closes the race because it's idempotent. If Tessera already
+	has the entry, dedup returns the existing index. If Tessera doesn't
+	have it (true phantom), Add inserts it and returns a fresh index.
+	Either way, the entry ends up properly recorded; reconciliation
+	converges.
 
 DESIGN: WHY PANIC ON DIVERGENCE?
 
-  CT logs cannot tolerate disagreement between the operator's
-  recorded state and the Merkle tree's committed state. If the
-  Detector finds a sequence where WAL claims hash A but Tessera
-  shows hash B, every proof rooted at the current tree head
-  potentially carries a lie. The only correct response is to stop
-  the operator immediately so consumers can't be served corrupt
-  proofs. The Detector returns ErrDiverged; the composition root
-  in cmd/operator/main.go panics on it.
+	CT logs cannot tolerate disagreement between the ledger's
+	recorded state and the Merkle tree's committed state. If the
+	Detector finds a sequence where WAL claims hash A but Tessera
+	shows hash B, every proof rooted at the current tree head
+	potentially carries a lie. The only correct response is to stop
+	the ledger immediately so consumers can't be served corrupt
+	proofs. The Detector returns ErrDiverged; the composition root
+	in cmd/ledger/main.go panics on it.
 
-  Process-level termination is the correct response across every
-  orchestrator (Kubernetes, systemd, bare metal) because non-zero
-  exit + restart-loop is a universal signal. The operator does NOT
-  decide what to do next (page on-call, dump evidence, etc.) —
-  that's infra's job.
+	Process-level termination is the correct response across every
+	orchestrator (Kubernetes, systemd, bare metal) because non-zero
+	exit + restart-loop is a universal signal. The ledger does NOT
+	decide what to do next (page on-call, dump evidence, etc.) —
+	that's infra's job.
 
 PACKAGE LAYOUT:
-  integrity.go          types + sentinels + minimal interfaces from
-                        the WAL surface (decoupled from wal/ package
-                        proper)
-  verifier.go           Verifier interface + tile-reader-backed impl
-  reasserter.go         Reasserter interface + appender-backed impl
-  tessera_adapter.go    one struct that satisfies both, wrapping
-                        an embedded Tessera appender + tile reader
-  detector.go           Reconcile (boot) + Loop (periodic sample-verify)
+
+	integrity.go          types + sentinels + minimal interfaces from
+	                      the WAL surface (decoupled from wal/ package
+	                      proper)
+	verifier.go           Verifier interface + tile-reader-backed impl
+	reasserter.go         Reasserter interface + appender-backed impl
+	tessera_adapter.go    one struct that satisfies both, wrapping
+	                      an embedded Tessera appender + tile reader
+	detector.go           Reconcile (boot) + Loop (periodic sample-verify)
 */
 package integrity
 
@@ -70,10 +71,10 @@ var ErrDiverged = errors.New("integrity: WAL state diverges from Tessera (panic)
 
 // ErrPhantom is returned during boot reconciliation when Tessera
 // rejects a re-Add (e.g., the identity is malformed in a way the
-// integrator refuses). True phantoms — entries the operator wrote
+// integrator refuses). True phantoms — entries the ledger wrote
 // to the WAL but never made it past Tessera's acceptance — surface
 // here. The Detector logs them and continues; the bytes stay in the
-// WAL until an operator reviews them.
+// WAL until an ledger reviews them.
 var ErrPhantom = errors.New("integrity: phantom entry (Tessera refuses re-Add)")
 
 // ─────────────────────────────────────────────────────────────────────

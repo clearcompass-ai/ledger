@@ -1,4 +1,4 @@
-# Attesta Operator — make targets
+# Attesta Ledger — make targets
 #
 # Wave 1 v3 §CI1 introduces the audit-v775 target. Other targets
 # below are conventional helpers for build / test / lint cadence.
@@ -46,13 +46,13 @@ clean: ## Remove build artifacts
 # ─────────────────────────────────────────────────────────────────────
 
 # audit-v775 ensures NO muEnable* gate has been flipped to false in
-# the SDK that this operator depends on. The discipline lives at
+# the SDK that this ledger depends on. The discipline lives at
 # ADR-005 §6: every muEnable constant is a load-bearing security
 # gate, and any value other than `true` in committed code is a
 # regression.
 #
 # Resolution order:
-#   1. If ./vendor/<sdk> exists, scan there (operator is vendoring).
+#   1. If ./vendor/<sdk> exists, scan there (ledger is vendoring).
 #   2. Otherwise, ask `go list -m` for the module cache directory
 #      and scan there (default Go module mode).
 #
@@ -83,14 +83,14 @@ audit-v775: ## Wave 1 §CI1 — fail if SDK ships any muEnable*=false
 
 # ─── Dev topology (REAL GCS) ────────────────────────────────────────────
 #
-# Two operators (Davidson trial on :8080, COA on :8081) backed by a
+# Two ledgers (Davidson trial on :8080, COA on :8081) backed by a
 # shared Postgres and REAL Google Cloud Storage (the developer's own
 # GCS buckets). Powers the judicial-network walkthrough.
 #
 # Required developer setup BEFORE `make dev-up`:
 #   gcloud auth application-default login
-#   export OPERATOR_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
-#   export OPERATOR_DEV_BUCKET_COA=<your-coa-bucket>
+#   export LEDGER_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
+#   export LEDGER_DEV_BUCKET_COA=<your-coa-bucket>
 # See deployment/local/README.dev.md for full prerequisites.
 
 dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
@@ -99,13 +99,13 @@ dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
 	  echo "      run: gcloud auth application-default login"; \
 	  exit 1; \
 	fi
-	@if [ -z "$$OPERATOR_DEV_BUCKET_DAVIDSON" ]; then \
-	  echo "FAIL: OPERATOR_DEV_BUCKET_DAVIDSON is unset"; \
+	@if [ -z "$$LEDGER_DEV_BUCKET_DAVIDSON" ]; then \
+	  echo "FAIL: LEDGER_DEV_BUCKET_DAVIDSON is unset"; \
 	  echo "      see deployment/local/README.dev.md"; \
 	  exit 1; \
 	fi
-	@if [ -z "$$OPERATOR_DEV_BUCKET_COA" ]; then \
-	  echo "FAIL: OPERATOR_DEV_BUCKET_COA is unset"; \
+	@if [ -z "$$LEDGER_DEV_BUCKET_COA" ]; then \
+	  echo "FAIL: LEDGER_DEV_BUCKET_COA is unset"; \
 	  echo "      see deployment/local/README.dev.md"; \
 	  exit 1; \
 	fi
@@ -113,7 +113,7 @@ dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
 
 dev-up: dev-preflight ## Boot dev topology against REAL GCS (Davidson :8080 + COA :8081)
 	$(DEV_COMPOSE) up -d --build
-	@echo "waiting for both operators to report healthy..."
+	@echo "waiting for both ledgers to report healthy..."
 	@for i in $$(seq 1 60); do \
 	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
 	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
@@ -121,31 +121,31 @@ dev-up: dev-preflight ## Boot dev topology against REAL GCS (Davidson :8080 + CO
 	    echo "ready: davidson=:8080  coa=:8081  gcs=storage.googleapis.com" && exit 0; \
 	  sleep 2; \
 	done; \
-	echo "operators did not report healthy in time; run 'make dev-logs'"; exit 1
+	echo "ledgers did not report healthy in time; run 'make dev-logs'"; exit 1
 
 dev-down: ## Tear down dev topology AND delete volumes (full reset; GCS buckets unchanged)
 	$(DEV_COMPOSE) down -v
 
-dev-logs: ## Tail logs from both operators
-	$(DEV_COMPOSE) logs -f operator-davidson operator-coa
+dev-logs: ## Tail logs from both ledgers
+	$(DEV_COMPOSE) logs -f ledger-davidson ledger-coa
 
 dev-status: ## Show service status
 	$(DEV_COMPOSE) ps
 
-dev-rebuild: ## Rebuild operator image and restart both services
-	$(DEV_COMPOSE) build operator-davidson
-	$(DEV_COMPOSE) up -d operator-davidson operator-coa
+dev-rebuild: ## Rebuild ledger image and restart both services
+	$(DEV_COMPOSE) build ledger-davidson
+	$(DEV_COMPOSE) up -d ledger-davidson ledger-coa
 
 # ─── Integration topology (fake-gcs-server, offline) ────────────────────
 #
-# Same operator + database shape but the GCS dependency is satisfied
+# Same ledger + database shape but the GCS dependency is satisfied
 # by fake-gcs-server (in-process, anonymous, deterministic). Used for
 # CI integration tests + offline / air-gapped local runs. Use the
 # real-GCS topology (above) for daily development.
 
 integration-up: ## Boot integration topology (fake-gcs-server, offline)
 	$(INT_COMPOSE) up -d --build
-	@echo "waiting for both operators to report healthy..."
+	@echo "waiting for both ledgers to report healthy..."
 	@for i in $$(seq 1 60); do \
 	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
 	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
@@ -153,13 +153,13 @@ integration-up: ## Boot integration topology (fake-gcs-server, offline)
 	    echo "ready: davidson=:8080  coa=:8081  fake-gcs=:4443" && exit 0; \
 	  sleep 2; \
 	done; \
-	echo "operators did not report healthy in time; run 'make integration-logs'"; exit 1
+	echo "ledgers did not report healthy in time; run 'make integration-logs'"; exit 1
 
 integration-down: ## Tear down integration topology AND delete volumes
 	$(INT_COMPOSE) down -v
 
-integration-logs: ## Tail logs from both operators (integration topology)
-	$(INT_COMPOSE) logs -f operator-davidson operator-coa
+integration-logs: ## Tail logs from both ledgers (integration topology)
+	$(INT_COMPOSE) logs -f ledger-davidson ledger-coa
 
 integration-status: ## Show service status (integration topology)
 	$(INT_COMPOSE) ps

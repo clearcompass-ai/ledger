@@ -1,41 +1,43 @@
 /*
-FILE PATH: cmd/operator/ethereum_rpc.go
+FILE PATH: cmd/ledger/ethereum_rpc.go
 
 DESCRIPTION:
-    Operator-side configuration and construction for the SDK's
-    EthereumRPCClient. Used to enable EIP-1271 (smart-contract-wallet)
-    signature verification end-to-end. When EIP-1271 is enabled the
-    operator constructs an HTTP JSON-RPC client at startup and passes
-    it to did.DefaultVerifierRegistryWithRPC; when disabled the
-    operator runs in EOA-only mode (the existing behavior, no network
-    surface added).
+
+	Ledger-side configuration and construction for the SDK's
+	EthereumRPCClient. Used to enable EIP-1271 (smart-contract-wallet)
+	signature verification end-to-end. When EIP-1271 is enabled the
+	ledger constructs an HTTP JSON-RPC client at startup and passes
+	it to did.DefaultVerifierRegistryWithRPC; when disabled the
+	ledger runs in EOA-only mode (the existing behavior, no network
+	surface added).
 
 KEY ARCHITECTURAL DECISIONS:
   - Strict three-tier env-var contract:
-      OPERATOR_ETH_RPC_ENABLED        (true/false; default false)
-      OPERATOR_ETH_RPC_ENDPOINT       (https URL; required when enabled)
-      OPERATOR_ETH_RPC_TIMEOUT_MS     (int ms; default 5000)
-      OPERATOR_ETH_RPC_ALLOW_HTTP     (true/false; default false)
+    LEDGER_ETH_RPC_ENABLED        (true/false; default false)
+    LEDGER_ETH_RPC_ENDPOINT       (https URL; required when enabled)
+    LEDGER_ETH_RPC_TIMEOUT_MS     (int ms; default 5000)
+    LEDGER_ETH_RPC_ALLOW_HTTP     (true/false; default false)
     "enabled" is the master switch — flipping it on without
-    OPERATOR_ETH_RPC_ENDPOINT is a startup error, not a silent
+    LEDGER_ETH_RPC_ENDPOINT is a startup error, not a silent
     degrade-to-disabled.
   - HTTPS-only by default. http:// endpoints are rejected at startup
-    unless OPERATOR_ETH_RPC_ALLOW_HTTP=true is set explicitly. This
+    unless LEDGER_ETH_RPC_ALLOW_HTTP=true is set explicitly. This
     is the same default the SDK's NewHTTPEthereumRPC enforces; the
-    operator surfaces the gate at config-load time so misconfigured
+    ledger surfaces the gate at config-load time so misconfigured
     deployments fail fast (not after the first EIP-1271 traffic).
   - Production endpoints (Alchemy, Infura, QuickNode) embed an API
-    key in the URL path. The operator NEVER logs the endpoint; the
+    key in the URL path. The ledger NEVER logs the endpoint; the
     SDK's NewHTTPEthereumRPC redacts it from error messages too.
-    Operators audit the configured endpoint via secret-management,
+    Ledgers audit the configured endpoint via secret-management,
     not stdout.
 
 OVERVIEW:
-    EthereumRPCConfig          — the parsed env-var config
-    LoadEthereumRPCConfig      — populate from environment
-    BuildEthereumRPCClient     — construct *HTTPEthereumRPC; returns
-                                 (nil, nil) when disabled, (rpc, nil)
-                                 on success, (nil, err) on misconfig
+
+	EthereumRPCConfig          — the parsed env-var config
+	LoadEthereumRPCConfig      — populate from environment
+	BuildEthereumRPCClient     — construct *HTTPEthereumRPC; returns
+	                             (nil, nil) when disabled, (rpc, nil)
+	                             on success, (nil, err) on misconfig
 
 KEY DEPENDENCIES:
   - github.com/clearcompass-ai/attesta/crypto/signatures:
@@ -58,7 +60,7 @@ import (
 // -------------------------------------------------------------------------------------------------
 
 // defaultEthereumRPCTimeoutMS is the default per-request timeout in
-// milliseconds when OPERATOR_ETH_RPC_TIMEOUT_MS is unset. 5000ms is
+// milliseconds when LEDGER_ETH_RPC_TIMEOUT_MS is unset. 5000ms is
 // the SDK default and a reasonable middle ground for live signature
 // verification against any major provider.
 const defaultEthereumRPCTimeoutMS = 5000
@@ -68,13 +70,13 @@ const defaultEthereumRPCTimeoutMS = 5000
 // -------------------------------------------------------------------------------------------------
 
 // EthereumRPCConfig is the parsed environment-variable configuration
-// for the operator's EthereumRPCClient construction at startup.
+// for the ledger's EthereumRPCClient construction at startup.
 //
-// Disabled-by-default: a freshly-deployed operator with NO eth-RPC
+// Disabled-by-default: a freshly-deployed ledger with NO eth-RPC
 // env vars set runs in EOA-only mode and pulls zero network surface.
 type EthereumRPCConfig struct {
 	// Enabled is the master switch. When false (the default), the
-	// operator does NOT construct an EthereumRPCClient and EIP-1271
+	// ledger does NOT construct an EthereumRPCClient and EIP-1271
 	// verification is unsupported. Production deployments that
 	// accept smart-contract-wallet signers MUST set this to true.
 	Enabled bool
@@ -98,42 +100,42 @@ type EthereumRPCConfig struct {
 // -------------------------------------------------------------------------------------------------
 
 // ErrEthereumRPCEndpointRequired is returned when
-// OPERATOR_ETH_RPC_ENABLED=true but OPERATOR_ETH_RPC_ENDPOINT is
-// empty. Operators that want EIP-1271 must supply an endpoint.
+// LEDGER_ETH_RPC_ENABLED=true but LEDGER_ETH_RPC_ENDPOINT is
+// empty. Ledgers that want EIP-1271 must supply an endpoint.
 var ErrEthereumRPCEndpointRequired = errors.New(
-	"OPERATOR_ETH_RPC_ENABLED=true requires OPERATOR_ETH_RPC_ENDPOINT (a JSON-RPC URL)")
+	"LEDGER_ETH_RPC_ENABLED=true requires LEDGER_ETH_RPC_ENDPOINT (a JSON-RPC URL)")
 
 // ErrEthereumRPCInsecureEndpoint is returned when an http:// endpoint
-// is configured without OPERATOR_ETH_RPC_ALLOW_HTTP=true. The SDK
+// is configured without LEDGER_ETH_RPC_ALLOW_HTTP=true. The SDK
 // would reject this in NewHTTPEthereumRPC; we surface it earlier so
-// startup fails fast with a clear operator-facing error.
+// startup fails fast with a clear ledger-facing error.
 var ErrEthereumRPCInsecureEndpoint = errors.New(
-	"OPERATOR_ETH_RPC_ENDPOINT is http:// but OPERATOR_ETH_RPC_ALLOW_HTTP is not true (set ALLOW_HTTP=true for local-dev only; production MUST use https://)")
+	"LEDGER_ETH_RPC_ENDPOINT is http:// but LEDGER_ETH_RPC_ALLOW_HTTP is not true (set ALLOW_HTTP=true for local-dev only; production MUST use https://)")
 
 // -------------------------------------------------------------------------------------------------
 // 4) LoadEthereumRPCConfig — env → struct
 // -------------------------------------------------------------------------------------------------
 
-// LoadEthereumRPCConfig reads the four OPERATOR_ETH_RPC_* env vars
+// LoadEthereumRPCConfig reads the four LEDGER_ETH_RPC_* env vars
 // and returns a populated EthereumRPCConfig. Validation of
 // "endpoint required when enabled" and "https-or-explicit-opt-in"
 // happens here so misconfiguration aborts startup before any
-// further operator wiring occurs.
+// further ledger wiring occurs.
 //
 // Returns:
 //   - the populated config and nil on success.
 //   - the zero-valued config and a typed error on misconfig.
 func LoadEthereumRPCConfig() (EthereumRPCConfig, error) {
 	cfg := EthereumRPCConfig{
-		Enabled:           os.Getenv("OPERATOR_ETH_RPC_ENABLED") == "true",
-		Endpoint:          os.Getenv("OPERATOR_ETH_RPC_ENDPOINT"),
-		AllowInsecureHTTP: os.Getenv("OPERATOR_ETH_RPC_ALLOW_HTTP") == "true",
+		Enabled:           os.Getenv("LEDGER_ETH_RPC_ENABLED") == "true",
+		Endpoint:          os.Getenv("LEDGER_ETH_RPC_ENDPOINT"),
+		AllowInsecureHTTP: os.Getenv("LEDGER_ETH_RPC_ALLOW_HTTP") == "true",
 		Timeout: time.Duration(envIntOr(
-			"OPERATOR_ETH_RPC_TIMEOUT_MS", defaultEthereumRPCTimeoutMS)) * time.Millisecond,
+			"LEDGER_ETH_RPC_TIMEOUT_MS", defaultEthereumRPCTimeoutMS)) * time.Millisecond,
 	}
 	if !cfg.Enabled {
 		// Disabled mode. Endpoint/Timeout/AllowInsecureHTTP are
-		// ignored; the operator runs EOA-only.
+		// ignored; the ledger runs EOA-only.
 		return cfg, nil
 	}
 	if cfg.Endpoint == "" {
@@ -157,9 +159,9 @@ func LoadEthereumRPCConfig() (EthereumRPCConfig, error) {
 //   - (nil, err)  on SDK-side construction failure (e.g., the SDK
 //     applies its own URL-scheme check redundantly).
 //
-// The operator passes the returned client to
+// The ledger passes the returned client to
 // did.DefaultVerifierRegistryWithRPC. The function never logs the
-// endpoint URL — operators audit it via secret-management.
+// endpoint URL — ledgers audit it via secret-management.
 func BuildEthereumRPCClient(cfg EthereumRPCConfig) (sdkcryptosigs.EthereumRPCClient, error) {
 	if !cfg.Enabled {
 		return nil, nil

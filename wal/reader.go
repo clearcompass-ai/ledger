@@ -175,7 +175,7 @@ func (c *Committer) MarkRetry(ctx context.Context, hash [32]byte) error {
 }
 
 // MarkManual transitions an entry to StateManual after retry exhaustion.
-// Bytes stay in the WAL; this is metric/operator state, not a deletion.
+// Bytes stay in the WAL; this is metric/ledger state, not a deletion.
 func (c *Committer) MarkManual(ctx context.Context, hash [32]byte) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -1,6 +1,6 @@
 # admission
 
-The operator's admission package houses the trust-boundary enforcement
+The ledger's admission package houses the trust-boundary enforcement
 stages that fire on every inbound entry before it reaches Tessera or
 Postgres. Each file in this package is one stage; each stage is
 fail-closed and returns a sentinel error the API layer maps to a
@@ -31,7 +31,7 @@ not here.
 The NFC check rejects non-NFC input rather than normalizing it. The
 SDK's caller-normalizes contract (Decision 52) places normalization
 at the caller boundary; downstream consumers compute SplitIDs against
-the NFC-normalized DIDs the caller supplied. If the operator silently
+the NFC-normalized DIDs the caller supplied. If the ledger silently
 normalized on ingress, the canonical hash the caller signed and the
-bytes the operator stored would diverge — a soundness break dressed
+bytes the ledger stored would diverge — a soundness break dressed
 up as a usability feature.

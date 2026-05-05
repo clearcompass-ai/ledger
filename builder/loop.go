@@ -3,7 +3,7 @@ Package builder — loop.go
 
 DESCRIPTION:
 
-	The continuous builder loop — THE core operational loop of the operator.
+	The continuous builder loop — THE core operational loop of the ledger.
 	Dequeues admitted entries, calls SDK ProcessBatch, commits state atomically,
 	appends entry identities to the Merkle tree, publishes commitments, and
 	requests witness cosignatures.
@@ -21,7 +21,7 @@ KEY ARCHITECTURAL DECISIONS:
     canonical bytes, NOT the wire-bytes-including-signature hash — to
     the Tessera personality, which wraps it with RFC 6962's 0x00 leaf
     prefix internally. Full wire bytes (canonical + sig_envelope) stay
-    in the operator's own storage. Tessera never sees full entry data.
+    in the ledger's own storage. Tessera never sees full entry data.
     Critical: do NOT use envelope.EntryLeafHash here — that would double-
     apply the RFC 6962 prefix because tessera-personality's NewEntry
     already applies it.
@@ -48,20 +48,21 @@ OVERVIEW:
 
 	Step 6 (Merkle append) is POST-COMMIT and best-effort. Crash between
 	commit and append → re-append on restart is safe (Tessera deduplicates
-	by identity hash). The operator's atomic state is in Postgres.
+	by identity hash). The ledger's atomic state is in Postgres.
 
 CONSUMER VERIFICATION FLOW (v7.75 contract):
-    1. Fetch wire bytes from operator's byte store.
-    2. envelope.Deserialize(canonical) → entry (signatures inline).
-    3. envelope.EntryIdentity(entry) → 32-byte hash.
-    4. Fetch inclusion proof for position N, verify path hashes to the
-       tree head published in the signed checkpoint.
+ 1. Fetch wire bytes from ledger's byte store.
+ 2. envelope.Deserialize(canonical) → entry (signatures inline).
+ 3. envelope.EntryIdentity(entry) → 32-byte hash.
+ 4. Fetch inclusion proof for position N, verify path hashes to the
+    tree head published in the signed checkpoint.
 
 MIGRATION NOTE:
-    Pre-v0.3.0 tiles contained SHA-256(canonical + sig_envelope). Those
-    tiles must be rebuilt — inclusion proofs against them will fail with
-    the new identity-based verification. Rebuild by replaying entries
-    through the builder against a fresh Tessera backend.
+
+	Pre-v0.3.0 tiles contained SHA-256(canonical + sig_envelope). Those
+	tiles must be rebuilt — inclusion proofs against them will fail with
+	the new identity-based verification. Rebuild by replaying entries
+	through the builder against a fresh Tessera backend.
 
 KEY DEPENDENCIES:
   - github.com/clearcompass-ai/attesta/builder: ProcessBatch, BatchResult,
@@ -125,10 +126,10 @@ func DefaultLoopConfig(logDID string) LoopConfig {
 //
 // AppendLeaf takes a 32-byte SHA-256 entry identity (envelope.EntryIdentity).
 // Tessera stores this hash in its entry tiles and computes the Merkle leaf
-// hash as H(0x00 || hash_bytes) per RFC 6962. The operator does NOT apply
+// hash as H(0x00 || hash_bytes) per RFC 6962. The ledger does NOT apply
 // the RFC 6962 prefix here — that's Tessera's job.
 //
-// Full entry bytes (canonical + signature envelope) stay in the operator's
+// Full entry bytes (canonical + signature envelope) stay in the ledger's
 // own storage. Tessera never sees them.
 type MerkleAppender interface {
 	AppendLeaf(data []byte) (uint64, error)
@@ -146,11 +147,11 @@ type WitnessCosigner interface {
 
 // BuilderLoop is the continuous builder goroutine.
 type BuilderLoop struct {
-	cfg         LoopConfig
-	db          *pgxpool.Pool
-	tree        *smt.Tree
-	leafStore   *store.PostgresLeafStore
-	nodeCache   *store.PostgresNodeCache
+	cfg       LoopConfig
+	db        *pgxpool.Pool
+	tree      *smt.Tree
+	leafStore *store.PostgresLeafStore
+	nodeCache *store.PostgresNodeCache
 	// reader is the CT-native log-tailing follower that reads new
 	// sequences from entry_index and advances builder_cursor in the
 	// builder's atomic commit. See builder/cursor_reader.go.

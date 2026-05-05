@@ -5,12 +5,12 @@ FILE PATH:
 
 DESCRIPTION:
 
-	Entry-signature verification at the operator's trust boundary.
+	Entry-signature verification at the ledger's trust boundary.
 	Thin wrapper around the SDK's signatures.VerifyEntry primitive
-	with operator-side error mapping.
+	with ledger-side error mapping.
 
 	The SDK owns the cryptographic gate logic (muEnableEntrySignatureVerify,
-	muEnablePubKeyOnCurve, muEnableSignatureLength); the operator's
+	muEnablePubKeyOnCurve, muEnableSignatureLength); the ledger's
 	job is to invoke the primitive on every inbound entry, resolve
 	the signer DID to a public key via the configured DIDResolver,
 	and map any failure to ErrSignatureInvalid for HTTP 401 dispatch.
@@ -20,9 +20,9 @@ KEY ARCHITECTURAL DECISIONS:
   - DIDResolver is an interface, not a concrete type. Phase 4 wires
     a real did.VerifierRegistry; tests wire stubs. The Phase 2 trust
     model (nil resolver = wire-format integrity only) is preserved
-    via the explicit nil check — the operator can run without DID
+    via the explicit nil check — the ledger can run without DID
     resolution during the v0.3.0-tessera → v7.75 cutover.
-  - Error mapping is the only operator-side logic. The SDK's
+  - Error mapping is the only ledger-side logic. The SDK's
     signatures.VerifyEntry already enforces the cryptographic
     invariants (length, on-curve, ecdsa.Verify) gated by the
     mutation-audit constants; this file does not duplicate any of
@@ -98,8 +98,8 @@ type DIDResolver interface {
 // matching the SDK's documented signing contract at
 // envelope/serialize.go:218-225:
 //
-//	1. signingHash := sha256.Sum256(envelope.SigningPayload(entry))
-//	2. signatures.SignEntry(signingHash, priv)
+//  1. signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+//  2. signatures.SignEntry(signingHash, priv)
 //
 // SigningPayload covers preamble + header_body + payload but NOT the
 // signatures section. Hashing envelope.EntryIdentity (= sha256(Serialize)

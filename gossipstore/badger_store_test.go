@@ -69,9 +69,9 @@ type stubEvent struct {
 	data string
 }
 
-func (s stubEvent) Kind() gossip.Kind     { return s.kind }
-func (s stubEvent) Bindings() [][32]byte  { return nil }
-func (s stubEvent) Validate() error       { return nil }
+func (s stubEvent) Kind() gossip.Kind    { return s.kind }
+func (s stubEvent) Bindings() [][32]byte { return nil }
+func (s stubEvent) Validate() error      { return nil }
 func (s stubEvent) CanonicalBytes() []byte {
 	out := []byte(s.kind)
 	out = append(out, '|')

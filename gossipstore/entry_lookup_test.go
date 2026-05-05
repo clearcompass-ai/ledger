@@ -118,7 +118,7 @@ func TestEncodeDecodeEntryLookupIndexEntry(t *testing.T) {
 	in := EntryLookupIndexEntry{
 		CanonicalBytes: []byte("canonical-bytes-payload"),
 		LogTimeMicros:  1714659120_000000,
-		LogDID:         "did:web:operator.example",
+		LogDID:         "did:web:ledger.example",
 	}
 	raw, err := EncodeEntryLookupIndexEntry(in)
 	if err != nil {

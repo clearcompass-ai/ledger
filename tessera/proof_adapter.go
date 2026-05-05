@@ -1,49 +1,52 @@
 /*
 FILE PATH:
-    tessera/proof_adapter.go
+
+	tessera/proof_adapter.go
 
 DESCRIPTION:
-    TesseraAdapter implements the operator's MerkleAppender interface
-    over a Tessera AppenderBackend and computes Merkle inclusion and
-    consistency proofs locally from tiles — the tlog-tiles format has
-    no server-side proof endpoints.
 
-    The builder depends only on the MerkleAppender interface
-    (AppendLeaf, Head). Proof methods are on the concrete type for
-    HTTP handler consumption.
+	TesseraAdapter implements the ledger's MerkleAppender interface
+	over a Tessera AppenderBackend and computes Merkle inclusion and
+	consistency proofs locally from tiles — the tlog-tiles format has
+	no server-side proof endpoints.
+
+	The builder depends only on the MerkleAppender interface
+	(AppendLeaf, Head). Proof methods are on the concrete type for
+	HTTP handler consumption.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Hash-only AppendLeaf: receives 32-byte SHA-256(wire_bytes), not
-      full entry data. The operator computes the hash in
-      builder/loop.go step 6 and passes only the digest. Tessera
-      never sees the full entry data.
-    - Tile-based proof computation: InclusionProof and
-      ConsistencyProof fetch tiles via the operator's TileReader and
-      compute proofs locally using the transparency-dev/merkle
-      library. No proof endpoints exist in the tlog-tiles format.
-    - TileHashReader bridges TileReader → merkle proof library's
-      HashReaderFunc. Fetches tiles on demand, extracts the required
-      hashes by tile coordinate.
-    - TypedInclusionProof parses into SDK types.MerkleProof for
-      cross-log verifiers.
+  - Hash-only AppendLeaf: receives 32-byte SHA-256(wire_bytes), not
+    full entry data. The ledger computes the hash in
+    builder/loop.go step 6 and passes only the digest. Tessera
+    never sees the full entry data.
+  - Tile-based proof computation: InclusionProof and
+    ConsistencyProof fetch tiles via the ledger's TileReader and
+    compute proofs locally using the transparency-dev/merkle
+    library. No proof endpoints exist in the tlog-tiles format.
+  - TileHashReader bridges TileReader → merkle proof library's
+    HashReaderFunc. Fetches tiles on demand, extracts the required
+    hashes by tile coordinate.
+  - TypedInclusionProof parses into SDK types.MerkleProof for
+    cross-log verifiers.
 
 OVERVIEW:
-    AppendLeaf(hash) → backend.AppendLeaf(hash) → assigned index.
-    Head()           → backend.Head()           → parsed tree state.
-    InclusionProof(idx, size) → fetch tiles → compute from hash tree.
-    ConsistencyProof(old, new) → fetch tiles → compute from hash tree.
+
+	AppendLeaf(hash) → backend.AppendLeaf(hash) → assigned index.
+	Head()           → backend.Head()           → parsed tree state.
+	InclusionProof(idx, size) → fetch tiles → compute from hash tree.
+	ConsistencyProof(old, new) → fetch tiles → compute from hash tree.
 
 KEY DEPENDENCIES:
-    - tessera/embedded_appender.go: in-process upstream Tessera
-      (AppenderBackend implementation used in production).
-    - tessera/tile_reader.go: LRU-cached tile fetching from the
-      POSIX-backed Tessera storage directory.
-    - github.com/transparency-dev/merkle: proof computation from
-      tiles.
-    - builder/loop.go: calls AppendLeaf and Head via the
-      MerkleAppender interface.
-    - api/tree.go: calls InclusionProof and ConsistencyProof for
-      HTTP endpoints.
+  - tessera/embedded_appender.go: in-process upstream Tessera
+    (AppenderBackend implementation used in production).
+  - tessera/tile_reader.go: LRU-cached tile fetching from the
+    POSIX-backed Tessera storage directory.
+  - github.com/transparency-dev/merkle: proof computation from
+    tiles.
+  - builder/loop.go: calls AppendLeaf and Head via the
+    MerkleAppender interface.
+  - api/tree.go: calls InclusionProof and ConsistencyProof for
+    HTTP endpoints.
 */
 package tessera
 
@@ -78,7 +81,7 @@ type AppenderBackend interface {
 	Head() (types.TreeHead, error)
 }
 
-// TesseraAdapter implements the operator's MerkleAppender interface
+// TesseraAdapter implements the ledger's MerkleAppender interface
 // over an AppenderBackend and uses tiles for proof computation.
 type TesseraAdapter struct {
 	backend    AppenderBackend

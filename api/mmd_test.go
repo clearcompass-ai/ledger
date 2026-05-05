@@ -77,7 +77,7 @@ func TestMMDHandler_SubSecondMMD(t *testing.T) {
 
 // Zero-duration MMD is a degenerate but representable input — the
 // handler must not crash, must serialize cleanly. It is the
-// composition root's job (cmd/operator) to refuse to start with
+// composition root's job (cmd/ledger) to refuse to start with
 // MMD=0; the handler is permissive by design.
 func TestMMDHandler_ZeroDuration(t *testing.T) {
 	h := NewMMDHandler(0)

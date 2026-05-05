@@ -1,6 +1,6 @@
 # scripts/local/docker-compose.integration.yml
 #
-# Integration-test topology. Same operator + database shape as
+# Integration-test topology. Same ledger + database shape as
 # docker-compose.dev.yml but the GCS dependency is satisfied by
 # fake-gcs-server (in-process, anonymous, deterministic) instead
 # of real Google Cloud Storage.
@@ -79,25 +79,25 @@ services:
       done
       "
 
-  operator-davidson:
+  ledger-davidson:
     build:
       context: ../../
       dockerfile: scripts/local/Dockerfile
     image: ledger:integration
-    container_name: attesta-int-operator-davidson
+    container_name: attesta-int-ledger-davidson
     environment:
-      OPERATOR_ADDR: ":8080"
-      OPERATOR_LOG_DID: "did:web:state:tn:davidson"
-      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
-      OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "davidson-entries"
-      OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
-      OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
-      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:davidson"
-      OPERATOR_SEQUENCER_INTERVAL: "200ms"
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:davidson"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_davidson?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "davidson-entries"
+      LEDGER_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
+      LEDGER_BYTE_STORE_GCS_ANONYMOUS: "true"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:davidson"
+      LEDGER_SEQUENCER_INTERVAL: "200ms"
     ports:
       - "8080:8080"
     volumes:
@@ -116,22 +116,22 @@ services:
       retries: 20
       start_period: 15s
 
-  operator-coa:
+  ledger-coa:
     image: ledger:integration
-    container_name: attesta-int-operator-coa
+    container_name: attesta-int-ledger-coa
     environment:
-      OPERATOR_ADDR: ":8080"
-      OPERATOR_LOG_DID: "did:web:state:tn:coa"
-      OPERATOR_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
-      OPERATOR_BYTE_STORE_BACKEND: "gcs"
-      OPERATOR_BYTE_STORE_GCS_BUCKET: "coa-entries"
-      OPERATOR_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
-      OPERATOR_BYTE_STORE_GCS_ANONYMOUS: "true"
-      OPERATOR_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
-      OPERATOR_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
-      OPERATOR_WAL_PATH: "/var/lib/attesta/wal"
-      OPERATOR_TESSERA_ORIGIN: "did:web:state:tn:coa"
-      OPERATOR_SEQUENCER_INTERVAL: "200ms"
+      LEDGER_ADDR: ":8080"
+      LEDGER_LOG_DID: "did:web:state:tn:coa"
+      LEDGER_DATABASE_URL: "postgres://attesta:attestapassword@postgres:5432/attesta_coa?sslmode=disable"
+      LEDGER_BYTE_STORE_BACKEND: "gcs"
+      LEDGER_BYTE_STORE_GCS_BUCKET: "coa-entries"
+      LEDGER_BYTE_STORE_GCS_ENDPOINT: "http://gcs:4443"
+      LEDGER_BYTE_STORE_GCS_ANONYMOUS: "true"
+      LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+      LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+      LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+      LEDGER_TESSERA_ORIGIN: "did:web:state:tn:coa"
+      LEDGER_SEQUENCER_INTERVAL: "200ms"
     ports:
       - "8081:8080"
     volumes:
@@ -143,7 +143,7 @@ services:
         condition: service_healthy
       gcs-init:
         condition: service_completed_successfully
-      operator-davidson:
+      ledger-davidson:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]

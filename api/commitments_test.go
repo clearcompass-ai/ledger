@@ -6,16 +6,16 @@ End-to-end coverage for the /v1/commitments/by-split-id handler
 
 Two layers:
 
-  1. Handler-with-mock-fetcher
-     Exercises the request validation + response-shape contract
-     against a stub types.CommitmentFetcher. No Badger, no
-     gossipstore — pure handler logic.
+ 1. Handler-with-mock-fetcher
+    Exercises the request validation + response-shape contract
+    against a stub types.CommitmentFetcher. No Badger, no
+    gossipstore — pure handler logic.
 
-  2. Handler→BadgerCommitmentFetcher→BadgerStore
-     Wires the production fetcher against an in-memory BadgerStore
-     populated via the gossipstore.WriteEntryLookupEntry path the
-     sequencer uses. Asserts the full CQRS pipeline serves
-     /by-split-id without touching Postgres.
+ 2. Handler→BadgerCommitmentFetcher→BadgerStore
+    Wires the production fetcher against an in-memory BadgerStore
+    populated via the gossipstore.WriteEntryLookupEntry path the
+    sequencer uses. Asserts the full CQRS pipeline serves
+    /by-split-id without touching Postgres.
 
 The integration layer is the load-bearing assertion: it proves
 that with the 0x0C projection populated, the handler returns
@@ -201,7 +201,7 @@ func TestCommitmentLookupHandler_SingleRow_Returns200JSON(t *testing.T) {
 		Fetcher: &stubFetcher{rows: []*types.EntryWithMetadata{{
 			CanonicalBytes: canonical,
 			LogTime:        logTime,
-			Position:       types.LogPosition{Sequence: 7234891, LogDID: "did:web:operator"},
+			Position:       types.LogPosition{Sequence: 7234891, LogDID: "did:web:ledger"},
 		}}},
 		Logger: discardLog(),
 	})
@@ -231,7 +231,7 @@ func TestCommitmentLookupHandler_SingleRow_Returns200JSON(t *testing.T) {
 	if out.Entries[0].Position.SequenceNumber != 7234891 {
 		t.Errorf("Sequence = %d, want 7234891", out.Entries[0].Position.SequenceNumber)
 	}
-	if out.Entries[0].Position.LogDID != "did:web:operator" {
+	if out.Entries[0].Position.LogDID != "did:web:ledger" {
 		t.Errorf("LogDID = %q", out.Entries[0].Position.LogDID)
 	}
 }
@@ -304,7 +304,7 @@ func TestCommitmentLookup_EndToEnd_BadgerCQRS(t *testing.T) {
 		gossipstore.EntryLookupIndexEntry{
 			CanonicalBytes: canonical,
 			LogTimeMicros:  logTime.UnixMicro(),
-			LogDID:         "did:web:operator.example",
+			LogDID:         "did:web:ledger.example",
 		}); err != nil {
 		t.Fatalf("WriteEntryLookupEntry: %v", err)
 	}
@@ -342,8 +342,8 @@ func TestCommitmentLookup_EndToEnd_BadgerCQRS(t *testing.T) {
 	if out.Entries[0].Position.SequenceNumber != 42 {
 		t.Errorf("Sequence = %d, want 42", out.Entries[0].Position.SequenceNumber)
 	}
-	if out.Entries[0].Position.LogDID != "did:web:operator.example" {
-		t.Errorf("LogDID = %q, want did:web:operator.example",
+	if out.Entries[0].Position.LogDID != "did:web:ledger.example" {
+		t.Errorf("LogDID = %q, want did:web:ledger.example",
 			out.Entries[0].Position.LogDID)
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, out.Entries[0].LogTime)
@@ -378,7 +378,7 @@ func TestCommitmentLookup_EndToEnd_EquivocationCase(t *testing.T) {
 			gossipstore.EntryLookupIndexEntry{
 				CanonicalBytes: row.bytes,
 				LogTimeMicros:  row.micros,
-				LogDID:         "did:web:operator",
+				LogDID:         "did:web:ledger",
 			}); err != nil {
 			t.Fatalf("Write seq=%d: %v", row.seq, err)
 		}

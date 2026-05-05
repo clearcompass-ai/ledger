@@ -7,10 +7,10 @@ Fail-fast: first failure terminates with appropriate HTTP status.
 CONTRACT:
 
 	On success, returns 202 Accepted with a SignedCertificateTimestamp.
-	The SCT is the operator's binding promise to sequence the entry
-	into the log within Maximum Merge Delay (OPERATOR_MMD). It is
-	signed by the operator's secp256k1 ECDSA identity key and is
-	offline-verifiable against the operator's published public key.
+	The SCT is the ledger's binding promise to sequence the entry
+	into the log within Maximum Merge Delay (LEDGER_MMD). It is
+	signed by the ledger's secp256k1 ECDSA identity key and is
+	offline-verifiable against the ledger's published public key.
 
 	The handler never blocks on Tessera or Postgres. Sequence-number
 	assignment, entry_index INSERT, and commitment_split_id extraction
@@ -22,22 +22,33 @@ CONTRACT:
 
 FAST-PATH SHAPE (admission steps run inline):
 
-	1. Read & validate preamble                  (prepareSubmission step 1)
-	2. Deserialize wire bytes                    (step 2)
-	3. NFC normalization check                   (step 3a)
-	4. Destination binding                       (step 3b)
-	5. Late-replay freshness                     (step 3c)
-	6. Signature verification                    (step 4)
-	7. Entry size + Evidence_Pointers cap        (steps 5, 6)
-	8. Mode A auth probe / Mode B PoW verify     (step 7)
-	9. Canonical hash + early duplicate probe    (steps 8, 8a)
-	10. Mode A credit deduction                  (its own pg tx; pre-WAL)
-	11. WAL.Submit (durable)                     (step 10)
-	12. Sign + return SCT                        (step 11)
+ 1. Read & validate preamble                  (prepareSubmission step 1)
 
-	Mode A credit deduction stays synchronous in the fast path so a
-	credit-exhausted caller receives 402 before the WAL is touched —
-	an SCT is never issued without payment authorization.
+ 2. Deserialize wire bytes                    (step 2)
+
+ 3. NFC normalization check                   (step 3a)
+
+ 4. Destination binding                       (step 3b)
+
+ 5. Late-replay freshness                     (step 3c)
+
+ 6. Signature verification                    (step 4)
+
+ 7. Entry size + Evidence_Pointers cap        (steps 5, 6)
+
+ 8. Mode A auth probe / Mode B PoW verify     (step 7)
+
+ 9. Canonical hash + early duplicate probe    (steps 8, 8a)
+
+ 10. Mode A credit deduction                  (its own pg tx; pre-WAL)
+
+ 11. WAL.Submit (durable)                     (step 10)
+
+ 12. Sign + return SCT                        (step 11)
+
+    Mode A credit deduction stays synchronous in the fast path so a
+    credit-exhausted caller receives 402 before the WAL is touched —
+    an SCT is never issued without payment authorization.
 
 INVARIANTS:
 
@@ -46,7 +57,7 @@ INVARIANTS:
   - Past step 4: all entries have verified signatures (SDK-D5).
   - Past step 11 (WAL.Submit): bytes are durably persisted; the
     Sequencer will assign a sequence number and write entry_index
-    + commitment_split_id atomically in its own pg transaction.
+  - commitment_split_id atomically in its own pg transaction.
   - Sequence numbers are gapless (Postgres sequence; assigned by
     sequencer/loop.go, not this handler).
 
@@ -92,7 +103,7 @@ import (
 // nil = Phase 2 trust model (wire format integrity only).
 // set = Phase 4 full verification (DID → pubkey → sdk VerifyEntry).
 //
-// Structurally compatible with admission.DIDResolver — the operator's
+// Structurally compatible with admission.DIDResolver — the ledger's
 // admission package defines the same single-method interface, and Go
 // auto-converts at the call site to admission.VerifyEntrySignature.
 type DIDResolver interface {
@@ -109,7 +120,7 @@ type WALCommitter interface {
 	// Submit blocks until wire bytes are durably persisted to local
 	// disk. Returns wal.ErrQueueFull when the in-memory queue is
 	// saturated; admission maps this to HTTP 503 + Retry-After.
-	// logTimeMicros is the operator-assigned admission time
+	// logTimeMicros is the ledger-assigned admission time
 	// persisted in Meta for the P5 deterministic-idempotency
 	// path (re-issuing the same SCT bytes on byte-identical
 	// resubmission).
@@ -129,7 +140,7 @@ type WALCommitter interface {
 // TesseraAppender is the Tessera surface admission needs.
 // *tessera.EmbeddedAppender satisfies it. AppendLeaf is dedup-aware
 // when the appender is constructed with tessera.WithDeduplication
-// (wired in cmd/operator/main.go) — re-Add of an existing identity
+// (wired in cmd/ledger/main.go) — re-Add of an existing identity
 // returns the previously-assigned sequence rather than integrating
 // again. This is the load-bearing safety property under concurrent
 // admission of the same content.
@@ -181,13 +192,13 @@ type SubmissionDeps struct {
 	Admission    AdmissionConfig
 	Identity     IdentityDeps
 	LogDID       string
-	OperatorDID  string
+	LedgerDID    string
 	MaxEntrySize int64
 	Logger       *slog.Logger
 
-	// OperatorSignerPriv signs SCTs returned by asynchronous
+	// LedgerSignerPriv signs SCTs returned by asynchronous
 	// submission endpoints, including POST /v1/entries/batch.
-	OperatorSignerPriv *ecdsa.PrivateKey
+	LedgerSignerPriv *ecdsa.PrivateKey
 
 	// FreshnessTolerance configures the late-replay rejection window
 	// at admission time. Zero defaults to policy.FreshnessInteractive.
@@ -195,13 +206,13 @@ type SubmissionDeps struct {
 
 	// BLSQuorumVerifier validates K-of-N witness cosignatures on
 	// any tree head EMBEDDED inside an admitted entry's payload
-	// (anchor entries authored by peer operators, witness-attestation
+	// (anchor entries authored by peer ledgers, witness-attestation
 	// commentary, cross-log proof entries). Wave 1 v3 §S1.
 	//
 	// Optional: nil disables the check entirely (existing v7.75
 	// commitment-entry surfaces don't embed tree heads, so the
 	// detector returns false unconditionally and the verifier is
-	// dead code today). Wired by cmd/operator/main.go iff a
+	// dead code today). Wired by cmd/ledger/main.go iff a
 	// witness key set is loaded.
 	BLSQuorumVerifier *admission.BLSQuorumVerifier
 }
@@ -490,15 +501,15 @@ func deductCreditModeA(
 // NewSubmissionHandler creates the POST /v1/entries handler.
 //
 // Panics if any of these are missing — without them the handler
-// cannot honor its contract and the operator should refuse to start:
+// cannot honor its contract and the ledger should refuse to start:
 //   - AdmissionConfig.EpochWindowSeconds (Mode B stamp verification)
 //   - LogDID                              (destination-binding)
-//   - OperatorDID                         (SCT signer identity)
-//   - OperatorSignerPriv                  (SCT signing key)
+//   - LedgerDID                         (SCT signer identity)
+//   - LedgerSignerPriv                  (SCT signing key)
 //
 // Returns 202 + SignedCertificateTimestamp on success. The SCT is
-// signed by OperatorSignerPriv against the operator-published
-// public key reachable via OperatorDID.
+// signed by LedgerSignerPriv against the ledger-published
+// public key reachable via LedgerDID.
 //
 // Mode A credit deduction stays synchronous in the fast path: the
 // handler returns 402 before WAL.Submit if the caller is out of
@@ -513,11 +524,11 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 	if deps.LogDID == "" {
 		panic("api: SubmissionDeps.LogDID must be non-empty (destination-binding enforcement)")
 	}
-	if deps.OperatorDID == "" {
-		panic("api: SubmissionDeps.OperatorDID must be non-empty — SCT signer identity")
+	if deps.LedgerDID == "" {
+		panic("api: SubmissionDeps.LedgerDID must be non-empty — SCT signer identity")
 	}
-	if deps.OperatorSignerPriv == nil {
-		panic("api: SubmissionDeps.OperatorSignerPriv must be non-nil — SCT signing")
+	if deps.LedgerSignerPriv == nil {
+		panic("api: SubmissionDeps.LedgerSignerPriv must be non-nil — SCT signing")
 	}
 
 	freshness := deps.FreshnessTolerance
@@ -541,7 +552,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		// (already durable). Re-issue the SAME SCT bytes by signing
 		// with the persisted log_time.
 		if prep.idempotentReplay {
-			sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
+			sct, err := SignSCT(deps.LedgerSignerPriv, deps.LedgerDID, deps.LogDID, prep.canonicalHash, prep.logTime)
 			if err != nil {
 				deps.Logger.Error("SignSCT (idempotent replay)", "error", err)
 				writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,
@@ -589,7 +600,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		// ── Step 12: Sign + return SCT ─────────────────────────────────
 		// log_time was assigned at step 9 (prepareSubmission) and is
 		// signed-over via LogTimeMicros in the SCT canonical packing.
-		sct, err := SignSCT(deps.OperatorSignerPriv, deps.OperatorDID, deps.LogDID, prep.canonicalHash, prep.logTime)
+		sct, err := SignSCT(deps.LedgerSignerPriv, deps.LedgerDID, deps.LogDID, prep.canonicalHash, prep.logTime)
 		if err != nil {
 			deps.Logger.Error("SignSCT", "error", err)
 			writeTypedError(ctx, w, apitypes.ErrorClassSCTSigningFailed,
