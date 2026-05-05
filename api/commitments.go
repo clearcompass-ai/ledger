@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/commitments.go
 
-GET /v1/commitments/by-split-id/{schema_id}/{hex} — v7.75
+GET /v1/commitments/by-split-id/{schema_id}/{hex} — 
 cryptographic-commitment lookup endpoint per Wave 1 v3 §C7 +
 Decision 4.
 
@@ -29,11 +29,11 @@ Response shape (Decision 4):
 
 Length contract:
 
-  - 404 Not Found  → zero rows matched the (schema_id, split_id)
+  - 404 Not Found → zero rows matched the (schema_id, split_id)
     tuple. SDK consumers treat this as "no commitment
     on log" — a normal recovery / history-replay
     outcome.
-  - 200 OK len=1   → normal case. SDK's FetchPREGrantCommitment /
+  - 200 OK len=1 → normal case. SDK's FetchPREGrantCommitment /
     FetchEscrowSplitCommitment consume entries[0]
     and proceed.
   - 200 OK len=2+  → cryptographic equivocation. The dealer signed
@@ -44,7 +44,7 @@ Length contract:
     every entry the ledger returned, and MUST NOT
     proceed with reconstruction or decryption.
 
-Domain disambiguation: this file serves v7.75 cryptographic Pedersen
+Domain disambiguation: this file serves cryptographic Pedersen
 commitments (escrow + PRE). SMT batch derivation commitments live at
 GET /v1/derivation-commitments?seq=N (api/derivation_commitments.go).
 */
@@ -73,7 +73,7 @@ import (
 // endpoint will accept on the URL path. Restricting the set prevents
 // callers from probing the commitment_split_id index under arbitrary
 // schema strings — a defensive measure that costs nothing because
-// only the two v7.75 commitment schemas can ever populate that
+// only the two commitment schemas can ever populate that
 // index in the first place (api/submission.go stage 4-Schema
 // dispatch is closed-set).
 var allowedCommitmentSchemas = map[string]struct{}{
@@ -90,7 +90,7 @@ var allowedCommitmentSchemas = map[string]struct{}{
 // is stable across SDK refactors of the underlying type.
 type CommitmentLookupPosition struct {
 	SequenceNumber uint64 `json:"sequence_number"`
-	LogDID         string `json:"log_did"`
+	LogDID string `json:"log_did"`
 }
 
 // CommitmentLookupEntry is one element of the entries array returned
@@ -101,9 +101,9 @@ type CommitmentLookupPosition struct {
 // Corrected" — sidecar fields like signatures and tree-head hashes
 // are NOT included.
 type CommitmentLookupEntry struct {
-	CanonicalBytesHex string                   `json:"canonical_bytes_hex"`
-	LogTime           string                   `json:"log_time"`
-	Position          CommitmentLookupPosition `json:"position"`
+	CanonicalBytesHex string `json:"canonical_bytes_hex"`
+	LogTime string `json:"log_time"`
+	Position CommitmentLookupPosition `json:"position"`
 }
 
 // CommitmentLookupResponse is the JSON response body shape on success.
@@ -132,7 +132,7 @@ type CommitmentLookupResponse struct {
 // verifiable via go list -deps ./api/.
 type CryptographicCommitmentDeps struct {
 	Fetcher types.CommitmentFetcher
-	Logger  *slog.Logger
+	Logger *slog.Logger
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

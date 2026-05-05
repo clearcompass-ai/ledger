@@ -115,7 +115,7 @@ type BadgerStore struct {
 	// gcCancel + gcDone manage the background value-log GC
 	// goroutine's lifecycle.
 	gcCancel context.CancelFunc
-	gcDone   chan struct{}
+	gcDone chan struct{}
 
 	closeOnce sync.Once
 }

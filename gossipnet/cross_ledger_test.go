@@ -66,10 +66,10 @@ import (
 // in-memory store + the bundle (handlers + verifier) + the
 // httptest.Server exposing the bundle's endpoints.
 type ledgerFixture struct {
-	store  *sdkgossip.InMemoryStore
+	store *sdkgossip.InMemoryStore
 	bundle *Bundle
 	server *httptest.Server
-	url    string
+	url string
 }
 
 // newLedgerFixture builds one ledger's gossip stack with no

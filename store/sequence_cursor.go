@@ -9,9 +9,9 @@ DESIGN:
 	Admission writes only entry_index. The builder reads new
 	sequences via
 	  SELECT sequence_number FROM entry_index
-	  WHERE  sequence_number > $cursor
-	  ORDER  BY sequence_number ASC
-	  LIMIT  $batch
+	  WHERE sequence_number > $cursor
+	  ORDER BY sequence_number ASC
+	  LIMIT $batch
 	using the entry_index PRIMARY KEY index. Cursor advance is one
 	row UPDATE per batch in the builder's atomic commit, bounding
 	dead tuples on builder_cursor by batches/sec instead of
@@ -104,9 +104,9 @@ func (c *SequenceCursor) Next(ctx context.Context, cursor uint64, batchSize int)
 	}
 	rows, err := c.db.Query(ctx, `
 		SELECT sequence_number FROM entry_index
-		WHERE  sequence_number > $1
-		ORDER  BY sequence_number ASC
-		LIMIT  $2`,
+		WHERE sequence_number > $1
+		ORDER BY sequence_number ASC
+		LIMIT $2`,
 		cursor, batchSize,
 	)
 	if err != nil {

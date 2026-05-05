@@ -26,8 +26,8 @@ Usage:
 
 Flags fall back to env:
 
-	-dsn     → LEDGER_DATABASE_URL
-	-did     → if empty, a fresh did:key is generated and printed
+	-dsn → LEDGER_DATABASE_URL
+	-did → if empty, a fresh did:key is generated and printed
 	            (caller must capture it for the matching submit
 	            client; ephemeral keys are never persisted here).
 
@@ -54,11 +54,11 @@ import (
 
 func main() {
 	var (
-		dsn     = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
-		token   = flag.String("token", "", "session token to mint (required)")
-		didStr  = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
+		dsn = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
+		token = flag.String("token", "", "session token to mint (required)")
+		didStr = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
 		credits = flag.Int64("credits", 100, "initial credit balance to seed")
-		ttl     = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
+		ttl = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
 	)
 	flag.Parse()
 
@@ -79,7 +79,7 @@ func main() {
 			log.Fatalf("seed-session: generate did:key: %v", err)
 		}
 		exchangeDID = kp.DID
-		fmt.Printf("generated exchange did:key (private key NOT persisted — capture for submit client):\n  %s\n", exchangeDID)
+		fmt.Printf("generated exchange did:key (private key NOT persisted — capture for submit client):\n %s\n", exchangeDID)
 	}
 
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func main() {
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (token) DO UPDATE SET
 		   exchange_did = EXCLUDED.exchange_did,
-		   expires_at   = EXCLUDED.expires_at`,
+		   expires_at = EXCLUDED.expires_at`,
 		*token, exchangeDID, expiresAt,
 	); err != nil {
 		log.Fatalf("seed-session: insert session: %v", err)
@@ -108,9 +108,9 @@ func main() {
 	}
 
 	fmt.Printf("seeded:\n")
-	fmt.Printf("  token        = %s\n", *token)
+	fmt.Printf("  token = %s\n", *token)
 	fmt.Printf("  exchange_did = %s\n", exchangeDID)
-	fmt.Printf("  expires_at   = %s\n", expiresAt.Format(time.RFC3339))
-	fmt.Printf("  balance      = %d credits\n", balance)
-	fmt.Printf("\nuse with:\n  curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/...\n", *token)
+	fmt.Printf("  expires_at = %s\n", expiresAt.Format(time.RFC3339))
+	fmt.Printf("  balance = %d credits\n", balance)
+	fmt.Printf("\nuse with:\n curl -H 'Authorization: Bearer %s' http://localhost:8080/v1/...\n", *token)
 }

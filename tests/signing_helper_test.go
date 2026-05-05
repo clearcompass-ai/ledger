@@ -1,11 +1,11 @@
 /*
 FILE PATH: tests/signing_helper_test.go
 
-The v7.75 signed-entry test helper. Replaces the v0.3.0 NewEntry +
+The signed-entry test helper. Replaces the v0.3.0 NewEntry +
 MustAppendSignature flow with the canonical post-Wave-1 signing path:
 
  1. envelope.NewUnsignedEntry(hdr, payload)
-    structural validation; Signatures left nil per the v7.75 builder
+    structural validation; Signatures left nil per the builder
     contract.
  2. hash := sha256.Sum256(envelope.SigningPayload(entry))
     SigningPayload is the canonical bytes WITHOUT the signatures
@@ -23,15 +23,14 @@ MustAppendSignature flow with the canonical post-Wave-1 signing path:
 
 After (5), entry.Serialize is total — passing the entry to
 envelope.Serialize, envelope.EntryIdentity, or any tile-leaf
-computation no longer risks the v7.75 panic documented at
+computation no longer risks the Serialize panic documented at
 envelope/serialize.go:443.
 
 WHY A DEDICATED HELPER:
-  - In v7.75, envelope.Serialize PANICS on entries that bypass the
+  - envelope.Serialize PANICS on entries that bypass the
     validated paths. Tests that build entries via NewUnsignedEntry
     alone and call Serialize will crash the test runner.
-  - cmd/bootstrap-v775-schemas/main.go runs the same flow as
-    production code; this helper is the test-side mirror, so test
+  - This helper mirrors production-code signing flow so test
     fixtures and production code agree on what a "valid signed
     entry" is.
   - github.com/clearcompass-ai/attesta/internal/testkeys is not
@@ -74,7 +73,7 @@ func testKeypair(t *testing.T) (*ecdsa.PrivateKey, string) {
 	return kp.PrivateKey, kp.DID
 }
 
-// makeSignedEntry constructs a v7.75-compliant signed *envelope.Entry
+// makeSignedEntry constructs a canonical signed *envelope.Entry
 // that is safe to feed to envelope.Serialize, envelope.EntryIdentity,
 // or any caller that consumes a fully-validated entry.
 //
@@ -123,7 +122,7 @@ func makeSignedEntry(
 // wire bytes produced by envelope.Serialize on the validated entry —
 // suitable as a request body for POST /v1/entries.
 //
-// Under v7.75 the wire bytes ARE the canonical bytes (signatures
+// Under the wire bytes ARE the canonical bytes (signatures
 // section is appended INSIDE Serialize), so callers no longer need
 // the old "canonical || sig" concatenation step.
 func signedWire(

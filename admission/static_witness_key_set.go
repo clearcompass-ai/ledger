@@ -34,7 +34,7 @@ import (
 // StaticWitnessKeySet implements the WitnessKeySet interface with
 // a fixed list of witness public keys + a constant K-of-N threshold.
 type StaticWitnessKeySet struct {
-	keys    []types.WitnessPublicKey
+	keys []types.WitnessPublicKey
 	quorumK int
 }
 

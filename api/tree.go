@@ -5,8 +5,8 @@ Tree head distribution and Merkle proof endpoints.
 
 CHANGES FROM PHASE 4 PREP:
   - NewTreeHeadHandler now accepts ?size=N query parameter.
-    GET /v1/tree/head         → latest cosigned tree head (existing)
-    GET /v1/tree/head?size=N  → tree head at specific size (NEW)
+    GET /v1/tree/head → latest cosigned tree head (existing)
+    GET /v1/tree/head?size=N → tree head at specific size (NEW)
     Falls through to existing Latest() when no parameter.
     Uses TreeHeadStore.GetBySize() which already exists (store/tree_heads.go).
 */
@@ -36,9 +36,9 @@ type InclusionProver interface {
 // TreeDeps holds dependencies for tree handlers.
 type TreeDeps struct {
 	TreeHeadStore TreeHeadFetcher
-	Inclusion     InclusionProver
-	Consistency   ConsistencyProver
-	Logger        *slog.Logger
+	Inclusion InclusionProver
+	Consistency ConsistencyProver
+	Logger *slog.Logger
 }
 
 // NewTreeHeadHandler creates GET /v1/tree/head[?size=N].

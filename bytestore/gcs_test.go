@@ -23,8 +23,8 @@ Coverage:
 Env vars (mirrors the ledger's production LEDGER_BYTE_STORE_*
 naming so tests and prod stay in sync):
 
-	ATTESTA_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
-	ATTESTA_TEST_GCS_BUCKET     e.g. attesta-test-bytes
+	ATTESTA_TEST_GCS_ENDPOINT e.g. http://localhost:4443/storage/v1/
+	ATTESTA_TEST_GCS_BUCKET e.g. attesta-test-bytes
 
 The docker-compose harness creates the bucket at startup; tests
 that need a clean state delete + recreate per-test via the
@@ -53,9 +53,9 @@ import (
 // server (integration harness) or real GCS, depending on which env
 // vars are set:
 //
-//	ATTESTA_TEST_GCS_ENDPOINT  set → fake-gcs mode (anonymous=true)
-//	ATTESTA_TEST_GCS_BUCKET    set → real GCS mode (ADC)
-//	neither set                     → t.Skip
+//	ATTESTA_TEST_GCS_ENDPOINT set → fake-gcs mode (anonymous=true)
+//	ATTESTA_TEST_GCS_BUCKET set → real GCS mode (ADC)
+//	neither set → t.Skip
 //
 // Real-GCS mode requires GOOGLE_APPLICATION_CREDENTIALS pointing at
 // a service-account key with storage.objects.create + .get + .delete
@@ -186,7 +186,7 @@ func TestGCS_WriteThenRead_RoundTrip(t *testing.T) {
 		t.Fatalf("ReadEntry: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Errorf("round-trip mismatch:\n  got=%x\n want=%x", got, wire)
+		t.Errorf("round-trip mismatch:\n got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -236,7 +236,7 @@ func TestGCS_ReadAfterWrite_HitsCache(t *testing.T) {
 		t.Fatalf("ReadEntry: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Errorf("cached read mismatch:\n  got=%x\n want=%x", got, wire)
+		t.Errorf("cached read mismatch:\n got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -537,7 +537,7 @@ func TestGCS_PresignGet_FetchesBytes(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Fatalf("presigned GET returned wrong bytes:\n  got=%x\n want=%x", got, wire)
+		t.Fatalf("presigned GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
 	}
 }
 

@@ -82,8 +82,8 @@ type S3Config struct {
 	SecretKey string
 
 	// PathStyle selects path-style vs virtual-host URLs:
-	//   - true  → host/bucket/key   (RustFS)
-	//   - false → bucket.host/key   (AWS S3 default)
+	//   - true → host/bucket/key (RustFS)
+	//   - false → bucket.host/key (AWS S3 default)
 	PathStyle bool
 
 	// CacheSize is the LRU cache size. Defaults to 4096.
@@ -104,16 +104,16 @@ type S3Config struct {
 // S3 satisfies Backend (Store + Presigner) against any S3-compatible
 // object store.
 type S3 struct {
-	client       *s3.Client
-	presigner    *s3.PresignClient
-	bucket       string
+	client *s3.Client
+	presigner *s3.PresignClient
+	bucket string
 	objectPrefix string
 	writeTimeout time.Duration
-	readTimeout  time.Duration
+	readTimeout time.Duration
 
-	mu      sync.Mutex
-	cache   map[string][]byte
-	access  map[string]int64
+	mu sync.Mutex
+	cache map[string][]byte
+	access map[string]int64
 	counter int64
 	maxSize int
 }

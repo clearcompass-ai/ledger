@@ -128,7 +128,7 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	}
 
 	// Verify: canonical_hash in Postgres matches sha256(storedWire).
-	// Under v7.75 envelope.EntryIdentity is sha256(Serialize(entry))
+	// Under envelope.EntryIdentity is sha256(Serialize(entry))
 	// and the wire bytes ARE Serialize(entry).
 	computedHash := sha256.Sum256(storedWire)
 	if !bytes.Equal(hash, computedHash[:]) {
@@ -150,13 +150,13 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 
 	entryBytes := opbytestore.NewMemory()
 
-	// Create a v7.75-signed entry. makeEntry produces an entry whose
+	// Create a -signed entry. makeEntry produces an entry whose
 	// Signatures section is well-formed, so envelope.Serialize is safe.
 	entry := makeEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:fetcher-rule",
 	}, []byte("fetcher-rule-payload"))
 	hash := envelope.EntryIdentity(entry)
-	// Wire bytes ARE the canonical bytes under v7.75 — the multi-sig
+	// Wire bytes ARE the canonical bytes under — the multi-sig
 	// section is appended INSIDE Serialize. WriteEntry's legacy
 	// (canonical, sig) split takes nil for sig now (parallel to the
 	// api/submission.go and api/batch.go fixes on main).
@@ -189,7 +189,7 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	}
 
 	// Verify wire bytes came from EntryReader. Wire bytes ARE the
-	// canonical bytes under v7.75; callers that need the algoID call
+	// canonical bytes under ; callers that need the algoID call
 	// envelope.Deserialize and read entry.Signatures[0].AlgoID.
 	if !bytes.Equal(ewm.CanonicalBytes, wire) {
 		t.Fatal("CanonicalBytes do not match EntryReader content")
@@ -232,7 +232,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 			i, hash[:], time.Now().UTC(), "did:example:query-rule-signer",
 		)
 		tx.Commit(ctx)
-		// v7.75: wire bytes ARE canonical bytes (signatures embedded).
+		// : wire bytes ARE canonical bytes (signatures embedded).
 		entryBytes.WriteEntry(ctx, i, hash, wire)
 	}
 

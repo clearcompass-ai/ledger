@@ -126,7 +126,7 @@ type ReplayConfig struct {
 
 // Replayer back-populates 0x0A + 0x0C from Postgres at boot.
 type Replayer struct {
-	cfg    ReplayConfig
+	cfg ReplayConfig
 	logger *slog.Logger
 }
 
@@ -165,12 +165,12 @@ func NewReplayer(cfg ReplayConfig) (*Replayer, error) {
 
 // replayRow is the in-memory shape of one Postgres row.
 type replayRow struct {
-	seq      uint64
+	seq uint64
 	schemaID string
-	splitID  [32]byte
-	signer   string
-	hash     [32]byte
-	logTime  int64 // unix-micros
+	splitID [32]byte
+	signer string
+	hash [32]byte
+	logTime int64 // unix-micros
 }
 
 // Replay scans Postgres for commitment-schema rows above the
@@ -255,7 +255,7 @@ func (r *Replayer) Replay(ctx context.Context) error {
 //
 // Schema-only commitments are filtered upstream by the JOIN —
 // only sequences that landed in commitment_split_id are returned,
-// and that table only carries v7.75 commitment-schema rows.
+// and that table only carries commitment-schema rows.
 func (r *Replayer) fetchBatch(ctx context.Context, hwm uint64) ([]replayRow, error) {
 	const q = `
 		SELECT

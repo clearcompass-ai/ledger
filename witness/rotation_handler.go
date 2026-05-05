@@ -25,10 +25,10 @@ import (
 
 // RotationHandler manages witness set rotations.
 type RotationHandler struct {
-	db         *pgxpool.Pool
+	db *pgxpool.Pool
 	currentSet []types.WitnessPublicKey
-	schemeTag  byte
-	logger     *slog.Logger
+	schemeTag byte
+	logger *slog.Logger
 }
 
 // NewRotationHandler creates a rotation handler with the current witness set.

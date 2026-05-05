@@ -25,7 +25,7 @@ TESSERA-ALIGNMENT INVARIANT:
 	knowledge of envelope structure; whatever bytes are written are
 	what reads return.
 
-	Under v7.75 the wire bytes ARE the canonical bytes (the multi-sig
+	Under the wire bytes ARE the canonical bytes (the multi-sig
 	section is appended INSIDE the canonical form by envelope.Serialize),
 	so a single blob carries everything a consumer needs;
 	envelope.Deserialize recovers the structure on the read path.
@@ -71,7 +71,7 @@ import (
 // required to construct the storage key and (for presigned URLs)
 // to let consumers verify the URL points at the promised bytes.
 type EntryRef struct {
-	Seq  uint64
+	Seq uint64
 	Hash [32]byte
 }
 

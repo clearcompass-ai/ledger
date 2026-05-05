@@ -97,7 +97,7 @@ func testKeyDID(t *testing.T) (*ecdsa.PrivateKey, string) {
 // header gate so tests can exercise the server's entry.Validate() step
 // against forged-malformed entries.
 //
-// v7.75 NOTE: The wire format embeds the multi-sig section INSIDE the
+//  NOTE: The wire format embeds the multi-sig section INSIDE the
 // canonical bytes. envelope.Serialize is total only on entries whose
 // Signatures section is well-formed; an empty Signatures slice panics
 // per envelope/serialize.go:443. Both branches below sign the entry
@@ -115,7 +115,7 @@ func signedWireBytes(
 	t.Helper()
 
 	if !skipValidate {
-		// Happy path: full v7.75 signing flow including entry.Validate.
+		// Happy path: full signing flow including entry.Validate.
 		// hdr.SignerDID is the DID the test already paired with priv.
 		return signedWire(t, hdr, payload, priv, hdr.SignerDID)
 	}

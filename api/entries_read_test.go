@@ -5,17 +5,17 @@ Evidence-based tests for the /v1/entries/{seq}/raw routing decision
 matrix. The handler's correctness is encoded entirely in the
 "which source serves the bytes?" decision, so tests focus on that:
 
-	WAL state                 Presigner       Outcome
+	WAL state Presigner Outcome
 	────────────────────────  ──────────────  ─────────────────────────
-	StateSequenced            (any)           200 OK + WAL bytes inline
-	StateManual               (any)           200 OK + WAL bytes inline
-	StatePending              (any)           200 OK + WAL bytes inline (defensive)
-	StateShipped              configured      302 + presigned URL
-	StateShipped              nil             500 (loud misconfig)
-	wal.ErrNotFound           configured      302 + presigned URL (post-GC path)
-	wal.ErrNotFound           nil             500
+	StateSequenced (any)           200 OK + WAL bytes inline
+	StateManual (any)           200 OK + WAL bytes inline
+	StatePending (any)           200 OK + WAL bytes inline (defensive)
+	StateShipped configured 302 + presigned URL
+	StateShipped nil 500 (loud misconfig)
+	wal.ErrNotFound configured 302 + presigned URL (post-GC path)
+	wal.ErrNotFound nil 500
 	Postgres "no row at seq"  —               404
-	Invalid seq in path       —               400
+	Invalid seq in path —               400
 
 Tests bypass HTTP middleware by constructing http.Request directly
 against the handler closure. Postgres is faked; WAL is faked; the
@@ -44,9 +44,9 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type fakeSeqHashLookup struct {
-	hashesBySeq  map[uint64][32]byte
+	hashesBySeq map[uint64][32]byte
 	logTimeBySeq map[uint64]time.Time
-	err          error
+	err error
 }
 
 func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
@@ -61,11 +61,11 @@ func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]b
 }
 
 type fakeWAL struct {
-	mu         sync.Mutex
-	wires      map[[32]byte][]byte
-	metas      map[[32]byte]wal.Meta
-	notFound   map[[32]byte]bool // hashes for which MetaState returns wal.ErrNotFound
-	hardErr    error
+	mu sync.Mutex
+	wires map[[32]byte][]byte
+	metas map[[32]byte]wal.Meta
+	notFound map[[32]byte]bool // hashes for which MetaState returns wal.ErrNotFound
+	hardErr error
 	readHardEr error
 }
 
@@ -110,7 +110,7 @@ func (f *fakeWAL) MetaState(_ context.Context, hash [32]byte) (wal.Meta, error) 
 
 type fakePresigner struct {
 	urlByPair map[uint64]string
-	err       error
+	err error
 }
 
 func (f *fakePresigner) PresignGet(_ context.Context, seq uint64, _ [32]byte, _ time.Duration) (string, error) {

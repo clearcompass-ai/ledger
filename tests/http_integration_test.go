@@ -57,9 +57,9 @@ import (
 // Wire format helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// buildWireEntry creates a v7.75 entry signed with the shared test
+// buildWireEntry creates a entry signed with the shared test
 // keypair. Used for Mode A (authenticated) submissions where the
-// compute stamp isn't needed. Under v7.75 the multi-sig section is
+// compute stamp isn't needed. Under the multi-sig section is
 // appended INSIDE envelope.Serialize, so the wire bytes ARE the
 // canonical bytes — no separate MustAppendSignature step.
 //
@@ -108,7 +108,7 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 		Nonce:      0, // updated each iteration
 	}
 
-	// v7.75 chicken-and-egg: the stamp target is
+	//  chicken-and-egg: the stamp target is
 	// envelope.EntryIdentity = sha256(Serialize(entry)), and Serialize
 	// embeds the signatures section. So changing the nonce changes
 	// SigningPayload changes the signature changes Serialize output.
@@ -160,7 +160,7 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 		)
 		if err == nil {
 			// canonical is already the wire bytes — no separate
-			// signature-append step under v7.75.
+			// signature-append step under .
 			return canonical
 		}
 	}
@@ -865,8 +865,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 		Nonce:      0,
 	}
 
-	// Brute force a valid nonce against the stale epoch. Same v7.75
-	// chicken-and-egg as buildModeBWireEntry — sign per iteration so
+	// Brute force a valid nonce against the stale epoch. Same 	// chicken-and-egg as buildModeBWireEntry — sign per iteration so
 	// EntryIdentity reflects the stamp target the ledger computes.
 	//
 	// Resolve the SignerDID label once before the loop so admission's

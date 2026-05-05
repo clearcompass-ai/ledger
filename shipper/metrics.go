@@ -14,13 +14,13 @@ import "sync/atomic"
 // goroutine-safe by virtue of sync/atomic. Read snapshots via
 // Snapshot.
 type Metrics struct {
-	shipped             atomic.Uint64 // entries that completed bytestore upload + MarkShipped
-	retries             atomic.Uint64 // failed-and-MarkRetry events
-	manual              atomic.Uint64 // entries that hit MaxAttempts and were marked manual
+	shipped atomic.Uint64 // entries that completed bytestore upload + MarkShipped
+	retries atomic.Uint64 // failed-and-MarkRetry events
+	manual atomic.Uint64 // entries that hit MaxAttempts and were marked manual
 	markShippedFailures atomic.Uint64 // bytestore succeeded but MarkShipped failed
-	hwm                 atomic.Uint64 // most recent HWM committed by hwmAdvancer
-	shipLatencyNanos    atomic.Int64  // sum of Read+Upload+MarkShipped wall-clock
-	shipLatencySamples  atomic.Int64  // count of contributing samples
+	hwm atomic.Uint64 // most recent HWM committed by hwmAdvancer
+	shipLatencyNanos atomic.Int64 // sum of Read+Upload+MarkShipped wall-clock
+	shipLatencySamples atomic.Int64 // count of contributing samples
 }
 
 // MetricsSnapshot is an immutable view of the Shipper's counters.

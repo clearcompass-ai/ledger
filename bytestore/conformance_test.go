@@ -33,14 +33,14 @@ WHAT WE ASSERT (Backend, adds Presigner):
 BACKEND MATRIX (each entry point gates on its env vars; otherwise
 skips):
 
-	TestConformance_Memory          (always runs — Store only)
-	TestConformance_GCS_Container   (ATTESTA_TEST_GCS_ENDPOINT)  Store
-	TestConformance_GCS_Real        (ATTESTA_TEST_GCS_BUCKET, no
+	TestConformance_Memory (always runs — Store only)
+	TestConformance_GCS_Container (ATTESTA_TEST_GCS_ENDPOINT)  Store
+	TestConformance_GCS_Real (ATTESTA_TEST_GCS_BUCKET, no
 	                                 endpoint) Backend
-	TestConformance_S3_Container    (ATTESTA_TEST_S3_ENDPOINT)   Backend
+	TestConformance_S3_Container (ATTESTA_TEST_S3_ENDPOINT)   Backend
 	                                (RustFS issues valid SigV4 URLs
 	                                that local SigV4 verifies)
-	TestConformance_S3_Real         (ATTESTA_TEST_S3_REAL=1 +
+	TestConformance_S3_Real (ATTESTA_TEST_S3_REAL=1 +
 	                                 ATTESTA_TEST_S3_BUCKET)     Backend
 
 	GCS container (fake-gcs-server) does NOT validate V4 signatures,
@@ -84,7 +84,7 @@ func runStoreConformance(ctx context.Context, t *testing.T, store Store) {
 			t.Fatalf("ReadEntry: %v", err)
 		}
 		if !bytes.Equal(got, wire) {
-			t.Fatalf("round-trip mismatch:\n  got=%x\n want=%x", got, wire)
+			t.Fatalf("round-trip mismatch:\n got=%x\n want=%x", got, wire)
 		}
 	})
 
@@ -143,7 +143,7 @@ func runStoreConformance(ctx context.Context, t *testing.T, store Store) {
 		want := [][]byte{wires[2], wires[0], wires[1]}
 		for i := range refs {
 			if !bytes.Equal(got[i], want[i]) {
-				t.Fatalf("position %d:\n  got=%x\n want=%x", i, got[i], want[i])
+				t.Fatalf("position %d:\n got=%x\n want=%x", i, got[i], want[i])
 			}
 		}
 	})
@@ -253,7 +253,7 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 			t.Fatalf("read body: %v", err)
 		}
 		if !bytes.Equal(got, wire) {
-			t.Fatalf("presigned GET returned wrong bytes:\n  got=%x\n want=%x", got, wire)
+			t.Fatalf("presigned GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
 		}
 	})
 
@@ -277,7 +277,7 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 			t.Fatalf("PresignGet: %v", err)
 		}
 		if !strings.Contains(url, hashHex) {
-			t.Fatalf("URL missing hash hex (static verifiability lost):\n  url=%s\n  hash=%s", url, hashHex)
+			t.Fatalf("URL missing hash hex (static verifiability lost):\n url=%s\n hash=%s", url, hashHex)
 		}
 	})
 }

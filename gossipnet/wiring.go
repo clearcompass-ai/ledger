@@ -151,7 +151,7 @@ const DefaultSinkQueueSize = 1024
 type Bundle struct {
 	PostHandler http.Handler
 	FeedHandler http.Handler
-	Sink        sdkgossip.Sink
+	Sink sdkgossip.Sink
 
 	// Verifier is the rotation-aware, LRU-cached originator
 	// verifier. Implements:

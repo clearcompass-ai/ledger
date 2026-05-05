@@ -252,26 +252,26 @@ func loadOrGenerateWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.Pr
 // ─────────────────────────────────────────────────────────────────────
 
 type Config struct {
-	ServerAddr            string
-	DatabaseURL           string
-	PgMaxConns            int32  // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
-	LogDID                string // Destination for self-published entries (anchors, commitments).
-	LedgerDID             string // Signer DID for ledger-authored commentary.
-	MaxEntrySize          int64
-	BatchSize             int
-	PollInterval          time.Duration
-	EpochWindowSeconds    int
+	ServerAddr string
+	DatabaseURL string
+	PgMaxConns int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
+	LogDID string // Destination for self-published entries (anchors, commitments).
+	LedgerDID string // Signer DID for ledger-authored commentary.
+	MaxEntrySize int64
+	BatchSize int
+	PollInterval time.Duration
+	EpochWindowSeconds int
 	EpochAcceptanceWindow int
-	AnchorInterval        time.Duration
-	AnchorSources         []anchor.AnchorSource
+	AnchorInterval time.Duration
+	AnchorSources []anchor.AnchorSource
 
 	// Sequencer settings (SCT/MMD architecture). The Sequencer
 	// drains StatePending entries asynchronously; v2 admission
 	// returns an SCT immediately after WAL fsync and the
 	// Sequencer redeems the promise within MMD.
-	SequencerInterval    time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
-	SequencerMaxInFlight int           // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
-	MMD                  time.Duration // default 24h; LEDGER_MMD
+	SequencerInterval time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
+	SequencerMaxInFlight int // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
+	MMD time.Duration // default 24h; LEDGER_MMD
 	// Tessera embedding — Phase 1B replaces the standalone
 	// tessera-personality binary with in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
@@ -284,9 +284,9 @@ type Config struct {
 	// production.
 	// TesseraOrigin is the c2sp.org/tlog-tiles origin string
 	// embedded in every signed checkpoint. Defaults to LogDID.
-	TesseraStorageDir    string
+	TesseraStorageDir string
 	TesseraSignerKeyFile string
-	TesseraOrigin        string
+	TesseraOrigin string
 	// LedgerSignerKeyFile is the path to a PEM-encoded
 	// secp256k1 ECDSA private key the ledger uses to sign its
 	// own entries (anchor publisher, commitment publisher). When
@@ -323,25 +323,25 @@ type Config struct {
 	// "memory" is intentionally rejected at the composition root —
 	// production must select a real backend. Tests that need a
 	// Store-only impl call bytestore.NewMemory directly.
-	ByteStoreBackend   string
-	ByteStorePrefix    string // empty = "entries"
+	ByteStoreBackend string
+	ByteStorePrefix string // empty = "entries"
 	ByteStoreCacheSize int
 
 	// GCS-specific.
-	ByteStoreGCSBucket   string
+	ByteStoreGCSBucket string
 	ByteStoreGCSEndpoint string // empty = default GCS endpoint
-	ByteStoreGCSAnon     bool   // true = no auth (fake-gcs-server)
+	ByteStoreGCSAnon bool // true = no auth (fake-gcs-server)
 
 	// S3-specific.
-	ByteStoreS3Bucket    string
-	ByteStoreS3Endpoint  string // empty = default AWS S3 endpoint
-	ByteStoreS3Region    string // empty = us-east-1 in factory
+	ByteStoreS3Bucket string
+	ByteStoreS3Endpoint string // empty = default AWS S3 endpoint
+	ByteStoreS3Region string // empty = us-east-1 in factory
 	ByteStoreS3AccessKey string // empty = default credential chain
 	ByteStoreS3SecretKey string // empty = default credential chain
-	ByteStoreS3PathStyle bool   // true for RustFS; false for AWS S3
-	TileCacheSize        int
-	SMTNodeCacheSize     int
-	DeltaWindow          int
+	ByteStoreS3PathStyle bool // true for RustFS; false for AWS S3
+	TileCacheSize int
+	SMTNodeCacheSize int
+	DeltaWindow int
 	// WitnessEndpoints is the comma-separated list of peer witness
 	// URLs the builder loop's HeadSync requester posts cosign
 	// requests to. Empty (default) → no cosignature collection;
@@ -354,7 +354,7 @@ type Config struct {
 	// LEDGER_WITNESS_KEY_FILE — same code paths as production
 	// K=N witnesses, no test-mode flag.
 	WitnessEndpoints []string
-	WitnessQuorumK   int
+	WitnessQuorumK int
 
 	// WitnessKeyFile is the path to a PEM-encoded secp256k1
 	// ECDSA private key the witness cosign endpoint
@@ -1022,8 +1022,8 @@ func main() {
 	// /metrics from the same port as the data-plane endpoints —
 	// no second listener.
 	var (
-		meterShutdown  func(ctx context.Context) error
-		gossipMeter    metric.Meter
+		meterShutdown func(ctx context.Context) error
+		gossipMeter metric.Meter
 		metricsHandler http.Handler
 	)
 	if cfg.MetricsEnable {
@@ -1083,10 +1083,10 @@ func main() {
 	// the gossip Sink as its CosignedHeadPublisher (W6 — fan out
 	// every K-of-N tree head as a KindCosignedTreeHead event).
 	var (
-		gossipBundle    *gossipnet.Bundle
-		gossipBStore    *gossipstore.BadgerStore
-		gossipPostH     http.Handler
-		gossipFeedH     http.Handler
+		gossipBundle *gossipnet.Bundle
+		gossipBStore *gossipstore.BadgerStore
+		gossipPostH http.Handler
+		gossipFeedH http.Handler
 		gossipPublisher *gossipnet.STHPublisher
 	)
 	var zeroNetID cosign.NetworkID
@@ -1415,7 +1415,7 @@ func main() {
 	// Embedded-tree-head BLS quorum verifier (Wave 1 v3 §S1).
 	// Wired iff the genesis witness set is loaded (witness mode
 	// active). Today the EntryEmbedsTreeHead detector returns
-	// false for every v7.75 schema, so this verifier is a no-op
+	// false for every schema, so this verifier is a no-op
 	// on the entry surface; wiring it now means the moment a
 	// schema starts embedding tree heads the K-of-N check fires
 	// without an additional code change.

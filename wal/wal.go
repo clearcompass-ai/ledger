@@ -6,7 +6,7 @@ for entries between admission and shipping. Backed by BadgerDB.
 
 PURPOSE:
 
-	Under v7.75 admission, the ledger MUST return HTTP 202 only after
+	Under admission, the ledger MUST return HTTP 202 only after
 	the wire bytes are durable on disk. The legacy code path returned
 	202 after a Postgres INSERT, which works at small scale but
 	thrashes Postgres autovacuum at 10B+ entries and ties admission

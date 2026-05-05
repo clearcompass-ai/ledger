@@ -88,22 +88,22 @@ type CommitterConfig struct {
 // Committer is the durable-bytes primitive. Methods are safe to call
 // from multiple goroutines.
 type Committer struct {
-	db     *badger.DB
-	cfg    CommitterConfig
+	db *badger.DB
+	cfg CommitterConfig
 	logger *slog.Logger
 
-	in       chan *submission
-	closing  chan struct{}
-	closed   chan struct{}
+	in chan *submission
+	closing chan struct{}
+	closed chan struct{}
 	closedMu sync.Mutex
 }
 
 // submission is a per-Submit record handed to the commit goroutine.
 type submission struct {
-	hash          [32]byte
-	wire          []byte
+	hash [32]byte
+	wire []byte
 	logTimeMicros int64 // unix-micros, persisted in Meta for P5 idempotency
-	done          chan error
+	done chan error
 }
 
 // NewCommitter wraps an open Badger DB and starts the group-commit
@@ -203,9 +203,9 @@ func (c *Committer) commitLoop() {
 	defer close(c.closed)
 
 	var (
-		batch        []*submission
-		batchBytes   int
-		batchTimer   = time.NewTimer(time.Hour) // long, never fires until reset
+		batch []*submission
+		batchBytes int
+		batchTimer = time.NewTimer(time.Hour) // long, never fires until reset
 		timerRunning bool
 	)
 	batchTimer.Stop()

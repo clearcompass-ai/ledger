@@ -1,7 +1,7 @@
 /*
 FILE PATH: integration/equivocation_test.go
 
-End-to-end test for the v7.75 cryptographic-commitment surface.
+End-to-end test for the cryptographic-commitment surface.
 
 # WHAT THIS TEST PINS
 

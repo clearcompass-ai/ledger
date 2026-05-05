@@ -21,7 +21,7 @@ KEY ARCHITECTURAL DECISIONS:
     a real did.VerifierRegistry; tests wire stubs. The Phase 2 trust
     model (nil resolver = wire-format integrity only) is preserved
     via the explicit nil check — the ledger can run without DID
-    resolution during the v0.3.0-tessera → v7.75 cutover.
+    resolution during the v0.3.0-tessera →  cutover.
   - Error mapping is the only ledger-side logic. The SDK's
     signatures.VerifyEntry already enforces the cryptographic
     invariants (length, on-curve, ecdsa.Verify) gated by the
@@ -74,7 +74,7 @@ var ErrSignerDIDResolution = errors.New("admission: signer DID resolution failed
 // A nil DIDResolver is permitted at the call site of
 // VerifyEntrySignature and triggers the Phase 2 trust model
 // (verification skipped, wire-format integrity only). This is a
-// transitional accommodation for the v0.3.0-tessera → v7.75 cutover
+// transitional accommodation for the v0.3.0-tessera →  cutover
 // and will be tightened in a later commit once the DID resolver is
 // wired in production.
 type DIDResolver interface {

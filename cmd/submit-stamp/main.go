@@ -35,7 +35,7 @@ Mode B at difficulty 16 typically takes ~65 ms on commodity
 hardware. At difficulty 24 (the default ceiling) it can take
 seconds. The brute-force loop signs every iteration because the
 SDK's stamp-target hash is envelope.EntryIdentity, which
-includes the signature section under v7.75 — so changing the
+includes the signature section under — so changing the
 nonce changes the hash that needs to be matched.
 */
 package main
@@ -64,14 +64,14 @@ import (
 
 func main() {
 	var (
-		ledgerURL  = flag.String("url", "http://localhost:8080", "ledger base URL")
-		logDID     = flag.String("log-did", "did:attesta:ledger:001", "destination log DID (admission rejects mismatched Header.Destination)")
-		token      = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
+		ledgerURL = flag.String("url", "http://localhost:8080", "ledger base URL")
+		logDID = flag.String("log-did", "did:attesta:ledger:001", "destination log DID (admission rejects mismatched Header.Destination)")
+		token = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
 		difficulty = flag.Int("difficulty", 0, "Mode B difficulty; 0 → query /v1/admission/difficulty")
-		epochSec   = flag.Int("epoch-window", 3600, "epoch window seconds (must match LEDGER_EPOCH_WINDOW_SECONDS)")
-		payload    = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
-		dryRun     = flag.Bool("dry-run", false, "build and print the entry without POSTing")
-		ledgerDID  = flag.String("ledger-did", "", "ledger's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
+		epochSec = flag.Int("epoch-window", 3600, "epoch window seconds (must match LEDGER_EPOCH_WINDOW_SECONDS)")
+		payload = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
+		dryRun = flag.Bool("dry-run", false, "build and print the entry without POSTing")
+		ledgerDID = flag.String("ledger-did", "", "ledger's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
 	)
 	flag.Parse()
 
@@ -148,13 +148,13 @@ func printSCTResponse(body []byte, ledgerDID string) {
 		fmt.Printf("could not parse SCT: %v\nraw: %s\n", err, body)
 		return
 	}
-	fmt.Printf("SCT.version            = %d\n", sct.Version)
-	fmt.Printf("SCT.signer_did         = %s\n", sct.SignerDID)
-	fmt.Printf("SCT.sig_algo_id        = %s\n", sct.SigAlgoID)
-	fmt.Printf("SCT.log_did            = %s\n", sct.LogDID)
-	fmt.Printf("SCT.canonical_hash     = %s\n", sct.CanonicalHash)
-	fmt.Printf("SCT.log_time           = %s\n", sct.LogTime)
-	fmt.Printf("SCT.log_time_micros    = %d\n", sct.LogTimeMicros)
+	fmt.Printf("SCT.version = %d\n", sct.Version)
+	fmt.Printf("SCT.signer_did = %s\n", sct.SignerDID)
+	fmt.Printf("SCT.sig_algo_id = %s\n", sct.SigAlgoID)
+	fmt.Printf("SCT.log_did = %s\n", sct.LogDID)
+	fmt.Printf("SCT.canonical_hash = %s\n", sct.CanonicalHash)
+	fmt.Printf("SCT.log_time = %s\n", sct.LogTime)
+	fmt.Printf("SCT.log_time_micros = %d\n", sct.LogTimeMicros)
 	fmt.Printf("SCT.signature[:32]     = %.32s...\n", sct.Signature)
 
 	if ledgerDID == "" {
@@ -182,14 +182,14 @@ func printSCTResponse(body []byte, ledgerDID string) {
 // this CLI doesn't need to import the api package (avoids a
 // reverse dep from cmd to api).
 type apiSCT struct {
-	Version       uint8  `json:"version"`
-	SignerDID     string `json:"signer_did"`
-	SigAlgoID     string `json:"sig_algo_id"`
-	LogDID        string `json:"log_did"`
+	Version uint8 `json:"version"`
+	SignerDID string `json:"signer_did"`
+	SigAlgoID string `json:"sig_algo_id"`
+	LogDID string `json:"log_did"`
 	CanonicalHash string `json:"canonical_hash"`
-	LogTimeMicros int64  `json:"log_time_micros"`
-	LogTime       string `json:"log_time"`
-	Signature     string `json:"signature"`
+	LogTimeMicros int64 `json:"log_time_micros"`
+	LogTime string `json:"log_time"`
+	Signature string `json:"signature"`
 }
 
 // verifyClientSCT recomputes the canonical signing payload from

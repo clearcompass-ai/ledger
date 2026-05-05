@@ -33,25 +33,25 @@ type LagProvider interface {
 
 // DifficultyController dynamically adjusts Mode B stamp difficulty.
 type DifficultyController struct {
-	lag           LagProvider
-	difficulty    atomic.Uint32
+	lag LagProvider
+	difficulty atomic.Uint32
 	minDifficulty uint32
 	maxDifficulty uint32
-	lowThreshold  int64
+	lowThreshold int64
 	highThreshold int64
-	hashFunc      string
-	logger        *slog.Logger
+	hashFunc string
+	logger *slog.Logger
 }
 
 // DifficultyConfig configures the difficulty controller.
 type DifficultyConfig struct {
 	InitialDifficulty uint32
-	MinDifficulty     uint32
-	MaxDifficulty     uint32
-	LowThreshold      int64
-	HighThreshold     int64
-	AdjustInterval    time.Duration
-	HashFunction      string // "sha256" or "argon2id"
+	MinDifficulty uint32
+	MaxDifficulty uint32
+	LowThreshold int64
+	HighThreshold int64
+	AdjustInterval time.Duration
+	HashFunction string // "sha256" or "argon2id"
 }
 
 // DefaultDifficultyConfig returns production defaults.

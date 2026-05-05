@@ -66,13 +66,13 @@ import (
 // the ledger's two append paths (the gossip handler's inbound
 // publishes and the publisher's outbound) stay coherent.
 type STHPublisher struct {
-	store          sdkgossip.Store
-	sink           sdkgossip.Sink
-	signer         sdkcosign.WitnessSigner
-	networkID      sdkcosign.NetworkID
-	originator     string
+	store sdkgossip.Store
+	sink sdkgossip.Sink
+	signer sdkcosign.WitnessSigner
+	networkID sdkcosign.NetworkID
+	originator string
 	ledgerEndpoint string
-	logger         *slog.Logger
+	logger *slog.Logger
 }
 
 // PublisherConfig configures STHPublisher.

@@ -39,9 +39,9 @@ import (
 
 // fixtureWitnesses generates k witnesses with did:key DIDs.
 type fixtureWitnesses struct {
-	dids    []string
+	dids []string
 	signers []cosign.WitnessSigner
-	keys    []types.WitnessPublicKey
+	keys []types.WitnessPublicKey
 }
 
 func newFixtureWitnesses(t *testing.T, k int) fixtureWitnesses {
@@ -280,7 +280,7 @@ func TestEquivocationMonitor_NoFalsePositiveOnDifferentSizes(t *testing.T) {
 func TestEquivocationMonitor_RejectsConfig(t *testing.T) {
 	cases := []struct {
 		name string
-		cfg  EquivocationMonitorConfig
+		cfg EquivocationMonitorConfig
 		want string
 	}{
 		{

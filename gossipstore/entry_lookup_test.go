@@ -31,10 +31,10 @@ import (
 
 func TestEntryLookupKey_RoundTrips(t *testing.T) {
 	cases := []struct {
-		name     string
+		name string
 		schemaID string
-		splitID  [32]byte
-		seq      uint64
+		splitID [32]byte
+		seq uint64
 	}{
 		{"basic", "schema-x", [32]byte{0x01}, 1},
 		{"high-seq", "schema-y", [32]byte{0xff, 0xfe}, 1<<63 + 7},
@@ -89,7 +89,7 @@ func TestEntryLookupKey_DistinctSplitIDsDoNotShareScan(t *testing.T) {
 func TestEntryLookupKeyParts_RejectsBadInputs(t *testing.T) {
 	cases := []struct {
 		name string
-		k    []byte
+		k []byte
 	}{
 		{"too short", []byte{prefixGossipRoot, subEntryLookup}},
 		{"wrong root", []byte{0x00, subEntryLookup, 0, 0}},

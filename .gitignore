@@ -124,7 +124,6 @@ override.tf.json
 # subdir so additions are explicit.
 /ledger
 /ledger-reader
-/bootstrap-v775-schemas
 /rebuild-tiles
 /seed-session
 /submit-stamp

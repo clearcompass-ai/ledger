@@ -68,10 +68,9 @@ the advisory lock only applies to the writer.
 cmd/                    Binaries
   ledger/             Main ledger binary
   ledger-reader/      Read-only replica (no admission, no sequencer)
-  submit-stamp/         CLI: build + sign + POST a v7.75 entry
-  seed-session/         Dev: insert into sessions table
-  rebuild-tiles/        Ops: replay entry_index → Tessera tiles
-  bootstrap-v775-schemas/ Ops: load schema definitions
+  submit-stamp/       CLI: build + sign + POST an entry
+  seed-session/       Dev: insert into sessions table
+  rebuild-tiles/      Ops: replay entry_index → Tessera tiles
 
 api/                    HTTP handlers (zero pgx imports)
 api/middleware/         Auth (SessionLookup), SizeLimit
@@ -150,9 +149,9 @@ store/commitment_fetcher.go:208
 gossipstore/commitment_fetcher.go:121
     var _ types.CommitmentFetcher = (*BadgerCommitmentFetcher)(nil)
 gossipnet/sequencer_adapter.go:103-105
-    var _ sequencer.SplitIDIndexWriter   = (*SequencerSplitIDAdapter)(nil)
-    var _ sequencer.EntryLookupWriter    = (*SequencerEntryLookupAdapter)(nil)
-    var _ sequencer.SplitIDReplayCursor  = (*SequencerReplayCursorAdapter)(nil)
+    var _ sequencer.SplitIDIndexWriter = (*SequencerSplitIDAdapter)(nil)
+    var _ sequencer.EntryLookupWriter = (*SequencerEntryLookupAdapter)(nil)
+    var _ sequencer.SplitIDReplayCursor = (*SequencerReplayCursorAdapter)(nil)
 ```
 
 Drift in any side fails the build at boot rather than at first

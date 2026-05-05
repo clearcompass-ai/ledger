@@ -53,10 +53,10 @@ INTEGRATION WITH proof_adapter.go:
 	The existing TesseraAdapter wraps a *Client + *TileReader.
 	After Phase 1B, cmd/ledger/main.go constructs:
 
-	  backend, _   := NewPOSIXTileBackend(storageDir)
-	  tileReader   := NewTileReader(backend, cacheSize)
-	  embedded, _  := NewEmbeddedAppender(ctx, driver, opts)
-	  adapter      := NewEmbeddedTesseraAdapter(embedded, tileReader, logger)
+	  backend, _ := NewPOSIXTileBackend(storageDir)
+	  tileReader := NewTileReader(backend, cacheSize)
+	  embedded, _ := NewEmbeddedAppender(ctx, driver, opts)
+	  adapter := NewEmbeddedTesseraAdapter(embedded, tileReader, logger)
 
 	EmbeddedTesseraAdapter mirrors TesseraAdapter's surface
 	(AppendLeaf, Head, RawInclusionProof, etc.) but holds an
@@ -114,7 +114,7 @@ type AppenderOptions struct {
 	// BatchSize / BatchMaxAge tune the integration batcher. A
 	// new batch flushes when either threshold is hit. Defaults:
 	// 256 entries, 1 second.
-	BatchSize   int
+	BatchSize int
 	BatchMaxAge time.Duration
 
 	// Signer is the Ed25519 note.Signer that signs checkpoints.
@@ -168,13 +168,13 @@ type EmbeddedAppender struct {
 	// upstream resources from tessera.NewAppender — held to
 	// drive Add and Head, and to call shutdown at Close.
 	appender *uptessera.Appender
-	reader   uptessera.LogReader
+	reader uptessera.LogReader
 	shutdown func(ctx context.Context) error
 
 	logger *slog.Logger
 
 	closeOnce sync.Once
-	closeErr  error
+	closeErr error
 }
 
 // NewEmbeddedAppender constructs an in-process Tessera appender

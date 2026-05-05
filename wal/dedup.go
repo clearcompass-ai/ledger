@@ -70,7 +70,7 @@ func (d *TesseraDedup) Get(ctx context.Context, identity []byte) (uint64, bool, 
 		return 0, false, fmt.Errorf("wal/dedup: empty identity")
 	}
 	var (
-		idx   uint64
+		idx uint64
 		found bool
 	)
 	err := d.db.View(func(txn *badger.Txn) error {

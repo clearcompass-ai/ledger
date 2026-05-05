@@ -35,7 +35,7 @@ SDK ALIGNMENT:
   - v0.3.0-tessera: envelope.StripSignature split a wire entry into
     (canonical, algoID, sigBytes) so EntryWithMetadata could carry the
     sidecar fields SignatureAlgoID and SignatureBytes.
-  - v7.75: signatures live INSIDE the canonical bytes (the v6
+  - : signatures live INSIDE the canonical bytes (the v6
     multi-sig section appended by envelope.Serialize). The wire bytes
     ARE the canonical bytes; envelope.StripSignature is removed.
     EntryWithMetadata now exposes only CanonicalBytes, LogTime, and
@@ -75,14 +75,14 @@ import (
 
 // ShardMeta describes an archived shard's location and range.
 type ShardMeta struct {
-	ShardDID            string `json:"shard_did"`
-	SequenceStart       uint64 `json:"sequence_start"`
-	SequenceEnd         uint64 `json:"sequence_end"`
+	ShardDID string `json:"shard_did"`
+	SequenceStart uint64 `json:"sequence_start"`
+	SequenceEnd uint64 `json:"sequence_end"`
 	TileArchiveEndpoint string `json:"tile_archive_endpoint"` // Static tile files (hash-only).
 	ByteArchiveEndpoint string `json:"byte_archive_endpoint"` // Full entry bytes.
-	FinalRootHash       string `json:"final_root_hash"`
-	FinalTreeSize       uint64 `json:"final_tree_size"`
-	ChainPosition       int    `json:"chain_position"`
+	FinalRootHash string `json:"final_root_hash"`
+	FinalTreeSize uint64 `json:"final_tree_size"`
+	ChainPosition int `json:"chain_position"`
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -92,7 +92,7 @@ type ShardMeta struct {
 // ArchiveReader fetches entries from archived shards.
 // Implements the same Fetch signature as builder.EntryFetcher.
 type ArchiveReader struct {
-	mu     sync.RWMutex
+	mu sync.RWMutex
 	shards map[string]ShardMeta
 	client *http.Client
 }
@@ -160,7 +160,7 @@ func (r *ArchiveReader) AddShard(meta ShardMeta) {
 // Returns the same types.EntryWithMetadata as the live ledger's Fetch.
 //
 // Hash-only architecture: tiles contain hashes only. Full wire bytes
-// are in the byte archive at a separate endpoint. Under v7.75 the wire
+// are in the byte archive at a separate endpoint. Under the wire
 // bytes ARE the canonical bytes — signatures live in the v6 multi-sig
 // section appended inside the canonical form, not as a separate
 // envelope. Callers that need the primary signature's algoID or raw

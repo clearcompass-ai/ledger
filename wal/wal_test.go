@@ -96,7 +96,7 @@ func TestWAL_Submit_ReadRoundTrip(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Fatalf("Read returned wrong bytes:\n  got=%x\n want=%x", got, wire)
+		t.Fatalf("Read returned wrong bytes:\n got=%x\n want=%x", got, wire)
 	}
 	// And the meta is in pending.
 	meta, err := c.MetaState(ctx, hash)
@@ -194,10 +194,10 @@ func TestWAL_StateMachine_PendingToShipped(t *testing.T) {
 	}
 
 	steps := []struct {
-		name      string
-		do        func() error
+		name string
+		do func() error
 		wantState EntryState
-		wantSeq   uint64
+		wantSeq uint64
 	}{
 		{"after submit", func() error { return nil }, StatePending, 0},
 		{"sequence", func() error { return c.Sequence(ctx, hash, 42) }, StateSequenced, 42},

@@ -66,7 +66,7 @@ func TestAdmission_DuplicateHash(t *testing.T) {
 }
 
 func TestAdmission_MalformedBytes(t *testing.T) {
-	// v7.75: envelope.StripSignature is gone — Deserialize is the
+	// : envelope.StripSignature is gone — Deserialize is the
 	// parser surface that rejects malformed wire bytes.
 	_, err := envelope.Deserialize([]byte{0xFF, 0xFF})
 	if err == nil {
@@ -84,7 +84,7 @@ func TestAdmission_UnsignedEntry_SDK_D5(t *testing.T) {
 }
 
 func TestAdmission_WrongSignerKey_SDK_D5(t *testing.T) {
-	// v7.75: signatures live INSIDE the canonical bytes. SDK-D5
+	// : signatures live INSIDE the canonical bytes. SDK-D5
 	// guarantee — Deserialize is parse-only, never crypto-verifies.
 	// We round-trip a signed entry's wire bytes and confirm the
 	// signatures section comes back intact (algoID + non-empty
@@ -126,9 +126,9 @@ func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
 }
 
 // TestAdmission_ExactlyMaxSize_SDK_D11 asserts that a near-cap entry
-// serializes successfully under the v7.75 size invariant.
+// serializes successfully under the size invariant.
 //
-// v7.75 changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+//  changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
 // (= 65535) per envelope/api.go:69-80, closing ORTHO-BUG-005 (entries
 // admitted under the old 1 MiB cap would later panic inside
 // MarshalBundleEntry's uint16 length prefix). The previous test fixture
@@ -153,7 +153,7 @@ func TestAdmission_ExactlyMaxSize_SDK_D11(t *testing.T) {
 // rejected by entry.Validate (the SDK gate that prevents downstream
 // MarshalBundleEntry panic). Previously this test was a tautology
 // (`(1<<20)+1 > (1<<20)` always true) that asserted nothing about the
-// SDK; the v7.75 cap drop made the lazy form even more meaningless,
+// SDK; the cap drop made the lazy form even more meaningless,
 // so the test now actually exercises the size cap.
 func TestAdmission_OverMaxSize_SDK_D11(t *testing.T) {
 	// Push 4 KiB past the cap so any reasonable header/sig overhead
@@ -198,7 +198,7 @@ func TestAdmission_EvidenceCapNonSnapshot_Decision51(t *testing.T) {
 	for i := range pointers {
 		pointers[i] = pos(uint64(i + 1))
 	}
-	// v7.75: NewUnsignedEntry runs the same validateHeaderForWrite
+	// : NewUnsignedEntry runs the same validateHeaderForWrite
 	// (envelope/serialize.go:241) that NewEntry runs, so this asserts
 	// the same EvidencePointers cap rejection without forcing the
 	// test to mint a signature. Destination is set so the rejection
@@ -645,7 +645,7 @@ func TestQuery_Scan_PastEnd(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestTreeHead_Assembly(t *testing.T) {
-	// v7.75 / Wave 2: SchemeTag moved from CosignedTreeHead to each
+	//  / Wave 2: SchemeTag moved from CosignedTreeHead to each
 	// WitnessSignature (types/tree_head.go:156-169). Per-head scheme
 	// is gone; per-signature scheme is now the canonical surface.
 	cosigned := types.CosignedTreeHead{
@@ -852,7 +852,7 @@ func TestDeltaBuffer_NonCommutativeStrict(t *testing.T) {
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, nil), pos(3))
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2)), PriorAuthority: ptrTo(pos(999))}, nil), pos(4))
-	// v7.75 builder.BatchResult: RejectedCounts (scalar) was replaced
+	//  builder.BatchResult: RejectedCounts (scalar) was replaced
 	// by RejectedPositions ([]int of input indices). Per the SDK
 	// docblock at builder/api.go:152-154, callers that consumed the
 	// scalar should switch to len(result.RejectedPositions).

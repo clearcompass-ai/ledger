@@ -27,9 +27,9 @@ import (
 
 // SMTDeps holds dependencies for SMT proof handlers.
 type SMTDeps struct {
-	Tree      *smt.Tree
+	Tree *smt.Tree
 	LeafStore smt.LeafStore
-	Logger    *slog.Logger
+	Logger *slog.Logger
 }
 
 // NewSMTProofHandler creates GET /v1/smt/proof/{key}.

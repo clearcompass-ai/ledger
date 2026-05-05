@@ -38,7 +38,7 @@ import (
 // CQRS). Re-exported as type aliases here for backwards
 // compatibility with existing in-package call sites.
 type (
-	CosignedTreeHead  = apitypes.CosignedTreeHead
+	CosignedTreeHead = apitypes.CosignedTreeHead
 	TreeHeadSignature = apitypes.TreeHeadSignature
 )
 
@@ -48,8 +48,8 @@ type (
 
 // TreeHeadStore manages tree head and signature persistence.
 type TreeHeadStore struct {
-	db     *pgxpool.Pool
-	mu     sync.RWMutex
+	db *pgxpool.Pool
+	mu sync.RWMutex
 	cached *CosignedTreeHead
 }
 

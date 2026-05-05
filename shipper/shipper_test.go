@@ -47,9 +47,9 @@ import (
 // fakeWAL implements the shipper.WAL interface with an in-memory
 // map. Goroutine-safe via mu.
 type fakeWAL struct {
-	mu    sync.Mutex
-	hwm   uint64
-	seqs  map[uint64][32]byte // seq → hash (== IterateSequenced result)
+	mu sync.Mutex
+	hwm uint64
+	seqs map[uint64][32]byte // seq → hash (== IterateSequenced result)
 	wires map[[32]byte][]byte // hash → wire bytes
 	metas map[[32]byte]*wal.Meta
 }
@@ -174,13 +174,13 @@ func (f *fakeWAL) MarkManual(_ context.Context, hash [32]byte) error {
 // fakeBytestore records every WriteEntry and can be configured to
 // fail the first N attempts on a specific seq.
 type fakeBytestore struct {
-	mu        sync.Mutex
-	stored    map[uint64][]byte
-	failSeq   uint64 // 0 = no failure
-	failTimes int    // remaining forced failures for failSeq
-	stallSeq  uint64 // 0 = no stall
-	stall     time.Duration
-	calls     atomic.Int64
+	mu sync.Mutex
+	stored map[uint64][]byte
+	failSeq uint64 // 0 = no failure
+	failTimes int // remaining forced failures for failSeq
+	stallSeq uint64 // 0 = no stall
+	stall time.Duration
+	calls atomic.Int64
 }
 
 func newFakeBytestore() *fakeBytestore {
@@ -234,7 +234,7 @@ type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-func wireFor(seq uint64) []byte   { return []byte(fmt.Sprintf("entry-%d-content", seq)) }
+func wireFor(seq uint64) []byte { return []byte(fmt.Sprintf("entry-%d-content", seq)) }
 func hashFor(seq uint64) [32]byte { return sha256.Sum256(wireFor(seq)) }
 
 // runUntilCondition runs the shipper in a goroutine and waits for
@@ -511,7 +511,7 @@ func TestShipper_BackoffFor_ExponentialCappedAtMax(t *testing.T) {
 	})
 	cases := []struct {
 		attempt uint32
-		want    time.Duration
+		want time.Duration
 	}{
 		{0, 0},
 		{1, 1 * time.Second},

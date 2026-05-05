@@ -14,7 +14,7 @@ These tests pin the construction contract end-to-end:
  2. StaticWitnessKeySet's Active() returns a defensive copy
     (caller can't mutate authoritative state).
  3. BLSQuorumVerifier.VerifyEntry on a non-embedding entry is a
-    no-op — confirms the verifier accepts the v7.75 entry surface
+    no-op — confirms the verifier accepts the entry surface
     without spurious rejections.
 
 # WHAT THIS DOES NOT PIN
@@ -83,7 +83,7 @@ func TestStaticWitnessKeySet_ActiveReturnsCopy(t *testing.T) {
 }
 
 func TestBLSQuorumVerifier_NoOpOnNonEmbeddingEntry(t *testing.T) {
-	// EntryEmbedsTreeHead returns false for every v7.75 schema
+	// EntryEmbedsTreeHead returns false for every schema
 	// today. Construct a verifier and an entry, confirm
 	// VerifyEntry returns nil — the chain check is a no-op
 	// without an embedded tree head.
@@ -102,8 +102,7 @@ func TestBLSQuorumVerifier_NoOpOnNonEmbeddingEntry(t *testing.T) {
 		nid,
 	)
 
-	// Entry with no commitment-tree-head embedding (the v7.75
-	// commitment-entry surface). EntryEmbedsTreeHead → false →
+	// Entry with no commitment-tree-head embedding (the 	// commitment-entry surface). EntryEmbedsTreeHead → false →
 	// VerifyEntry no-op.
 	entry := &envelope.Entry{
 		Header: envelope.ControlHeader{

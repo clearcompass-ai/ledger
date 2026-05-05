@@ -145,7 +145,7 @@ func BuildCosignHandlerSigner(signer cosign.WitnessSigner, cfg ServeConfig) (htt
 // request. Per-process state. Other purposes pass through.
 func newMonotonicityGuard(maxBytes int64, logger *slog.Logger) func(http.Handler) http.Handler {
 	var (
-		mu             sync.Mutex
+		mu sync.Mutex
 		lastSignedSize uint64
 	)
 	return func(next http.Handler) http.Handler {

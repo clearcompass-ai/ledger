@@ -135,7 +135,7 @@ func TestAdmission_RejectsBadSignature(t *testing.T) {
 			Destination: "did:web:ledger.example",
 		},
 	}
-	// v7.75 signing contract (envelope/serialize.go:218-225): sign
+	//  signing contract (envelope/serialize.go:218-225): sign
 	// over sha256(SigningPayload(entry)). The verifier hashes the
 	// same bytes, so producing a sigA over the actual signing hash
 	// (with key A) is the correct way to set up a wrong-key
@@ -218,7 +218,7 @@ func TestAdmission_RejectsMalformedCommitmentPayload(t *testing.T) {
 // negative control: the same envelope shape with valid inner
 // bytes parses cleanly.
 //
-// v7.75 NOTE: artifact.DeserializePREGrantCommitment now performs
+//  NOTE: artifact.DeserializePREGrantCommitment now performs
 // the on-curve check at structural ingress (artifact/pre_grant_commitment.go:228),
 // not deferred to VerifyPREGrantCommitment as in earlier versions.
 // The previous fixture (zero-byte points) was off-curve (point
@@ -424,7 +424,7 @@ func hexEncode(b []byte) string {
 
 // onCurvePoint returns compressed(k·G) on secp256k1 — a structurally
 // valid commitment point. Used to satisfy the on-curve check that
-// v7.75 artifact.DeserializePREGrantCommitment performs at structural
+//  artifact.DeserializePREGrantCommitment performs at structural
 // ingress (artifact/pre_grant_commitment.go:228). Mirrors the SDK's
 // own test helper at crypto/artifact/pre_grant_commitment_wire_test.go:22.
 func onCurvePoint(t *testing.T, k int64) [33]byte {

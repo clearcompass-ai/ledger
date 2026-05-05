@@ -15,13 +15,13 @@ co-tenants gossip data with the existing WAL keyspace (prefixes
 	0x07 0x03 <klen:2><kind><lamport:8><olen:2><orig>   → eventID:32
 	0x07 0x04 <olen:2><orig>                            → headRecord (40 bytes)
 	0x07 0x05 <olen:2><orig><lamport:8>                 → eventID:32
-	0x07 0x06                                           → statsCounter (16 bytes)
+	0x07 0x06 → statsCounter (16 bytes)
 	0x07 0x07 <olen:2><orig>                            → empty (existence marker)
 	0x07 0x09 <binding:32><eventID:32>                  → empty (binding inverted index)
 	0x07 0x0A <slen:2><schema><spid:32><seq:8>          → SplitIDIndexEntry JSON
 	0x07 0x0B <binding:32>                              → SignedEvent JSON (equiv projection)
 	0x07 0x0C <slen:2><schema><spid:32><seq:8>          → EntryLookupIndexEntry JSON
-	0x07 0x0D                                           → uint64 BE (splitid replay HWM)
+	0x07 0x0D → uint64 BE (splitid replay HWM)
 
 # SCALE NOTES
 
@@ -76,12 +76,12 @@ const prefixGossipRoot byte = 0x07
 // Sub-prefix tags. Single bytes chosen so all of one index's keys
 // are contiguous in Badger's sort order.
 const (
-	subEvent      byte = 0x01 // by-eventID
-	subChain      byte = 0x02 // per-originator chain
-	subKindIndex  byte = 0x03 // per-kind global
-	subHead       byte = 0x04 // per-originator head pointer
-	subSTHIndex   byte = 0x05 // per-originator STH reverse index
-	subStats      byte = 0x06 // singleton stats record
+	subEvent byte = 0x01 // by-eventID
+	subChain byte = 0x02 // per-originator chain
+	subKindIndex byte = 0x03 // per-kind global
+	subHead byte = 0x04 // per-originator head pointer
+	subSTHIndex byte = 0x05 // per-originator STH reverse index
+	subStats byte = 0x06 // singleton stats record
 	subOrigExists byte = 0x07 // existence marker for originator count
 
 	// subBindingIndex holds the inverted index from a 32-byte
@@ -345,7 +345,7 @@ func allHeadsPrefix() []byte {
 // pointer: 32 byte prevHash || 8 byte lamport (big-endian).
 type headRecord struct {
 	prevHash [32]byte
-	lamport  uint64
+	lamport uint64
 }
 
 func encodeHead(h headRecord) []byte {
@@ -367,7 +367,7 @@ func decodeHead(raw []byte) (headRecord, error) {
 
 // statsRecord is the on-disk stats: EventCount + OriginatorCount.
 type statsRecord struct {
-	eventCount      uint64
+	eventCount uint64
 	originatorCount uint64
 }
 

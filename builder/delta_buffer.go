@@ -35,9 +35,9 @@ import (
 
 // DeltaBufferStore persists the delta-window buffer to Postgres.
 type DeltaBufferStore struct {
-	db         *pgxpool.Pool
+	db *pgxpool.Pool
 	windowSize int
-	logger     *slog.Logger
+	logger *slog.Logger
 }
 
 // NewDeltaBufferStore creates a buffer store.

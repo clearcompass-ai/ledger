@@ -64,14 +64,14 @@ type TileBackend interface {
 // Cache indefinitely.
 type TileReader struct {
 	backend TileBackend
-	mu      sync.RWMutex
-	cache   map[string]tileEntry
+	mu sync.RWMutex
+	cache map[string]tileEntry
 	counter int64
 	maxSize int
 }
 
 type tileEntry struct {
-	data   []byte
+	data []byte
 	access int64
 }
 
@@ -143,7 +143,7 @@ func (tr *TileReader) evictLRU() {
 		return
 	}
 	type kv struct {
-		key    string
+		key string
 		access int64
 	}
 	entries := make([]kv, 0, len(tr.cache))
@@ -173,7 +173,7 @@ func (tr *TileReader) evictLRU() {
 // Format: tile/{L}/{N}
 // Where {N} is encoded as three-digit path segments:
 //
-//	tile/0/x001/x234/067   for tile index 1,234,067 (full tile, 256 entries)
+//	tile/0/x001/x234/067 for tile index 1,234,067 (full tile, 256 entries)
 //	tile/0/001/234/067.p/42 for a partial tile with 42 entries
 //
 // The 'x' prefix indicates a full tile (exactly 256 entries). Partial tiles
@@ -201,11 +201,11 @@ func EntryTilePath(index uint64) string {
 //
 // Examples:
 //
-//	0        → "000"
-//	42       → "042"
-//	1234     → "x001/234"
-//	1234067  → "x001/x234/067"
-//	0        → "000"
+//	0 → "000"
+//	42 → "042"
+//	1234 → "x001/234"
+//	1234067 → "x001/x234/067"
+//	0 → "000"
 func encodeTileIndex(index uint64) string {
 	if index == 0 {
 		return "000"

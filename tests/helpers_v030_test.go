@@ -25,7 +25,7 @@ KEY ARCHITECTURAL DECISIONS:
     envelope.NewUnsignedEntry (not a struct literal), so it exercises
     the same write-time gate that production callers hit on the
     unsigned-construction path (anchor/publisher.go,
-    lifecycle/shard_manager.go on v7.75). Tests that deliberately
+    lifecycle/shard_manager.go on ). Tests that deliberately
     forge malformed entries bypass this helper and hand-construct via
     struct literal; tests that need signed entries call
     envelope.NewEntry directly with a []Signature third argument.
@@ -65,7 +65,7 @@ const testOperatorDID = testLogDID
 // makeV030Entry constructs an unsigned Entry via envelope.NewUnsignedEntry,
 // defaulting hdr.Destination to testLogDID when the caller leaves it empty.
 //
-// v7.75 note: envelope.NewEntry now requires a []Signature third
+//  note: envelope.NewEntry now requires a []Signature third
 // argument; envelope.NewUnsignedEntry is the no-signature constructor
 // that this helper has always wanted. Production code on the wave1
 // branch made the same switch in anchor/publisher.go and
@@ -125,14 +125,14 @@ func makeForeignEntry(
 // these, the test suite breaks at build time — making the API drift
 // obvious before any test run.
 //
-// v7.75 note: StripSignature / AppendSignature were removed from the
+//  note: StripSignature / AppendSignature were removed from the
 // envelope package — the multi-sig section now lives INSIDE the
 // canonical bytes (appended by Serialize), so the wire-vs-canonical
 // split is gone. Their drop from this list is the surfaced API drift.
 var (
 	_ = envelope.EntryIdentity // Tessera dedup key (preferred vocabulary)
 	_ = envelope.EntryLeafHash // RFC 6962 leaf hash (consumer-side only)
-	_ = envelope.Serialize     // canonical bytes (signatures embedded)
-	_ = envelope.Deserialize   // canonical parser (signatures extracted)
+	_ = envelope.Serialize // canonical bytes (signatures embedded)
+	_ = envelope.Deserialize // canonical parser (signatures extracted)
 	_ = envelope.ValidateDestination
 )

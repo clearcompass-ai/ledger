@@ -28,7 +28,7 @@ wired, the commentary_seq column in derivation_commitments has no value.
 
 SDK ALIGNMENT:
   - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-  - v7.75: entry construction split into two constructors per
+  - : entry construction split into two constructors per
     core/envelope/entry.go's docblock —
     envelope.NewEntry(header, payload, signatures)  — fully signed
     envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
@@ -56,21 +56,21 @@ import (
 
 // CommitmentPublisherConfig configures commitment frequency.
 type CommitmentPublisherConfig struct {
-	IntervalEntries int           // Entries between commitments (default 1000).
-	IntervalTime    time.Duration // Max time between commitments (default 1h).
+	IntervalEntries int // Entries between commitments (default 1000).
+	IntervalTime time.Duration // Max time between commitments (default 1h).
 }
 
 // CommitmentPublisher publishes derivation commitments.
 type CommitmentPublisher struct {
-	ledgerDID    string
-	logDID       string // NEW (v0.3.0): destination for self-published commentary.
-	cfg          CommitmentPublisherConfig
-	logger       *slog.Logger
-	mu           sync.Mutex
-	lastPublish  time.Time
+	ledgerDID string
+	logDID string // NEW (v0.3.0): destination for self-published commentary.
+	cfg CommitmentPublisherConfig
+	logger *slog.Logger
+	mu sync.Mutex
+	lastPublish time.Time
 	entriesSince int
-	submitFn     func(entry *envelope.Entry) error
-	commitStore  *store.CommitmentStore // nil = no table persistence
+	submitFn func(entry *envelope.Entry) error
+	commitStore *store.CommitmentStore // nil = no table persistence
 }
 
 // NewCommitmentPublisher creates a commitment publisher.
@@ -170,7 +170,7 @@ func (cp *CommitmentPublisher) publish(
 	// Build commentary entry: Target_Root=null, Authority_Path=null.
 	// Destination = logDID — this commentary lands in the local log.
 	//
-	// NewUnsignedEntry per the v7.75 envelope API split: this
+	// NewUnsignedEntry per the envelope API split: this
 	// publisher constructs the entry, submitFn signs and submits.
 	// Fully-signed callers use envelope.NewEntry(header, payload, sigs).
 	entry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{

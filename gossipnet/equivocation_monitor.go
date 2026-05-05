@@ -141,20 +141,20 @@ type EquivocationMonitorConfig struct {
 
 // EquivocationMonitor polls peers for STH divergence.
 type EquivocationMonitor struct {
-	store       sdkgossip.Store
-	peers       []equivocationPeerInternal
+	store sdkgossip.Store
+	peers []equivocationPeerInternal
 	witnessKeys []types.WitnessPublicKey
-	quorumK     int
-	networkID   sdkcosign.NetworkID
+	quorumK int
+	networkID sdkcosign.NetworkID
 	blsVerifier sdkcosign.BLSAggregateVerifier
-	publisher   *EquivocationPublisher
-	interval    time.Duration
-	logger      *slog.Logger
+	publisher *EquivocationPublisher
+	interval time.Duration
+	logger *slog.Logger
 }
 
 type equivocationPeerInternal struct {
-	did    string
-	url    string
+	did string
+	url string
 	client sdkgossip.Client
 }
 

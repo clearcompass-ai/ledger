@@ -6,8 +6,8 @@ subject key. Distinct from /v1/smt/proof/{key} which returns Merkle proofs.
 
 Routes:
 
-	GET  /v1/smt/leaf/{key}   → single LeafResponse
-	POST /v1/smt/leaves       → []LeafResponse (batch)
+	GET /v1/smt/leaf/{key}   → single LeafResponse
+	POST /v1/smt/leaves → []LeafResponse (batch)
 
 Delegates to PostgresLeafStore.Get() which returns *types.SMTLeaf
 (store/smt_state.go). Reuses SMTDeps from proofs.go.
@@ -28,14 +28,14 @@ import (
 const maxLeafBatchSize = 100
 
 type LeafResponse struct {
-	Key          string            `json:"key"`
-	OriginTip    *PositionResponse `json:"origin_tip,omitempty"`
+	Key string `json:"key"`
+	OriginTip *PositionResponse `json:"origin_tip,omitempty"`
 	AuthorityTip *PositionResponse `json:"authority_tip,omitempty"`
-	Exists       bool              `json:"exists"`
+	Exists bool `json:"exists"`
 }
 
 type PositionResponse struct {
-	LogDID   string `json:"log_did"`
+	LogDID string `json:"log_did"`
 	Sequence uint64 `json:"sequence"`
 }
 

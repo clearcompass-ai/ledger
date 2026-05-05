@@ -5,7 +5,7 @@ Entry fetch-by-position endpoints. Three routes:
 
 	GET /v1/entries/{seq}             → JSON metadata (no bytes)
 	GET /v1/entries/batch?start&count → JSON list of metadata
-	GET /v1/entries/{seq}/raw         → wire bytes
+	GET /v1/entries/{seq}/raw → wire bytes
 	                                     200 OK inline (un-shipped)
 	                                     302 Found redirect (shipped)
 
@@ -29,16 +29,16 @@ THE 302 ROUTE — design summary:
 
 	Routing decision matrix (computed inside the handler):
 
-	  Postgres entry_index        WAL meta state      Outcome
+	  Postgres entry_index WAL meta state Outcome
 	  ─────────────────────────   ─────────────────   ──────────────────
-	  no row at seq                —                   404
-	  row at seq                   StateSequenced      200 + wal.Read
-	  row at seq                   StateManual         200 + wal.Read
-	  row at seq                   StatePending        200 + wal.Read   *defensive*
-	  row at seq                   StateShipped        302 + presigned
-	  row at seq                   wal.ErrNotFound     302 + presigned   *post-GC*
-	  row at seq                   transport error     500
-	  no Presigner configured + StateShipped/post-GC   500   *misconfig*
+	  no row at seq —                   404
+	  row at seq StateSequenced 200 + wal.Read
+	  row at seq StateManual 200 + wal.Read
+	  row at seq StatePending 200 + wal.Read *defensive*
+	  row at seq StateShipped 302 + presigned
+	  row at seq wal.ErrNotFound 302 + presigned *post-GC*
+	  row at seq transport error 500
+	  no Presigner configured + StateShipped/post-GC 500 *misconfig*
 
 	The handler is opaque to envelope structure — wire bytes go out
 	raw. Consumers feed the response body to envelope.Deserialize and
@@ -106,13 +106,13 @@ type Presigner interface {
 
 // EntryReadDeps holds dependencies for entry read handlers.
 type EntryReadDeps struct {
-	Fetcher    EntryFetcher
-	QueryAPI   QueryAPI
+	Fetcher EntryFetcher
+	QueryAPI QueryAPI
 	EntryStore SeqHashLookup
-	WAL        EntryWALReader
-	Presigner  Presigner
-	LogDID     string
-	Logger     *slog.Logger
+	WAL EntryWALReader
+	Presigner Presigner
+	LogDID string
+	Logger *slog.Logger
 
 	// PresignTTL caps the lifetime of redirect URLs the handler
 	// issues. Defaults to 1 hour. Capped at 7 days by the underlying

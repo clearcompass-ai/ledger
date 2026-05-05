@@ -69,9 +69,9 @@ type stubEvent struct {
 	data string
 }
 
-func (s stubEvent) Kind() gossip.Kind    { return s.kind }
+func (s stubEvent) Kind() gossip.Kind { return s.kind }
 func (s stubEvent) Bindings() [][32]byte { return nil }
-func (s stubEvent) Validate() error      { return nil }
+func (s stubEvent) Validate() error { return nil }
 func (s stubEvent) CanonicalBytes() []byte {
 	out := []byte(s.kind)
 	out = append(out, '|')
@@ -85,7 +85,7 @@ func (s stubEvent) EncodeWireBody() (json.RawMessage, error) {
 // and a registered did:key VerifierRegistry.
 type fixture struct {
 	signer cosign.WitnessSigner
-	did    string
+	did string
 }
 
 func newFixture(t *testing.T) fixture {

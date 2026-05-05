@@ -3,19 +3,19 @@ FILE PATH: wal/keyspace.go
 
 BadgerDB keyspace layout for the WAL.
 
-	entry:<hash:32>          → wire bytes        (immutable, write-once)
-	meta:<hash:32>            → meta record       (state, seq, attempts)
-	seq_index:<seq:8>         → hash:32           (after sequencing)
+	entry:<hash:32>          → wire bytes (immutable, write-once)
+	meta:<hash:32>            → meta record (state, seq, attempts)
+	seq_index:<seq:8>         → hash:32 (after sequencing)
 	inflight:<hash:32>        → ts:8 (unix-nano)  (breadcrumb across Add)
-	hwm                       → seq:8             (high-water mark for shipped)
-	tessera_dedup:<id:32>     → seq:8             (Tessera Deduplicator backing)
+	hwm → seq:8 (high-water mark for shipped)
+	tessera_dedup:<id:32>     → seq:8 (Tessera Deduplicator backing)
 
 State machine on meta:
 
-	pending   — written by Submit, before tessera.Add
+	pending — written by Submit, before tessera.Add
 	sequenced — written by Sequence (after tessera.Add returned a seq)
-	shipped   — written by MarkShipped (after bytestore upload completed)
-	manual    — written by Shipper after N retry-exhausted attempts
+	shipped — written by MarkShipped (after bytestore upload completed)
+	manual — written by Shipper after N retry-exhausted attempts
 	            (ledger-side metric only — bytes stay in WAL)
 
 INVARIANTS:
@@ -45,11 +45,11 @@ import (
 // Keyspace prefixes. Single-byte tags chosen so the BadgerDB sort
 // order groups related keys (e.g., all `entry:` keys are contiguous).
 const (
-	prefixEntry        byte = 0x01
-	prefixMeta         byte = 0x02
-	prefixSeqIndex     byte = 0x03
-	prefixInflight     byte = 0x04
-	prefixHWM          byte = 0x05
+	prefixEntry byte = 0x01
+	prefixMeta byte = 0x02
+	prefixSeqIndex byte = 0x03
+	prefixInflight byte = 0x04
+	prefixHWM byte = 0x05
 	prefixTesseraDedup byte = 0x06
 )
 

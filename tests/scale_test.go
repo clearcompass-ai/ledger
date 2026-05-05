@@ -294,7 +294,7 @@ func TestScale_BuilderThroughput(t *testing.T) {
 				seq, hash[:], time.Now().UTC(),
 				fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			)
-			// v7.75: wire bytes ARE canonical bytes; no separate sig.
+			// : wire bytes ARE canonical bytes; no separate sig.
 			entryBytes.WriteEntry(ctx, seq, hash, wire)
 		}
 		tx.Commit(ctx)
@@ -562,7 +562,7 @@ func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 	// At difficulty 16 (ledger default) this would take ~10x longer; we
 	// use 8 to keep test runtime under 5 minutes.
 	const (
-		N          = 1_000
+		N = 1_000
 		difficulty = 8
 	)
 
@@ -651,7 +651,7 @@ func reportTableSizes(t *testing.T, pool *pgxpool.Pool) {
 		var rowCount int64
 		pool.QueryRow(context.Background(),
 			fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&rowCount)
-		t.Logf("  %-25s %8s  (%d rows)", table, size, rowCount)
+		t.Logf("  %-25s %8s (%d rows)", table, size, rowCount)
 	}
 }
 
