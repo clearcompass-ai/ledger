@@ -35,8 +35,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
 )
 
 // ─────────────────────────────────────────────────────────────────────

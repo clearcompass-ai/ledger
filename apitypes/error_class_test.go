@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // allErrorClasses enumerates every ErrorClass constant defined in

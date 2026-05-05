@@ -29,9 +29,9 @@ import (
 	"strings"
 	"testing"
 
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 func TestBatchHandler_NilDepsPanics(t *testing.T) {

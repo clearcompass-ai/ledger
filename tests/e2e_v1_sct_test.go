@@ -34,7 +34,7 @@ WHAT'S COVERED:
     - Mutating an SCT field after receipt invalidates the
       signature.
 
-GATING: ORTHOLOG_TEST_DSN required (Postgres). Skips otherwise.
+GATING: ATTESTA_TEST_DSN required (Postgres). Skips otherwise.
 */
 package tests
 
@@ -50,10 +50,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
 
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // DerivationCommitmentDeps groups the derivation-commitment query handler

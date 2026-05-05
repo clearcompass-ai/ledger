@@ -22,7 +22,7 @@ docker compose -f "${COMPOSE_FILE}" up -d
 
 # Wait for fake-gcs healthy.
 for i in $(seq 1 60); do
-    health="$(docker inspect --format='{{.State.Health.Status}}' ortholog_test_gcs 2>/dev/null || true)"
+    health="$(docker inspect --format='{{.State.Health.Status}}' attesta_test_gcs 2>/dev/null || true)"
     if [ "${health}" = "healthy" ]; then
         echo "fake-gcs healthy (attempt ${i})"
         break
@@ -37,22 +37,22 @@ for i in $(seq 1 60); do
 done
 
 echo "== fake-gcs version + image =="
-IMAGE_NAME="$(docker inspect --format='{{.Config.Image}}' ortholog_test_gcs)"
-IMAGE_DIGEST="$(docker inspect --format='{{index .Image}}' ortholog_test_gcs)"
+IMAGE_NAME="$(docker inspect --format='{{.Config.Image}}' attesta_test_gcs)"
+IMAGE_DIGEST="$(docker inspect --format='{{index .Image}}' attesta_test_gcs)"
 echo "  image:  ${IMAGE_NAME}"
 echo "  digest: ${IMAGE_DIGEST}"
-docker exec ortholog_test_gcs /bin/fake-gcs-server -h 2>&1 | head -3 || \
+docker exec attesta_test_gcs /bin/fake-gcs-server -h 2>&1 | head -3 || \
     echo "  (couldn't probe binary version)"
 
 # Ensure test bucket exists.
 HTTP_CODE="$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
-    -d '{"name":"ortholog-test-bytes"}' \
+    -d '{"name":"attesta-test-bytes"}' \
     "http://127.0.0.1:4443/storage/v1/b" || true)"
 echo "== test bucket: status=${HTTP_CODE} =="
 
 echo "== starting fake-gcs log capture (background) =="
-docker logs -f ortholog_test_gcs > /tmp/fake-gcs-diag.log 2>&1 &
+docker logs -f attesta_test_gcs > /tmp/fake-gcs-diag.log 2>&1 &
 LOG_PID=$!
 trap "kill ${LOG_PID} 2>/dev/null || true" EXIT
 
@@ -63,8 +63,8 @@ LOG_START_LINES="$(wc -l < /tmp/fake-gcs-diag.log 2>/dev/null || echo 0)"
 LOG_START_LINES="$(echo "${LOG_START_LINES}" | tr -d ' ')"
 echo "  log baseline: ${LOG_START_LINES} lines"
 
-export ORTHOLOG_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
-export ORTHOLOG_TEST_GCS_BUCKET='ortholog-test-bytes'
+export ATTESTA_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
+export ATTESTA_TEST_GCS_BUCKET='attesta-test-bytes'
 
 echo
 echo "== running diagnostic tests (E1-E5) =="

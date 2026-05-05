@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 )
 
 func newTestSigner(t *testing.T) cosign.WitnessSigner {

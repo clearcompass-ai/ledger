@@ -58,13 +58,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
-	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // drainOnce drains the WAL of all currently-Pending entries. Any

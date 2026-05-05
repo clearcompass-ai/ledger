@@ -60,10 +60,10 @@ import (
 	"sync"
 	"time"
 
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdklog "github.com/clearcompass-ai/attesta/log"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ledger/tessera"
 )
 
 // -------------------------------------------------------------------------------------------------

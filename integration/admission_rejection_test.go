@@ -30,7 +30,7 @@ N-1 prior pipeline stages and fails on the Nth."
 Skip semantics: the database-touching helper resetTables in the
 shared CI2 harness fixtures is not invoked by these tests because
 they exercise admission-layer code paths that don't write to the
-database. ORTHOLOG_TEST_DSN is therefore not required, and these
+database. ATTESTA_TEST_DSN is therefore not required, and these
 tests run unconditionally on every `go test`.
 */
 package integration
@@ -47,15 +47,15 @@ import (
 
 	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/artifact"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	sdkschema "github.com/clearcompass-ai/ortholog-sdk/schema"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/admission"
+	"github.com/clearcompass-ai/ledger/admission"
 )
 
 // ─────────────────────────────────────────────────────────────────────

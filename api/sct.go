@@ -11,7 +11,7 @@ commitment commentary entries).
 
 The SCT wire layout, the SignedCertificateTimestamp JSON shape,
 the canonical signing-payload packer, and the verification
-function ALL live in ortholog-sdk/crypto/sct. This operator-side
+function ALL live in attesta/crypto/sct. This operator-side
 file ships ONE function: SignSCT — the signing path that holds
 the operator's private key. The SDK is verifier-side and does
 not (and should not) hold a signing function.
@@ -50,8 +50,8 @@ import (
 	"fmt"
 	"time"
 
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 // SignSCT builds and signs an SCT for (LogDID, canonical_hash,

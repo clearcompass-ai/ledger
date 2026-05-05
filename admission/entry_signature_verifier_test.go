@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 type stubResolver struct {

@@ -3,7 +3,7 @@ FILE PATH: bytestore/s3_test.go
 
 Tests for bytestore.S3. Run against any S3-compatible backend:
   - RustFS (default in integration/docker-compose.yml)
-  - real AWS S3 (set ORTHOLOG_TEST_S3_REAL=1 + AWS creds)
+  - real AWS S3 (set ATTESTA_TEST_S3_REAL=1 + AWS creds)
 
 Coverage mirrors gcs_test.go so the two adapters stay at parity:
 
@@ -22,13 +22,13 @@ Coverage mirrors gcs_test.go so the two adapters stay at parity:
 
 Env vars:
 
-  ORTHOLOG_TEST_S3_ENDPOINT     e.g. http://localhost:9000
-  ORTHOLOG_TEST_S3_BUCKET       e.g. ortholog-test-bytes
-  ORTHOLOG_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
-  ORTHOLOG_TEST_S3_SECRET_KEY   e.g. rustfsadmin
-  ORTHOLOG_TEST_S3_REGION       e.g. us-east-1 (default)
-  ORTHOLOG_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
-  ORTHOLOG_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
+  ATTESTA_TEST_S3_ENDPOINT     e.g. http://localhost:9000
+  ATTESTA_TEST_S3_BUCKET       e.g. attesta-test-bytes
+  ATTESTA_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
+  ATTESTA_TEST_S3_SECRET_KEY   e.g. rustfsadmin
+  ATTESTA_TEST_S3_REGION       e.g. us-east-1 (default)
+  ATTESTA_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
+  ATTESTA_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
                                  credential chain, virtual-host style,
                                  no endpoint override)
 
@@ -57,7 +57,7 @@ import (
 
 // requireS3 opens a bytestore.S3 configured for either a local
 // container (RustFS via env vars) or real AWS S3
-// (ORTHOLOG_TEST_S3_REAL=1 + standard AWS_* creds + bucket name).
+// (ATTESTA_TEST_S3_REAL=1 + standard AWS_* creds + bucket name).
 //
 // Real-S3 mode requires an AWS credential chain in scope (env vars,
 // IAM role, ~/.aws). Each test gets a unique prefix so concurrent
@@ -66,18 +66,18 @@ import (
 func requireS3(t *testing.T) *S3 {
 	t.Helper()
 
-	endpoint := os.Getenv("ORTHOLOG_TEST_S3_ENDPOINT")
-	bucket := os.Getenv("ORTHOLOG_TEST_S3_BUCKET")
-	realMode := os.Getenv("ORTHOLOG_TEST_S3_REAL") == "1"
+	endpoint := os.Getenv("ATTESTA_TEST_S3_ENDPOINT")
+	bucket := os.Getenv("ATTESTA_TEST_S3_BUCKET")
+	realMode := os.Getenv("ATTESTA_TEST_S3_REAL") == "1"
 
 	if endpoint == "" && !realMode {
-		t.Skip("ORTHOLOG_TEST_S3_ENDPOINT unset and ORTHOLOG_TEST_S3_REAL!=1; skipping S3 test")
+		t.Skip("ATTESTA_TEST_S3_ENDPOINT unset and ATTESTA_TEST_S3_REAL!=1; skipping S3 test")
 	}
 	if bucket == "" {
 		if realMode {
-			t.Skip("ORTHOLOG_TEST_S3_BUCKET unset for real-S3 mode; skipping")
+			t.Skip("ATTESTA_TEST_S3_BUCKET unset for real-S3 mode; skipping")
 		}
-		bucket = "ortholog-test-bytes"
+		bucket = "attesta-test-bytes"
 	}
 
 	prefix := fmt.Sprintf("test/%s/%d", t.Name(), time.Now().UnixNano())
@@ -93,7 +93,7 @@ func requireS3(t *testing.T) *S3 {
 	if realMode {
 		// Real AWS: no endpoint override; default credential chain;
 		// virtual-host URLs.
-		if r := os.Getenv("ORTHOLOG_TEST_S3_REGION"); r != "" {
+		if r := os.Getenv("ATTESTA_TEST_S3_REGION"); r != "" {
 			cfg.Region = r
 		}
 		t.Logf("S3 test mode: real AWS S3 (bucket=%s, prefix=%s)", bucket, prefix)
@@ -101,10 +101,10 @@ func requireS3(t *testing.T) *S3 {
 		// Container mode (RustFS): explicit endpoint, static creds,
 		// path-style URLs.
 		cfg.Endpoint = endpoint
-		cfg.AccessKey = envOrDefault("ORTHOLOG_TEST_S3_ACCESS_KEY", "rustfsadmin")
-		cfg.SecretKey = envOrDefault("ORTHOLOG_TEST_S3_SECRET_KEY", "rustfsadmin")
-		cfg.Region = envOrDefault("ORTHOLOG_TEST_S3_REGION", "us-east-1")
-		cfg.PathStyle = os.Getenv("ORTHOLOG_TEST_S3_PATH_STYLE") != "false"
+		cfg.AccessKey = envOrDefault("ATTESTA_TEST_S3_ACCESS_KEY", "rustfsadmin")
+		cfg.SecretKey = envOrDefault("ATTESTA_TEST_S3_SECRET_KEY", "rustfsadmin")
+		cfg.Region = envOrDefault("ATTESTA_TEST_S3_REGION", "us-east-1")
+		cfg.PathStyle = os.Getenv("ATTESTA_TEST_S3_PATH_STYLE") != "false"
 		t.Logf("S3 test mode: container (endpoint=%s, bucket=%s)", endpoint, bucket)
 	}
 

@@ -40,16 +40,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
-	"github.com/clearcompass-ai/ortholog-operator/shipper"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -97,9 +97,9 @@ type walDBCloser interface{ Close() error }
 func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarness {
 	t.Helper()
 
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN not set — skipping graceful-shutdown test")
+		t.Skip("ATTESTA_TEST_DSN not set — skipping graceful-shutdown test")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -21,7 +21,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
+	"github.com/clearcompass-ai/ledger/tessera"
 )
 
 // EntriesPerEntryTile is the c2sp.org/tlog-tiles entry-tile fanout.

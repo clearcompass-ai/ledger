@@ -8,7 +8,7 @@
 # Invariants checked (mechanically, via grep and go vet):
 #
 #   SOURCE (must be present):
-#     1. go.mod pins ortholog-sdk v0.3.0-tessera
+#     1. go.mod pins attesta v0.3.0-tessera
 #     2. anchor/publisher.go: PublisherConfig has LogDID, uses crypto.HashBytes,
 #        NewEntry sets Destination
 #     3. builder/commitment_publisher.go: has logDID field, constructor takes it
@@ -84,7 +84,7 @@ must_not_contain() {
 bold "━━━ SOURCE: presence checks ━━━"
 
 must_contain "go.mod" \
-    "ortholog-sdk v0.3.0-tessera" \
+    "attesta v0.3.0-tessera" \
     "go.mod pinned to SDK v0.3.0-tessera"
 
 must_contain "anchor/publisher.go" \

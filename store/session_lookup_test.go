@@ -19,7 +19,7 @@ package store
 import (
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
+	"github.com/clearcompass-ai/ledger/api/middleware"
 )
 
 func TestNewPostgresSessionLookup_NilPanics(t *testing.T) {

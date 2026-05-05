@@ -6,7 +6,7 @@ specific file:line in the repo.
 ## Package layout
 
 ```
-ortholog-operator/
+ledger/
 ├── cmd/
 │   ├── operator/         # main binary; loadConfig + wiring
 │   ├── operator-reader/  # read-only sibling (no admission)
@@ -231,12 +231,12 @@ artifact encryption + key management lives outside this binary.
 | Drift-free projection key | `findings.EntryCommitmentBinding` (SDK) used by both producer + consumer |
 | Graceful shutdown | `sync.WaitGroup` drains every goroutine (`sequencer/sequencer.go:Run`, `cmd/operator/main.go gossipWG`) |
 | Single-writer invariant | Postgres advisory lock at boot (`store/postgres.go`) |
-| OTel error dimensionality | Every `writeTypedError` increments `ortholog_api_errors_total{error_class, http_status}` |
+| OTel error dimensionality | Every `writeTypedError` increments `attesta_api_errors_total{error_class, http_status}` |
 
 ## SDK pin
 
 ```
-go.mod:  github.com/clearcompass-ai/ortholog-sdk v0.9.6
+go.mod:  github.com/clearcompass-ai/attesta v0.9.6
 ```
 
 The operator never re-implements SDK validation logic. Every signed

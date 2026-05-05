@@ -74,35 +74,35 @@ import (
 	"github.com/transparency-dev/tessera/storage/posix"
 	posixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkcryptosigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
-	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
-	"github.com/clearcompass-ai/ortholog-sdk/network"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkcryptosigs "github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdkdid "github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/exchange/policy"
+	sdklog "github.com/clearcompass-ai/attesta/log"
+	"github.com/clearcompass-ai/attesta/network"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/clearcompass-ai/ortholog-operator/admission"
-	"github.com/clearcompass-ai/ortholog-operator/anchor"
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/builder"
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/gossipnet"
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
-	"github.com/clearcompass-ai/ortholog-operator/integrity"
-	"github.com/clearcompass-ai/ortholog-operator/sequencer"
-	"github.com/clearcompass-ai/ortholog-operator/shipper"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/tessera"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
-	"github.com/clearcompass-ai/ortholog-operator/witness"
+	"github.com/clearcompass-ai/ledger/admission"
+	"github.com/clearcompass-ai/ledger/anchor"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/builder"
+	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/gossipnet"
+	"github.com/clearcompass-ai/ledger/gossipstore"
+	"github.com/clearcompass-ai/ledger/integrity"
+	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/tessera"
+	"github.com/clearcompass-ai/ledger/wal"
+	"github.com/clearcompass-ai/ledger/witness"
 )
 
 // loadOrGenerateTesseraSigner resolves the checkpoint signer.
@@ -450,7 +450,7 @@ func loadConfig() (*Config, error) {
 		EpochWindowSeconds:    3600, // 1h — matches testEpochWindowSeconds.
 		EpochAcceptanceWindow: 1,
 		AnchorInterval:        1 * time.Hour,
-		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/ortholog/tessera"),
+		TesseraStorageDir:     envOr("OPERATOR_TESSERA_STORAGE_DIR", "/var/lib/attesta/tessera"),
 		TesseraSignerKeyFile:  os.Getenv("OPERATOR_TESSERA_SIGNER_KEY_FILE"),
 		OperatorSignerKeyFile: os.Getenv("OPERATOR_SIGNER_KEY_FILE"),
 		TesseraOrigin:         os.Getenv("OPERATOR_TESSERA_ORIGIN"), // defaults to LogDID below
@@ -481,8 +481,8 @@ func loadConfig() (*Config, error) {
 		MetricsEnable:        os.Getenv("OPERATOR_METRICS_ENABLE") == "true",
 		MetricsEnvironment:   envOr("OPERATOR_METRICS_ENVIRONMENT", "dev"),
 		ServiceVersion:       envOr("OPERATOR_SERVICE_VERSION", "dev"),
-		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/ortholog/wal"),
-		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/ortholog/tessera-antispam"),
+		WALPath:              envOr("OPERATOR_WAL_PATH", "/var/lib/attesta/wal"),
+		TesseraAntispamPath:  envOr("OPERATOR_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
 
 		SequencerInterval:    envDurationOr("OPERATOR_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("OPERATOR_SEQUENCER_MAX_INFLIGHT", 4),
@@ -1028,7 +1028,7 @@ func main() {
 	)
 	if cfg.MetricsEnable {
 		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
-			ServiceName:    "ortholog-operator",
+			ServiceName:    "ledger",
 			ServiceVersion: cfg.ServiceVersion,
 			Environment:    cfg.MetricsEnvironment,
 			Exporters:      []sdklog.ExporterKind{sdklog.PrometheusExporter},
@@ -1038,18 +1038,18 @@ func main() {
 			os.Exit(1)
 		}
 		otel.SetMeterProvider(mpResult.Provider)
-		gossipMeter = mpResult.Provider.Meter("github.com/clearcompass-ai/ortholog-operator/gossip")
+		gossipMeter = mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/gossip")
 
 		// PT-6 — Install the api/ error counter so every
 		// writeTypedError / writeTypedJSONError site emits a
 		// typed error_class attribute. Idempotent on the same
 		// meter; no-op if already installed.
-		apiMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ortholog-operator/api")
+		apiMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/api")
 		if installed := api.InstallErrorCounter(apiMeter); !installed {
 			logger.Warn("metrics: api error counter not installed (already wired?)")
 		} else {
 			logger.Info("metrics: api error counter installed",
-				"metric", "ortholog_api_errors_total")
+				"metric", "attesta_api_errors_total")
 		}
 
 		metricsHandler = mpResult.PrometheusHandler

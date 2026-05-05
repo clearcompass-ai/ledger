@@ -26,8 +26,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // ─────────────────────────────────────────────────────────────────────

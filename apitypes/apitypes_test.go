@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 func TestCosignedTreeHead_FieldsRoundTrip(t *testing.T) {

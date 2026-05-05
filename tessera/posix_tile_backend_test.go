@@ -155,7 +155,7 @@ func TestPOSIXTileBackend_ReadTileByPath_MissingReturnsErrNotExist(t *testing.T)
 
 func TestPOSIXTileBackend_ReadCheckpoint_RoundTrip(t *testing.T) {
 	tmp := t.TempDir()
-	want := []byte("ortholog\n100\nrootHashB64\n\n— signature\n")
+	want := []byte("attesta\n100\nrootHashB64\n\n— signature\n")
 	writeTile(t, tmp, "checkpoint", want)
 
 	b, _ := NewPOSIXTileBackend(tmp)

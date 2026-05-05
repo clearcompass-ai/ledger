@@ -33,7 +33,7 @@ echo "== waiting for fake-gcs container readiness =="
 for i in $(seq 1 60); do
     # fake-gcs-server has its own healthcheck — wait for it to
     # report healthy via docker.
-    health="$(docker inspect --format='{{.State.Health.Status}}' ortholog_test_gcs 2>/dev/null || true)"
+    health="$(docker inspect --format='{{.State.Health.Status}}' attesta_test_gcs 2>/dev/null || true)"
     if [ "${health}" = "healthy" ]; then
         echo "fake-gcs container healthy (attempt ${i})"
         break
@@ -59,13 +59,13 @@ for i in $(seq 1 60); do
 done
 
 echo "== exporting test env =="
-export ORTHOLOG_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
-export ORTHOLOG_TEST_GCS_BUCKET='ortholog-test-bytes'
+export ATTESTA_TEST_GCS_ENDPOINT='http://127.0.0.1:4443/storage/v1/'
+export ATTESTA_TEST_GCS_BUCKET='attesta-test-bytes'
 
 echo "== ensuring test bucket exists in fake-gcs =="
-# fake-gcs-server's bucket-init container creates "ortholog-tiles"
+# fake-gcs-server's bucket-init container creates "attesta-tiles"
 # (used by Tessera's tile writer). The byte-store tests use a
-# different bucket name (ortholog-test-bytes) so they don't clash
+# different bucket name (attesta-test-bytes) so they don't clash
 # with the tile data — but bucket-init doesn't know about it.
 #
 # Create it here via the standard GCS storage v1 API. 200 / 201
@@ -74,11 +74,11 @@ echo "== ensuring test bucket exists in fake-gcs =="
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"${ORTHOLOG_TEST_GCS_BUCKET}\"}" \
+    -d "{\"name\":\"${ATTESTA_TEST_GCS_BUCKET}\"}" \
     "http://127.0.0.1:4443/storage/v1/b" || true)
 case "${HTTP_CODE}" in
     200|201|409)
-        echo "test bucket '${ORTHOLOG_TEST_GCS_BUCKET}' ready (status=${HTTP_CODE})"
+        echo "test bucket '${ATTESTA_TEST_GCS_BUCKET}' ready (status=${HTTP_CODE})"
         ;;
     *)
         echo "FATAL: bucket creation failed (status=${HTTP_CODE})"

@@ -6,7 +6,7 @@
 # end-to-end against actual Google Cloud Storage.
 #
 # Required env:
-#   ORTHOLOG_REAL_GCS_BUCKET   the bucket name (REQUIRED)
+#   ATTESTA_REAL_GCS_BUCKET   the bucket name (REQUIRED)
 #   GOOGLE_APPLICATION_CREDENTIALS  path to a service-account key
 #                                   file that grants the test
 #                                   identity:
@@ -14,14 +14,14 @@
 #                                     - storage.objects.get
 #                                     - storage.objects.list
 #                                     - storage.objects.delete
-#                                   on $ORTHOLOG_REAL_GCS_BUCKET.
+#                                   on $ATTESTA_REAL_GCS_BUCKET.
 #
 # Or set GOOGLE_APPLICATION_CREDENTIALS to a JSON key, OR run on
 # GCE/GKE with workload identity, OR have `gcloud auth
 # application-default login` configured.
 #
 # Usage:
-#   export ORTHOLOG_REAL_GCS_BUCKET=my-test-bucket
+#   export ATTESTA_REAL_GCS_BUCKET=my-test-bucket
 #   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 #   ./scripts/run-gcs-tests-real.sh
 #
@@ -37,10 +37,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 # ── Validate inputs ───────────────────────────────────────────────
-if [ -z "${ORTHOLOG_REAL_GCS_BUCKET:-}" ]; then
-    echo "FATAL: ORTHOLOG_REAL_GCS_BUCKET not set"
+if [ -z "${ATTESTA_REAL_GCS_BUCKET:-}" ]; then
+    echo "FATAL: ATTESTA_REAL_GCS_BUCKET not set"
     echo
-    echo "  export ORTHOLOG_REAL_GCS_BUCKET=<your-bucket-name>"
+    echo "  export ATTESTA_REAL_GCS_BUCKET=<your-bucket-name>"
     echo "  $0"
     exit 1
 fi
@@ -71,14 +71,14 @@ if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
 fi
 
 echo "== running GCS entry-store tests against REAL GCS =="
-echo "   bucket: ${ORTHOLOG_REAL_GCS_BUCKET}"
+echo "   bucket: ${ATTESTA_REAL_GCS_BUCKET}"
 echo "   creds:  ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
 echo
 
-# Real-mode signal: ORTHOLOG_TEST_GCS_BUCKET set, ENDPOINT unset.
+# Real-mode signal: ATTESTA_TEST_GCS_BUCKET set, ENDPOINT unset.
 # requireGCS detects this and uses ADC instead of anonymous auth.
-unset ORTHOLOG_TEST_GCS_ENDPOINT
-export ORTHOLOG_TEST_GCS_BUCKET="${ORTHOLOG_REAL_GCS_BUCKET}"
+unset ATTESTA_TEST_GCS_ENDPOINT
+export ATTESTA_TEST_GCS_BUCKET="${ATTESTA_REAL_GCS_BUCKET}"
 
 # Slightly longer timeout than the fake-gcs run — real GCS calls
 # are network-bound and a cold-start ADC token fetch can spike
@@ -93,4 +93,4 @@ echo
 echo "Cleanup verification: list any leftover objects under test/ in your bucket"
 echo "(should be empty after t.Cleanup ran):"
 echo
-echo "  gsutil ls 'gs://${ORTHOLOG_REAL_GCS_BUCKET}/test/**' || echo '(no leftovers — good)'"
+echo "  gsutil ls 'gs://${ATTESTA_REAL_GCS_BUCKET}/test/**' || echo '(no leftovers — good)'"

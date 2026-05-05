@@ -11,15 +11,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	sdksct "github.com/clearcompass-ai/ortholog-sdk/crypto/sct"
-	"github.com/clearcompass-ai/ortholog-sdk/exchange/policy"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
+	sdksct "github.com/clearcompass-ai/attesta/crypto/sct"
+	"github.com/clearcompass-ai/attesta/exchange/policy"
 
-	"github.com/clearcompass-ai/ortholog-operator/admission"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/admission"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/apitypes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 const (

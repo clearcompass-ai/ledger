@@ -93,7 +93,7 @@ anchor/                 External anchor publisher
 builder/                Commitment publisher loop
 
 docs/                   This documentation
-integration/            Postgres-backed integration tests (gated by ORTHOLOG_TEST_DSN)
+integration/            Postgres-backed integration tests (gated by ATTESTA_TEST_DSN)
 tests/                  End-to-end test harness
 scripts/                Runnable developer utilities (run-local, run-gcs-tests, run-soak, ...)
 scripts/local/          Docker Compose stacks (local single-op, dev multi-op, integration two-op, test harness)
@@ -118,7 +118,7 @@ go test -count=1 -race -short ./api/ ./api/middleware/ ./apitypes/ \
 go vet ./...
 
 # Integration tests (need a live Postgres)
-export ORTHOLOG_TEST_DSN="postgres://..."
+export ATTESTA_TEST_DSN="postgres://..."
 go test -count=1 ./integration/... ./tests/...
 ```
 
@@ -182,13 +182,13 @@ openssl ecparam -name secp256k1 -genkey -noout -out new.key
 
 ```sh
 # 1. Flip readiness to NotReady (stops new traffic; existing requests drain)
-kubectl annotate pod ortholog-operator-0 ortholog.io/drain=true
+kubectl annotate pod ledger-0 attesta.io/drain=true
 
 # 2. Wait for /readyz to return 503 OR for the WAL queue to drain
 curl http://operator/readyz
 
 # 3. SIGTERM
-kubectl delete pod ortholog-operator-0 --grace-period=60
+kubectl delete pod ledger-0 --grace-period=60
 ```
 
 ### Inspect a stuck entry

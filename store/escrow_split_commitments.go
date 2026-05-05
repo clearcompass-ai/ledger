@@ -24,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/escrow"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
 )
 
 // EscrowSplitCommitmentStore wraps SplitID-keyed access to the

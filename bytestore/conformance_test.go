@@ -34,14 +34,14 @@ BACKEND MATRIX (each entry point gates on its env vars; otherwise
 skips):
 
   TestConformance_Memory          (always runs — Store only)
-  TestConformance_GCS_Container   (ORTHOLOG_TEST_GCS_ENDPOINT)  Store
-  TestConformance_GCS_Real        (ORTHOLOG_TEST_GCS_BUCKET, no
+  TestConformance_GCS_Container   (ATTESTA_TEST_GCS_ENDPOINT)  Store
+  TestConformance_GCS_Real        (ATTESTA_TEST_GCS_BUCKET, no
                                    endpoint) Backend
-  TestConformance_S3_Container    (ORTHOLOG_TEST_S3_ENDPOINT)   Backend
+  TestConformance_S3_Container    (ATTESTA_TEST_S3_ENDPOINT)   Backend
                                   (RustFS issues valid SigV4 URLs
                                   that local SigV4 verifies)
-  TestConformance_S3_Real         (ORTHOLOG_TEST_S3_REAL=1 +
-                                   ORTHOLOG_TEST_S3_BUCKET)     Backend
+  TestConformance_S3_Real         (ATTESTA_TEST_S3_REAL=1 +
+                                   ATTESTA_TEST_S3_BUCKET)     Backend
 
   GCS container (fake-gcs-server) does NOT validate V4 signatures,
   so it can only run the Store half of the suite.
@@ -296,8 +296,8 @@ func TestConformance_GCS_Container(t *testing.T) {
 	// fake-gcs-server: we get full Store coverage but PresignGet
 	// V4 signing isn't validated by the fake. Skip the Backend
 	// suite — it lives in TestConformance_GCS_Real.
-	if os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT") == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT unset; skipping fake-gcs conformance")
+	if os.Getenv("ATTESTA_TEST_GCS_ENDPOINT") == "" {
+		t.Skip("ATTESTA_TEST_GCS_ENDPOINT unset; skipping fake-gcs conformance")
 	}
 	store := requireGCS(t)
 	runStoreConformance(context.Background(), t, store)
@@ -306,11 +306,11 @@ func TestConformance_GCS_Container(t *testing.T) {
 func TestConformance_GCS_Real(t *testing.T) {
 	// Real-GCS: bucket configured, no endpoint override. Uses ADC
 	// (GOOGLE_APPLICATION_CREDENTIALS) for signed-URL keys.
-	if os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT") != "" {
-		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT set — that's container mode; this test is real-GCS only")
+	if os.Getenv("ATTESTA_TEST_GCS_ENDPOINT") != "" {
+		t.Skip("ATTESTA_TEST_GCS_ENDPOINT set — that's container mode; this test is real-GCS only")
 	}
-	if os.Getenv("ORTHOLOG_TEST_GCS_BUCKET") == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset; skipping real-GCS conformance")
+	if os.Getenv("ATTESTA_TEST_GCS_BUCKET") == "" {
+		t.Skip("ATTESTA_TEST_GCS_BUCKET unset; skipping real-GCS conformance")
 	}
 	store := requireGCS(t)
 	runBackendConformance(context.Background(), t, store)
@@ -320,11 +320,11 @@ func TestConformance_S3_Container(t *testing.T) {
 	// RustFS: full Backend coverage. SigV4 is validated by the
 	// container, and the local SigV4 signer in the SDK produces
 	// verifiable URLs.
-	if os.Getenv("ORTHOLOG_TEST_S3_ENDPOINT") == "" {
-		t.Skip("ORTHOLOG_TEST_S3_ENDPOINT unset; skipping S3 container conformance")
+	if os.Getenv("ATTESTA_TEST_S3_ENDPOINT") == "" {
+		t.Skip("ATTESTA_TEST_S3_ENDPOINT unset; skipping S3 container conformance")
 	}
-	if os.Getenv("ORTHOLOG_TEST_S3_REAL") == "1" {
-		t.Skip("ORTHOLOG_TEST_S3_REAL=1 — that's real-AWS mode; this test is for the local container")
+	if os.Getenv("ATTESTA_TEST_S3_REAL") == "1" {
+		t.Skip("ATTESTA_TEST_S3_REAL=1 — that's real-AWS mode; this test is for the local container")
 	}
 	store := requireS3(t)
 	runBackendConformance(context.Background(), t, store)
@@ -332,11 +332,11 @@ func TestConformance_S3_Container(t *testing.T) {
 
 func TestConformance_S3_Real(t *testing.T) {
 	// Real AWS S3: default credential chain, virtual-host URLs.
-	if os.Getenv("ORTHOLOG_TEST_S3_REAL") != "1" {
-		t.Skip("ORTHOLOG_TEST_S3_REAL!=1; skipping real-AWS conformance")
+	if os.Getenv("ATTESTA_TEST_S3_REAL") != "1" {
+		t.Skip("ATTESTA_TEST_S3_REAL!=1; skipping real-AWS conformance")
 	}
-	if os.Getenv("ORTHOLOG_TEST_S3_BUCKET") == "" {
-		t.Skip("ORTHOLOG_TEST_S3_BUCKET unset; skipping real-AWS conformance")
+	if os.Getenv("ATTESTA_TEST_S3_BUCKET") == "" {
+		t.Skip("ATTESTA_TEST_S3_BUCKET unset; skipping real-AWS conformance")
 	}
 	store := requireS3(t)
 	runBackendConformance(context.Background(), t, store)

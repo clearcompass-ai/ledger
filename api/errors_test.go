@@ -30,7 +30,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 func newManualReader(t *testing.T) (*metric.MeterProvider, *metric.ManualReader) {
@@ -41,7 +41,7 @@ func newManualReader(t *testing.T) (*metric.MeterProvider, *metric.ManualReader)
 }
 
 // collectErrorCounter returns the aggregated count of
-// ortholog_api_errors_total observations matching the supplied
+// attesta_api_errors_total observations matching the supplied
 // (error_class, http_status) tuple. Returns 0 when no match is
 // found.
 func collectErrorCounter(
@@ -57,7 +57,7 @@ func collectErrorCounter(
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "ortholog_api_errors_total" {
+			if m.Name != "attesta_api_errors_total" {
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])

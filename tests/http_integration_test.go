@@ -18,7 +18,7 @@ VET-COMPLIANCE NOTE:
 	catches this with the "using resp before checking for errors" diagnostic.
 	All such call sites route through doRequest / httpGet helpers.
 
-Run: ORTHOLOG_TEST_DSN="postgres://..." go test ./tests/ -v -count=1 -run TestHTTP
+Run: ATTESTA_TEST_DSN="postgres://..." go test ./tests/ -v -count=1 -run TestHTTP
 */
 package tests
 
@@ -37,10 +37,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/admission"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,7 +392,7 @@ func TestHTTP_Submission_ModeB_WrongLogDID_403(t *testing.T) {
 	// Stamp bound to a different log DID.
 	wire := buildModeBWireEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:wrong-log",
-	}, []byte("wrong-log-payload"), "did:ortholog:different-log", 16)
+	}, []byte("wrong-log-payload"), "did:attesta:different-log", 16)
 
 	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader(wire))
 	resp := doRequest(t, req)

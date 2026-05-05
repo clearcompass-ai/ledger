@@ -36,7 +36,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ import (
 // api.SubmissionDeps.LogDID, or every default-Destination entry will
 // fail step 3b's destination check with 403 Forbidden.
 // testLogDID is defined in helpers_test.go at package scope. We reuse that
-// value (did:ortholog:test:integration) as both the log destination and
+// value (did:attesta:test:integration) as both the log destination and
 // the operator DID for self-published entries in v0.3.0 fixtures.
 const testOperatorDID = testLogDID
 

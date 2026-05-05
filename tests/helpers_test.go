@@ -7,7 +7,7 @@ Provides:
   - In-memory SDK harness (testHarness) that wraps the SDK builder with
     convenience methods for SMT state inspection.
   - Mock fetcher and schema resolver implementing the SDK builder contracts.
-  - Postgres connection/migration helpers gated by ORTHOLOG_TEST_DSN.
+  - Postgres connection/migration helpers gated by ATTESTA_TEST_DSN.
   - Bulk entry generation for determinism and scale tests.
   - SDK v0.1.0 admission helpers — buildStampParams, verifyStampForTest —
     that wrap the post-Wave-1.5 GenerateStamp(StampParams) and
@@ -28,26 +28,26 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/admission"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ledger/store"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const testLogDID = "did:ortholog:test:integration"
+const testLogDID = "did:attesta:test:integration"
 
 // testEpochWindowSeconds is the epoch length used by HTTP integration tests.
-// 1 hour matches the production default (ORTHOLOG_EPOCH_WINDOW_SECONDS=3600)
+// 1 hour matches the production default (ATTESTA_EPOCH_WINDOW_SECONDS=3600)
 // and is wired into testserver_test.go's SubmissionDeps.Admission.
 const testEpochWindowSeconds = 3600
 
@@ -69,7 +69,7 @@ func pos(seq uint64) types.LogPosition {
 }
 
 func foreignPos(seq uint64) types.LogPosition {
-	return types.LogPosition{LogDID: "did:ortholog:foreign", Sequence: seq}
+	return types.LogPosition{LogDID: "did:attesta:foreign", Sequence: seq}
 }
 
 func ptrTo[T any](v T) *T { return &v }
@@ -552,7 +552,7 @@ func runSDKBuilder(t *testing.T, entries []*envelope.Entry, positions []types.Lo
 // Postgres helpers (for integration tests requiring a real database)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// skipIfNoPostgres checks for ORTHOLOG_TEST_DSN. Returns a pool or skips the test.
+// skipIfNoPostgres checks for ATTESTA_TEST_DSN. Returns a pool or skips the test.
 // Cleans all tables for isolation.
 func skipIfNoPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -569,9 +569,9 @@ func skipIfNoPostgres(t *testing.T) *pgxpool.Pool {
 // Use for tests that depend on data from a prior test (e.g., QueryIndex after BulkInsert).
 func connectPostgres(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN not set — skipping Postgres integration test")
+		t.Skip("ATTESTA_TEST_DSN not set — skipping Postgres integration test")
 	}
 
 	ctx := context.Background()
@@ -670,3 +670,64 @@ func mustJSON(v any) []byte {
 // ─────────────────────────────────────────────────────────────────────────────
 
 var _ = fmt.Sprintf
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Real-GCS gating for integration tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// requireRealGCS returns a real-GCS-backed bytestore.Backend for
+// integration tests that exercise the full byte-storage path. The
+// integration suite is REAL-GCS-ONLY — fake-gcs-server is rejected.
+//
+// Resolution chain (matches bytestore.NewGCS production path):
+//
+//  1. ATTESTA_TEST_GCS_BUCKET — required. Skip the test if unset.
+//  2. ATTESTA_TEST_GCS_ENDPOINT — must be EMPTY. The integration
+//     suite refuses fake-gcs to keep production behavior pinned
+//     (presigned URLs, V4 signing, ADC chain). Set the variable
+//     to fail the test loudly.
+//  3. ADC chain (in priority order):
+//        a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
+//        b. gcloud application-default login (developer workstation)
+//        c. Workload Identity (GKE / Cloud Run / GCE metadata server)
+//
+// The bucket must grant the test identity:
+//
+//   - storage.objects.create
+//   - storage.objects.get
+//   - storage.objects.list
+//   - storage.objects.delete
+//   - iam.serviceAccounts.signBlob (for V4 PresignGet)
+//
+// On any wiring failure, the test fails (NOT skips) so a broken
+// CI configuration doesn't silently turn into a green build.
+func requireRealGCS(t *testing.T) opbytestore.Backend {
+	t.Helper()
+
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
+	if bucket == "" {
+		t.Skip("ATTESTA_TEST_GCS_BUCKET unset; integration suite skipped")
+	}
+
+	if endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT"); endpoint != "" {
+		t.Fatalf(
+			"integration suite refuses fake-gcs (ATTESTA_TEST_GCS_ENDPOINT=%q). "+
+				"Real-GCS only — point ATTESTA_TEST_GCS_BUCKET at a real bucket "+
+				"and rely on ADC / Workload Identity for credentials.", endpoint,
+		)
+	}
+
+	store, err := opbytestore.NewFromConfig(context.Background(), opbytestore.Config{
+		Backend: "gcs",
+		Bucket:  bucket,
+		// No GCSEndpoint, no GCSAnonymous → ADC default chain.
+	})
+	if err != nil {
+		t.Fatalf("requireRealGCS: bytestore.NewFromConfig: %v "+
+			"(ADC credentials unavailable? ensure GOOGLE_APPLICATION_CREDENTIALS, "+
+			"gcloud application-default login, or Workload Identity is configured)", err)
+	}
+	// Backend impls handle their own connection lifetime; no Close
+	// method exists on the interface.
+	return store
+}

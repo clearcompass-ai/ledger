@@ -2,7 +2,7 @@
 Package apitypes is a leaf package shared by api/ + store/ that
 holds the value types and error sentinels exchanged across the
 api ↔ store boundary. It has zero dependencies on github.com/jackc/pgx
-or github.com/clearcompass-ai/ortholog-operator/store.
+or github.com/clearcompass-ai/ledger/store.
 
 # WHY THIS PACKAGE EXISTS
 

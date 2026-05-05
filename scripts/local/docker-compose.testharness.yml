@@ -13,11 +13,11 @@
 #
 #   cd integration
 #   docker-compose up -d
-#   ORTHOLOG_TEST_DSN="postgres://ortholog:ortholog@localhost:5544/ortholog_test?sslmode=disable" \
-#   ORTHOLOG_TEST_GCS_ENDPOINT="http://localhost:4443" \
+#   ATTESTA_TEST_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable" \
+#   ATTESTA_TEST_GCS_ENDPOINT="http://localhost:4443" \
 #   go test ./...
 #
-# CI3, CI4, CI5 integration tests skip when ORTHOLOG_TEST_DSN is
+# CI3, CI4, CI5 integration tests skip when ATTESTA_TEST_DSN is
 # unset, so this harness is the gate that makes them run. The
 # unit-test suite is unaffected and runs unconditionally.
 #
@@ -38,11 +38,11 @@ services:
   # ─────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
-    container_name: ortholog_test_postgres
+    container_name: attesta_test_postgres
     environment:
-      POSTGRES_USER: ortholog
-      POSTGRES_PASSWORD: ortholog
-      POSTGRES_DB: ortholog_test
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attesta
+      POSTGRES_DB: attesta_test
     # Pass tuning parameters directly to the server daemon:
     command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     ports:
@@ -56,7 +56,7 @@ services:
     # emulator: HTTP API-compatible with google-cloud-storage
     # clients, single binary, no auth in -scheme http mode.
     image: fsouza/fake-gcs-server:latest
-    container_name: ortholog_test_gcs
+    container_name: attesta_test_gcs
     command:
       - "-scheme=http"
       - "-port=4443"
@@ -81,7 +81,7 @@ services:
   # ─────────────────────────────────────────────────────────────────
   bucket-init:
     image: curlimages/curl:latest
-    container_name: ortholog_test_bucket_init
+    container_name: attesta_test_bucket_init
     depends_on:
       fake-gcs:
         condition: service_healthy
@@ -93,7 +93,7 @@ services:
         set -e;
         STATUS=$$(curl -s -o /dev/null -w "%{http_code}" -X POST
           -H "Content-Type: application/json"
-          -d ''{"name":"ortholog-tiles"}''
+          -d ''{"name":"attesta-tiles"}''
           http://fake-gcs:4443/storage/v1/b);
         case "$$STATUS" in
           200|201|409) echo "bucket ready (status=$$STATUS)"; exit 0;;
@@ -111,7 +111,7 @@ services:
   # backends; the adapter is byte-identical across them.
   rustfs:
     image: rustfs/rustfs:latest
-    container_name: ortholog_test_rustfs
+    container_name: attesta_test_rustfs
     environment:
       RUSTFS_ACCESS_KEY: rustfsadmin
       RUSTFS_SECRET_KEY: rustfsadmin
@@ -130,7 +130,7 @@ services:
   # ─────────────────────────────────────────────────────────────────
   rustfs-init:
     image: amazon/aws-cli:latest
-    container_name: ortholog_test_rustfs_init
+    container_name: attesta_test_rustfs_init
     depends_on:
       rustfs:
         condition: service_healthy
@@ -141,8 +141,8 @@ services:
     entrypoint: >
       sh -c '
         set -e;
-        aws --endpoint-url http://rustfs:9000 s3 mb s3://ortholog-test-bytes 2>/dev/null || true;
-        echo "bucket ortholog-test-bytes ready";
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://attesta-test-bytes 2>/dev/null || true;
+        echo "bucket attesta-test-bytes ready";
       '
 
 # Networks are auto-created. Service names (postgres, fake-gcs, rustfs)

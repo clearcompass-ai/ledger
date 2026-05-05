@@ -8,8 +8,8 @@ High-volume operator soak test against a real cloud bytestore.
 Build-tag-isolated so the default `go test ./...` run never invokes
 it — soak runs are minutes-long and cost real cloud spend. Opt-in via:
 
-  ORTHOLOG_TEST_DSN=postgres://...                        \
-  ORTHOLOG_TEST_GCS_BUCKET=ortholog-soak-<your-instance>  \
+  ATTESTA_TEST_DSN=postgres://...                        \
+  ATTESTA_TEST_GCS_BUCKET=attesta-soak-<your-instance>  \
   GOOGLE_APPLICATION_CREDENTIALS=...                      \
   go test -tags=soak ./tests/ -run TestSoak -v -count=1 -timeout 30m
 
@@ -36,10 +36,10 @@ WHAT IT MEASURES:
 
 CONFIG VIA ENV (with defaults):
 
-  ORTHOLOG_SOAK_ENTRIES        total entries to submit (default 1_000_000)
-  ORTHOLOG_SOAK_CONCURRENCY    concurrent submitters    (default 8)
-  ORTHOLOG_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
-  ORTHOLOG_SOAK_P99_BOUND_MS   HTTP admission p99 ceiling, ms (default 100)
+  ATTESTA_SOAK_ENTRIES        total entries to submit (default 1_000_000)
+  ATTESTA_SOAK_CONCURRENCY    concurrent submitters    (default 8)
+  ATTESTA_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
+  ATTESTA_SOAK_P99_BOUND_MS   HTTP admission p99 ceiling, ms (default 100)
 
 The defaults model a 1M-entry soak. Smaller numbers are useful for
 quick iteration; the same tests are valid at any size.
@@ -67,16 +67,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
 
-	"github.com/clearcompass-ai/ortholog-operator/api"
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
-	"github.com/clearcompass-ai/ortholog-operator/shipper"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	"github.com/clearcompass-ai/ortholog-operator/store/indexes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/shipper"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // soakSubmission records one accepted entry for the post-soak verify pass.
@@ -101,13 +101,13 @@ type soakOperator struct {
 func startSoakOperator(t *testing.T) *soakOperator {
 	t.Helper()
 
-	dsn := os.Getenv("ORTHOLOG_TEST_DSN")
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
-		t.Skip("ORTHOLOG_TEST_DSN not set — skipping soak test")
+		t.Skip("ATTESTA_TEST_DSN not set — skipping soak test")
 	}
-	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
 	if bucket == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_BUCKET not set — skipping soak test")
+		t.Skip("ATTESTA_TEST_GCS_BUCKET not set — skipping soak test")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,10 +315,10 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 	op := startSoakOperator(t)
 	op.seedSoakSession(t, "tok-soak", "did:example:soak-exchange", 100_000_000)
 
-	total := envInt("ORTHOLOG_SOAK_ENTRIES", 1_000_000)
-	concurrency := envInt("ORTHOLOG_SOAK_CONCURRENCY", 8)
-	verifySamples := envInt("ORTHOLOG_SOAK_VERIFY_SAMPLES", 100)
-	p99BoundMs := envInt("ORTHOLOG_SOAK_P99_BOUND_MS", 100)
+	total := envInt("ATTESTA_SOAK_ENTRIES", 1_000_000)
+	concurrency := envInt("ATTESTA_SOAK_CONCURRENCY", 8)
+	verifySamples := envInt("ATTESTA_SOAK_VERIFY_SAMPLES", 100)
+	p99BoundMs := envInt("ATTESTA_SOAK_P99_BOUND_MS", 100)
 
 	t.Logf("soak config: entries=%d concurrency=%d verify_samples=%d p99_bound_ms=%d",
 		total, concurrency, verifySamples, p99BoundMs)

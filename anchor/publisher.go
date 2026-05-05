@@ -41,11 +41,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdklog "github.com/clearcompass-ai/attesta/log"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // PublisherConfig configures the anchor publisher.

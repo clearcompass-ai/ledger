@@ -14,7 +14,7 @@ package — where PostgresCommitmentFetcher lives — pulls in pgx
 package-wide; importing ANY symbol from store/ transitively
 imports pgx. Putting the Badger-backed fetcher here means api/
 satisfies its commitment-lookup dependency through gossipstore +
-ortholog-sdk/types only.
+attesta/types only.
 
 Compliance test:
 
@@ -52,7 +52,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // BadgerCommitmentFetcher resolves a (schemaID, splitID) tuple to

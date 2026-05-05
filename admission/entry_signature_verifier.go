@@ -35,9 +35,9 @@ KEY ARCHITECTURAL DECISIONS:
 
 KEY DEPENDENCIES:
 
-  - github.com/clearcompass-ai/ortholog-sdk/core/envelope: Entry,
+  - github.com/clearcompass-ai/attesta/core/envelope: Entry,
     EntryIdentity.
-  - github.com/clearcompass-ai/ortholog-sdk/crypto/signatures:
+  - github.com/clearcompass-ai/attesta/crypto/signatures:
     VerifyEntry primitive (gated by SDK mutation switches).
 */
 package admission
@@ -49,8 +49,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 )
 
 // ErrSignatureInvalid is returned by VerifyEntrySignature when an

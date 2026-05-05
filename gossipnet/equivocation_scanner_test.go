@@ -25,14 +25,14 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
 
-	"github.com/clearcompass-ai/ortholog-operator/gossipnet"
-	"github.com/clearcompass-ai/ortholog-operator/gossipstore"
+	"github.com/clearcompass-ai/ledger/gossipnet"
+	"github.com/clearcompass-ai/ledger/gossipstore"
 )
 
 func nonZeroNetworkIDForScanner() cosign.NetworkID {

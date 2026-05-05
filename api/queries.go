@@ -40,13 +40,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
-	"github.com/clearcompass-ai/ortholog-operator/wal"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/apitypes"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // defaultScanCount mirrors store/indexes.DefaultScanCount;
@@ -479,7 +479,7 @@ func NewDifficultyHandler(deps *QueryDeps) http.HandlerFunc {
 // ─────────────────────────────────────────────────────────────────────
 
 // parseLogPosition splits "did:sequence" into a typed LogPosition. The
-// DID itself may contain colons (did:web:x, did:ortholog:a:b:c) so we
+// DID itself may contain colons (did:web:x, did:attesta:a:b:c) so we
 // split on the LAST colon to isolate the sequence.
 func parseLogPosition(s string) (types.LogPosition, error) {
 	if s == "" {

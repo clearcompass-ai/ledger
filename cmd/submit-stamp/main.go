@@ -22,12 +22,12 @@ Usage:
 
 	go run ./cmd/submit-stamp \
 	    -url http://localhost:8080 \
-	    -log-did "did:ortholog:operator:001" \
+	    -log-did "did:attesta:operator:001" \
 	    -payload "hello world"
 
 	go run ./cmd/submit-stamp \
 	    -url http://localhost:8080 \
-	    -log-did "did:ortholog:operator:001" \
+	    -log-did "did:attesta:operator:001" \
 	    -token "tok-dev" \
 	    -payload @/path/to/payload.json
 
@@ -55,17 +55,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	sdkadmission "github.com/clearcompass-ai/ortholog-sdk/crypto/admission"
-	sdksigs "github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	sdkdid "github.com/clearcompass-ai/ortholog-sdk/did"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
+	sdksigs "github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdkdid "github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 func main() {
 	var (
 		operatorURL = flag.String("url", "http://localhost:8080", "operator base URL")
-		logDID      = flag.String("log-did", "did:ortholog:operator:001", "destination log DID (admission rejects mismatched Header.Destination)")
+		logDID      = flag.String("log-did", "did:attesta:operator:001", "destination log DID (admission rejects mismatched Header.Destination)")
 		token       = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
 		difficulty  = flag.Int("difficulty", 0, "Mode B difficulty; 0 → query /v1/admission/difficulty")
 		epochSec    = flag.Int("epoch-window", 3600, "epoch window seconds (must match OPERATOR_EPOCH_WINDOW_SECONDS)")
@@ -222,7 +222,7 @@ func verifyClientSCT(pub *ecdsa.PublicKey, sct *apiSCT) error {
 		return fmt.Errorf("signature decode: %w", err)
 	}
 	// Match the packing in api/sct.go::SCTSigningPayload exactly.
-	const domainSep = "ORTHOLOG_SCT_V1\x00"
+	const domainSep = "ATTESTA_SCT_V1\x00"
 	buf := make([]byte, 0, len(domainSep)+1+2+len(sct.SignerDID)+2+len(sct.SigAlgoID)+2+len(sct.LogDID)+32+8)
 	buf = append(buf, domainSep...)
 	buf = append(buf, sct.Version)

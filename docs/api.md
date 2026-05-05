@@ -171,7 +171,7 @@ Mounted iff gossip is enabled (`gossipBStore != nil`):
 | `GET /metrics` | `server.go:322` |
 
 Prometheus scrape endpoint. Mounted iff `OPERATOR_METRICS_ENABLE=true`.
-Metric: `ortholog_api_errors_total{error_class, http_status}` —
+Metric: `attesta_api_errors_total{error_class, http_status}` —
 see [observability.md](observability.md).
 
 ## Route-mount tests

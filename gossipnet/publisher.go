@@ -54,10 +54,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // STHPublisher emits KindCosignedTreeHead events to the gossip

@@ -1,5 +1,5 @@
 /*
-Package store provides Postgres persistence for the Ortholog operator.
+Package store provides Postgres persistence for the Attesta operator.
 
 FILE PATH: store/postgres.go
 
@@ -40,7 +40,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/ortholog-operator/apitypes"
+	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool) error {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // BuilderLockID is the Postgres advisory lock key for builder exclusivity.
-const BuilderLockID int64 = 0x4F5254484F4C4F47 // "ORTHOLOG" in hex
+const BuilderLockID int64 = 0x4F5254484F4C4F47 // "ATTESTA" in hex
 
 // AcquireBuilderLock takes the advisory lock.
 func AcquireBuilderLock(ctx context.Context, db *pgxpool.Pool) (release func(), err error) {

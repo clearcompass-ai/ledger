@@ -60,7 +60,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/clearcompass-ai/ortholog-sdk/gossip"
+	"github.com/clearcompass-ai/attesta/gossip"
 )
 
 // Iterate implements gossip.Store.

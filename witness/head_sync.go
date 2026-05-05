@@ -53,11 +53,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdklog "github.com/clearcompass-ai/attesta/log"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/store"
+	"github.com/clearcompass-ai/ledger/store"
 )
 
 // CosignedHeadPublisher is the interface HeadSync calls after a

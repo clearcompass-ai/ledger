@@ -81,12 +81,12 @@ import (
 	"net/http"
 	"time"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip/findings"
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
-	sdkwitness "github.com/clearcompass-ai/ortholog-sdk/witness"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	"github.com/clearcompass-ai/attesta/gossip/findings"
+	sdklog "github.com/clearcompass-ai/attesta/log"
+	"github.com/clearcompass-ai/attesta/types"
+	sdkwitness "github.com/clearcompass-ai/attesta/witness"
 )
 
 // DefaultEquivocationInterval is the default poll period.

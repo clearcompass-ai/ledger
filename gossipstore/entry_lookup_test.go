@@ -61,7 +61,7 @@ func TestEntryLookupKey_RoundTrips(t *testing.T) {
 }
 
 func TestEntryLookupKey_PrefixMatchesKey(t *testing.T) {
-	schemaID := "ortholog.network/schema/pre-grant-commitment/v1"
+	schemaID := "attesta.network/schema/pre-grant-commitment/v1"
 	splitID := [32]byte{0xaa, 0xbb, 0xcc}
 
 	prefix := entryLookupPrefix(schemaID, splitID)
@@ -179,7 +179,7 @@ func TestWriteAndListEntryLookupEntriesAt_Empty(t *testing.T) {
 func TestWriteAndListEntryLookupEntriesAt_SingleRow(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
-	schema := "ortholog.network/schema/pre-grant-commitment/v1"
+	schema := "attesta.network/schema/pre-grant-commitment/v1"
 	split := [32]byte{0xab, 0xcd}
 
 	want := EntryLookupIndexEntry{

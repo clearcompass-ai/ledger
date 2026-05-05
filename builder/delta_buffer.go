@@ -29,8 +29,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // DeltaBufferStore persists the delta-window buffer to Postgres.

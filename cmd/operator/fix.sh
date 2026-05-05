@@ -1,4 +1,4 @@
-cd ~/workspace/ortholog-operator
+cd ~/workspace/ledger
 
 # 1. Lines needing the AppendSignature fix + ~3 lines context each
 sed -n '125,132p'   tests/http_integration_test.go

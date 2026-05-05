@@ -16,7 +16,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	"github.com/clearcompass-ai/attesta/types"
 )
 
 // ScanFromPosition returns entries starting at startPos in sequence order.

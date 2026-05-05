@@ -28,10 +28,10 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	"github.com/clearcompass-ai/ortholog-sdk/gossip"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/gossip"
 )
 
 // memDB opens an in-memory Badger DB for one test and registers a

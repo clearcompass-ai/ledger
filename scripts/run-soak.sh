@@ -3,29 +3,29 @@
 #
 # Runs the build-tag-isolated operator soak test (tests/soak_test.go).
 # Default: 1M entries against real GCS, ~3 min sustained throughput.
-# Lower the count via ORTHOLOG_SOAK_ENTRIES for quick iteration.
+# Lower the count via ATTESTA_SOAK_ENTRIES for quick iteration.
 #
 # Required env:
-#   ORTHOLOG_TEST_DSN              postgres connection string (REQUIRED)
-#   ORTHOLOG_TEST_GCS_BUCKET       real GCS bucket name (REQUIRED)
+#   ATTESTA_TEST_DSN              postgres connection string (REQUIRED)
+#   ATTESTA_TEST_GCS_BUCKET       real GCS bucket name (REQUIRED)
 #   GOOGLE_APPLICATION_CREDENTIALS path to a service-account key with
 #                                  storage.objects.{create,get,list,delete}
 #                                  on the bucket (or workload identity)
 #
 # Optional knobs (env, with defaults):
-#   ORTHOLOG_SOAK_ENTRIES          1000000   total entries to submit
-#   ORTHOLOG_SOAK_CONCURRENCY      8         concurrent submitter goroutines
-#   ORTHOLOG_SOAK_VERIFY_SAMPLES   100       random subset to verify via /raw
-#   ORTHOLOG_SOAK_P99_BOUND_MS     100       admission p99 ceiling
+#   ATTESTA_SOAK_ENTRIES          1000000   total entries to submit
+#   ATTESTA_SOAK_CONCURRENCY      8         concurrent submitter goroutines
+#   ATTESTA_SOAK_VERIFY_SAMPLES   100       random subset to verify via /raw
+#   ATTESTA_SOAK_P99_BOUND_MS     100       admission p99 ceiling
 #
 # Usage:
-#   export ORTHOLOG_TEST_DSN=postgres://...
-#   export ORTHOLOG_TEST_GCS_BUCKET=ortholog-soak
+#   export ATTESTA_TEST_DSN=postgres://...
+#   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
 #   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 #   ./scripts/run-soak.sh
 #
 # Or scale down for a quick run:
-#   ORTHOLOG_SOAK_ENTRIES=10000 ORTHOLOG_SOAK_VERIFY_SAMPLES=20 \
+#   ATTESTA_SOAK_ENTRIES=10000 ATTESTA_SOAK_VERIFY_SAMPLES=20 \
 #     ./scripts/run-soak.sh
 
 set -euo pipefail
@@ -34,17 +34,17 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 # ── Validate inputs ───────────────────────────────────────────────
-if [ -z "${ORTHOLOG_TEST_DSN:-}" ]; then
-    echo "FATAL: ORTHOLOG_TEST_DSN not set"
+if [ -z "${ATTESTA_TEST_DSN:-}" ]; then
+    echo "FATAL: ATTESTA_TEST_DSN not set"
     echo
-    echo "  export ORTHOLOG_TEST_DSN=postgres://user:pw@host/db"
+    echo "  export ATTESTA_TEST_DSN=postgres://user:pw@host/db"
     exit 1
 fi
 
-if [ -z "${ORTHOLOG_TEST_GCS_BUCKET:-}" ]; then
-    echo "FATAL: ORTHOLOG_TEST_GCS_BUCKET not set"
+if [ -z "${ATTESTA_TEST_GCS_BUCKET:-}" ]; then
+    echo "FATAL: ATTESTA_TEST_GCS_BUCKET not set"
     echo
-    echo "  export ORTHOLOG_TEST_GCS_BUCKET=<your-bucket>"
+    echo "  export ATTESTA_TEST_GCS_BUCKET=<your-bucket>"
     exit 1
 fi
 
@@ -56,16 +56,16 @@ fi
 
 # Soak runs against REAL GCS — explicitly clear any container-mode signal
 # the test harness might pick up.
-unset ORTHOLOG_TEST_GCS_ENDPOINT
+unset ATTESTA_TEST_GCS_ENDPOINT
 
-ENTRIES="${ORTHOLOG_SOAK_ENTRIES:-1000000}"
-CONCURRENCY="${ORTHOLOG_SOAK_CONCURRENCY:-8}"
-SAMPLES="${ORTHOLOG_SOAK_VERIFY_SAMPLES:-100}"
-P99_BOUND_MS="${ORTHOLOG_SOAK_P99_BOUND_MS:-100}"
+ENTRIES="${ATTESTA_SOAK_ENTRIES:-1000000}"
+CONCURRENCY="${ATTESTA_SOAK_CONCURRENCY:-8}"
+SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
+P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
 
-echo "== ortholog operator soak =="
+echo "== attesta operator soak =="
 echo "   dsn:          (set, omitted)"
-echo "   bucket:       ${ORTHOLOG_TEST_GCS_BUCKET}"
+echo "   bucket:       ${ATTESTA_TEST_GCS_BUCKET}"
 echo "   creds:        ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
 echo "   entries:      ${ENTRIES}"
 echo "   concurrency:  ${CONCURRENCY}"
@@ -97,11 +97,11 @@ cat <<EOF
   "verify_samples":     ${SAMPLES},
   "p99_bound_ms":       ${P99_BOUND_MS},
   "wall_clock_seconds": ${ELAPSED_S},
-  "bucket":             "${ORTHOLOG_TEST_GCS_BUCKET}",
+  "bucket":             "${ATTESTA_TEST_GCS_BUCKET}",
   "test_status":        "ok"
 }
 EOF
 
 echo
 echo "Cleanup verification: leftover soak objects under your bucket?"
-echo "  gsutil ls 'gs://${ORTHOLOG_TEST_GCS_BUCKET}/soak/**' || echo '(none)'"
+echo "  gsutil ls 'gs://${ATTESTA_TEST_GCS_BUCKET}/soak/**' || echo '(none)'"

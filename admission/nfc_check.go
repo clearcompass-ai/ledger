@@ -32,7 +32,7 @@ KEY ARCHITECTURAL DECISIONS:
 KEY DEPENDENCIES:
 
   - golang.org/x/text/unicode/norm: NFC normalization primitive.
-  - github.com/clearcompass-ai/ortholog-sdk/core/envelope: Entry,
+  - github.com/clearcompass-ai/attesta/core/envelope: Entry,
     ControlHeader (read-only).
 */
 package admission
@@ -43,7 +43,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // ErrIngressNotNFC is returned by CheckNFC when a DID-shaped header

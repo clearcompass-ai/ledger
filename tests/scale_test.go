@@ -4,8 +4,8 @@ FILE PATH: tests/scale_test.go
 Scale tests. Measures builder throughput, sequence allocation rate,
 Postgres write behavior, and queue drain time under sustained load.
 
-Gated by ORTHOLOG_TEST_DSN — skips without Postgres.
-Entry count configurable via ORTHOLOG_SCALE_N (default 1,000,000).
+Gated by ATTESTA_TEST_DSN — skips without Postgres.
+Entry count configurable via ATTESTA_SCALE_N (default 1,000,000).
 
 POST-WAVE-1.5 NOTES:
   - Wire format used in HTTP throughput tests is protocol v5.
@@ -16,11 +16,11 @@ POST-WAVE-1.5 NOTES:
 
 Run:
 
-	ORTHOLOG_TEST_DSN="postgres://ortholog:ortholog@localhost:5432/ortholog_test?sslmode=disable" \
+	ATTESTA_TEST_DSN="postgres://attesta:attesta@localhost:5432/attesta_test?sslmode=disable" \
 	  go test ./tests/ -v -count=1 -run TestScale -timeout 30m
 
 	# Start smaller:
-	ORTHOLOG_SCALE_N=100000 go test ./tests/ -v -count=1 -run TestScale -timeout 30m
+	ATTESTA_SCALE_N=100000 go test ./tests/ -v -count=1 -run TestScale -timeout 30m
 */
 package tests
 
@@ -39,20 +39,20 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkbuilder "github.com/clearcompass-ai/ortholog-sdk/builder"
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
-	"github.com/clearcompass-ai/ortholog-sdk/core/smt"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ortholog-operator/api/middleware"
-	opbuilder "github.com/clearcompass-ai/ortholog-operator/builder"
-	"github.com/clearcompass-ai/ortholog-operator/store"
-	opbytestore "github.com/clearcompass-ai/ortholog-operator/bytestore"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	opbuilder "github.com/clearcompass-ai/ledger/builder"
+	"github.com/clearcompass-ai/ledger/store"
+	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 )
 
-// getScaleN returns the entry count from ORTHOLOG_SCALE_N (default 1M).
+// getScaleN returns the entry count from ATTESTA_SCALE_N (default 1M).
 func getScaleN() int {
-	if v := os.Getenv("ORTHOLOG_SCALE_N"); v != "" {
+	if v := os.Getenv("ATTESTA_SCALE_N"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
@@ -410,9 +410,9 @@ func TestScale_SDKProcessBatch(t *testing.T) {
 	// test runs >10 minutes on commodity hardware. Skip under
 	// -short so `go test -short ./...` stays fast; opt in via
 	// `go test -run TestScale_SDKProcessBatch ./tests/` (or set
-	// ORTHOLOG_SCALE_N=1000 for a quicker smoke test).
+	// ATTESTA_SCALE_N=1000 for a quicker smoke test).
 	if testing.Short() {
-		t.Skip("scale benchmark skipped under -short; run without -short or with ORTHOLOG_SCALE_N=1000 for a smoke test")
+		t.Skip("scale benchmark skipped under -short; run without -short or with ATTESTA_SCALE_N=1000 for a smoke test")
 	}
 	N := getScaleN()
 

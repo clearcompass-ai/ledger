@@ -65,7 +65,7 @@ docker compose -f "${COMPOSE_FILE}" up -d postgres fake-gcs bucket-init
 # Wait for Postgres readiness via psql connection probe.
 echo "== waiting for postgres =="
 for i in $(seq 1 30); do
-    if docker exec ortholog_test_postgres pg_isready -U ortholog -d ortholog_test >/dev/null 2>&1; then
+    if docker exec attesta_test_postgres pg_isready -U attesta -d attesta_test >/dev/null 2>&1; then
         echo "postgres ready (attempt ${i})"
         break
     fi
@@ -75,7 +75,7 @@ done
 # Wait for fake-gcs healthcheck to flip green.
 echo "== waiting for fake-gcs =="
 for i in $(seq 1 30); do
-    health="$(docker inspect --format='{{.State.Health.Status}}' ortholog_test_gcs 2>/dev/null || true)"
+    health="$(docker inspect --format='{{.State.Health.Status}}' attesta_test_gcs 2>/dev/null || true)"
     if [ "${health}" = "healthy" ]; then
         echo "fake-gcs ready (attempt ${i})"
         break
@@ -85,8 +85,8 @@ done
 
 # Wait for bucket-init to finish (it exits 0 on bucket creation).
 for i in $(seq 1 30); do
-    status="$(docker inspect --format='{{.State.Status}}' ortholog_test_bucket_init 2>/dev/null || true)"
-    exitcode="$(docker inspect --format='{{.State.ExitCode}}' ortholog_test_bucket_init 2>/dev/null || echo -1)"
+    status="$(docker inspect --format='{{.State.Status}}' attesta_test_bucket_init 2>/dev/null || true)"
+    exitcode="$(docker inspect --format='{{.State.ExitCode}}' attesta_test_bucket_init 2>/dev/null || echo -1)"
     if [ "${status}" = "exited" ] && [ "${exitcode}" = "0" ]; then
         echo "bucket ready (attempt ${i})"
         break
@@ -99,10 +99,10 @@ mkdir -p "${RUN_DIR}/wal" "${RUN_DIR}/tessera" "${RUN_DIR}/antispam"
 
 # ── Operator env ─────────────────────────────────────────────────
 # Postgres
-export OPERATOR_DATABASE_URL="${OPERATOR_DATABASE_URL:-postgres://ortholog:ortholog@localhost:5544/ortholog_test?sslmode=disable}"
+export OPERATOR_DATABASE_URL="${OPERATOR_DATABASE_URL:-postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable}"
 
 # Identity
-export OPERATOR_LOG_DID="${OPERATOR_LOG_DID:-did:ortholog:operator:local}"
+export OPERATOR_LOG_DID="${OPERATOR_LOG_DID:-did:attesta:operator:local}"
 
 # Storage volumes
 export OPERATOR_WAL_PATH="${OPERATOR_WAL_PATH:-${RUN_DIR}/wal}"
@@ -111,7 +111,7 @@ export OPERATOR_TESSERA_ANTISPAM_PATH="${OPERATOR_TESSERA_ANTISPAM_PATH:-${RUN_D
 
 # Bytestore — fake-gcs locally; the bucket bucket-init created.
 export OPERATOR_BYTE_STORE_BACKEND="${OPERATOR_BYTE_STORE_BACKEND:-gcs}"
-export OPERATOR_BYTE_STORE_GCS_BUCKET="${OPERATOR_BYTE_STORE_GCS_BUCKET:-ortholog-tiles}"
+export OPERATOR_BYTE_STORE_GCS_BUCKET="${OPERATOR_BYTE_STORE_GCS_BUCKET:-attesta-tiles}"
 export OPERATOR_BYTE_STORE_GCS_ENDPOINT="${OPERATOR_BYTE_STORE_GCS_ENDPOINT:-http://localhost:4443/storage/v1/}"
 export OPERATOR_BYTE_STORE_GCS_ANONYMOUS="${OPERATOR_BYTE_STORE_GCS_ANONYMOUS:-true}"
 

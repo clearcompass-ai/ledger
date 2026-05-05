@@ -18,7 +18,7 @@ integration-tests topology, jump to [§ Integration topology](#integration-topol
 |---|---|---|
 | `operator-davidson` | `:8080` | Trial-court operator, `LogDID = did:web:state:tn:davidson` |
 | `operator-coa` | `:8081` | Appellate-court operator, `LogDID = did:web:state:tn:coa` |
-| `postgres` | `:5432` | Shared Postgres 18 with two databases (`ortholog_davidson`, `ortholog_coa`) |
+| `postgres` | `:5432` | Shared Postgres 18 with two databases (`attesta_davidson`, `attesta_coa`) |
 | (no GCS service) | — | Each operator hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
 
 This is the runtime the **judicial-network walkthrough** runs
@@ -130,7 +130,7 @@ where deterministic offline runs matter more than GCS realism.
 | Operator startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
 | Operator startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
 | `dev-up` hangs at "waiting for both operators" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
-| `/healthz` returns 503 from `operator-coa` | `ortholog_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
+| `/healthz` returns 503 from `operator-coa` | `attesta_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
 | `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2. |
 
 ---

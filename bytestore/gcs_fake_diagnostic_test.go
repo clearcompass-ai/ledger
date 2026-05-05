@@ -8,7 +8,7 @@ LIST returns the object's path, but GET on that exact path 404s
 even after a 1.5-second retry budget.
 
 Each test runs ONLY against fake-gcs-server (skipped if
-ORTHOLOG_TEST_GCS_ENDPOINT is unset). Real GCS doesn't exhibit
+ATTESTA_TEST_GCS_ENDPOINT is unset). Real GCS doesn't exhibit
 this pattern, so running there is wasted I/O.
 
 Each experiment validates one hypothesis with a controlled change
@@ -52,17 +52,17 @@ import (
 	"google.golang.org/api/option"
 )
 
-// requireFakeGCS skips unless ORTHOLOG_TEST_GCS_ENDPOINT is set.
+// requireFakeGCS skips unless ATTESTA_TEST_GCS_ENDPOINT is set.
 // Diagnostic tests are fake-gcs-specific by design.
 func requireFakeGCS(t *testing.T) (string, string) {
 	t.Helper()
-	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
+	endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_ENDPOINT unset; diagnostic is fake-gcs-only")
+		t.Skip("ATTESTA_TEST_GCS_ENDPOINT unset; diagnostic is fake-gcs-only")
 	}
-	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
 	if bucket == "" {
-		bucket = "ortholog-test-bytes"
+		bucket = "attesta-test-bytes"
 	}
 	return endpoint, bucket
 }

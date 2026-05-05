@@ -3,7 +3,7 @@ FILE PATH: bytestore/gcs_test.go
 
 Tests for bytestore.GCS. Run against the fake-gcs-server harness
 exposed by integration/docker-compose.yml. Skip cleanly when the env
-vars are unset, mirroring the ORTHOLOG_TEST_DSN skip pattern in
+vars are unset, mirroring the ATTESTA_TEST_DSN skip pattern in
 store/sequence_cursor_test.go and store/commitment_fetcher_test.go.
 
 Coverage:
@@ -23,8 +23,8 @@ Coverage:
 Env vars (mirrors the operator's production OPERATOR_BYTE_STORE_*
 naming so tests and prod stay in sync):
 
-  ORTHOLOG_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
-  ORTHOLOG_TEST_GCS_BUCKET     e.g. ortholog-test-bytes
+  ATTESTA_TEST_GCS_ENDPOINT   e.g. http://localhost:4443/storage/v1/
+  ATTESTA_TEST_GCS_BUCKET     e.g. attesta-test-bytes
 
 The docker-compose harness creates the bucket at startup; tests
 that need a clean state delete + recreate per-test via the
@@ -53,8 +53,8 @@ import (
 // server (integration harness) or real GCS, depending on which env
 // vars are set:
 //
-//	ORTHOLOG_TEST_GCS_ENDPOINT  set → fake-gcs mode (anonymous=true)
-//	ORTHOLOG_TEST_GCS_BUCKET    set → real GCS mode (ADC)
+//	ATTESTA_TEST_GCS_ENDPOINT  set → fake-gcs mode (anonymous=true)
+//	ATTESTA_TEST_GCS_BUCKET    set → real GCS mode (ADC)
 //	neither set                     → t.Skip
 //
 // Real-GCS mode requires GOOGLE_APPLICATION_CREDENTIALS pointing at
@@ -65,19 +65,19 @@ import (
 func requireGCS(t *testing.T) *GCS {
 	t.Helper()
 
-	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
-	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT")
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
 
 	if endpoint == "" && bucket == "" {
-		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set; skipping GCS test")
+		t.Skip("neither ATTESTA_TEST_GCS_ENDPOINT nor ATTESTA_TEST_GCS_BUCKET set; skipping GCS test")
 	}
 
 	fakeMode := endpoint != ""
 	if !fakeMode && bucket == "" {
-		t.Skip("ORTHOLOG_TEST_GCS_BUCKET unset for real-GCS mode; skipping")
+		t.Skip("ATTESTA_TEST_GCS_BUCKET unset for real-GCS mode; skipping")
 	}
 	if fakeMode && bucket == "" {
-		bucket = "ortholog-test-bytes"
+		bucket = "attesta-test-bytes"
 	}
 
 	prefix := fmt.Sprintf("test/%s/%d", t.Name(), time.Now().UnixNano())
@@ -433,14 +433,14 @@ func TestGCS_ConcurrentWriters(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────
 
 func TestGCS_DifferentObjectPrefix_IsolatesData(t *testing.T) {
-	endpoint := os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT")
-	bucket := os.Getenv("ORTHOLOG_TEST_GCS_BUCKET")
+	endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT")
+	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
 	if endpoint == "" && bucket == "" {
-		t.Skip("neither ORTHOLOG_TEST_GCS_ENDPOINT nor ORTHOLOG_TEST_GCS_BUCKET set")
+		t.Skip("neither ATTESTA_TEST_GCS_ENDPOINT nor ATTESTA_TEST_GCS_BUCKET set")
 	}
 	fakeMode := endpoint != ""
 	if fakeMode && bucket == "" {
-		bucket = "ortholog-test-bytes"
+		bucket = "attesta-test-bytes"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -504,7 +504,7 @@ func TestGCS_DifferentObjectPrefix_IsolatesData(t *testing.T) {
 // the server may not validate the signature the way real GCS does.
 // Real-GCS mode runs this; fake-gcs mode skips with a log line.
 func TestGCS_PresignGet_FetchesBytes(t *testing.T) {
-	if os.Getenv("ORTHOLOG_TEST_GCS_ENDPOINT") != "" {
+	if os.Getenv("ATTESTA_TEST_GCS_ENDPOINT") != "" {
 		t.Skip("PresignGet uses real GCS V4 signing; fake-gcs-server does not validate it")
 	}
 	ctx := context.Background()

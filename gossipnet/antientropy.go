@@ -59,8 +59,8 @@ import (
 	"net/http"
 	"time"
 
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
-	sdklog "github.com/clearcompass-ai/ortholog-sdk/log"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
+	sdklog "github.com/clearcompass-ai/attesta/log"
 )
 
 // DefaultAntiEntropyInterval is the default per-tick period.

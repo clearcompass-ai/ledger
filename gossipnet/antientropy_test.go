@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	sdkcosign "github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/did"
-	sdkgossip "github.com/clearcompass-ai/ortholog-sdk/gossip"
+	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/did"
+	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 )
 
 // stubFeedServer serves the SDK's /v1/gossip/since wire format

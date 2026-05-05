@@ -13,7 +13,7 @@ KEY ARCHITECTURAL DECISIONS:
 package middleware
 
 import (
-	"github.com/clearcompass-ai/ortholog-sdk/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // MaxEvidencePointers is the Decision 51 cap.
