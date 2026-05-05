@@ -1081,12 +1081,23 @@ func main() {
 			logger.Error("witness signer", "error", err)
 			os.Exit(1)
 		}
-		cosignH := witness.NewCosignHandler(witness.ServeConfig{
+		// Tree-head-only signing surface: the operator's witness
+		// role refuses to cosign rotation or escrow-override
+		// payloads even though the SDK handler can serve them. A
+		// dedicated rotation/override witness is a separate
+		// deployment.
+		witnessHandler, err = witness.BuildCosignHandler(witness.ServeConfig{
 			WitnessKey: witnessKey,
 			NetworkID:  cfg.NetworkID,
-			Logger:     logger,
+			AllowedPurposes: map[cosign.Purpose]struct{}{
+				cosign.PurposeTreeHead: {},
+			},
+			Logger: logger,
 		})
-		witnessHandler = http.HandlerFunc(cosignH.ServeHTTP)
+		if err != nil {
+			logger.Error("witness cosign handler", "error", err)
+			os.Exit(1)
+		}
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 

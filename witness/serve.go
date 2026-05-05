@@ -1,27 +1,64 @@
 /*
 FILE PATH: witness/serve.go
 
-Witness cosignature endpoint. Accepts tree head cosign requests from
-peer operators and returns a signature over the tree head.
+Witness cosignature endpoint construction. Wraps the SDK's universal
+cosign handler (cosign.NewWitnessHandler) with the operator-side
+monotonicity guard that refuses to cosign a tree head smaller than
+the largest tree head this process has previously signed.
 
-Deployed when this operator acts as a witness for another log.
-The signing key is the witness private key (not the operator's log key).
+# WHY THIS THIN WRAPPER EXISTS
 
-KEY ARCHITECTURAL DECISIONS:
-  - Signs the cosign-canonical tree-head message via cosign.SignECDSA
-    (universal signing surface; binds the signature to the deployment's
-    NetworkID and the PurposeTreeHead domain).
-  - Validates tree head is monotonically non-decreasing (no rollback).
-  - Rate limited per-peer (not implemented here — middleware concern).
-  - Key injected via config, never hardcoded.
-  - Returns types.WitnessSignature JSON with SchemeTag=SchemeECDSA —
-    the cosign verifier rejects SchemeTag==0.
+The SDK ships a wire-complete cosign handler — JSON parsing,
+network/purpose/hash-algo validation, payload decoding, signing,
+response encoding. It does not encode operator-policy rules like
+"refuse rollbacks" because such rules are deployment-specific.
+
+The operator's witness role enforces:
+
+  - Monotonicity (this file): never cosign a tree_size strictly
+    smaller than this process's lastSignedSize. Per-process state;
+    resets on restart by design — the wraparound risk on restart is
+    accepted in exchange for not depending on persistent state for
+    a defense-in-depth check. The authoritative non-rollback
+    guarantee is the per-originator hash chain enforced at the
+    gossip Store + Tessera log layer.
+
+  - Network binding (SDK): rejects requests whose network_id is not
+    in AllowedNetworks. Single-network deployments contain exactly
+    one entry derived from the network bootstrap document.
+
+  - Purpose binding (SDK, optional): when AllowedPurposes is set,
+    refuses to cosign anything other than tree heads — narrowing
+    the witness's signing surface to exactly what this deployment
+    role requires.
+
+# MONOTONICITY MIDDLEWARE
+
+A pre-handler middleware reads the request body once (capped at
+the SDK's MaxRequestBytes), peeks at the cosign.WireRequest's
+purpose field, and for PurposeTreeHead extracts the embedded
+tree_size. On rollback the response is 409 Conflict + a
+WireError-shaped JSON body. On non-tree-head purposes (rotation,
+escrow override) the middleware passes through unchanged.
+
+Body re-injection: the middleware replaces r.Body with a
+bytes.Reader over the buffered bytes so the SDK handler reads the
+same content. No mutation of headers or method.
+
+State semantics: lastSignedSize advances at middleware entry on
+the optimistic assumption that the SDK handler will accept the
+request. If the SDK rejects for a downstream reason (bad network,
+malformed payload), lastSignedSize stays advanced — a rollback
+attempt at exactly the rejected size becomes a no-op next time.
+This matches the previous hand-rolled behavior and is acceptable
+because the SDK rejections fire on structurally invalid requests
+that an honest operator never sends.
 */
 package witness
 
 import (
+	"bytes"
 	"crypto/ecdsa"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,176 +67,154 @@ import (
 	"sync"
 
 	"github.com/clearcompass-ai/ortholog-sdk/crypto/cosign"
-	"github.com/clearcompass-ai/ortholog-sdk/crypto/signatures"
-	"github.com/clearcompass-ai/ortholog-sdk/types"
 )
 
 // ServeConfig configures the witness cosign endpoint.
 type ServeConfig struct {
-	// WitnessKey is the private key used to sign tree heads.
+	// WitnessKey is the ECDSA private key used to sign tree heads.
 	// Injected from HSM/config. Never persisted in plaintext.
+	// BLS witnesses inject a different signer via BuildCosignHandlerSigner.
 	WitnessKey *ecdsa.PrivateKey
 
 	// NetworkID is the deployment's 32-byte cosign-domain identifier,
-	// derived at boot from the operator's network bootstrap document
-	// via network.MustNetworkID. Witnesses for the same network share
-	// the same value; signatures produced under one NetworkID never
-	// verify under another.
+	// derived at boot from the operator's network bootstrap document.
+	// Witnesses for the same network share the same value; signatures
+	// produced under one NetworkID never verify under another.
 	NetworkID cosign.NetworkID
+
+	// AllowedPurposes optionally narrows the signing surface. nil ⇒
+	// accept any registered Purpose. Operators wishing to deploy a
+	// "tree-head-only" witness pass {cosign.PurposeTreeHead: {}}.
+	AllowedPurposes map[cosign.Purpose]struct{}
+
+	// MaxRequestBytes caps request body size. <= 0 ⇒
+	// cosign.DefaultMaxRequestBytes (64 KiB).
+	MaxRequestBytes int64
 
 	Logger *slog.Logger
 }
 
-// CosignHandler handles POST /v1/cosign requests from peer operators.
-// Implements http.Handler. Registered in api/server.go when witness
-// mode is enabled (Handlers.WitnessCosign != nil).
-type CosignHandler struct {
-	key       *ecdsa.PrivateKey
-	pubID     [32]byte // SHA-256 of uncompressed public key bytes
-	networkID cosign.NetworkID
-	logger    *slog.Logger
-
-	mu             sync.Mutex
-	lastSignedSize uint64 // monotonicity guard: never sign a smaller tree
+// BuildCosignHandler constructs the witness cosign handler ready to
+// mount at POST /v1/cosign. Wraps cosign.NewWitnessHandler with the
+// monotonicity guard.
+//
+// Returns an error if the SDK handler factory rejects the config
+// (zero NetworkID, missing signer, etc.).
+func BuildCosignHandler(cfg ServeConfig) (http.Handler, error) {
+	if cfg.WitnessKey == nil {
+		return nil, fmt.Errorf("witness/serve: WitnessKey required")
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	signer := cosign.NewECDSAWitnessSigner(cfg.WitnessKey)
+	return BuildCosignHandlerSigner(signer, cfg)
 }
 
-// NewCosignHandler creates a witness cosign endpoint handler.
-func NewCosignHandler(cfg ServeConfig) *CosignHandler {
-	pubBytes := signatures.PubKeyBytes(&cfg.WitnessKey.PublicKey)
-	pubID := sha256.Sum256(pubBytes)
-	return &CosignHandler{
-		key:       cfg.WitnessKey,
-		pubID:     pubID,
-		networkID: cfg.NetworkID,
-		logger:    cfg.Logger,
+// BuildCosignHandlerSigner is the BLS-or-custom-signer variant.
+// Operators with HSM-backed BLS witnesses construct a custom
+// cosign.WitnessSigner and pass it here.
+func BuildCosignHandlerSigner(signer cosign.WitnessSigner, cfg ServeConfig) (http.Handler, error) {
+	if signer == nil {
+		return nil, fmt.Errorf("witness/serve: signer required")
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	maxBytes := cfg.MaxRequestBytes
+	if maxBytes <= 0 {
+		maxBytes = cosign.DefaultMaxRequestBytes
+	}
+
+	inner, err := cosign.NewWitnessHandler(cosign.WitnessHandlerConfig{
+		Signer:          signer,
+		AllowedNetworks: map[cosign.NetworkID]struct{}{cfg.NetworkID: {}},
+		AllowedPurposes: cfg.AllowedPurposes,
+		MaxRequestBytes: maxBytes,
+		Logger:          cfg.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("witness/serve: build SDK handler: %w", err)
+	}
+	guard := newMonotonicityGuard(maxBytes, cfg.Logger)
+	return guard(inner), nil
+}
+
+// newMonotonicityGuard returns middleware that rejects tree-head
+// rollbacks with 409 Conflict before the inner handler sees the
+// request. Per-process state. Other purposes pass through.
+func newMonotonicityGuard(maxBytes int64, logger *slog.Logger) func(http.Handler) http.Handler {
+	var (
+		mu             sync.Mutex
+		lastSignedSize uint64
+	)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Buffer the body once so we can peek the WireRequest
+			// then re-pass to the SDK handler. The cap matches the
+			// SDK handler's MaxRequestBytes; the SDK still applies
+			// http.MaxBytesReader on its side as a defense-in-depth.
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes))
+			if err != nil {
+				writeMonotonicityError(w, http.StatusBadRequest, "read body failed")
+				return
+			}
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+
+			// Peek the WireRequest envelope. If decode fails the
+			// SDK handler will rejct it with its own 400; we just
+			// pass through.
+			var req cosign.WireRequest
+			if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Only tree-head purpose carries monotonicity semantics.
+			if req.Purpose != cosign.PurposeTreeHead {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Decode the tree-head wire payload. A decode failure
+			// here is a malformed request — let the SDK handler
+			// produce the canonical 400.
+			var th cosign.WireTreeHeadPayload
+			if jsonErr := json.Unmarshal(req.Payload, &th); jsonErr != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			mu.Lock()
+			if th.TreeSize < lastSignedSize {
+				prev := lastSignedSize
+				mu.Unlock()
+				logger.Warn("cosign: rejected rollback attempt",
+					"requested", th.TreeSize, "last_signed", prev)
+				writeMonotonicityError(w, http.StatusConflict,
+					fmt.Sprintf("tree_size rollback rejected: requested=%d last_signed=%d",
+						th.TreeSize, prev))
+				return
+			}
+			lastSignedSize = th.TreeSize
+			mu.Unlock()
+
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
-// ServeHTTP handles the cosign request.
-//
-// Request body (JSON):
-//
-//	{ "tree_size": 1000, "root_hash": "abcdef0123..." }
-//
-// Response body (JSON): types.WitnessSignature
-//
-//	{ "pub_key_id": "...", "sig_bytes": "..." }
-//
-// Error responses:
-//
-//	405 — wrong HTTP method
-//	400 — malformed JSON, missing fields, bad hex
-//	409 — tree_size rollback rejected (monotonicity guard)
-//	500 — signing failure
-func (h *CosignHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-	if err != nil {
-		http.Error(w, `{"error":"read body failed"}`, http.StatusBadRequest)
-		return
-	}
-
-	var req struct {
-		TreeSize uint64 `json:"tree_size"`
-		RootHash string `json:"root_hash"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
-	if req.TreeSize == 0 {
-		http.Error(w, `{"error":"tree_size must be positive"}`, http.StatusBadRequest)
-		return
-	}
-
-	// Parse root hash — must be exactly 64 hex characters (32 bytes).
-	var rootHash [32]byte
-	rootBytes, err := hexDecodeExact(req.RootHash, 32)
-	if err != nil {
-		http.Error(w, `{"error":"root_hash must be 64 hex chars"}`, http.StatusBadRequest)
-		return
-	}
-	copy(rootHash[:], rootBytes)
-
-	// Monotonicity guard: never sign a smaller tree than previously signed.
-	// This prevents a malicious operator from requesting cosignatures on
-	// rolled-back state. The guard is per-process (resets on restart).
-	h.mu.Lock()
-	if req.TreeSize < h.lastSignedSize {
-		h.mu.Unlock()
-		h.logger.Warn("cosign: rejected rollback attempt",
-			"requested", req.TreeSize, "last_signed", h.lastSignedSize)
-		http.Error(w, `{"error":"tree_size rollback rejected"}`, http.StatusConflict)
-		return
-	}
-	h.lastSignedSize = req.TreeSize
-	h.mu.Unlock()
-
-	// Sign the cosign-canonical tree-head message via cosign.SignECDSA.
-	// The canonical bytes are [purpose-prefix][NUL][NetworkID][HashAlgo]
-	// [RootHash][TreeSize-BE]; cosign hashes them with SHA-256 and
-	// signs the digest with secp256k1 ECDSA. Binding to NetworkID +
-	// PurposeTreeHead is what makes the signature non-replayable
-	// across networks or against a rotation message.
-	head := types.TreeHead{TreeSize: req.TreeSize, RootHash: rootHash}
-	payload := cosign.NewTreeHeadPayload(head)
-	sigBytes, err := cosign.SignECDSA(payload, h.networkID, cosign.HashAlgoSHA256, h.key)
-	if err != nil {
-		h.logger.Error("cosign: signing failed", "error", err)
-		http.Error(w, `{"error":"signing failed"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Return WitnessSignature as JSON. SchemeTag is mandatory: the
-	// cosign verifier rejects SchemeTag==0 with ErrSchemeUnspecified.
-	resp := types.WitnessSignature{
-		PubKeyID:  h.pubID,
-		SchemeTag: signatures.SchemeECDSA,
-		SigBytes:  sigBytes,
-	}
-
+// writeMonotonicityError emits a WireError-shaped JSON response so
+// callers parse a single error envelope across SDK + monotonicity
+// rejections.
+func writeMonotonicityError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-
-	h.logger.Info("cosigned tree head",
-		"tree_size", req.TreeSize,
-		"root_hash", req.RootHash[:min(16, len(req.RootHash))])
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Hex helpers (no encoding/hex import needed for this simple case)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// hexDecodeExact decodes a hex string and verifies exact byte length.
-func hexDecodeExact(s string, expectedLen int) ([]byte, error) {
-	if len(s) != expectedLen*2 {
-		return nil, fmt.Errorf("expected %d hex chars, got %d", expectedLen*2, len(s))
-	}
-	b := make([]byte, expectedLen)
-	for i := 0; i < expectedLen; i++ {
-		hi := unhex(s[i*2])
-		lo := unhex(s[i*2+1])
-		if hi == 0xFF || lo == 0xFF {
-			return nil, fmt.Errorf("invalid hex at position %d", i*2)
-		}
-		b[i] = hi<<4 | lo
-	}
-	return b, nil
-}
-
-func unhex(c byte) byte {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
-	default:
-		return 0xFF
-	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(cosign.WireError{Error: message})
 }
