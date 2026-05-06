@@ -188,16 +188,21 @@ func TestEquivocationScanner_DetectsAndPublishes(t *testing.T) {
 	if len(verified) != 1 {
 		t.Fatalf("verified count = %d, want 1", len(verified))
 	}
-	if verified[0].EquivocatorDID() != eqKP.DID {
+	// v0.1.1: VerifiedEntryCommitmentEquivocationFinding wrapper
+	// was removed; FetchEquivocationByBinding returns plain
+	// *EntryCommitmentEquivocationFinding values whose fields are
+	// directly readable. The cryptographic guarantee comes from
+	// the in-flight verifier dispatch the function performs
+	// (registry.Register("key", ...) above).
+	if verified[0].EquivocatorDID != eqKP.DID {
 		t.Errorf("EquivocatorDID = %q, want %q",
-			verified[0].EquivocatorDID(), eqKP.DID)
+			verified[0].EquivocatorDID, eqKP.DID)
 	}
-	if verified[0].SplitID() != splitID {
+	if verified[0].SplitID != splitID {
 		t.Errorf("SplitID round-trip mismatch")
 	}
-	a, b := verified[0].Sides()
-	gotA := hex.EncodeToString(a.CanonicalHash[:])
-	gotB := hex.EncodeToString(b.CanonicalHash[:])
+	gotA := hex.EncodeToString(verified[0].SideA.CanonicalHash[:])
+	gotB := hex.EncodeToString(verified[0].SideB.CanonicalHash[:])
 	if gotA == gotB {
 		t.Error("verified sides have identical CanonicalHash — should differ")
 	}

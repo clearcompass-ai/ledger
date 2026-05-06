@@ -25,7 +25,9 @@ SCANNER goroutine, on its own scheduling.
  4. If the list contains < 2 entries: legitimate first
     admission. No-op.
  5. If the list contains >= 2 entries: equivocation. Pick the
-    two earliest seqs, build *VerifiedEntryCommitmentEquivocationFinding,
+    two earliest seqs, build *findings.EntryCommitmentEquivocationFinding
+    (v0.1.1 collapsed the previous Verified... phantom-typed wrapper;
+    the publish gate is now developer discipline at the call site),
     sign + Append + Broadcast via the ledger's gossip Sink.
 
 # IDEMPOTENCY

@@ -1,4 +1,4 @@
-# SDK v1.0.0 contract validation
+# SDK v0.1.1 contract validation
 
 Code-level audit of every ledger package against the SDK contract.
 Evidence is gathered from `go list`, `go vet`, `go build`, and
@@ -6,7 +6,7 @@ compile-time interface assertions — never grep alone.
 
 ```
 $ go list -m all | grep attesta
-github.com/clearcompass-ai/attesta v1.0.0
+github.com/clearcompass-ai/attesta v0.1.1
 
 $ go vet ./...
 (clean)
@@ -23,7 +23,7 @@ catch drift.
 
 | Package | SDK imports (via `go list -f '{{.Imports}}'`) | Compile-time anchors |
 |---|---|---|
-| `admission/` | `core/envelope`, `crypto/cosign`, `crypto/signatures`, `did` | `admission/static_witness_key_set.go:78 var _ WitnessKeySet = (*StaticWitnessKeySet)(nil)` |
+| `admission/` | `core/envelope`, `crypto/cosign`, `crypto/signatures`, `did`, `types` | `admission/bls_quorum_verifier.go` (holds `*cosign.WitnessKeySet` directly; v0.1.1 collapsed the prior single-impl `WitnessKeySet` interface + `StaticWitnessKeySet` wrapper into the SDK's encapsulated topology object). Compile-time alignment pinned by `admission/v011_contract_test.go`: `findings.WitnessAttested = (*findings.EquivocationFinding)(nil)` |
 | `anchor/` | `core/envelope`, `crypto`, `crypto/signatures`, `log` | (uses SDK directly; no ledger-side interfaces to pin) |
 | `api/` | `core/envelope`, `core/smt`, `crypto`, `crypto/admission`, `crypto/sct`, `crypto/signatures`, `crypto/artifact`, `crypto/escrow`, `exchange/policy`, `types` | `api/entries_read.go:381 var _ SeqHashLookup = EntryStore(nil)` |
 | `apitypes/` | (none — leaf package, zero pgx, zero SDK) | (boundary types only) |

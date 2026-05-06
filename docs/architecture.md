@@ -235,7 +235,7 @@ artifact encryption + key management lives outside this binary.
 ## SDK pin
 
 ```
-go.mod:  github.com/clearcompass-ai/attesta v1.0.0
+go.mod:  github.com/clearcompass-ai/attesta v0.1.1
 ```
 
 The ledger never re-implements SDK validation logic. Every signed
@@ -244,7 +244,24 @@ artifact goes through SDK primitives:
 - `envelope.Deserialize` / `envelope.NewEntry` / `envelope.Validate`
 - `crypto/admission.VerifyStamp` (Mode B PoW)
 - `crypto/sct.SignSCT` (admission promise)
-- `crypto/cosign.WitnessCollector` (K-of-N quorum)
-- `findings.NewEntryCommitmentEquivocationFinding` (verified evidence)
+- `crypto/cosign.NewWitnessKeySet` (encapsulated K-of-N topology)
+- `crypto/cosign.WitnessCollector` (K-of-N collection)
+- `crypto/cosign.Verify(payload, set, algo, sigs)` (single-arg verification)
+- `findings.NewEquivocationFinding` + `Verify(set)` (witness-attested gossip events)
+- `findings.NewEntryCommitmentEquivocationFinding` (signer-attested gossip events)
 - `gossip.FeedHandler` + `BufferedSink` + `MultiSink` (pull-based egress)
+
+### v0.1.1 alignment notes
+
+The v0.1.1 break collapsed the previous `(keys, K, networkID,
+blsVerifier)` parameter group into a single `*cosign.WitnessKeySet`
+constructed once at boot (`cmd/ledger/main.go`) from
+`LEDGER_WITNESS_QUORUM_K` + the genesis witness DIDs. The same
+keyset is shared between the admission `BLSQuorumVerifier` and the
+gossipnet `EquivocationMonitor` — one source of truth for
+witness topology. Phantom-typed `Verified...Finding` wrappers were
+removed; the publish gate is now developer discipline at the call
+site, enforced by tests in `gossipnet/equivocation_monitor_test.go`
+and the contract conformance tests in
+`admission/v011_contract_test.go` + `gossipnet/v011_contract_test.go`.
 - `types.CommitmentFetcher` (read-side abstraction)

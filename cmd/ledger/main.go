@@ -1198,12 +1198,12 @@ func main() {
 		//
 		// Compares each peer's view of their own STH against our
 		// local view. On (size-equal, root-different) divergence
-		// the SDK's witness.DetectEquivocation verifies both heads
-		// against the witness key set + K-of-N quorum, the
-		// type-safety constructor (.Verify) returns a
-		// *VerifiedEquivocationFinding, and the EquivocationPublisher
-		// fans the finding out to peers as a KindEquivocationFinding
-		// gossip event.
+		// the SDK's witness.DetectEquivocation(headA, headB, set)
+		// verifies both heads against the *cosign.WitnessKeySet
+		// (K-of-N read from set.Quorum()), finding.Verify(set)
+		// returns nil to clear the publish gate, and the
+		// EquivocationPublisher fans the finding out to peers as a
+		// KindEquivocationFinding gossip event.
 		//
 		// Disabled when:
 		//   - GenesisWitnessSet is empty (no witness keys to verify
@@ -1218,6 +1218,22 @@ func main() {
 			if werr != nil {
 				logger.Error("equivocation monitor: witness key resolution",
 					"error", werr)
+				os.Exit(1)
+			}
+			// v0.1.1: build *cosign.WitnessKeySet once at boot;
+			// keys + NetworkID + K-of-N quorum + BLS verifier are
+			// encapsulated topology, not separate per-call args.
+			witnessSet, wsErr := cosign.NewWitnessKeySet(
+				witnessKeys,
+				cfg.NetworkID,
+				cfg.WitnessQuorumK,
+				cosign.NewProductionBLSVerifier(),
+			)
+			if wsErr != nil {
+				logger.Error("equivocation monitor: NewWitnessKeySet failed",
+					"error", wsErr,
+					"keys", len(witnessKeys),
+					"quorum_k", cfg.WitnessQuorumK)
 				os.Exit(1)
 			}
 			equivPub, perr := gossipnet.NewEquivocationPublisher(gossipnet.EquivocationPublisherConfig{
@@ -1240,14 +1256,11 @@ func main() {
 				})
 			}
 			eqMon, eerr := gossipnet.NewEquivocationMonitor(gossipnet.EquivocationMonitorConfig{
-				Store:       gossipBStore,
-				Peers:       equivPeers,
-				WitnessKeys: witnessKeys,
-				QuorumK:     cfg.WitnessQuorumK,
-				NetworkID:   cfg.NetworkID,
-				BLSVerifier: cosign.NewProductionBLSVerifier(),
-				Publisher:   equivPub,
-				Logger:      logger,
+				Store:      gossipBStore,
+				Peers:      equivPeers,
+				WitnessSet: witnessSet,
+				Publisher:  equivPub,
+				Logger:     logger,
 			})
 			if eerr != nil {
 				logger.Error("equivocation monitor", "error", eerr)
@@ -1264,8 +1277,8 @@ func main() {
 			defer eqCancel()
 			logger.Info("equivocation monitor: enabled",
 				"peers", len(equivPeers),
-				"quorum_k", cfg.WitnessQuorumK,
-				"witness_set_size", len(witnessKeys),
+				"quorum_k", witnessSet.Quorum(),
+				"witness_set_size", witnessSet.Size(),
 			)
 		} else {
 			logger.Info("equivocation monitor: disabled (missing prerequisites)",
@@ -1427,20 +1440,27 @@ func main() {
 				"error", wkErr)
 			os.Exit(1)
 		}
-		keySet, ksErr := admission.NewStaticWitnessKeySet(witKeys, cfg.WitnessQuorumK)
+		// v0.1.1: cosign.NewWitnessKeySet encapsulates keys +
+		// NetworkID + LEDGER_WITNESS_QUORUM_K + BLS verifier.
+		// admission.BLSQuorumVerifier takes one *cosign.WitnessKeySet;
+		// the prior StaticWitnessKeySet wrapper is gone.
+		admSet, ksErr := cosign.NewWitnessKeySet(
+			witKeys,
+			cfg.NetworkID,
+			cfg.WitnessQuorumK,
+			cosign.NewProductionBLSVerifier(),
+		)
 		if ksErr != nil {
 			logger.Error("admission BLS verifier: build keyset",
-				"error", ksErr)
+				"error", ksErr,
+				"keys", len(witKeys),
+				"quorum_k", cfg.WitnessQuorumK)
 			os.Exit(1)
 		}
-		blsQuorumVerifier = admission.NewBLSQuorumVerifier(
-			keySet,
-			cosign.NewProductionBLSVerifier(),
-			cfg.NetworkID,
-		)
+		blsQuorumVerifier = admission.NewBLSQuorumVerifier(admSet)
 		logger.Info("admission: embedded-tree-head BLS verifier enabled",
-			"witness_set_size", len(witKeys),
-			"quorum_k", cfg.WitnessQuorumK,
+			"witness_set_size", admSet.Size(),
+			"quorum_k", admSet.Quorum(),
 		)
 	}
 
