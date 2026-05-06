@@ -106,7 +106,7 @@ func TestScale_BulkInsert(t *testing.T) {
 			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:signer%d", signerIdx),
 			}, payload)
-			hash := envelope.EntryIdentity(entry)
+			hash := mustEntryIdentity(entry)
 
 			_, err := tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
@@ -145,7 +145,7 @@ func TestScale_BulkInsert(t *testing.T) {
 			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:signer%d", signerIdx),
 			}, payload)
-			hash := envelope.EntryIdentity(entry)
+			hash := mustEntryIdentity(entry)
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,
 					signer_did)
@@ -284,8 +284,8 @@ func TestScale_BuilderThroughput(t *testing.T) {
 			entry := makeEntry(t, envelope.ControlHeader{
 				SignerDID: fmt.Sprintf("did:example:scale-signer%d", seq/100),
 			}, payload)
-			hash := envelope.EntryIdentity(entry)
-			wire := envelope.Serialize(entry)
+			hash := mustEntryIdentity(entry)
+			wire := mustSerialize(entry)
 
 			tx.Exec(ctx, `
 				INSERT INTO entry_index (sequence_number, canonical_hash, log_time,

@@ -128,8 +128,16 @@ func toEntryResponses(metas []types.EntryWithMetadata) []EntryResponse {
 			h := crypto.HashBytes(ewm.CanonicalBytes)
 			resp.CanonicalHash = hex.EncodeToString(h[:])
 		} else {
-			id := envelope.EntryIdentity(entry)
-			resp.CanonicalHash = hex.EncodeToString(id[:])
+			id, idErr := envelope.EntryIdentity(entry)
+			if idErr != nil {
+				// EntryIdentity failure on a deserialized-OK entry
+				// is exceedingly rare; fall back to the raw byte
+				// hash rather than failing the read.
+				h := crypto.HashBytes(ewm.CanonicalBytes)
+				resp.CanonicalHash = hex.EncodeToString(h[:])
+			} else {
+				resp.CanonicalHash = hex.EncodeToString(id[:])
+			}
 			resp.ProtocolVer = entry.Header.ProtocolVersion
 			resp.PayloadSize = len(entry.DomainPayload)
 			resp.SignerDID = entry.Header.SignerDID

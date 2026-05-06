@@ -303,7 +303,11 @@ func buildModeAWire(
 	if err := entry.Validate(); err != nil {
 		return nil, fmt.Errorf("Validate: %w", err)
 	}
-	return envelope.Serialize(entry), nil
+	wire, err := envelope.Serialize(entry)
+	if err != nil {
+		return nil, fmt.Errorf("Serialize: %w", err)
+	}
+	return wire, nil
 }
 
 // buildModeBWire brute-forces a valid Mode B PoW stamp. The signing
@@ -342,7 +346,10 @@ func buildModeBWire(
 			AlgoID:    envelope.SigAlgoECDSA,
 			Bytes:     sig,
 		}}
-		canonical := envelope.Serialize(entry)
+		canonical, err := envelope.Serialize(entry)
+		if err != nil {
+			return nil, fmt.Errorf("Serialize: %w", err)
+		}
 		entryHash := sha256.Sum256(canonical)
 		apiProof := sdkadmission.ProofFromWire(header.AdmissionProof, logDID)
 		err = sdkadmission.VerifyStamp(

@@ -132,5 +132,5 @@ func signedWire(
 	signerDID string,
 ) []byte {
 	t.Helper()
-	return envelope.Serialize(makeSignedEntry(t, hdr, payload, priv, signerDID))
+	return mustSerialize(makeSignedEntry(t, hdr, payload, priv, signerDID))
 }

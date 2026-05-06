@@ -46,7 +46,7 @@ import (
 
 func TestAdmission_ValidEntry(t *testing.T) {
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, []byte("attestation"))
-	canonical := envelope.Serialize(entry)
+	canonical := mustSerialize(entry)
 	hash := sha256.Sum256(canonical)
 	if len(canonical) == 0 {
 		t.Fatal("canonical bytes should not be empty")
@@ -59,8 +59,8 @@ func TestAdmission_ValidEntry(t *testing.T) {
 
 func TestAdmission_DuplicateHash(t *testing.T) {
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, nil)
-	h1 := sha256.Sum256(envelope.Serialize(entry))
-	h2 := sha256.Sum256(envelope.Serialize(entry))
+	h1 := sha256.Sum256(mustSerialize(entry))
+	h2 := sha256.Sum256(mustSerialize(entry))
 	if h1 != h2 {
 		t.Fatal("identical entries must produce identical hashes")
 	}
@@ -93,7 +93,7 @@ func TestAdmission_WrongSignerKey_SDK_D5(t *testing.T) {
 	// downstream verifier (admission/entry_signature_verifier.go)
 	// is what would reject a wrong-key signature.
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, nil)
-	wire := envelope.Serialize(entry)
+	wire := mustSerialize(entry)
 	parsed, err := envelope.Deserialize(wire)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
 	// belongs at the verifier layer (admission/entry_signature_verifier_test.go),
 	// not at the parser.
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice"}, nil)
-	wire := envelope.Serialize(entry)
+	wire := mustSerialize(entry)
 	parsed, err := envelope.Deserialize(wire)
 	if err != nil {
 		t.Fatal("Deserialize should succeed on a well-formed wire")
@@ -140,7 +140,7 @@ func TestAdmission_ExactlyMaxSize_SDK_D11(t *testing.T) {
 	// 1 KiB margin for preamble + header_body + signatures section.
 	payload := make([]byte, envelope.MaxCanonicalBytes-1024)
 	entry := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:big"}, payload)
-	wire := envelope.Serialize(entry)
+	wire := mustSerialize(entry)
 	if len(wire) == 0 {
 		t.Fatal("near-max entry should serialize")
 	}
@@ -766,7 +766,7 @@ func TestLogTime_Monotonicity(t *testing.T) {
 
 func TestLogTime_OutsideCanonicalHash(t *testing.T) {
 	e := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a"}, nil)
-	c := envelope.Serialize(e)
+	c := mustSerialize(e)
 	if sha256.Sum256(c) != sha256.Sum256(c) {
 		t.Fatal("hash should be stable")
 	}

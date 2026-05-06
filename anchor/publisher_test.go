@@ -114,7 +114,10 @@ func TestSubmitViaHTTP_DoesNotRetry422(t *testing.T) {
 // envelope.Serialize(entry) byte-for-byte. Pre-fix-regression guard.
 func TestSubmitViaHTTP_HappyPath_BytesMatch(t *testing.T) {
 	entry := fixtureSignedEntry(t, []byte("happy-bytes"))
-	wantBytes := envelope.Serialize(entry)
+	wantBytes, err := envelope.Serialize(entry)
+	if err != nil {
+		t.Fatalf("envelope.Serialize: %v", err)
+	}
 
 	var seen []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

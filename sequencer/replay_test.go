@@ -162,7 +162,10 @@ func buildReplayEntry(t *testing.T, payload string) (wire []byte, hash [32]byte)
 	if err := entry.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	wire = envelope.Serialize(entry)
+	wire, sErr := envelope.Serialize(entry)
+	if sErr != nil {
+		t.Fatalf("envelope.Serialize: %v", sErr)
+	}
 	hash = sha256.Sum256(wire)
 	return wire, hash
 }

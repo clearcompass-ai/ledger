@@ -32,7 +32,7 @@ INVARIANTS LOCKED (5 total):
 
  5. Tessera leaf is envelope.EntryIdentity, not sha256(wire)
     Inclusion proof fetched after submission commits to
-    envelope.EntryIdentity(entry), NOT sha256(canonical+sig).
+    mustEntryIdentity(entry), NOT sha256(canonical+sig).
     Locks the Tessera leaf scheme against regression.
 
 KEY DEPENDENCIES:
@@ -131,7 +131,7 @@ func signedWireBytes(
 	// Deliberately skip entry.Validate — the test asserts that the
 	// SERVER's Validate step rejects this forged entry. Serialize is
 	// safe because Signatures is non-empty.
-	return envelope.Serialize(entry)
+	return mustSerialize(entry)
 }
 
 // postEntry submits wire bytes to the test server's admission endpoint
@@ -308,7 +308,7 @@ func TestHTTP_SubmitRejectsFutureEventTime(t *testing.T) {
 // Asserts:
 //   - 202 Accepted returned.
 //   - Response body carries sequence_number and canonical_hash.
-//   - canonical_hash decodes to envelope.EntryIdentity(entry).
+//   - canonical_hash decodes to mustEntryIdentity(entry).
 func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
@@ -320,7 +320,7 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 		Destination: testLogDID,
 		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("positive-path-admission"), priv, signerDID)
-	wire := envelope.Serialize(entry)
+	wire := mustSerialize(entry)
 
 	resp := postEntry(t, srv.URL, wire)
 	body := readBody(t, resp)
@@ -371,8 +371,8 @@ func TestMerkleLeaf_IsEntryIdentity(t *testing.T) {
 		Destination: testLogDID,
 		EventTime:   time.Now().UTC().UnixMicro(),
 	}, []byte("merkle-leaf-identity-test"), priv, signerDID)
-	expectedIdentity := envelope.EntryIdentity(entry)
-	wire := envelope.Serialize(entry)
+	expectedIdentity := mustEntryIdentity(entry)
+	wire := mustSerialize(entry)
 
 	// Submit and wait for admission.
 	resp := postEntry(t, srv.URL, wire)

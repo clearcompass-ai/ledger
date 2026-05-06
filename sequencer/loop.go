@@ -291,24 +291,33 @@ func (s *Sequencer) insertEntryIndex(
 		}
 	}
 
-	// 0x0C entry-lookup projection (Pure CQRS — P8). Same write
+	// 0x0C entry-lookup projection (pure CQRS read path). Same write
 	// discipline as 0x0A: AFTER the Postgres commit, best-effort,
 	// non-blocking. The full canonical wire bytes are captured
 	// here so the read endpoint serves /v1/commitments/by-split-id
 	// without re-loading from Postgres or Tessera.
 	if extractedSplitID != nil && s.entryLookup != nil {
-		canonical := envelope.Serialize(entry)
-		lookupEntry := EntryLookupIndexEntry{
-			CanonicalBytes: canonical,
-			LogTimeMicros:  entry.Header.EventTime,
-			LogDID:         s.logDID,
-		}
-		if werr := s.entryLookup.WriteEntryLookupEntry(
-			ctx, extractedSchemaID, *extractedSplitID, seq, lookupEntry,
-		); werr != nil {
-			s.logger.Warn("sequencer: entry lookup projection write failed",
-				"seq", seq, "schema_id", extractedSchemaID,
-				"error", werr)
+		canonical, serr := envelope.Serialize(entry)
+		if serr != nil {
+			// Best-effort projection write only — log and skip.
+			// The Postgres entry_index row is already durable; the
+			// 0x0C projection is a read-side cache that the boot
+			// replayer can rebuild from Postgres.
+			s.logger.Warn("sequencer: entry-lookup serialize failed",
+				"seq", seq, "schema_id", extractedSchemaID, "error", serr)
+		} else {
+			lookupEntry := EntryLookupIndexEntry{
+				CanonicalBytes: canonical,
+				LogTimeMicros:  entry.Header.EventTime,
+				LogDID:         s.logDID,
+			}
+			if werr := s.entryLookup.WriteEntryLookupEntry(
+				ctx, extractedSchemaID, *extractedSplitID, seq, lookupEntry,
+			); werr != nil {
+				s.logger.Warn("sequencer: entry lookup projection write failed",
+					"seq", seq, "schema_id", extractedSchemaID,
+					"error", werr)
+			}
 		}
 	}
 	return nil

@@ -314,7 +314,10 @@ func TestV1Handler_ZeroDifficulty_Rejected(t *testing.T) {
 		AlgoID:    envelope.SigAlgoECDSA,
 		Bytes:     sig,
 	}}
-	wire := envelope.Serialize(entry)
+	wire, sErr := envelope.Serialize(entry)
+	if sErr != nil {
+		t.Fatalf("envelope.Serialize: %v", sErr)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(wire))
 	rr := httptest.NewRecorder()

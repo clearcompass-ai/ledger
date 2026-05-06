@@ -200,6 +200,16 @@ GET /v1/gossip/event/{eventID}
 GET /v1/gossip/by-binding/{hash}     ← zero-trust audit primitive
 ```
 
+The gossip handler, feed handler, and cosign witness handler are
+panic-resilient by SDK construction: each embeds
+`defer recoverPanic(...)` as the first statement of `ServeHTTP`, so
+the ledger does NOT need to wrap them in any local recovery
+middleware. Recovered panics surface a clean 500 carrying the typed
+`ErrInternalPanic` sentinel + a `panic_kind` label and increment
+`attesta_gossip_panic_total` (see [observability.md](observability.md)).
+`http.ErrAbortHandler` is re-panicked so stdlib's `TimeoutHandler`
+integration still works.
+
 ## Trust split
 
 ```

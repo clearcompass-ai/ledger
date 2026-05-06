@@ -413,7 +413,16 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// Crash between commit and this append → safe to re-run on restart.
 	if bl.merkle != nil {
 		for i, ewm := range metas {
-			identity := envelope.EntryIdentity(entries[i])
+			identity, idErr := envelope.EntryIdentity(entries[i])
+			if idErr != nil {
+				// Best-effort post-commit append: malformed entry
+				// (which would have been rejected at admission)
+				// is logged and skipped. Postgres entry_index has
+				// the durable record either way.
+				bl.logger.Error("EntryIdentity failed in Merkle append",
+					"seq", ewm.Position.Sequence, "error", idErr)
+				continue
+			}
 			if _, appendErr := bl.merkle.AppendLeaf(identity[:]); appendErr != nil {
 				bl.logger.Error("Tessera append failed",
 					"seq", ewm.Position.Sequence, "error", appendErr)

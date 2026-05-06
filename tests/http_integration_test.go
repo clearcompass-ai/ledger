@@ -75,7 +75,7 @@ import (
 // identifiers and signs with the matching keypair.
 func buildWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte) []byte {
 	t.Helper()
-	return envelope.Serialize(makeAdmissibleEntry(t, header, payload))
+	return mustSerialize(makeAdmissibleEntry(t, header, payload))
 }
 
 // buildModeBWireEntry creates a v5 entry with a valid compute stamp for Mode B.
@@ -141,7 +141,7 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 		// signing-section encode that Serialize is about to do. We'll
 		// be returning Serialize's output anyway, so any structural
 		// rejection will surface there with the same panic message.
-		canonical := envelope.Serialize(entry)
+		canonical := mustSerialize(entry)
 		entryHash := sha256.Sum256(canonical)
 
 		// Translate wire→API for verification (same path the ledger
@@ -889,7 +889,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 			AlgoID:    envelope.SigAlgoECDSA,
 			Bytes:     sig,
 		}}
-		canonical := envelope.Serialize(entry)
+		canonical := mustSerialize(entry)
 		entryHash := sha256.Sum256(canonical)
 
 		// Verify against the stale epoch with window=0 (exact match) to

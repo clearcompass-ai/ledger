@@ -210,7 +210,10 @@ func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
 	// reinventing the policy.
 	client := sdklog.DefaultClient(30 * time.Second)
 	return func(entry *envelope.Entry) error {
-		canonical := envelope.Serialize(entry)
+		canonical, err := envelope.Serialize(entry)
+		if err != nil {
+			return fmt.Errorf("anchor: serialize: %w", err)
+		}
 		resp, err := client.Post(targetURL+"/v1/entries", "application/octet-stream",
 			bytes.NewReader(canonical))
 		if err != nil {

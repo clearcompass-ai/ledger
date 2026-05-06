@@ -413,7 +413,12 @@ func prepareSubmission(
 				"unauthenticated submission requires compute stamp")
 		}
 		apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
-		canonicalHash := envelope.EntryIdentity(entry)
+		canonicalHash, idErr := envelope.EntryIdentity(entry)
+		if idErr != nil {
+			return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+				http.StatusUnprocessableEntity,
+				"EntryIdentity: %s", idErr)
+		}
 		var hashFunc sdkadmission.HashFunc
 		switch deps.Admission.DiffController.HashFunction() {
 		case "argon2id":
@@ -437,9 +442,14 @@ func prepareSubmission(
 	}
 
 	// ── Step 8: Canonical hash ─────────────────────────────────────
-	canonicalHash := envelope.EntryIdentity(entry)
+	canonicalHash, hashErr := envelope.EntryIdentity(entry)
+	if hashErr != nil {
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity,
+			"EntryIdentity: %s", hashErr)
+	}
 
-	// ── Step 8a: Deterministic-idempotency probe (P5) ──────────────
+	// ── Step 8a: Deterministic-idempotency probe ──────────────────
 	// A byte-identical resubmission MUST return the SAME SCT bytes
 	// (not 409 Conflict). We probe the WAL's Meta record for the
 	// persisted log_time; if found, the caller short-circuits the

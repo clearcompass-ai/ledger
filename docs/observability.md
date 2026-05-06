@@ -181,5 +181,59 @@ is the per-event detail.
 
 `gossipnet/wiring.go` injects an OTel `metric.Meter` into the
 gossip pipeline (separate from the api meter, named under the
-`.../gossip` instrumentation scope). Provides counters for sink
-drops, anti-entropy pulls, signature verification outcomes, etc.
+`.../gossip` instrumentation scope). The SDK's `gossip.Instruments`
+registers the following metrics; the ledger does not implement them
+directly, but mounting the gossip handler with `Instruments != nil`
+exposes them on the `/metrics` scrape endpoint.
+
+### Metric inventory
+
+| Metric | Type | Labels | Source |
+|---|---|---|---|
+| `attesta_gossip_received_total` | counter | `kind`, `outcome` | Inbound publish accepts vs. rejects, dimensioned by gossip Kind + accept/reject outcome |
+| `attesta_gossip_published_total` | counter | `kind`, `peer`, `outcome` | Outbound publish per-peer fan-out |
+| `attesta_gossip_verify_duration_seconds` | histogram | `kind` | Verifier time per Kind |
+| `attesta_gossip_chain_head_lamport` | gauge | `originator` | Per-originator current chain head Lamport time |
+| `attesta_gossip_store_size_total` | gauge | `kind` | Total events in the local gossip store |
+| `attesta_gossip_panic_total` | counter | `panic_kind` | Panics recovered by the SDK handler's self-encapsulating defer |
+
+### `attesta_gossip_panic_total` panic_kind values
+
+The SDK's gossip + cosign handlers each embed `defer recoverPanic` as
+the first statement of `ServeHTTP`, so it is structurally impossible
+to mount these handlers without panic recovery — even if the ledger
+forgets to wrap them in middleware. Recovered panics emit a 500 with
+the typed `ErrInternalPanic` sentinel and increment this counter
+labelled by classifier output:
+
+| `panic_kind` | When |
+|---|---|
+| `nil_pointer_deref` | nil pointer dereference (the most common code-bug signal) |
+| `index_out_of_range` | slice / array indexing past bounds |
+| `slice_out_of_range` | slice expression `s[a:b]` with `a` or `b` out of range |
+| `integer_division_by_zero` | division by zero |
+| `runtime_error_other` | other `runtime.Error` panics not in the above buckets |
+| `error_panic` | `panic(err)` with a non-runtime error |
+| `string_panic` | `panic("msg")` with a string literal |
+| `other` | any other recovered value |
+
+The classifier is best-effort but the label set is stable — SRE
+dashboards can pin alerting on specific kinds without worrying about
+labels appearing or disappearing.
+
+`http.ErrAbortHandler` is re-panicked rather than recovered so
+stdlib's `TimeoutHandler` integration still works as designed.
+
+### Recommended alerts
+
+```promql
+# Any panic at all is page-worthy — indicates either a code bug
+# or a hostile-input attack the SDK contained.
+sum by (panic_kind) (rate(attesta_gossip_panic_total[5m])) > 0
+
+# Rejection rate by Kind (informational dashboard)
+sum by (kind) (rate(attesta_gossip_received_total{outcome="rejected"}[5m]))
+
+# Per-peer fan-out failure rate
+sum by (peer) (rate(attesta_gossip_published_total{outcome="failed"}[5m]))
+```
