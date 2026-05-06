@@ -76,11 +76,12 @@ func run(logger *slog.Logger) error {
 		dsn = cfg.PostgresDSN
 	}
 	pool, err := store.InitPool(ctx, store.PoolConfig{
-		DSN:             dsn,
-		MaxConns:        int32(cfg.MaxConns),
-		MinConns:        int32(cfg.MinConns),
-		MaxConnLifetime: 30 * time.Minute,
-		MaxConnIdleTime: 5 * time.Minute,
+		DSN:              dsn,
+		MaxConns:         int32(cfg.MaxConns),
+		MinConns:         int32(cfg.MinConns),
+		MaxConnLifetime:  30 * time.Minute,
+		MaxConnIdleTime:  5 * time.Minute,
+		StatementTimeout: cfg.StatementTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("postgres pool: %w", err)
@@ -260,6 +261,7 @@ type readerConfig struct {
 	ReplicaDSN string
 	MaxConns int
 	MinConns int
+	StatementTimeout time.Duration // LEDGER_PG_STATEMENT_TIMEOUT, default 5s
 	ServerAddr string
 	TesseraStorageDir string // shared POSIX dir with the writer ledger
 	TileCacheSize int
@@ -297,6 +299,7 @@ func loadConfig() readerConfig {
 		ReplicaDSN:        envOr("ATTESTA_REPLICA_DSN", ""),
 		MaxConns:          20,
 		MinConns:          5,
+		StatementTimeout:  parsePgStatementTimeout(),
 		ServerAddr:        envOr("ATTESTA_SERVER_ADDR", ":8081"),
 		TesseraStorageDir: envOr("ATTESTA_TESSERA_STORAGE_DIR", "/var/lib/attesta/tessera"),
 		TileCacheSize:     10000,
@@ -354,4 +357,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// parsePgStatementTimeout reads LEDGER_PG_STATEMENT_TIMEOUT as a Go
+// duration. Defaults to 5 s. An unparseable value silently falls
+// back to the default — the writer ledger emits a warning if its
+// own copy fails to parse, so the misconfig is still operator-
+// visible from the writer's logs.
+func parsePgStatementTimeout() time.Duration {
+	const def = 5 * time.Second
+	v := os.Getenv("LEDGER_PG_STATEMENT_TIMEOUT")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return def
+	}
+	return d
 }

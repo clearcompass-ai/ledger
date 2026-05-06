@@ -259,6 +259,15 @@ type Config struct {
 	ServerAddr string
 	DatabaseURL string
 	PgMaxConns int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
+
+	// PgStatementTimeout, when > 0, is applied via the AfterConnect
+	// hook on every pool connection so EVERY query gets a DB-side
+	// statement_timeout cap. Defense-in-depth on per-call-site
+	// context.WithTimeout discipline. Default 5 s; 0 disables (the
+	// application is then sole authority on per-query budgets).
+	// Set via LEDGER_PG_STATEMENT_TIMEOUT (Go duration syntax).
+	PgStatementTimeout time.Duration
+
 	LogDID string // Destination for self-published entries (anchors, commitments).
 	LedgerDID string // Signer DID for ledger-authored commentary.
 
@@ -559,7 +568,8 @@ func loadConfig() (*Config, error) {
 
 		// Pool size: env override OR derived from MaxInFlight (set
 		// after we know the final MaxInFlight value below).
-		PgMaxConns: int32(envIntOr("LEDGER_PG_MAX_CONNS", 0)),
+		PgMaxConns:         int32(envIntOr("LEDGER_PG_MAX_CONNS", 0)),
+		PgStatementTimeout: envDurationOr("LEDGER_PG_STATEMENT_TIMEOUT", 5*time.Second),
 	}
 	if cfg.PgMaxConns == 0 {
 		cfg.PgMaxConns = defaultPgMaxConns(cfg.SequencerMaxInFlight)
@@ -825,11 +835,12 @@ func main() {
 	// LEDGER_PG_MAX_CONNS; validatePgPoolSizing rejects anything
 	// below SequencerMaxInFlight + pgPoolHeadroom at boot.
 	pgPool, err := store.InitPool(ctx, store.PoolConfig{
-		DSN:             cfg.DatabaseURL,
-		MaxConns:        cfg.PgMaxConns,
-		MinConns:        2,
-		MaxConnLifetime: 30 * time.Minute,
-		MaxConnIdleTime: 5 * time.Minute,
+		DSN:              cfg.DatabaseURL,
+		MaxConns:         cfg.PgMaxConns,
+		MinConns:         2,
+		MaxConnLifetime:  30 * time.Minute,
+		MaxConnIdleTime:  5 * time.Minute,
+		StatementTimeout: cfg.PgStatementTimeout,
 	})
 	if err != nil {
 		logger.Error("pgxpool", "error", err)
@@ -839,6 +850,7 @@ func main() {
 	pool := pgPool.DB
 	logger.Info("postgres pool ready",
 		"max_conns", cfg.PgMaxConns,
+		"statement_timeout", cfg.PgStatementTimeout,
 		"sequencer_max_inflight", cfg.SequencerMaxInFlight,
 	)
 
@@ -846,6 +858,21 @@ func main() {
 		logger.Error("migrations", "error", err)
 		os.Exit(1)
 	}
+
+	// Builder advisory lock: at most one writer per database. The
+	// new pod fails fast within DefaultBuilderLockAcquireTimeout
+	// (30 s) if a previous pod still holds the lock — surfacing
+	// rolling-update misconfigurations immediately instead of
+	// hanging. Heartbeat goroutine surfaces ErrAdvisoryLockLost via
+	// fatal so the supervisor exits + orchestrator restarts on
+	// stale-connection lock loss.
+	builderLock, err := store.AcquireBuilderLock(ctx, pool, fatal, logger)
+	if err != nil {
+		logger.Error("builder advisory lock", "error", err)
+		os.Exit(1)
+	}
+	defer builderLock.Release()
+	logger.Info("builder advisory lock acquired", "lock_id", store.BuilderLockID)
 
 	// ── Stores ────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)

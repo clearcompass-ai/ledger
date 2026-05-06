@@ -392,3 +392,127 @@ curl -i -H "Range: bytes=0-15" https://<ledger>/tile/0/x000/000  # → 206 Parti
 `LEDGER_TILE_SERVE_DISABLE=true` mounts no tile routes at all. Use
 this when a separate read-replica process serves tiles and the
 admission node should reject `/tile/...` traffic at the LB layer.
+
+## Database hardening
+
+The ledger's Postgres surface is tuned for production via four
+in-binary mechanisms plus one operator-applied SQL file. F1
+(versioned migrations) is intentionally NOT used: schema changes
+remain a single idempotent DDL block in `store/postgres.go::RunMigrations`
+to keep boot deterministic.
+
+### F2 — Append-only grants (operator-applied)
+
+The application connects as a role (typically `ledger_app`).
+After `RunMigrations` populates the schema, an operator runs
+`deploy/sql/grants.sql` ONCE to revoke `UPDATE`, `DELETE`,
+`TRUNCATE` privileges on the append-only tables. Even a
+SQL-injection bug or a buggy ORM cannot mutate the log; the
+role lacks the privilege.
+
+```sh
+# Once per fresh database, after `cmd/ledger` has booted:
+psql "$LEDGER_DATABASE_URL_ADMIN" -v ON_ERROR_STOP=1 \
+     -v ledger_app=ledger_app \
+     -f deploy/sql/grants.sql
+```
+
+Append-only tables (mutation revoked):
+`entry_index`, `commitment_split_id`, `derivation_commitments`,
+`tree_heads`, `tree_head_sigs`, `equivocation_proofs`.
+
+Mutable tables (intentionally unrevoked):
+`builder_cursor`, `credits`, `smt_leaves`, `smt_nodes`,
+`delta_window_buffers`, `sessions`.
+
+Verification query (from grants.sql header comment):
+
+```sql
+SELECT table_name,
+       string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privs
+FROM information_schema.table_privileges
+WHERE grantee = 'ledger_app'
+  AND table_name IN ('entry_index', 'commitment_split_id',
+                     'derivation_commitments', 'tree_heads',
+                     'tree_head_sigs', 'equivocation_proofs')
+GROUP BY table_name
+ORDER BY table_name;
+```
+
+Expected: each table shows only `INSERT, SELECT` (and `REFERENCES`
+if granted at schema level). `UPDATE / DELETE / TRUNCATE` must NOT
+appear.
+
+### F3 — Per-statement statement_timeout (in-code)
+
+Every connection acquired from the pool runs `SET statement_timeout`
+via the `pgxpool.Config.AfterConnect` hook. A misconfigured or
+runaway query that escapes the application's per-call-site
+`context.WithTimeout` discipline still gets cancelled at the DB
+layer.
+
+```sh
+# Default: 5 seconds per query
+LEDGER_PG_STATEMENT_TIMEOUT=5s
+
+# Tighten for a quiet read-only deployment:
+LEDGER_PG_STATEMENT_TIMEOUT=2s
+
+# Disable (application is sole authority):
+LEDGER_PG_STATEMENT_TIMEOUT=0
+```
+
+Both `cmd/ledger` (writer) and `cmd/ledger-reader` (read replica)
+honor this env. Unparseable values silently fall back to 5 s; the
+writer logs the effective value at boot under
+`postgres pool ready` so misconfigs are visible.
+
+### F4 — Builder advisory-lock heartbeat (in-code)
+
+`AcquireBuilderLock` takes the Postgres advisory lock at boot
+with a bounded timeout (`DefaultBuilderLockAcquireTimeout` = 30 s)
+so a rolling-update where the previous pod still holds the lock
+fails fast with an explicit error instead of hanging forever:
+
+```
+store: advisory lock failed within 30s (another writer may hold
+the lock — check rolling-update or zombie pod): ...
+```
+
+After acquisition, a heartbeat goroutine pings the holding
+connection every `DefaultBuilderLockHeartbeatInterval` (10 s).
+If the ping fails — TCP reaper, network partition, server
+restart — the connection is dead, the advisory lock has
+auto-released server-side, and the heartbeat surfaces
+`ErrAdvisoryLockLost` via the supervisor's fatal channel. The
+process exits and the orchestrator (k8s/systemd/bare-metal
+restart-loop) starts a fresh pod that goes through a clean
+`Acquire` path.
+
+This catches the otherwise-silent failure mode where a stale
+TCP connection that the kernel hasn't reaped leaves the lock
+"held" by a zombie pod — without the heartbeat, the new pod
+hangs indefinitely waiting for a lock that the dead one will
+never release.
+
+### F5 — Boot-time pool warmup (in-code)
+
+`InitPool` eagerly opens `MinConns` connections via
+`Acquire`/`Release` after the pool is constructed and pinged.
+Without this warmup, admission p99 spikes during the first ~30 s
+after boot as cold connection slots pay the full
+TCP+TLS+startup-message handshake cost (~50-200 ms each in
+same-region, more across regions).
+
+Failures during warmup are logged but NOT fatal: the pool stays
+valid, and the application falls back to lazy connection on the
+first request that needs an unwarmed slot.
+
+### Boot order with F changes
+
+`store/postgres.go::InitPool` (warmup) → `RunMigrations` → 
+`AcquireBuilderLock` (with heartbeat goroutine) → rest of subsystem
+wiring. The lock acquisition fails fast on rolling-update conflict;
+the heartbeat starts immediately after acquisition and shares the
+supervisor's fatal channel so a lock loss exits the process via the
+same path as a sequencer or shipper panic.
