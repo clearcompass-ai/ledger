@@ -294,6 +294,30 @@ type Config struct {
 	// without bespoke ledger config.
 	TileServeDisable bool // LEDGER_TILE_SERVE_DISABLE
 
+	// TileBackend selects the tile-storage backend the /tile/ +
+	// /checkpoint HTTP routes read from. One of:
+	//
+	//   "posix" (default) — reads from <LEDGER_TESSERA_STORAGE_DIR>.
+	//                       Local POSIX I/O. Path Tessera writes
+	//                       to today.
+	//   "gcs"             — reads from gs://<LEDGER_BYTE_STORE_GCS_BUCKET>/
+	//                       <LEDGER_TILE_BUCKET_PREFIX>/. Reuses
+	//                       the entry-bytestore GCS client (one
+	//                       auth surface). Suitable when Tessera
+	//                       writes tiles directly to GCS or an
+	//                       external sync mirrors POSIX → GCS.
+	//
+	// Both share the bytestore.TileBackend interface; switching
+	// requires only this env var (no code change).
+	TileBackend string // LEDGER_TILE_BACKEND
+
+	// TileBucketPrefix scopes tile keys under the GCS bucket.
+	// Defaults to "tessera/" so entries (under "entries/") and
+	// tiles (under "tessera/") never collide in the same bucket.
+	// Empty prefix means tiles at bucket root. Only consulted
+	// when TileBackend=="gcs".
+	TileBucketPrefix string // LEDGER_TILE_BUCKET_PREFIX
+
 	MaxEntrySize int64
 	BatchSize int
 	PollInterval time.Duration
@@ -526,6 +550,8 @@ func loadConfig() (*Config, error) {
 		MaxConcurrentConns: envIntOr("LEDGER_MAX_CONCURRENT_CONNS", 0),
 		PprofAddr:          os.Getenv("LEDGER_PPROF_ADDR"),
 		TileServeDisable:   os.Getenv("LEDGER_TILE_SERVE_DISABLE") == "true",
+		TileBackend:        envOr("LEDGER_TILE_BACKEND", "posix"),
+		TileBucketPrefix:   envOr("LEDGER_TILE_BUCKET_PREFIX", "tessera/"),
 
 		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
@@ -1632,12 +1658,38 @@ func main() {
 	// MaxTileBytes cap from attesta v0.1.2). Suppressed when
 	// LEDGER_TILE_SERVE_DISABLE=true — for private deployments
 	// where auditors go through a designated witness instead.
+	//
+	// Backend dispatch (LEDGER_TILE_BACKEND):
+	//
+	//   posix → reuses the existing *tessera.POSIXTileBackend.
+	//   gcs   → constructs a *bytestore.GCSTiles companion that
+	//           reuses the entry-bytestore's authenticated GCS
+	//           client. Requires LEDGER_BYTE_STORE_BACKEND=gcs.
 	var checkpointHandler http.HandlerFunc
 	var tileHandler http.HandlerFunc
 	if !cfg.TileServeDisable {
-		checkpointHandler = api.NewCheckpointHandler(tileBackend, logger)
-		tileHandler = api.NewTileHandler(tileBackend, logger)
+		var serving bytestore.TileBackend
+		switch cfg.TileBackend {
+		case "", "posix":
+			serving = tileBackend
+		case "gcs":
+			gcsBackend, ok := byteStore.(*bytestore.GCS)
+			if !ok {
+				logger.Error("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs",
+					"byte_store_backend", cfg.ByteStoreBackend)
+				os.Exit(1)
+			}
+			serving = bytestore.NewGCSTiles(gcsBackend, cfg.TileBucketPrefix, 30*time.Second)
+		default:
+			logger.Error("LEDGER_TILE_BACKEND must be one of posix|gcs",
+				"got", cfg.TileBackend)
+			os.Exit(1)
+		}
+		checkpointHandler = api.NewCheckpointHandler(serving, logger)
+		tileHandler = api.NewTileHandler(serving, logger)
 		logger.Info("static-ct tile serving enabled",
+			"backend", cfg.TileBackend,
+			"prefix", cfg.TileBucketPrefix,
 			"routes", []string{"/checkpoint", "/tile/{level}/{rest...}"},
 		)
 	} else {

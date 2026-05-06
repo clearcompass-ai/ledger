@@ -201,3 +201,194 @@ curl http://ledger/v1/entries-hash/<hash_hex>
 # The bytes are still in the WAL — ledger-side intervention to retry
 # manually OR mark the entry as drop-and-replace.
 ```
+
+## Static-CT tile serving (c2sp.org/tlog-tiles)
+
+The ledger exposes the c2sp.org/tlog-tiles read surface so external
+auditors fetch inclusion + consistency proofs offline using the SDK's
+`log/tessera_fetcher` primitive — no per-entry round-trip to the
+ledger required, no ledger CPU consumed past one read per tile.
+
+Routes:
+
+```
+GET /checkpoint                       — signed root, mutates per integration cycle
+GET /tile/{level}/{rest...}           — hash tiles
+GET /tile/entries/{rest...}           — entry-bundle tiles
+```
+
+The backend that satisfies these reads is selected via
+`LEDGER_TILE_BACKEND`:
+
+| Value | Reads from | When to pick |
+|---|---|---|
+| `posix` (default) | the local `LEDGER_TESSERA_STORAGE_DIR` | single-binary deployment, or zero-trust origin behind a CDN |
+| `gcs` | `<bucket>/<prefix>/...` in the same bucket as `LEDGER_BYTE_STORE_GCS_BUCKET` | tiles written directly to GCS, or a sync mirrors POSIX → GCS |
+
+`LEDGER_TILE_BACKEND=gcs` requires `LEDGER_BYTE_STORE_BACKEND=gcs` —
+the tile backend reuses the same authenticated bucket handle the
+entry bytestore opens, so there is exactly one GCS client per ledger
+process regardless of which surfaces are served from GCS.
+
+`LEDGER_TILE_BUCKET_PREFIX` (default `tessera/`) is the GCS key
+prefix where Tessera writes tiles. Empty prefix means tiles at
+bucket root. Entries (under the entry bytestore's `ObjectPrefix`)
+and tiles never collide in the same bucket because the prefixes are
+distinct namespaces.
+
+### Lane 1 — POSIX origin, GCS mirror, CDN fronts GCS (recommended)
+
+Tessera writes tiles to a local POSIX directory; a sidecar (e.g.
+`gsutil rsync` or `gcloud storage rsync`) mirrors that directory into
+a GCS bucket; a generic CDN (CloudFront, Cloud CDN, Fastly) fronts
+GCS for auditors. The ledger's `/tile/...` routes serve as a
+zero-trust origin from POSIX.
+
+```
+       Auditor traffic (99%+ cache hit)
+                  │
+                  ▼
+           ┌─────────────┐
+           │     CDN     │   Cache-Control honored:
+           └──────┬──────┘     full tile  86400 immutable
+                  │            partial    max-age=2
+                  ▼            checkpoint max-age=2
+           ┌─────────────┐
+           │  GCS bucket │   Mirrored from POSIX (gsutil rsync)
+           └──────┬──────┘
+                  │
+                  ▼ (origin pull / direct ledger access)
+           ┌─────────────┐
+           │   Ledger    │   LEDGER_TILE_BACKEND=posix
+           │  POSIX dir  │   /tile/... reads LEDGER_TESSERA_STORAGE_DIR
+           └─────────────┘
+```
+
+Pros: Tessera write path is unchanged (POSIX-native). CDN absorbs
+read load. GCS is read-only from the ledger's perspective.
+
+Cons: rsync lag is the auditor staleness floor (typically <60s with
+cron-driven rsync). If the rsync sidecar fails, auditors hit the
+ledger directly until it recovers — capacity-plan accordingly.
+
+### Lane 2 — Tessera writes GCS directly (heavier)
+
+Tessera's `tessera/storage/gcp` driver writes tiles directly to GCS
+with Spanner-backed coordination. The ledger's `/tile/...` routes
+serve from the same GCS bucket via `LEDGER_TILE_BACKEND=gcs`.
+
+```
+                  Tessera (cmd/ledger embedded)
+                          │
+                          ▼  writes
+                   ┌─────────────┐
+                   │  GCS bucket │
+                   └──────┬──────┘
+                          ▲
+            CDN (auditors)│  Ledger /tile/... (LEDGER_TILE_BACKEND=gcs)
+            ──────────────┴──────────────────────────
+```
+
+Pros: no sidecar; auditor staleness is bounded by GCS strong
+consistency (single-digit ms).
+
+Cons: Tessera's GCP driver requires Spanner, which introduces
+additional operational surface beyond Postgres. Requires explicit
+opt-in by switching the Tessera storage driver in `tessera/`.
+
+### GCS bucket layout
+
+For Lane 2 (or Lane 1 with POSIX rsync mirror), the bucket is
+shared between the entry bytestore and tiles, distinguished by
+prefix:
+
+```
+gs://<bucket>/
+   entries/                            (LEDGER_BYTE_STORE_GCS_OBJECT_PREFIX, default "entries")
+       0000000000000001/<hash_hex>
+       0000000000000002/<hash_hex>
+       ...
+   tessera/                            (LEDGER_TILE_BUCKET_PREFIX, default "tessera/")
+       checkpoint
+       tile/
+           0/x000/000              <- hash tiles
+           0/x000/001
+           ...
+           entries/x000/000        <- entry-bundle tiles
+           entries/x000/001
+           ...
+```
+
+Operators can override either prefix:
+
+```sh
+export LEDGER_BYTE_STORE_GCS_BUCKET=ledger-prod-bytes
+export LEDGER_BYTE_STORE_GCS_OBJECT_PREFIX=entries        # default
+export LEDGER_TILE_BACKEND=gcs
+export LEDGER_TILE_BUCKET_PREFIX=tessera                  # default ("tessera/" trimmed)
+```
+
+### CDN configuration example (Cloud CDN)
+
+```yaml
+backendBucket:
+  name: ledger-tile-origin
+  bucketName: ledger-prod-bytes
+  cdnPolicy:
+    cacheMode: USE_ORIGIN_HEADERS   # honor Cache-Control from the origin
+    defaultTtl: 60                  # safety floor; origin sends per-route TTL
+    maxTtl: 86400                   # full tiles cap
+    negativeCaching: true           # 404 caching defends origin from probing
+    negativeCachingPolicy:
+      - code: 404
+        ttl: 2                      # match the partial-tile cache window
+```
+
+The `Cache-Control` constants in `api/tile_handler.go` are the
+single source of truth for CDN behavior. Origin headers:
+
+| Route | Cache-Control |
+|---|---|
+| Full hash / entry-bundle tile | `public, max-age=86400, immutable` |
+| Partial tile (path contains `.p/`) | `public, max-age=2` |
+| `/checkpoint` | `max-age=2` |
+
+Full tiles are immutable by spec — once written, the 256-entry
+boundary is reached and the tile never changes. CDNs honor
+`immutable` by skipping re-validation entirely.
+
+### Scale envelope (1B+ entries, 10M/day)
+
+| Property | Headroom |
+|---|---|
+| Tile object count at 1B entries | ~8M objects (~4M hash + ~4M entry-bundle) — well under unlimited bucket capacity |
+| Tile write rate at 10M entries/day | ~0.5 tiles/sec — 1000× under the 5000 writes/sec/bucket quota |
+| Tile read rate (auditor traffic post-CDN) | <100 origin reads/sec at 99% cache hit ratio against 10K req/sec auditor load |
+| `MaxTileBytes` ceiling | 16,777,472 bytes (256 entries × (2 + 65535)) — mirrors the SDK's `log/tessera_fetcher.MaxTileBytes` |
+
+The bounded I/O ceiling defends auditors and CDN origin pulls
+against a hostile or misbehaving GCS object that streams unbounded
+bytes within the 30-second per-request budget. The
+`integration-gcs-tile` Makefile target exercises this against a
+real bucket.
+
+### Operational verification
+
+```sh
+# Real-GCS integration tests (uploads ~16 MiB, deletes its own objects)
+export ATTESTA_TEST_GCS_BUCKET=ledger-tile-integration-<your-instance>
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json
+make integration-gcs-tile
+
+# Smoke check a deployed endpoint
+curl -i https://<ledger>/checkpoint                          # → 200, Cache-Control: max-age=2
+curl -i https://<ledger>/tile/0/x000/000                     # → 200 (or 404 before first integration)
+curl -i https://<ledger>/tile/entries/x000/000               # → 200 (or 404)
+curl -i -H "Range: bytes=0-15" https://<ledger>/tile/0/x000/000  # → 206 Partial Content
+```
+
+### Disabling tile serving
+
+`LEDGER_TILE_SERVE_DISABLE=true` mounts no tile routes at all. Use
+this when a separate read-replica process serves tiles and the
+admission node should reject `/tile/...` traffic at the LB layer.

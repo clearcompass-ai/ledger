@@ -72,7 +72,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -82,31 +81,20 @@ import (
 	"time"
 
 	"github.com/clearcompass-ai/ledger/apitypes"
+	"github.com/clearcompass-ai/ledger/bytestore"
 )
 
 // -------------------------------------------------------------------------------------------------
-// 1) Backend contract
+// 1) Backend contract (re-exported from bytestore)
 // -------------------------------------------------------------------------------------------------
 
-// TileBackend is the minimum surface tile-serving handlers
-// require. *tessera.POSIXTileBackend satisfies it.
-//
-// Defined as a small interface in api/ (not in tessera/) so the
-// pure-CQRS api package depends on a method-set, not a concrete
-// type. Tests + alternative backends (in-memory, GCS-direct)
-// can satisfy it without dragging in tessera's full surface.
-type TileBackend interface {
-	// ReadTileByPath returns the bytes of a c2sp.org/tlog-tiles
-	// path (e.g., "tile/0/x001/067" or "tile/entries/x001/067").
-	// Returns os.ErrNotExist when the file is absent — the
-	// canonical c2sp signal for "tile not yet integrated".
-	ReadTileByPath(ctx context.Context, path string) ([]byte, error)
-
-	// ReadCheckpoint returns the bytes of <root>/checkpoint.
-	// Returns os.ErrNotExist before the first checkpoint is
-	// written (typical at fresh boot).
-	ReadCheckpoint(ctx context.Context) ([]byte, error)
-}
+// TileBackend is an alias for bytestore.TileBackend — the
+// read-only storage contract behind the /checkpoint and /tile
+// HTTP routes. Re-exported here so the api package's public
+// surface stays self-contained for callers that import api
+// alone, while the canonical definition + compile-time guards
+// for concrete implementations (POSIX, GCS) live in bytestore.
+type TileBackend = bytestore.TileBackend
 
 // -------------------------------------------------------------------------------------------------
 // 2) Cache-Control constants

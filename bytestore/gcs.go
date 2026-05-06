@@ -39,6 +39,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +50,22 @@ import (
 
 // Maximum TTL allowed by GCS V4 signed URLs.
 const gcsMaxPresignTTL = 7 * 24 * time.Hour
+
+// MaxTileBytes is the largest c2sp.org/tlog-tiles tile body the
+// GCSTiles backend will read into memory. Mirrors the SDK's
+// log/tessera_fetcher.MaxTileBytes (attesta v0.1.2): a fully-
+// packed entry-bundle tile is 256 entries × (2-byte uint16 length
+// prefix + MaxBundleEntrySize 65535) = 16,777,472 bytes. Hash
+// tiles are bounded much more tightly (256 × 32 = 8 KiB), so the
+// entry-bundle ceiling is a safe upper bound for every tile shape
+// the backend serves.
+//
+// Defends auditors / CDN origin pulls against a hostile or
+// misbehaving GCS object that holds the connection open and
+// streams unbounded bytes past the per-request timeout. The
+// backend wraps NewReader in io.LimitReader{N: MaxTileBytes + 1}
+// and rejects with an explicit "exceeds MaxTileBytes" error.
+const MaxTileBytes = 256 * (2 + 65535) // 16,777,472
 
 // GCSConfig configures NewGCS.
 type GCSConfig struct {
@@ -302,3 +320,127 @@ func (s *GCS) Close() error {
 
 // Compile-time pin.
 var _ Backend = (*GCS)(nil)
+
+// -------------------------------------------------------------------------------------------------
+// GCSTiles — c2sp.org/tlog-tiles read-only backend
+// -------------------------------------------------------------------------------------------------
+
+// GCSTiles serves c2sp.org/tlog-tiles paths from a configurable
+// prefix in the same bucket the entry bytestore uses. Constructed
+// from an existing *GCS so the auth surface, client, and bucket
+// handle are reused — there is exactly one GCS client per ledger
+// process, regardless of whether it serves entries, tiles, or
+// both.
+//
+// Object layout under the bucket:
+//
+//	<prefix>/checkpoint
+//	<prefix>/tile/<level>/<chunked_index>[.p/<partial_size>]
+//	<prefix>/tile/entries/<chunked_index>[.p/<partial_size>]
+//
+// Empty prefix means tiles live at bucket root (no leading
+// directory). The default prefix in cmd/ledger is "tessera/" so
+// entries (under "entries/") and tiles (under "tessera/") never
+// collide in the same bucket.
+//
+// Implements bytestore.TileBackend (compile-time pinned at the
+// bottom of this file).
+type GCSTiles struct {
+	bucket      *storage.BucketHandle
+	prefix      string // canonical form: trimmed of trailing slash
+	readTimeout time.Duration
+}
+
+// NewGCSTiles returns a tile backend reusing the supplied *GCS's
+// authenticated bucket handle. prefix is the GCS key prefix where
+// Tessera writes tiles; trailing slashes are trimmed. Empty
+// prefix means tiles at bucket root.
+//
+// readTimeout caps each ReadTileByPath / ReadCheckpoint call's
+// outbound GCS round-trip. 0 defaults to 30 seconds (matches
+// the *GCS struct's read budget).
+func NewGCSTiles(g *GCS, prefix string, readTimeout time.Duration) *GCSTiles {
+	if readTimeout <= 0 {
+		readTimeout = 30 * time.Second
+	}
+	return &GCSTiles{
+		bucket:      g.bucket,
+		prefix:      strings.TrimSuffix(prefix, "/"),
+		readTimeout: readTimeout,
+	}
+}
+
+// objectKey composes the GCS object key for a c2sp.org/tlog-tiles
+// path. Path-traversal defense in depth: the api-layer handler
+// already validates these inputs, but the storage layer ALSO
+// rejects ".." segments, absolute paths, and non-printable bytes
+// so a backend used outside the standard handler still refuses
+// hostile input.
+func (t *GCSTiles) objectKey(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("bytestore/gcs: tile path empty")
+	}
+	if strings.Contains(path, "..") {
+		return "", fmt.Errorf("bytestore/gcs: tile path rejects '..': %q", path)
+	}
+	if strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("bytestore/gcs: tile path rejects absolute: %q", path)
+	}
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c < 0x20 || c > 0x7E {
+			return "", fmt.Errorf("bytestore/gcs: tile path rejects non-printable byte at %d", i)
+		}
+	}
+	if t.prefix == "" {
+		return path, nil
+	}
+	return t.prefix + "/" + path, nil
+}
+
+// ReadTileByPath returns the bytes of a c2sp.org/tlog-tiles path
+// (e.g., "tile/0/x001/067" or "tile/entries/x001/067"). Returns
+// os.ErrNotExist verbatim when the object is absent — the SDK's
+// log/tessera_fetcher.fetchTesseraTile drives the partial-then-
+// full fallback off this exact sentinel.
+//
+// Bounded I/O: the response body is wrapped in io.LimitedReader
+// at MaxTileBytes+1 so an over-streaming GCS object cannot OOM
+// the host, even within the readTimeout window.
+func (t *GCSTiles) ReadTileByPath(ctx context.Context, path string) ([]byte, error) {
+	key, err := t.objectKey(path)
+	if err != nil {
+		return nil, err
+	}
+	rctx, cancel := context.WithTimeout(ctx, t.readTimeout)
+	defer cancel()
+	rc, err := t.bucket.Object(key).NewReader(rctx)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, os.ErrNotExist
+		}
+		return nil, fmt.Errorf("bytestore/gcs: tile %q: %w", key, err)
+	}
+	defer rc.Close()
+	limited := &io.LimitedReader{R: rc, N: MaxTileBytes + 1}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("bytestore/gcs: tile read %q: %w", key, err)
+	}
+	if int64(len(data)) > MaxTileBytes {
+		return nil, fmt.Errorf("bytestore/gcs: tile %q exceeds MaxTileBytes (%d)", key, MaxTileBytes)
+	}
+	return data, nil
+}
+
+// ReadCheckpoint returns the bytes of <prefix>/checkpoint —
+// the c2sp.org/tlog-tiles signed checkpoint Tessera writes after
+// each integration cycle. Returns os.ErrNotExist before the
+// first checkpoint is published.
+func (t *GCSTiles) ReadCheckpoint(ctx context.Context) ([]byte, error) {
+	return t.ReadTileByPath(ctx, "checkpoint")
+}
+
+// Compile-time pin: GCSTiles satisfies the read-only
+// TileBackend contract the api/ tile-serving handlers consume.
+var _ TileBackend = (*GCSTiles)(nil)
