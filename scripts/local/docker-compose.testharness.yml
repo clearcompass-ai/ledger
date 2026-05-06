@@ -1,0 +1,148 @@
+# Ledger integration test harness.
+#
+# Postgres container provides the ledger's pgxpool connections,
+# embedded schemaDDL queries, and pg_advisory_lock builder
+# exclusivity without protocol adapters. Tessera storage is fronted
+# by fake-gcs-server because the ledger writes Tessera tiles to
+# GCS-shaped object storage; in production this is real GCS, here
+# it is the local emulator.
+#
+# Bring-up:
+#
+#   cd integration
+#   docker-compose up -d
+#   ATTESTA_TEST_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable" \
+#   ATTESTA_TEST_GCS_ENDPOINT="http://localhost:4443" \
+#   go test ./...
+#
+# Integration tests skip when ATTESTA_TEST_DSN is unset, so this
+# harness is the gate that makes them run. The unit-test suite is
+# unaffected and runs unconditionally.
+#
+# Persistence: every container declares no volumes. State is
+# ephemeral — containers can be recreated freely between test
+# runs and CI parallelism is not constrained by shared state.
+#
+# Network: services bind to localhost on non-default ports (5544
+# for Postgres, 4443 for fake-gcs-server) to avoid clashing with
+# whatever the developer might have running locally. Inside the
+# Docker network the containers reach each other by service name.
+
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────────────────────────
+  # Postgres — ledger's metadata + index store
+  # ─────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: attesta_test_postgres
+    environment:
+      POSTGRES_USER: attesta
+      POSTGRES_PASSWORD: attesta
+      POSTGRES_DB: attesta_test
+    # Pass tuning parameters directly to the server daemon:
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    ports:
+      - "127.0.0.1:5544:5432"
+
+  # ─────────────────────────────────────────────────────────────────
+  # fake-gcs-server — Tessera tile / entry-bundle storage
+  # ─────────────────────────────────────────────────────────────────
+  fake-gcs:
+    # fsouza/fake-gcs-server is the de-facto local-dev GCS
+    # emulator: HTTP API-compatible with google-cloud-storage
+    # clients, single binary, no auth in -scheme http mode.
+    image: fsouza/fake-gcs-server:latest
+    container_name: attesta_test_gcs
+    command:
+      - "-scheme=http"
+      - "-port=4443"
+      - "-public-host=localhost:4443"
+      # The bucket the ledger writes tiles to. Created at
+      # startup so tests don't have to provision it.
+      - "-data=/data"
+    ports:
+      - "127.0.0.1:4443:4443"
+    healthcheck:
+      # fake-gcs-server has no built-in /healthz so we rely on
+      # the storage-layer endpoint that always responds with the
+      # bucket list (empty initially).
+      test: ["CMD", "wget", "-qO-", "http://localhost:4443/storage/v1/b"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  # bucket-init — one-shot job that creates the tiles bucket on the
+  # fake-gcs-server before tests run.
+  # ─────────────────────────────────────────────────────────────────
+  bucket-init:
+    image: curlimages/curl:latest
+    container_name: attesta_test_bucket_init
+    depends_on:
+      fake-gcs:
+        condition: service_healthy
+    # POST to the storage v1 endpoint creates the bucket. Idempotent
+    # via the curl exit-code dance: 200 (created) or 409 (already
+    # exists) both succeed; anything else fails.
+    entrypoint: >
+      sh -c '
+        set -e;
+        STATUS=$$(curl -s -o /dev/null -w "%{http_code}" -X POST
+          -H "Content-Type: application/json"
+          -d ''{"name":"attesta-tiles"}''
+          http://fake-gcs:4443/storage/v1/b);
+        case "$$STATUS" in
+          200|201|409) echo "bucket ready (status=$$STATUS)"; exit 0;;
+          *) echo "bucket create failed: $$STATUS"; exit 1;;
+        esac
+      '
+
+  # ─────────────────────────────────────────────────────────────────
+  # RustFS — S3-compatible byte store for the bytestore.S3 adapter
+  # ─────────────────────────────────────────────────────────────────
+  #
+  # Validates the S3 adapter against the same docker-compose harness
+  # that exercises the GCS adapter against fake-gcs-server. RustFS
+  # speaks the same SigV4 wire as AWS S3, R2, and other S3-compatible
+  # backends; the adapter is byte-identical across them.
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: attesta_test_rustfs
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_ADDRESS: ":9000"
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/ || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  # rustfs-init — one-shot bucket creator. Uses awscli against the
+  # RustFS S3 endpoint so we don't depend on a vendor-specific CLI.
+  # ─────────────────────────────────────────────────────────────────
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    container_name: attesta_test_rustfs_init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      sh -c '
+        set -e;
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://attesta-test-bytes 2>/dev/null || true;
+        echo "bucket attesta-test-bytes ready";
+      '
+
+# Networks are auto-created. Service names (postgres, fake-gcs, rustfs)
+# resolve via Docker's embedded DNS for inter-container access;
+# host-side access is via the published 127.0.0.1 ports above.

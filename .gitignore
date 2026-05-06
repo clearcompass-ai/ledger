@@ -1,0 +1,149 @@
+# --- General ---
+# Ignore dot-directories anywhere (e.g., .git/, .vscode/, .idea/, .pytest_cache/)
+**/.*/
+# But allow .githooks (pre-commit hooks shared via repo)
+!.githooks/
+!.githooks/**
+# --- Environment Variables & Secrets ---
+# Ignore env files by default...
+.env
+.env.*
+env.*
+
+# Ignore plaintext image-warmer env (anywhere)
+**/image-warmer.env
+
+# But keep the encrypted SOPS version tracked (anywhere)
+!**/image-warmer.env.sops
+
+# Allow BOTH dot-prefixed and non-dot-prefixed encrypted env files anywhere EXCEPT inside dot-directories
+!**/.env.enc
+**/.*/.env.enc
+!**/env.enc
+**/.*/env.enc
+
+# Allow example files and SOPS config (wherever they are), still subject to dot-directory ignore above
+!**/.env.example
+!**/env.example
+!**/.sops.yaml
+
+# --- Byte-compiled/optimized/DLL files ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environment ---
+venv/
+.venv/
+env/
+.env/
+*env/
+*env.bak/
+*env.old/
+
+# --- Application Outputs & Logs ---
+.outputs/
+logs/
+*.log
+*.log.*
+output.txt
+output*.txt
+artifacts/test/
+
+# --- IDE/Editor Configurations ---
+# Note: dot-directories are already handled by **/.*/
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# --- Build, Distribution, and Packaging Artifacts ---
+
+dist/
+*.egg-info/
+pip-wheel-metadata/
+/site/
+*.egg
+/wheels/
+# Local debug runs — MHTML, screenshots, JSON output
+.run/
+# --- Testing & Coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+htmlcov/
+pytest-report.html
+
+# --- Operating System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- Docker ---
+docker-compose.override.yml
+docker-compose.local.yml
+
+# --- Terraform & OpenTofu ---
+.terraform/
+.tofu/
+terraform.tfstate
+terraform.tfstate.backup
+tofu.tfstate
+tofu.tfstate.backup
+*.tfvars
+*.tfplan
+.terraform.lock.hcl
+.tofu.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Go / Golang ---
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+/bin
+/pkg
+/vendor/
+
+# Built binaries that land in the repo root when developers run
+# `go build ./cmd/<name>` without a -o flag. One entry per cmd/
+# subdir so additions are explicit.
+/ledger
+/ledger-reader
+/rebuild-tiles
+/seed-session
+/submit-stamp
+
+# --- Node.js / npm / yarn ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# --- Other ---
+.python-version
+*.pem
+*.key
+*.duckdb
+*.csv
+secrets.yml
+
+# --- SOPS/Age Private Keys (Safety Net) ---
+keys.txt
+*age-key.txt

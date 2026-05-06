@@ -1,0 +1,446 @@
+/*
+FILE PATH: integration/admission_rejection_test.go
+
+Admission-rejection coverage. One test case per documented
+rejection error code, plus one test for the schema-payload
+passthrough invariant.
+
+Why a mix of unit-level and HTTP-level tests:
+
+  - For NFC, signature, BLS quorum: the ledger's admission
+    package exposes typed errors directly. A unit-level call
+    against the package's exported functions exercises the same
+    code path the HTTP handler invokes, with less ceremony than
+    constructing a wire-encoded entry that triggers the rejection
+    at exactly the right pipeline stage. The test asserts
+    errors.Is on the typed sentinel — a regression that drops
+    the wrapping fails the test.
+
+  - For the SDK's commitment payload errors and the schema
+    passthrough invariant: tests call the SDK schema parsers
+    (or the ledger's dispatch logic) directly because the
+    rejection contract is the error type returned, not the HTTP
+    status code that wraps it. The HTTP-status mapping is
+    exercised in the happy-path test by inversion (anything
+    other than 202 fails the happy path).
+
+This split keeps each test focused on one assertion and avoids the
+combinatorial explosion of "construct a wire entry that passes the
+N-1 prior pipeline stages and fails on the Nth."
+
+Skip semantics: the database-touching helper resetTables in the
+shared harness fixtures is not invoked by these tests because
+they exercise admission-layer code paths that don't write to the
+database. ATTESTA_TEST_DSN is therefore not required, and these
+tests run unconditionally on every `go test`.
+*/
+package integration
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"math/big"
+	"strings"
+	"testing"
+
+	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/artifact"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/crypto/escrow"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
+	"github.com/clearcompass-ai/attesta/types"
+
+	"github.com/clearcompass-ai/ledger/admission"
+)
+
+// ─────────────────────────────────────────────────────────────────────
+// ErrIngressNotNFC
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAdmission_RejectsNonNFCSignerDID confirms that the ledger's
+// defensive NFC check rejects an entry whose SignerDID is in NFD
+// (decomposed) form rather than NFC (composed). The test bypasses
+// envelope.NewEntry because that constructor enforces other
+// invariants we are not testing here; the unit under test is
+// admission.CheckNFC reading a manually-built header.
+func TestAdmission_RejectsNonNFCSignerDID(t *testing.T) {
+	// "Café" with the e-acute as a precomposed character (NFC, 5
+	// bytes) versus "Café" (NFD, 6 bytes). The visual
+	// rendering is identical; the byte sequences are not. The SDK's
+	// caller-normalizes contract puts the normalization burden on
+	// the caller; the ledger MUST reject NFD-form input rather than silently
+	// normalize it.
+	const nfdDID = "did:web:Café.example"
+	entry := &envelope.Entry{
+		Header: envelope.ControlHeader{
+			SignerDID:   nfdDID,
+			Destination: "did:web:ledger.example",
+		},
+	}
+	err := admission.CheckNFC(entry)
+	if err == nil {
+		t.Fatal("expected ErrIngressNotNFC, got nil")
+	}
+	if !errors.Is(err, admission.ErrIngressNotNFC) {
+		t.Fatalf("expected ErrIngressNotNFC, got %v", err)
+	}
+}
+
+// TestAdmission_AcceptsNFCSignerDID is the negative control:
+// the same DID in precomposed (NFC) form passes the check.
+func TestAdmission_AcceptsNFCSignerDID(t *testing.T) {
+	// "Café" precomposed (NFC, e-acute as a single codepoint).
+	const nfcDID = "did:web:Café.example"
+	entry := &envelope.Entry{
+		Header: envelope.ControlHeader{
+			SignerDID:   nfcDID,
+			Destination: "did:web:ledger.example",
+		},
+	}
+	if err := admission.CheckNFC(entry); err != nil {
+		t.Fatalf("expected nil for NFC input, got %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ErrSignatureInvalid
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAdmission_RejectsBadSignature confirms that
+// admission.VerifyEntrySignature wraps the SDK's signature failure
+// in ErrSignatureInvalid. The test signs the entry with key A and
+// asks the verifier to verify with key B's public key; the SDK's
+// signatures.VerifyEntry returns ErrSignatureVerificationFailed,
+// which the ledger wrapper maps to ErrSignatureInvalid.
+func TestAdmission_RejectsBadSignature(t *testing.T) {
+	keyA, err := signatures.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey A: %v", err)
+	}
+	keyB, err := signatures.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey B: %v", err)
+	}
+
+	// Build a minimal valid entry header for signing.
+	const signerDID = "did:web:test-signer.example"
+	entry := &envelope.Entry{
+		Header: envelope.ControlHeader{
+			SignerDID:   signerDID,
+			Destination: "did:web:ledger.example",
+		},
+	}
+	//  signing contract (envelope/serialize.go:218-225): sign
+	// over sha256(SigningPayload(entry)). The verifier hashes the
+	// same bytes, so producing a sigA over the actual signing hash
+	// (with key A) is the correct way to set up a wrong-key
+	// rejection — the signature is valid against keyA but the
+	// resolver hands keyB's pubkey to the verifier.
+	signingHash := sha256.Sum256(envelope.SigningPayload(entry))
+	sigA, err := signatures.SignEntry(signingHash, keyA)
+	if err != nil {
+		t.Fatalf("SignEntry A: %v", err)
+	}
+
+	// Resolver returns key B's public key, not key A's. The
+	// signature was produced with A; verification with B's key
+	// MUST fail with ErrSignatureInvalid (cryptographic mismatch),
+	// not ErrSignerDIDResolution (resolver failure).
+	resolver := stubDIDResolver{
+		did: signerDID,
+		pub: &keyB.PublicKey,
+	}
+	err = admission.VerifyEntrySignature(context.Background(), entry, sigA, resolver)
+	if err == nil {
+		t.Fatal("expected ErrSignatureInvalid, got nil")
+	}
+	if !errors.Is(err, admission.ErrSignatureInvalid) {
+		t.Fatalf("expected ErrSignatureInvalid, got %v", err)
+	}
+}
+
+// stubDIDResolver satisfies admission.DIDResolver by returning a
+// canned (did, pubkey) pair on every Resolve call.
+type stubDIDResolver struct {
+	did string
+	pub *ecdsa.PublicKey
+}
+
+func (s stubDIDResolver) ResolvePublicKey(_ context.Context, did string) (*ecdsa.PublicKey, error) {
+	if did != s.did {
+		return nil, errors.New("stubDIDResolver: unknown DID")
+	}
+	return s.pub, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ErrCommitmentPayloadMalformed
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAdmission_RejectsMalformedCommitmentPayload confirms that
+// the SDK's schema.ParsePREGrantCommitmentEntry rejects a payload
+// whose commitment_bytes_hex decodes to bytes that do not parse as
+// a valid PREGrantCommitment wire form.
+//
+// The ledger's C2 dispatcher routes such payloads through the
+// SDK parser; the rejection lands as ErrCommitmentPayloadMalformed
+// at the dispatch site and the admission handler maps that to
+// HTTP 422.
+func TestAdmission_RejectsMalformedCommitmentPayload(t *testing.T) {
+	// Valid envelope structure, invalid inner bytes (8 bytes of
+	// zero — too short to be a PREGrantCommitment which needs
+	// at least SplitID + M + N + one 33-byte commitment point).
+	envelopeBytes, _ := json.Marshal(map[string]any{
+		"schema_id":            artifact.PREGrantCommitmentSchemaID,
+		"commitment_bytes_hex": "0000000000000000",
+	})
+	entry := &envelope.Entry{
+		DomainPayload: envelopeBytes,
+	}
+
+	_, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	if err == nil {
+		t.Fatal("expected ErrCommitmentPayloadMalformed, got nil")
+	}
+	// The SDK's wrapping uses fmt.Errorf("%w: ...", err) which
+	// preserves errors.Is matching against the sentinel.
+	if !errors.Is(err, sdkschema.ErrCommitmentPayloadMalformed) {
+		t.Fatalf("expected ErrCommitmentPayloadMalformed, got %v", err)
+	}
+}
+
+// TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload is the
+// negative control: the same envelope shape with valid inner
+// bytes parses cleanly.
+//
+//  NOTE: artifact.DeserializePREGrantCommitment now performs
+// the on-curve check at structural ingress (artifact/pre_grant_commitment.go:228),
+// not deferred to VerifyPREGrantCommitment as in earlier versions.
+// The previous fixture (zero-byte points) was off-curve (point
+// prefix 0x00 invalid) and now fails Parse with
+// ErrCommitmentPointOffCurve. Fixture rebuilt using k·G compressed
+// points produced via secp256k1.ScalarBaseMult, then serialized via
+// the SDK's SerializePREGrantCommitment.
+func TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload(t *testing.T) {
+	commitment := artifact.PREGrantCommitment{
+		SplitID:       [32]byte{0xAB, 0xCD},
+		M:             2,
+		N:             2,
+		CommitmentSet: [][33]byte{onCurvePoint(t, 1), onCurvePoint(t, 2)},
+	}
+	wire, err := artifact.SerializePREGrantCommitment(commitment)
+	if err != nil {
+		t.Fatalf("SerializePREGrantCommitment: %v", err)
+	}
+
+	envelopeBytes, _ := json.Marshal(map[string]any{
+		"schema_id":            artifact.PREGrantCommitmentSchemaID,
+		"commitment_bytes_hex": hexEncode(wire),
+	})
+	entry := &envelope.Entry{
+		DomainPayload: envelopeBytes,
+	}
+
+	got, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	if err != nil {
+		t.Fatalf("ParsePREGrantCommitmentEntry: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil commitment")
+	}
+	if got.M != 2 || got.N != 2 {
+		t.Errorf("threshold: got M=%d N=%d, want M=2 N=2",
+			got.M, got.N)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ErrCommitmentSchemaIDMismatch
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAdmission_RejectsSchemaIDMismatch confirms that the SDK
+// parser rejects a payload whose schema_id field does not match
+// the schema being parsed against. This is the primary defense
+// against routing mistakes — admitting a pre-grant payload as an
+// escrow split would corrupt the index.
+func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
+	// Payload carries the ESCROW schema id but is being parsed
+	// as a PRE grant. The SDK MUST reject.
+	wire := make([]byte, 32+2+2*33)
+	wire[32] = 2
+	wire[33] = 2
+	envelopeBytes, _ := json.Marshal(map[string]any{
+		"schema_id":            escrow.EscrowSplitCommitmentSchemaID,
+		"commitment_bytes_hex": hexEncode(wire),
+	})
+	entry := &envelope.Entry{
+		DomainPayload: envelopeBytes,
+	}
+
+	_, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	if err == nil {
+		t.Fatal("expected ErrCommitmentSchemaIDMismatch, got nil")
+	}
+	if !errors.Is(err, sdkschema.ErrCommitmentSchemaIDMismatch) {
+		t.Fatalf("expected ErrCommitmentSchemaIDMismatch, got %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ErrWitnessQuorumInsufficient
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAdmission_RejectsInsufficientWitnessQuorum confirms that
+// admission/bls_quorum_verifier.go's VerifyEmbeddedTreeHead wraps
+// cosign quorum failures in ErrWitnessQuorumInsufficient.
+//
+// v0.1.1: build a real *cosign.WitnessKeySet (NewWitnessKeySet
+// rejects empty-keys + impossible-quorum at construction time, so
+// the previous "emptyKeySet returning ([], 1, nil)" mock is no
+// longer constructible — that's a feature, not a regression).
+// Passing a zero CosignedTreeHead with no signatures still hits
+// cosign.ErrEmptySignatures, which the ledger wrapper remaps to
+// the typed sentinel.
+func TestAdmission_RejectsInsufficientWitnessQuorum(t *testing.T) {
+	witKey := types.WitnessPublicKey{}
+	witKey.ID[0] = 1
+	witKey.PublicKey = []byte{0x04, 1, 2, 3}
+	set, err := cosign.NewWitnessKeySet(
+		[]types.WitnessPublicKey{witKey},
+		cosign.NetworkID{1},
+		1,   // K=1 with one key in the set
+		nil, // BLS verifier not needed; ECDSA path handles empty sigs
+	)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
+	v := admission.NewBLSQuorumVerifier(set)
+	// A zero CosignedTreeHead has no signatures — cosign.Verify
+	// rejects with ErrEmptySignatures before any cryptographic work.
+	err = v.VerifyEmbeddedTreeHead(types.CosignedTreeHead{})
+	if err == nil {
+		t.Fatal("expected ErrWitnessQuorumInsufficient, got nil")
+	}
+	if !errors.Is(err, admission.ErrWitnessQuorumInsufficient) {
+		t.Fatalf("expected ErrWitnessQuorumInsufficient, got %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Schema passthrough invariant
+// ─────────────────────────────────────────────────────────────────────
+
+// TestC2Passthrough_UnknownSchemaID confirms the load-bearing
+// invariant: an entry payload with an unrecognized schema_id
+// flows through the dispatcher unchanged (no extracted SplitID,
+// no error). This is what allows bootstrap scripts to admit
+// schema-definition entries before any commitment entry exists,
+// and preserves domain/protocol separation.
+//
+// Because dispatchCommitmentSchema is package-private to api/,
+// the test exercises the invariant via the SDK parsers' negative
+// behavior: parsing a payload with unrecognized schema_id against
+// EITHER known parser fails with ErrCommitmentSchemaIDMismatch,
+// confirming that the dispatcher's switch statement (which
+// matches on the same schema_id constants) cannot route those
+// payloads to either parser. The default branch of that switch
+// is the passthrough.
+func TestC2Passthrough_UnknownSchemaID(t *testing.T) {
+	envelopeBytes, _ := json.Marshal(map[string]any{
+		"schema_id":            "some-unrelated-domain-schema-v1",
+		"commitment_bytes_hex": "00",
+	})
+	entry := &envelope.Entry{
+		DomainPayload: envelopeBytes,
+	}
+
+	// Both parsers reject the unrecognized schema_id with the
+	// SAME error sentinel (ErrCommitmentSchemaIDMismatch), which
+	// confirms the dispatcher's switch statement cannot route
+	// these payloads — the default branch (passthrough) is the
+	// only path open to them.
+	_, preErr := sdkschema.ParsePREGrantCommitmentEntry(entry)
+	if !errors.Is(preErr, sdkschema.ErrCommitmentSchemaIDMismatch) {
+		t.Errorf("expected schema ID mismatch from PRE parser, got %v", preErr)
+	}
+	_, escrowErr := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
+	if !errors.Is(escrowErr, sdkschema.ErrCommitmentSchemaIDMismatch) {
+		t.Errorf("expected schema ID mismatch from escrow parser, got %v", escrowErr)
+	}
+
+	// The dispatcher's contract: when neither parser matches, it
+	// returns (nil SplitID, "", nil) and admission proceeds with
+	// no SplitID indexed for this entry. The HTTP-level
+	// confirmation is in the grant-lifecycle happy-path test
+	// (the synthetic commitment goes through admission and admits
+	// successfully); here we pin the unit-level invariant that the
+	// SDK parsers agree on the schema_id discriminator.
+}
+
+// TestC2Passthrough_NoDomainPayload confirms that an entry with
+// an empty DomainPayload also passes through dispatch — there is
+// no schema_id field to peek, so the dispatcher's JSON unmarshal
+// step produces a zero-value envelope and the switch falls to
+// the default branch.
+//
+// This case matters because commentary entries (BuildCommentary
+// output) often have minimal or empty payloads; admission must
+// not require every entry to carry a recognized schema_id.
+func TestC2Passthrough_NoDomainPayload(t *testing.T) {
+	entry := &envelope.Entry{
+		DomainPayload: nil,
+	}
+	// Neither SDK parser should fire on an entry with no payload;
+	// they reject with malformed-payload errors when they do see
+	// non-JSON or wrong-shape input.
+	if _, err := sdkschema.ParsePREGrantCommitmentEntry(entry); err == nil {
+		t.Errorf("PRE parser unexpectedly accepted entry with no DomainPayload")
+	}
+	if _, err := sdkschema.ParseEscrowSplitCommitmentEntry(entry); err == nil {
+		t.Errorf("escrow parser unexpectedly accepted entry with no DomainPayload")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────
+
+// hexEncode is a thin wrapper to keep the table-test bodies tidy.
+// strings.ToLower because hex.EncodeToString already returns
+// lowercase but we make the contract explicit for any future
+// reader.
+func hexEncode(b []byte) string {
+	const hex = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, v := range b {
+		out[i*2] = hex[v>>4]
+		out[i*2+1] = hex[v&0x0f]
+	}
+	return strings.ToLower(string(out))
+}
+
+// onCurvePoint returns compressed(k·G) on secp256k1 — a structurally
+// valid commitment point. Used to satisfy the on-curve check that
+//  artifact.DeserializePREGrantCommitment performs at structural
+// ingress (artifact/pre_grant_commitment.go:228). Mirrors the SDK's
+// own test helper at crypto/artifact/pre_grant_commitment_wire_test.go:22.
+func onCurvePoint(t *testing.T, k int64) [33]byte {
+	t.Helper()
+	c := secp256k1.S256()
+	x, y := c.ScalarBaseMult(big.NewInt(k).Bytes())
+	var out [33]byte
+	if y.Bit(0) == 0 {
+		out[0] = 0x02
+	} else {
+		out[0] = 0x03
+	}
+	xb := x.Bytes()
+	copy(out[1+32-len(xb):], xb)
+	return out
+}

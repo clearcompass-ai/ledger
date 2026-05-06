@@ -1,0 +1,496 @@
+/*
+FILE PATH: tests/e2e_graceful_shutdown_test.go
+
+Validates graceful-shutdown semantics for the WAL + Shipper:
+
+	TestE2E_ShutdownDuringShipping_Drains
+	  Submits N entries, lets the Shipper start consuming, then
+	  cancels ctx mid-flight. After full harness shutdown, the WAL
+	  must be in a consistent state:
+	    - HWM is some value H ≤ N (monotonic, never overruns).
+	    - Every entry with seq ≤ HWM is StateShipped.
+	    - Every entry with seq > HWM is StateSequenced (not half-shipped:
+	      the Shipper guarantees bytestore.WriteEntry completes BEFORE
+	      wal.MarkShipped runs, so a half-state is impossible).
+
+	TestE2E_RestartCompletesShipping
+	  Continuation of the same WAL volume + bytestore: spawns a fresh
+	  harness pointed at the persisted WAL path and the same Memory
+	  backend instance. The new Shipper picks up the leftover
+	  Sequenced entries, ships them, and HWM converges to N.
+
+BOTH TESTS USE A FILE-BACKED WAL (t.TempDir()) so the close-and-
+reopen path actually exercises Badger persistence. The harness in
+e2e_shipper_redirect_test.go uses wal.OpenInMemory which would not
+survive the close.
+*/
+package tests
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
+
+	"github.com/clearcompass-ai/ledger/api"
+	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
+	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/store/indexes"
+	"github.com/clearcompass-ai/ledger/wal"
+)
+
+// ─────────────────────────────────────────────────────────────────────
+// Disk-backed harness
+//
+// Mirrors startE2EOperator's wiring but parameterized on:
+//   - walPath: tempdir path to a Badger DB. Reusing the same path
+//     across two startShutdownOperator calls models the
+//     restart-after-shutdown path.
+//   - backend: shared *localPresignBackend so the second harness
+//     sees objects the first one wrote. If nil, a fresh one is built.
+//   - merkle: shared *stubMerkleAppender so the Tessera state (next
+//     seq counter) survives the restart, mirroring the production
+//     antispam-volume restart path.
+//   - cleanFirst: whether to truncate Postgres tables. The first
+//     invocation does; the restart invocation must NOT (would lose
+//     the entry_index rows the WAL is reconciling against).
+// ─────────────────────────────────────────────────────────────────────
+
+type shutdownHarnessOpts struct {
+	walPath string
+	backend *localPresignBackend
+	merkle *stubMerkleAppender
+	cleanFirst bool
+}
+
+type shutdownHarness struct {
+	BaseURL string
+	Pool *pgxpool.Pool
+	WAL *wal.Committer
+	walDB walDBCloser
+	Backend *localPresignBackend
+	Merkle *stubMerkleAppender
+	Server *api.Server
+	Shipper *shipper.Shipper
+	cancel context.CancelFunc
+	done chan struct{}
+}
+
+// walDBCloser is a tiny shim — the wal.Open return type lives in
+// the badger v4 package. The shutdown test only ever needs Close()
+// on it, so we narrow the surface.
+type walDBCloser interface{ Close() error }
+
+func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarness {
+	t.Helper()
+
+	dsn := os.Getenv("ATTESTA_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ATTESTA_TEST_DSN not set — skipping graceful-shutdown test")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		cancel()
+		t.Fatalf("pgxpool: %v", err)
+	}
+	if err := store.RunMigrations(ctx, pool); err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("migrations: %v", err)
+	}
+	if opts.cleanFirst {
+		cleanTables(t, pool)
+	}
+
+	walDB, err := wal.Open(opts.walPath, logger)
+	if err != nil {
+		pool.Close()
+		cancel()
+		t.Fatalf("wal.Open(%q): %v", opts.walPath, err)
+	}
+	// On-disk Badger: real db.Sync() works (no DisableSync).
+	walc := wal.NewCommitter(walDB, wal.CommitterConfig{Logger: logger})
+
+	backend := opts.backend
+	if backend == nil {
+		backend = newLocalPresignBackend(t)
+	}
+	merkle := opts.merkle
+	if merkle == nil {
+		merkle = &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+	}
+
+	composite := store.NewCompositeByteReader(walc, backend, logger)
+	entryStore := store.NewEntryStore(pool)
+	creditStore := store.NewCreditStore(pool)
+	sequenceCursor := store.NewSequenceCursor(pool)
+	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
+	queryAPI := indexes.NewPostgresQueryAPI(pool, composite, testLogDID)
+
+	diffController := middleware.NewDifficultyController(
+		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
+	)
+
+	submissionDeps := &api.SubmissionDeps{
+		Storage: api.StorageDeps{
+			EntryStore: entryStore, WAL: walc, Tessera: merkle,
+		},
+		Admission: api.AdmissionConfig{
+			DiffController:        diffController,
+			EpochWindowSeconds:    testEpochWindowSeconds,
+			EpochAcceptanceWindow: testEpochAcceptanceWindow,
+		},
+		Identity:     api.IdentityDeps{Credits: creditStore},
+		LogDID:       testLogDID,
+		MaxEntrySize: 1 << 20,
+		Logger:       logger,
+	}
+	queryDeps := &api.QueryDeps{
+		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
+	}
+	entryReadDeps := &api.EntryReadDeps{
+		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
+		WAL: walc, Presigner: backend, LogDID: testLogDID, Logger: logger,
+	}
+
+	handlers := api.Handlers{
+		Submission:      api.NewSubmissionHandler(submissionDeps),
+		Difficulty:      api.NewDifficultyHandler(queryDeps),
+		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
+		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
+	}
+
+	serverCfg := api.DefaultServerConfig()
+	serverCfg.Addr = "127.0.0.1:0"
+	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("listen: %v", err)
+	}
+	baseURL := fmt.Sprintf("http://%s", ln.Addr().String())
+
+	// Sequencer first — v1 admission is now a polling facade and
+	// needs the sequencer running to advance WAL state.
+	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
+		PollInterval: 10 * time.Millisecond,
+		Logger:       logger,
+	})
+
+	ship := shipper.NewShipper(walc, backend, shipper.Config{
+		PollInterval: 50 * time.Millisecond,
+		MaxInFlight:  4,
+		Logger:       logger,
+	})
+
+	done := make(chan struct{}, 3)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		_ = server.Serve(ln)
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		_ = seq.Run(ctx)
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		_ = ship.Run(ctx)
+	}()
+
+	h := &shutdownHarness{
+		BaseURL: baseURL, Pool: pool, WAL: walc, walDB: walDB,
+		Backend: backend, Merkle: merkle, Server: server, Shipper: ship,
+		cancel: cancel, done: done,
+	}
+
+	for i := 0; i < 50; i++ {
+		resp, err := http.Get(baseURL + "/healthz")
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			return h
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("shutdown harness did not become ready in 2.5s")
+	return nil
+}
+
+// stop cancels ctx, waits for the server + shipper goroutines to
+// return, shuts the HTTP server, then closes the WAL committer + DB
+// + Postgres pool. Tables are NOT cleaned — the next harness
+// instance picks up where this one left off.
+func (h *shutdownHarness) stop(t *testing.T) {
+	t.Helper()
+	h.cancel()
+	// Wait for both background goroutines (server + shipper).
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-h.done:
+		case <-timeout.C:
+			t.Fatalf("shutdown harness goroutine %d/2 did not return in 10s", i+1)
+		}
+	}
+	if err := h.Server.Shutdown(context.Background()); err != nil {
+		t.Logf("server.Shutdown: %v", err)
+	}
+	_ = h.WAL.Close()
+	_ = h.walDB.Close()
+	h.Pool.Close()
+}
+
+func (h *shutdownHarness) seedSession(t *testing.T, token, exchangeDID string, credits int64) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := h.Pool.Exec(ctx,
+		`INSERT INTO sessions (token, exchange_did, expires_at) VALUES ($1, $2, $3)
+		 ON CONFLICT (token) DO NOTHING`,
+		token, exchangeDID, time.Now().UTC().Add(1*time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if credits > 0 {
+		cs := store.NewCreditStore(h.Pool)
+		if _, err := cs.BulkPurchase(ctx, exchangeDID, credits); err != nil {
+			t.Fatalf("seed credits: %v", err)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Test 1: shutdown mid-flight leaves the WAL consistent.
+// ─────────────────────────────────────────────────────────────────────
+
+func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
+	const n = 50
+
+	walDir := filepath.Join(t.TempDir(), "wal")
+	backend := newLocalPresignBackend(t)
+	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+
+	// ── Step 1: submit n entries, let some ship, cancel ────────────
+	h1 := startShutdownOperator(t, shutdownHarnessOpts{
+		walPath:    walDir,
+		backend:    backend,
+		merkle:     merkle,
+		cleanFirst: true,
+	})
+	h1.seedSession(t, "tok-shutdown", "did:example:shutdown-exchange", 1000)
+
+	type submitted struct {
+		seq uint64
+		hash [32]byte
+	}
+	all := make([]submitted, 0, n)
+	for i := 0; i < n; i++ {
+		wire := buildWireEntry(t, envelope.ControlHeader{
+			SignerDID: "did:example:shutdown-signer",
+		}, []byte(fmt.Sprintf("shutdown-%03d", i)))
+		result := submitEntry(t, h1.BaseURL, "tok-shutdown", wire)
+		seq := uint64(result["sequence_number"].(float64))
+		hashHex := result["canonical_hash"].(string)
+		hashBytes, err := hex.DecodeString(hashHex)
+		if err != nil {
+			t.Fatalf("decode hash[%d]: %v", i, err)
+		}
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+		all = append(all, submitted{seq: seq, hash: hash})
+	}
+
+	// Wait until at least 3 entries have shipped so the shipper is
+	// known to be active. Don't wait for all — the point of the test
+	// is to interrupt mid-flight.
+	const minShippedBeforeCancel = 3
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		hwm, err := h1.WAL.HWM(context.Background())
+		if err != nil {
+			t.Fatalf("HWM: %v", err)
+		}
+		if hwm >= minShippedBeforeCancel {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	hwmBeforeCancel, err := h1.WAL.HWM(context.Background())
+	if err != nil {
+		t.Fatalf("HWM: %v", err)
+	}
+	t.Logf("phase 1: cancelling with HWM=%d / submitted=%d", hwmBeforeCancel, n)
+
+	h1.stop(t)
+
+	// ── Step 1 assertions: re-open the WAL read-only and inspect ──
+	// We have to reopen because the committer is closed; reopening
+	// read-only via wal.Open + a fresh committer (no shipper, no
+	// admission) gives us a clean introspection surface.
+	probeLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	probeDB, err := wal.Open(walDir, probeLogger)
+	if err != nil {
+		t.Fatalf("reopen WAL for assertions: %v", err)
+	}
+	probe := wal.NewCommitter(probeDB, wal.CommitterConfig{Logger: probeLogger})
+
+	finalHWM, err := probe.HWM(context.Background())
+	if err != nil {
+		t.Fatalf("post-shutdown HWM: %v", err)
+	}
+	if finalHWM < hwmBeforeCancel {
+		t.Errorf("HWM regressed: pre-cancel=%d post-cancel=%d", hwmBeforeCancel, finalHWM)
+	}
+	if finalHWM > uint64(n) {
+		t.Errorf("HWM=%d overran submission count %d", finalHWM, n)
+	}
+
+	// Every entry's meta state must be either Sequenced or Shipped —
+	// there is no half-state. Group by state for the assertion.
+	var (
+		shipped int
+		sequenced int
+		other int
+	)
+	ctx := context.Background()
+	for _, e := range all {
+		meta, err := probe.MetaState(ctx, e.hash)
+		if err != nil {
+			t.Errorf("seq=%d hash=%x: meta state: %v", e.seq, e.hash[:4], err)
+			continue
+		}
+		switch meta.State {
+		case wal.StateShipped:
+			shipped++
+		case wal.StateSequenced:
+			sequenced++
+		default:
+			other++
+			t.Errorf("seq=%d hash=%x: unexpected state %s", e.seq, e.hash[:4], meta.State)
+		}
+	}
+	t.Logf("phase 1 final: HWM=%d shipped=%d sequenced=%d other=%d", finalHWM, shipped, sequenced, other)
+	if other > 0 {
+		t.Errorf("entries in non-{Sequenced,Shipped} state: %d", other)
+	}
+	if shipped+sequenced != n {
+		t.Errorf("accounting: shipped+sequenced=%d, want %d", shipped+sequenced, n)
+	}
+
+	_ = probe.Close()
+	_ = probeDB.Close()
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Test 2: a fresh harness against the same WAL drains the leftover.
+// ─────────────────────────────────────────────────────────────────────
+
+func TestE2E_RestartCompletesShipping(t *testing.T) {
+	const n = 30
+
+	walDir := filepath.Join(t.TempDir(), "wal")
+	backend := newLocalPresignBackend(t)
+	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+
+	// ── Step 1: submit n, cancel mid-flight ─────────────────────────
+	h1 := startShutdownOperator(t, shutdownHarnessOpts{
+		walPath:    walDir,
+		backend:    backend,
+		merkle:     merkle,
+		cleanFirst: true,
+	})
+	h1.seedSession(t, "tok-restart", "did:example:restart-exchange", 1000)
+
+	hashes := make([][32]byte, 0, n)
+	for i := 0; i < n; i++ {
+		wire := buildWireEntry(t, envelope.ControlHeader{
+			SignerDID: "did:example:restart-signer",
+		}, []byte(fmt.Sprintf("restart-%03d", i)))
+		result := submitEntry(t, h1.BaseURL, "tok-restart", wire)
+		hashHex := result["canonical_hash"].(string)
+		hashBytes, _ := hex.DecodeString(hashHex)
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+		hashes = append(hashes, hash)
+	}
+
+	// Wait until something has shipped, then cancel.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hwm, _ := h1.WAL.HWM(context.Background())
+		if hwm >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	hwmAtCancel, _ := h1.WAL.HWM(context.Background())
+	t.Logf("phase 1: cancelling with HWM=%d / submitted=%d", hwmAtCancel, n)
+	h1.stop(t)
+
+	// ── Step 2: fresh harness with the same WAL + backend + merkle ─
+	h2 := startShutdownOperator(t, shutdownHarnessOpts{
+		walPath:    walDir,
+		backend:    backend,
+		merkle:     merkle,
+		cleanFirst: false, // keep entry_index rows
+	})
+	defer h2.stop(t)
+
+	// Wait for the shipper's HWM to converge to n. With Memory backend
+	// and small entry count, this should be sub-second; allow 10s for
+	// CI variability.
+	deadline = time.Now().Add(10 * time.Second)
+	var finalHWM uint64
+	for time.Now().Before(deadline) {
+		hwm, err := h2.WAL.HWM(context.Background())
+		if err != nil {
+			t.Fatalf("HWM: %v", err)
+		}
+		finalHWM = hwm
+		if hwm >= uint64(n) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if finalHWM < uint64(n) {
+		t.Fatalf("phase 2: HWM=%d did not converge to %d in 10s", finalHWM, n)
+	}
+
+	// Every entry must end StateShipped after the second harness drains.
+	ctx := context.Background()
+	for i, h := range hashes {
+		meta, err := h2.WAL.MetaState(ctx, h)
+		if err != nil {
+			t.Errorf("hash[%d]: meta state: %v", i, err)
+			continue
+		}
+		if meta.State != wal.StateShipped {
+			t.Errorf("hash[%d] state=%s, want Shipped", i, meta.State)
+		}
+	}
+	t.Logf("phase 2: drained to HWM=%d", finalHWM)
+}
