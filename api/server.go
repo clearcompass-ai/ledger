@@ -140,6 +140,15 @@ type Server struct {
 	cfg        ServerConfig
 	ready      atomic.Bool
 	logger     *slog.Logger
+
+	// readinessProbe, when non-nil, is consulted on /readyz in
+	// addition to the s.ready atomic. Returning a non-nil error
+	// surfaces 503 with the error message in the body so an
+	// operator can grep for the specific subsystem that flipped
+	// readiness (e.g., "database unavailable: circuit breaker
+	// open"). Set via SetReadinessProbe; cmd/ledger wires the DB
+	// circuit breaker here.
+	readinessProbe atomic.Pointer[func() error]
 }
 
 // Handlers holds all registered handler functions. Nil fields
@@ -236,13 +245,24 @@ func NewServer(
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		if s.ready.Load() {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ready"))
-		} else {
+		if !s.ready.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("shutting down"))
+			return
 		}
+		// Optional subsystem probe (e.g., DB circuit breaker).
+		// When set + erroring, return 503 with the probe's
+		// error message so operators see the specific subsystem
+		// that flipped readiness.
+		if probe := s.readinessProbe.Load(); probe != nil && *probe != nil {
+			if err := (*probe)(); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(err.Error()))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
 	})
 
 	// ── Submission — full middleware chain ─────────────────────────────
@@ -515,6 +535,22 @@ func (s *Server) ServeTLSWithListener(ln net.Listener) error {
 // before calling Shutdown. Returns the previous value.
 func (s *Server) SetReady(ready bool) bool {
 	return s.ready.Swap(ready)
+}
+
+// SetReadinessProbe installs an optional subsystem-readiness
+// probe consulted on every /readyz request. Returning nil keeps
+// readiness OK; returning an error flips /readyz to 503 with
+// the error message in the body. Pass nil to clear the probe.
+//
+// cmd/ledger wires the DB circuit breaker here so a tripped
+// breaker pulls the pod from the load balancer until the breaker
+// half-open probe succeeds.
+func (s *Server) SetReadinessProbe(probe func() error) {
+	if probe == nil {
+		s.readinessProbe.Store(nil)
+		return
+	}
+	s.readinessProbe.Store(&probe)
 }
 
 // Shutdown gracefully shuts down the server. Drains in-flight

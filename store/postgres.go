@@ -548,14 +548,49 @@ func (bl *BuilderLock) heartbeatLoop(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4) Transaction Manager
+// 4) Transaction Manager + per-query timeout discipline
 // ─────────────────────────────────────────────────────────────────────────────
+
+// DefaultQueryTimeout is the application-side per-query budget
+// applied when the caller's ctx has no deadline. Defense-in-depth
+// on top of the DB-side `statement_timeout` from F3 (the pgxpool
+// AfterConnect hook). Either layer fires first, but having both
+// means a runaway query is bounded even if one layer is mis-
+// configured.
+//
+// 5 seconds matches the F3 default (LEDGER_PG_STATEMENT_TIMEOUT).
+// Callers that need a tighter budget pass an explicit
+// context.WithTimeout into the store function.
+const DefaultQueryTimeout = 5 * time.Second
+
+// WithQueryTimeout returns a derived context bounded by
+// DefaultQueryTimeout if the input ctx has no deadline. Callers
+// that already passed a ctx with a deadline get back the same ctx
+// + a no-op cancel. Either way the returned cancel MUST be called
+// (use defer immediately).
+//
+// Use this at the entry of public Store methods so every Postgres
+// query is application-side timeout-bounded — even when an HTTP
+// handler forgot to set a request budget. The DB-side
+// statement_timeout (F3) is still the load-bearing protection;
+// this is the application-side belt to F3's suspenders.
+func WithQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, DefaultQueryTimeout)
+}
 
 // TxFunc is a function executed within a transaction.
 type TxFunc func(ctx context.Context, tx pgx.Tx) error
 
-// WithTransaction executes fn within a transaction.
+// WithTransaction executes fn within a transaction. If the input
+// ctx has no deadline, applies DefaultQueryTimeout so every query
+// inside fn is bounded — defense-in-depth on the F3 DB-side cap.
 func WithTransaction(ctx context.Context, db *pgxpool.Pool, iso pgx.TxIsoLevel, fn TxFunc) error {
+	ctx, cancel := WithQueryTimeout(ctx)
+	defer cancel()
+
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: iso})
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)

@@ -237,6 +237,8 @@ func (c ErrorClass) String() string {
 		return "credit_deduct_failed"
 	case ErrorClassEscrowOverrideFailed:
 		return "escrow_override_failed"
+	case ErrorClassDBUnavailable:
+		return "db_unavailable"
 	}
 	return "unknown"
 }
@@ -288,4 +290,13 @@ const (
 	ErrorClassProofGenFailed
 	ErrorClassCreditDeductFailed
 	ErrorClassEscrowOverrideFailed
+
+	// 503 — database unavailable / circuit-breaker tripped.
+	// Distinct from ErrorClassDBQueryFailed (which is a per-query
+	// fault — a missing row, syntax error, etc.). DBUnavailable
+	// fires when the breaker has opened after consecutive pool-
+	// acquisition failures: the DB is presumed down, fail-fast
+	// for the cooldown window so we don't pile up requests waiting
+	// on a wedged connection.
+	ErrorClassDBUnavailable
 )

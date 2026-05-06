@@ -874,6 +874,12 @@ func main() {
 	defer builderLock.Release()
 	logger.Info("builder advisory lock acquired", "lock_id", store.BuilderLockID)
 
+	// Postgres circuit breaker: trips after consecutive pool-
+	// acquisition failures, fails fast for the cooldown window,
+	// then probes once. Wired into /readyz so a tripped breaker
+	// pulls the pod from the load balancer until the DB recovers.
+	dbBreaker := store.NewBreaker(pool, store.DefaultBreakerFailureThreshold, store.DefaultBreakerCooldown, logger)
+
 	// ── Stores ────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)
 	creditStore := store.NewCreditStore(pool)
@@ -1870,6 +1876,24 @@ func main() {
 	serverCfg.TLSCertFile = cfg.TLSCertFile
 	serverCfg.TLSKeyFile = cfg.TLSKeyFile
 	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
+
+	// Wire the DB circuit breaker into /readyz: a tripped breaker
+	// returns 503 from /readyz so the load balancer pulls the pod
+	// from rotation until the breaker half-open probe succeeds.
+	// The breaker is fed by store layer pool acquisitions; per-
+	// query failures (missing rows, syntax errors) DO NOT trip it.
+	server.SetReadinessProbe(func() error {
+		// Cheap check: try to acquire + immediately release.
+		// Failures pass through the breaker's state machine.
+		probeCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		conn, err := dbBreaker.Acquire(probeCtx)
+		if err != nil {
+			return fmt.Errorf("database unavailable: %w", err)
+		}
+		conn.Release()
+		return nil
+	})
 
 	// ── pprof on a private listener (optional) ───────────────────────
 	//
