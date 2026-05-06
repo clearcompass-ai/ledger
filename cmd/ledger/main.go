@@ -8,21 +8,20 @@ DESCRIPTION:
 	Runs the admission HTTP server, builder loop, and (optional) anchor
 	publisher under a shared cancellable context.
 
-SDK v0.3.0 WIRING CHANGES (addressed in this rewrite):
+SDK WIRING:
  1. anchor.PublisherConfig requires LogDID — threaded from cfg.LogDID.
  2. builder.NewCommitmentPublisher is (ledgerDID, logDID, cfg, submitFn,
     logger) — both DIDs passed explicitly.
  3. api.SubmissionDeps has FreshnessTolerance (defaults to
     policy.FreshnessInteractive = 5 min if zero). Explicit here for
     auditability.
- 4. Phase 4 DID verifier scaffolded behind a nil — when ready, swap
-    for did.DefaultVerifierRegistry(cfg.LogDID, resolver).
+ 4. DID verifier is scaffolded behind a nil — swap for
+    did.DefaultVerifierRegistry(cfg.LogDID, resolver) to enable full
+    DID-based signature verification.
 
-LEDGER INTERNAL SIGNATURES (the ones the last attempt got wrong):
+LEDGER INTERNAL SIGNATURES:
   - tessera.NewEmbeddedAppender(ctx, driver, opts, logger) →
-    *EmbeddedAppender. Wraps in-process upstream Tessera; no
-    HTTP. Phase 1B replaced the standalone tessera-personality
-    binary with this in-process construction.
+    *EmbeddedAppender. Wraps in-process upstream Tessera; no HTTP.
   - tessera.NewTesseraAdapter(backend, tileReader, logger) →
     MerkleAppender. backend is *EmbeddedAppender or
     *ReadOnlyAppender; both satisfy AppenderBackend.
@@ -272,8 +271,7 @@ type Config struct {
 	SequencerInterval time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
 	SequencerMaxInFlight int // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
 	MMD time.Duration // default 24h; LEDGER_MMD
-	// Tessera embedding — Phase 1B replaces the standalone
-	// tessera-personality binary with in-process upstream Tessera.
+	// Tessera embedding — in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
 	// Tessera POSIX driver writes tiles, entry bundles, and the
 	// checkpoint to. Ledger-reader and ledger-writer must
@@ -308,8 +306,8 @@ type Config struct {
 	// recovery story differs.
 	TesseraAntispamPath string
 
-	// Byte store backend (Phase 2 + 3+4). Selects where the
-	// ledger's entry bytes live. The composition root passes
+	// Byte store backend selects where the ledger's entry bytes
+	// live. The composition root passes
 	// these directly to bytestore.NewFromConfig; per-backend
 	// validation lives in the factory.
 	//
@@ -711,13 +709,12 @@ func main() {
 	)
 
 	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
-	// v0.8.0 wiring. When LEDGER_ETH_RPC_ENABLED=true the ledger
-	// constructs an HTTPEthereumRPC client and is ready to pass it
-	// into did.DefaultVerifierRegistryWithRPC at the Phase 4 verifier-
-	// registry seam. When disabled (the default) the ledger runs
-	// EOA-only and pulls zero network surface — same behavior as
-	// pre-v0.8.0. Endpoint URL is NEVER logged (typically embeds an
-	// API key); the audit channel is secret-management.
+	// When LEDGER_ETH_RPC_ENABLED=true the ledger constructs an
+	// HTTPEthereumRPC client and is ready to pass it into
+	// did.DefaultVerifierRegistryWithRPC at the verifier-registry seam.
+	// When disabled (the default) the ledger runs EOA-only and pulls
+	// zero network surface. Endpoint URL is NEVER logged (typically
+	// embeds an API key); the audit channel is secret-management.
 	ethRPCCfg, err := LoadEthereumRPCConfig()
 	if err != nil {
 		logger.Error("ethereum rpc config", "error", err)
@@ -736,7 +733,7 @@ func main() {
 			"insecure_http", ethRPCCfg.AllowInsecureHTTP,
 		)
 	}
-	_ = ethRPC // wired into did.DefaultVerifierRegistryWithRPC at Phase 4.
+	_ = ethRPC // wired into did.DefaultVerifierRegistryWithRPC when DID resolver is enabled.
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
@@ -831,13 +828,11 @@ func main() {
 
 	// ── Tessera personality ───────────────────────────────────────────
 	//
-	// Embedded Tessera (Phase 1B): in-process upstream Tessera
-	// over a POSIX storage driver. The standalone
-	// tessera-personality binary is gone — sequencing,
-	// integration, and checkpoint signing all run inside this
-	// process. TileReader reads tiles directly off the same
-	// directory Tessera writes to. Adapter satisfies the
-	// MerkleAppender interface the builder loop holds.
+	// Embedded Tessera: in-process upstream Tessera over a POSIX
+	// storage driver. Sequencing, integration, and checkpoint
+	// signing all run inside this process. TileReader reads tiles
+	// directly off the same directory Tessera writes to. Adapter
+	// satisfies the MerkleAppender interface the builder loop holds.
 	if err := os.MkdirAll(cfg.TesseraStorageDir, 0o755); err != nil {
 		logger.Error("tessera storage dir", "error", err, "dir", cfg.TesseraStorageDir)
 		os.Exit(1)
@@ -1040,7 +1035,7 @@ func main() {
 		otel.SetMeterProvider(mpResult.Provider)
 		gossipMeter = mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/gossip")
 
-		// PT-6 — Install the api/ error counter so every
+		// — Install the api/ error counter so every
 		// writeTypedError / writeTypedJSONError site emits a
 		// typed error_class attribute. Idempotent on the same
 		// meter; no-op if already installed.
@@ -1289,14 +1284,13 @@ func main() {
 			)
 		}
 
-		// ── EquivocationScanner (entry-level, v0.9.6) ────────────────
+		// ── EquivocationScanner (entry-level) ───────────────────────
 		//
 		// Independent goroutine subscribed to the splitid index
 		// (Badger prefix 0x0A). The sequencer writes one entry
-		// per Phase 2 commit; the scanner detects collisions
-		// (≥ 2 entries at the same (schema_id, split_id)) and
-		// publishes a verified KindEntryCommitmentEquivocation
-		// event.
+		// per commit; the scanner detects collisions (≥ 2 entries
+		// at the same (schema_id, split_id)) and publishes a
+		// verified KindEntryCommitmentEquivocation event.
 		//
 		// Hot-path isolation: this runs on its OWN goroutine,
 		// never on the admission or sequencer pools. Detection
@@ -1408,7 +1402,7 @@ func main() {
 		logger,
 	)
 
-	// ── Anchor publisher (v0.3.0: LogDID threaded) ────────────────────
+	// ── Anchor publisher ──────────────────────────────────────────────
 	anchorPub := anchor.NewPublisher(
 		anchor.PublisherConfig{
 			LedgerDID:     cfg.LedgerDID,
@@ -1425,7 +1419,7 @@ func main() {
 	// SubmissionDeps is shared between both endpoints: same fast-path
 	// validation via prepareSubmission. v1 polls WAL for the
 	// Sequencer to advance; v2 returns an SCT immediately.
-	// Embedded-tree-head BLS quorum verifier (Wave 1 v3 §S1).
+	// Embedded-tree-head BLS quorum verifier.
 	// Wired iff the genesis witness set is loaded (witness mode
 	// active). Today the EntryEmbedsTreeHead detector returns
 	// false for every schema, so this verifier is a no-op
@@ -1529,8 +1523,8 @@ func main() {
 	// ── Cryptographic commitment lookup (Pure CQRS — Badger 0x0C) ─────
 	//
 	// /v1/commitments/by-split-id is served from the 0x0C entry-lookup
-	// projection populated by the sequencer at Phase 2 commit-time.
-	// The handler takes a types.CommitmentFetcher interface, NOT the
+	// projection populated by the sequencer at commit time. The
+	// handler takes a types.CommitmentFetcher interface, NOT the
 	// concrete Postgres-backed fetcher — so the api package's
 	// transitive imports avoid pgx for this read path.
 	//
@@ -1652,11 +1646,10 @@ func main() {
 		Logger:       logger,
 	})
 	if gossipBStore != nil {
-		// Wire the v0.9.6 splitid index writer. Sequencer
-		// continues to write Postgres commitment_split_id
-		// (existing read-path consumers); ALSO writes the
-		// Badger 0x0A index that the EquivocationScanner
-		// subscribes to.
+		// Wire the splitid index writer. Sequencer continues to
+		// write Postgres commitment_split_id (existing read-path
+		// consumers); ALSO writes the Badger 0x0A index that the
+		// EquivocationScanner subscribes to.
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(gossipBStore))
 
@@ -1669,7 +1662,7 @@ func main() {
 			gossipnet.NewSequencerEntryLookupAdapter(gossipBStore),
 			cfg.LogDID)
 
-		// Wire the boot replayer (PT-4 — P3 + I9 + A4). On every
+		// Wire the boot replayer (— P3 + I9 + A4). On every
 		// boot, the sequencer scans Postgres above the persisted
 		// HWM (Badger 0x0D) and back-populates 0x0A + 0x0C for
 		// any rows missing — closing the gap between the

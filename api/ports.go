@@ -4,7 +4,7 @@ FILE PATH: api/ports.go
 api/ side ports (interfaces) for every concrete *store.X type the
 HTTP handler layer consumes. Defining the interfaces HERE follows
 the Go idiom of "consumer defines the interface" and is the
-load-bearing piece of PT-7's Pure CQRS closure: the api/ package
+load-bearing piece of the Pure CQRS closure: the api/ package
 imports zero pgx packages because it depends on these interfaces
 + apitypes value types, never on store/ directly.
 
@@ -24,7 +24,7 @@ Two reasons:
  2. The interface set is the api/ "stable contract" — alternate
     read-side implementations (Badger projections, in-memory test
     fakes) plug in via these interfaces without recompiling api/.
-    gossipstore.BadgerCommitmentFetcher (PT-1+PT-2) is the
+    gossipstore.BadgerCommitmentFetcher is the
     canonical example: it implements types.CommitmentFetcher (SDK
     side) and serves /by-split-id with zero pgx in api/.
 
@@ -78,7 +78,7 @@ type EntryStore interface {
 
 // CreditDeducter is the api/ → credit-store surface for Mode A
 // fiat write-credit accounting. *store.CreditStore satisfies it
-// via its self-tx Deduct method (added in PT-7).
+// via its self-tx Deduct method (added ).
 //
 // The api/ side is intentionally given a tx-less surface: the
 // store implementation manages its own ReadCommitted transaction

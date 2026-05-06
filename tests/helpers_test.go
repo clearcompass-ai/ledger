@@ -258,7 +258,37 @@ func makeAdmissibleEntry(t *testing.T, h envelope.ControlHeader, payload []byte)
 }
 
 func canonicalHashBytes(entry *envelope.Entry) [32]byte {
-	return envelope.EntryIdentity(entry)
+	id, err := envelope.EntryIdentity(entry)
+	if err != nil {
+		// helpers_test fixtures construct via NewUnsignedEntry +
+		// Validate, so EntryIdentity should never fail here. Panic
+		// rather than silently returning the zero hash — a bad
+		// fixture must surface loudly during test development.
+		panic("canonicalHashBytes: EntryIdentity: " + err.Error())
+	}
+	return id
+}
+
+// mustSerialize is a test-only helper: serialize the entry and
+// panic on error. Helpers that construct entries via the
+// NewUnsignedEntry → Sign → Validate path can never trigger a
+// real Serialize error; treating the error as fatal here keeps
+// the existing helper signatures intact.
+func mustSerialize(entry *envelope.Entry) []byte {
+	canonical, err := envelope.Serialize(entry)
+	if err != nil {
+		panic("tests: mustSerialize: " + err.Error())
+	}
+	return canonical
+}
+
+// mustEntryIdentity mirrors mustSerialize for EntryIdentity.
+func mustEntryIdentity(entry *envelope.Entry) [32]byte {
+	id, err := envelope.EntryIdentity(entry)
+	if err != nil {
+		panic("tests: mustEntryIdentity: " + err.Error())
+	}
+	return id
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -359,7 +389,7 @@ func (f *mockFetcher) storeEntry(p types.LogPosition, entry *envelope.Entry) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.entries[p] = &types.EntryWithMetadata{
-		CanonicalBytes: envelope.Serialize(entry),
+		CanonicalBytes: mustSerialize(entry),
 		LogTime:        time.Now(),
 		Position:       p,
 	}
@@ -617,8 +647,8 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 func insertTestEntry(t *testing.T, pool *pgxpool.Pool, seq uint64, entry *envelope.Entry, logDID string) {
 	t.Helper()
 	ctx := context.Background()
-	hash := envelope.EntryIdentity(entry)
-	canonical := envelope.Serialize(entry)
+	hash := mustEntryIdentity(entry)
+	canonical := mustSerialize(entry)
 	logTime := time.Now().UTC()
 
 	var targetRoot, cosigOf, schemaRef []byte

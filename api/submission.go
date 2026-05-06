@@ -94,14 +94,15 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1) DID Resolution Interface (Phase 4 signature verification)
+// 1) DID Resolution Interface (signature verification)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DIDResolver resolves a signer DID to its current secp256k1 public key.
-// Phase 4 SDK provides the concrete implementation (did/resolver.go).
+// The SDK's did package provides the concrete implementation
+// (did/resolver.go).
 //
-// nil = Phase 2 trust model (wire format integrity only).
-// set = Phase 4 full verification (DID → pubkey → sdk VerifyEntry).
+// nil = wire-format-integrity-only trust model (no DID resolution).
+// set = full verification (DID → pubkey → sdk VerifyEntry).
 //
 // Structurally compatible with admission.DIDResolver — the ledger's
 // admission package defines the same single-method interface, and Go
@@ -157,7 +158,7 @@ type TesseraAppender interface {
 // admission writes wire bytes to the WAL only; the Shipper migrates
 // them to the byte store asynchronously.
 //
-// PT-7 — Pure CQRS: EntryStore is the api.EntryStore interface
+// — Pure CQRS: EntryStore is the api.EntryStore interface
 // (defined in ports.go); the field used to be *store.EntryStore.
 // The DB field is gone — credit deduction now uses the self-tx
 // CreditDeducter interface and admission's only Postgres write
@@ -177,7 +178,7 @@ type AdmissionConfig struct {
 
 // IdentityDeps groups credential and DID resolution dependencies.
 //
-// PT-7 — Pure CQRS: Credits is the api.CreditDeducter interface
+// — Pure CQRS: Credits is the api.CreditDeducter interface
 // (defined in ports.go); the field used to be *store.CreditStore.
 // The interface's tx-less Deduct(ctx, exchangeDID) signature lets
 // the api package hold zero pgx imports.
@@ -207,12 +208,14 @@ type SubmissionDeps struct {
 	// BLSQuorumVerifier validates K-of-N witness cosignatures on
 	// any tree head EMBEDDED inside an admitted entry's payload
 	// (anchor entries authored by peer ledgers, witness-attestation
-	// commentary, cross-log proof entries). Wave 1 v3 §S1.
+	// commentary, cross-log proof entries).
 	//
-	// Optional: nil disables the check entirely (existing 	// commitment-entry surfaces don't embed tree heads, so the
-	// detector returns false unconditionally and the verifier is
-	// dead code today). Wired by cmd/ledger/main.go iff a
-	// witness key set is loaded.
+	// Optional: nil disables the check entirely. Existing commitment-
+	// entry surfaces don't embed tree heads, so the detector returns
+	// false unconditionally and the verifier is dead code today;
+	// wiring it now means the moment a schema starts embedding tree
+	// heads the K-of-N check fires without an additional code change.
+	// Wired by cmd/ledger/main.go iff a witness key set is loaded.
 	BLSQuorumVerifier *admission.BLSQuorumVerifier
 }
 
@@ -250,7 +253,7 @@ type submissionError struct {
 	Class apitypes.ErrorClass
 }
 
-// submissionFail constructs a typed *submissionError. PT-6: every
+// submissionFail constructs a typed *submissionError. Every
 // admission-side error carries an apitypes.ErrorClass so the
 // HTTP handler increments the right OTel counter dimension.
 func submissionFail(class apitypes.ErrorClass, status int, format string, args ...any) *submissionError {
@@ -410,7 +413,12 @@ func prepareSubmission(
 				"unauthenticated submission requires compute stamp")
 		}
 		apiProof := sdkadmission.ProofFromWire(h.AdmissionProof, deps.LogDID)
-		canonicalHash := envelope.EntryIdentity(entry)
+		canonicalHash, idErr := envelope.EntryIdentity(entry)
+		if idErr != nil {
+			return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+				http.StatusUnprocessableEntity,
+				"EntryIdentity: %s", idErr)
+		}
 		var hashFunc sdkadmission.HashFunc
 		switch deps.Admission.DiffController.HashFunction() {
 		case "argon2id":
@@ -434,9 +442,14 @@ func prepareSubmission(
 	}
 
 	// ── Step 8: Canonical hash ─────────────────────────────────────
-	canonicalHash := envelope.EntryIdentity(entry)
+	canonicalHash, hashErr := envelope.EntryIdentity(entry)
+	if hashErr != nil {
+		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+			http.StatusUnprocessableEntity,
+			"EntryIdentity: %s", hashErr)
+	}
 
-	// ── Step 8a: Deterministic-idempotency probe (P5) ──────────────
+	// ── Step 8a: Deterministic-idempotency probe ──────────────────
 	// A byte-identical resubmission MUST return the SAME SCT bytes
 	// (not 409 Conflict). We probe the WAL's Meta record for the
 	// persisted log_time; if found, the caller short-circuits the
@@ -480,8 +493,9 @@ func prepareSubmission(
 // dev/test path where Credits is nil. Returns
 // apitypes.ErrInsufficientCredits to surface as HTTP 402.
 //
-// PT-7: api/ holds no pgx import — the CreditDeducter interface
-// (api/ports.go) hides the txn boundary inside the store impl.
+// Pure CQRS: api/ holds no pgx import — the CreditDeducter
+// interface (api/ports.go) hides the txn boundary inside the store
+// impl.
 func deductCreditModeA(
 	ctx context.Context,
 	deps *SubmissionDeps,

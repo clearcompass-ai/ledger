@@ -192,7 +192,7 @@ func startTestOperator(t *testing.T) *testOperator {
 			DIDResolver: nil,
 		},
 		LogDID:           testLogDID,
-		LedgerDID:        testOperatorDID,
+		LedgerDID:        testLedgerDID,
 		LedgerSignerPriv: opSignerPriv,
 		MaxEntrySize:     1 << 20,
 		Logger:           logger,
@@ -354,7 +354,7 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 // newTestServer(t) helper whose docstring says:
 //
 //     "test harness returning *httptest.Server configured with testLogDID
-//     as cfg.LogDID and testOperatorDID as cfg.LedgerDID. Assumed
+//     as cfg.LogDID and testLedgerDID as cfg.LedgerDID. Assumed
 //     present in testserver_test.go. If unavailable, port the factory
 //     pattern from http_integration_test.go."
 //

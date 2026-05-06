@@ -125,8 +125,8 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 		clientOpts = append(clientOpts, option.WithoutAuthentication())
 	}
 
-	// Force JSON reads — see Phase 2 diagnostic. fake-gcs-server's
-	// XML surface is incomplete; real GCS handles both.
+	// Force JSON reads — fake-gcs-server's XML surface is
+	// incomplete; real GCS handles both.
 	clientOpts = append(clientOpts, storage.WithJSONReads())
 
 	client, err := storage.NewClient(ctx, clientOpts...)

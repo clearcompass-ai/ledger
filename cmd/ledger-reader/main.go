@@ -88,13 +88,12 @@ func run(logger *slog.Logger) error {
 	logger.Info("postgres read pool initialized", "replica", cfg.ReplicaDSN != "")
 
 	// ── Tessera (read-only) ─────────────────────────────────────
-	// Phase 1B: the reader binary no longer talks HTTP to a
-	// separate personality. Instead it reads tiles + checkpoint
-	// directly off the POSIX directory the writer ledger's
-	// embedded Tessera writes to (shared volume in k8s, same
-	// host in single-node deployments). ReadOnlyAppender's
-	// AppendLeaf returns ErrReadOnly — a loud rejection if any
-	// future code path mistakenly tries to write from the reader.
+	// The reader binary reads tiles + checkpoint directly off the
+	// POSIX directory the writer ledger's embedded Tessera writes
+	// to (shared volume in k8s, same host in single-node
+	// deployments). ReadOnlyAppender's AppendLeaf returns
+	// ErrReadOnly — a loud rejection if any future code path
+	// mistakenly tries to write from the reader.
 	tileBackend, err := tessera.NewPOSIXTileBackend(cfg.TesseraStorageDir)
 	if err != nil {
 		return fmt.Errorf("tessera posix tile backend: %w", err)
@@ -266,8 +265,8 @@ type readerConfig struct {
 	MaxDifficulty int
 	HashFunction string
 
-	// Byte store (Phase 2 + 3+4). Reader and writer must agree on
-	// backend + bucket + prefix so reads return the same bytes
+	// Byte store. Reader and writer must agree on backend + bucket
+	// + prefix so reads return the same bytes
 	// the writer admitted. Backend selection mirrors the writer
 	// ledger: "gcs" or "s3" via LEDGER_BYTE_STORE_BACKEND.
 	ByteStoreBackend string

@@ -152,7 +152,10 @@ func signedEntryModeBWithKey(t *testing.T, priv *ecdsa.PrivateKey, logDID string
 			AlgoID:    envelope.SigAlgoECDSA,
 			Bytes:     sig,
 		}}
-		canonical := envelope.Serialize(entry)
+		canonical, sErr := envelope.Serialize(entry)
+		if sErr != nil {
+			t.Fatalf("envelope.Serialize: %v", sErr)
+		}
 		entryHash := sha256.Sum256(canonical)
 		apiProof := sdkadmission.ProofFromWire(hdr.AdmissionProof, logDID)
 		if err := sdkadmission.VerifyStamp(

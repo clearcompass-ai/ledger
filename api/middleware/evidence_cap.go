@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/middleware/evidence_cap.go
 
-Decision 51 early guard. Rejects entries with Evidence_Pointers exceeding
+Early guard that rejects entries with Evidence_Pointers exceeding
 the cap (10) unless the entry is an Authority Snapshot.
 
 KEY ARCHITECTURAL DECISIONS:
@@ -16,7 +16,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
-// MaxEvidencePointers is the Decision 51 cap.
+// MaxEvidencePointers caps Evidence_Pointers per entry.
 const MaxEvidencePointers = 10
 
 // CheckEvidenceCap validates the evidence pointer cap for a deserialized entry.

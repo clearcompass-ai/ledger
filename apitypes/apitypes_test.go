@@ -4,7 +4,7 @@ FILE PATH: apitypes/apitypes_test.go
 Tests pinning the leaf-package contract:
 
   - The package's transitive imports contain ZERO pgx packages
-    (this is the load-bearing P8 / PT-7 invariant; verified at
+    (this is the load-bearing P8 / invariant; verified at
     build time via go list -deps in CI).
   - Value types preserve their fields verbatim across instantiation.
   - ErrInsufficientCredits is a stable, errors.Is-compatible

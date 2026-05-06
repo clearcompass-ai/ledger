@@ -192,7 +192,7 @@ func TestSequencerSplitIDAdapter_StaticInterfaceCheck(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// SequencerReplayCursorAdapter (PT-4)
+// SequencerReplayCursorAdapter
 // ─────────────────────────────────────────────────────────────────────
 
 func TestNewSequencerReplayCursorAdapter_NilStore(t *testing.T) {

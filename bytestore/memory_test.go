@@ -130,8 +130,14 @@ func TestMemory_Envelope_RoundTrip(t *testing.T) {
 	s := NewMemory()
 
 	original := mustNewSignedEntry(t, "did:web:envelope-rt.example", []byte("payload-rt"))
-	wire := envelope.Serialize(original)
-	hash := envelope.EntryIdentity(original)
+	wire, sErr := envelope.Serialize(original)
+	if sErr != nil {
+		t.Fatalf("envelope.Serialize: %v", sErr)
+	}
+	hash, hErr := envelope.EntryIdentity(original)
+	if hErr != nil {
+		t.Fatalf("envelope.EntryIdentity: %v", hErr)
+	}
 
 	if err := s.WriteEntry(ctx, 99, hash, wire); err != nil {
 		t.Fatalf("WriteEntry: %v", err)
@@ -151,7 +157,11 @@ func TestMemory_Envelope_RoundTrip(t *testing.T) {
 	}
 
 	// Identity stability — Tessera dedup keys on this hash.
-	if envelope.EntryIdentity(parsed) != hash {
+	parsedID, err := envelope.EntryIdentity(parsed)
+	if err != nil {
+		t.Fatalf("EntryIdentity (parsed): %v", err)
+	}
+	if parsedID != hash {
 		t.Fatal("EntryIdentity changed across store round-trip — Tessera dedup would break")
 	}
 	if parsed.Header.SignerDID != original.Header.SignerDID {
@@ -176,8 +186,16 @@ func TestMemory_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
 		originals[i] = mustNewSignedEntry(t,
 			fmt.Sprintf("did:web:multi-rt-%d.example", i),
 			[]byte(fmt.Sprintf("payload-%d", i)))
-		wires[i] = envelope.Serialize(originals[i])
-		hashes[i] = envelope.EntryIdentity(originals[i])
+		w, sErr := envelope.Serialize(originals[i])
+		if sErr != nil {
+			t.Fatalf("envelope.Serialize seq=%d: %v", i, sErr)
+		}
+		wires[i] = w
+		h, hErr := envelope.EntryIdentity(originals[i])
+		if hErr != nil {
+			t.Fatalf("envelope.EntryIdentity seq=%d: %v", i, hErr)
+		}
+		hashes[i] = h
 		if err := s.WriteEntry(ctx, uint64(i), hashes[i], wires[i]); err != nil {
 			t.Fatalf("WriteEntry seq=%d: %v", i, err)
 		}
@@ -196,7 +214,11 @@ func TestMemory_Envelope_MultipleEntries_DistinctIdentities(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seq=%d: Deserialize: %v", i, err)
 		}
-		if envelope.EntryIdentity(parsed) != hashes[i] {
+		parsedID, idErr := envelope.EntryIdentity(parsed)
+		if idErr != nil {
+			t.Fatalf("seq=%d: EntryIdentity: %v", i, idErr)
+		}
+		if parsedID != hashes[i] {
 			t.Fatalf("seq=%d: identity drift", i)
 		}
 	}

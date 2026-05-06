@@ -283,7 +283,10 @@ func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, f
 	if !middleware.CheckEvidenceCap(entry) {
 		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "Evidence_Pointers %d exceeds cap %d (non-snapshot)", len(entry.Header.EvidencePointers), middleware.MaxEvidencePointers)
 	}
-	canonicalHash := envelope.EntryIdentity(entry)
+	canonicalHash, err := envelope.EntryIdentity(entry)
+	if err != nil {
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "EntryIdentity: %s", err)
+	}
 	if !middleware.IsAuthenticated(ctx) {
 		h := &entry.Header
 		if h.AdmissionProof == nil {

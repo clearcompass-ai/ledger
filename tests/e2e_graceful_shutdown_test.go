@@ -293,7 +293,7 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 	backend := newLocalPresignBackend(t)
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
-	// ── Phase 1: submit n entries, let some ship, cancel ────────────
+	// ── Step 1: submit n entries, let some ship, cancel ────────────
 	h1 := startShutdownOperator(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
@@ -347,7 +347,7 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 
 	h1.stop(t)
 
-	// ── Phase 1 assertions: re-open the WAL read-only and inspect ──
+	// ── Step 1 assertions: re-open the WAL read-only and inspect ──
 	// We have to reopen because the committer is closed; reopening
 	// read-only via wal.Open + a fresh committer (no shipper, no
 	// admission) gives us a clean introspection surface.
@@ -416,7 +416,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	backend := newLocalPresignBackend(t)
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
-	// ── Phase 1: submit n, cancel mid-flight ─────────────────────────
+	// ── Step 1: submit n, cancel mid-flight ─────────────────────────
 	h1 := startShutdownOperator(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
@@ -451,7 +451,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	t.Logf("phase 1: cancelling with HWM=%d / submitted=%d", hwmAtCancel, n)
 	h1.stop(t)
 
-	// ── Phase 2: fresh harness with the same WAL + backend + merkle ─
+	// ── Step 2: fresh harness with the same WAL + backend + merkle ─
 	h2 := startShutdownOperator(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,

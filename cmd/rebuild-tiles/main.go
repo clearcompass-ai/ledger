@@ -3,14 +3,15 @@ FILE PATH: cmd/rebuild-tiles/main.go
 
 DESCRIPTION:
 
-	One-shot utility that rebuilds the Tessera tile store after the
-	v0.3.0-tessera ledger migration. Drives the patched builder loop
-	to completion over existing admitted entries in Postgres, against
-	a FRESH Tessera personality (empty storage).
+	One-shot utility that rebuilds the Tessera tile store from
+	existing admitted entries in Postgres, driving the builder loop
+	to completion against a FRESH Tessera personality (empty storage).
 
-	Necessary because the v0.3.0 migration changes the Merkle leaf scheme
-	from sha256(canonical+signature_envelope) to envelope.EntryIdentity,
-	which makes every previously-published inclusion proof invalid.
+	Use this when the on-disk Tessera state is lost or invalidated
+	(e.g., volume corruption, leaf-scheme migration). The Postgres
+	entry_index is the source of truth for what was admitted; this
+	utility replays those entries against a fresh tile store so
+	inclusion proofs match the rebuilt tree.
 
 WHY A SEPARATE BINARY:
 

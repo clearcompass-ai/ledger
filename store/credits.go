@@ -38,7 +38,7 @@ func NewCreditStore(db *pgxpool.Pool) *CreditStore {
 // credit deduction to share its commit boundary. Most callers
 // should use Deduct instead — it manages its own transaction
 // internally and lets the api/ side keep zero pgx imports
-// (PT-7 — Pure CQRS).
+// (— Pure CQRS).
 func (s *CreditStore) DeductInTx(ctx context.Context, tx pgx.Tx, exchangeDID string) (int64, error) {
 	var balance int64
 	err := tx.QueryRow(ctx,

@@ -1,8 +1,7 @@
 /*
 FILE PATH: api/errors.go
 
-PT-6 — A10 (Strict Error Dimensionality) + P10 (SRE-grade
-Observability):
+Strict error dimensionality + SRE-grade observability:
 
 	Every api/ error-emission site funnels through writeTypedError,
 	which increments a single OpenTelemetry Int64Counter with two

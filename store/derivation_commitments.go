@@ -15,9 +15,9 @@ The word "commitment" is overloaded across two distinct concepts:
     a specific entry range produced a specific SMT mutation set.
 
   - CRYPTOGRAPHIC commitments: Pedersen commitments published
-    on-log alongside escrow shares and PRE grants per ADR-005 §4.
-    Verifier-side equivocation detection and cross-share consistency
-    rely on these.
+    on-log alongside escrow shares and PRE grants. Verifier-side
+    equivocation detection and cross-share consistency rely on
+    these.
 
 CRASH RECOVERY: Commitments are persisted POST-COMMIT (loop.go step 7).
 A crash between atomic commit and commitment persistence loses the row.
@@ -42,7 +42,7 @@ import (
 )
 
 // CommitmentRow lives in apitypes/ so api/ can consume it without
-// importing store/ (PT-7 — Pure CQRS). Re-exported as a type alias
+// importing store/ (— Pure CQRS). Re-exported as a type alias
 // for builder/ + integration tests already using *store.CommitmentRow.
 type CommitmentRow = apitypes.CommitmentRow
 

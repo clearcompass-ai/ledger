@@ -1,20 +1,16 @@
 /*
 FILE PATH: tessera/embedded_appender.go
 
-EmbeddedAppender — wraps the upstream Tessera library in-process,
-replacing the HTTP-based *Client. Phase 1B's load-bearing change:
-the ledger no longer talks HTTP to a separate
-tessera-personality binary; it imports
-github.com/transparency-dev/tessera directly and holds an
-*tessera.Appender + tessera.LogReader for the lifetime of the
-process.
+EmbeddedAppender — wraps the upstream Tessera library in-process.
+The ledger imports github.com/transparency-dev/tessera directly
+and holds an *tessera.Appender + tessera.LogReader for the
+lifetime of the process — no HTTP hop to a separate Tessera
+personality binary.
 
 WHY EMBEDDED:
 
-  - Eliminates the standalone tessera-personality binary
-    (deleted in commit 7/7) and the network hop between ledger
-    and personality. One process, one cgroup, one set of
-    failure modes.
+  - One process, one cgroup, one set of failure modes (no network
+    hop between ledger and a standalone Tessera personality).
   - Preserves the ledger's existing MerkleAppender interface
     (AppendLeaf + Head). The builder loop and proof_adapter.go
     keep their existing API surface — only the construction site
@@ -27,9 +23,9 @@ WHY EMBEDDED:
 CONTRACT:
 
 	AppendLeaf(data []byte) (uint64, error)
-	  - Requires len(data) == 32 (SHA-256 entry identity per the
-	    v0.3.0-tessera SDK alignment). Hash-only tiles: Tessera
-	    sees only the 32-byte identity, never the full wire bytes.
+	  - Requires len(data) == 32 (SHA-256 entry identity).
+	    Hash-only tiles: Tessera sees only the 32-byte identity,
+	    never the full wire bytes.
 	  - Blocks until Tessera's batching logic assigns a sequence
 	    number and the IndexFuture resolves. Typical latency
 	    depends on WithCheckpointInterval / WithBatching options
@@ -50,8 +46,7 @@ CONTRACT:
 
 INTEGRATION WITH proof_adapter.go:
 
-	The existing TesseraAdapter wraps a *Client + *TileReader.
-	After Phase 1B, cmd/ledger/main.go constructs:
+	cmd/ledger/main.go constructs:
 
 	  backend, _ := NewPOSIXTileBackend(storageDir)
 	  tileReader := NewTileReader(backend, cacheSize)
@@ -410,10 +405,7 @@ var _ AppenderBackend = (*ReadOnlyAppender)(nil)
 //	         tlog-tiles ecosystem consumers verify these; the
 //	         ledger does not)
 //
-// Lifted from the deleted tessera/client.go in Phase 1B
-// (commit 7/7) so the parser stays available after the HTTP
-// client is removed. Both EmbeddedAppender.Head and
-// ReadOnlyAppender.Head call this.
+// Both EmbeddedAppender.Head and ReadOnlyAppender.Head call this.
 func parseSignedNoteCheckpoint(data []byte) (types.TreeHead, error) {
 	text := string(data)
 	lines := strings.Split(text, "\n")

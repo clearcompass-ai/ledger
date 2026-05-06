@@ -1,20 +1,20 @@
 /*
 FILE PATH: store/commitment_fetcher_test.go
 
-Multi-row contract tests for PostgresCommitmentFetcher (Wave 1 v3 §C5).
+Multi-row contract tests for PostgresCommitmentFetcher.
 
 The single load-bearing invariant under test: when commitment_split_id
 has more than one row matching (schema_id, split_id), the fetcher
 returns ALL of them as []*EntryWithMetadata. The SDK's
 *CommitmentEquivocationError construction depends on this signal;
 collapsing to a single row would silently destroy the cryptographic
-evidence that ADR-005 §3 instructs verifiers to act on.
+evidence verifiers act on.
 
 Test isolation: tests requiring a live Postgres skip when
-ATTESTA_TEST_DSN is unset. The CI2 docker-compose harness
-(integration/) wires the env var so these tests run on every PR.
-Local developers can run them by exporting ATTESTA_TEST_DSN to a
-disposable Postgres database.
+ATTESTA_TEST_DSN is unset. The integration/ docker-compose harness
+wires the env var so these tests run on every PR. Local developers
+can run them by exporting ATTESTA_TEST_DSN to a disposable Postgres
+database.
 */
 package store
 
@@ -79,9 +79,9 @@ var _ bytestore.Reader = (*fakeEntryReader)(nil)
 const testLogDID = "did:web:test-ledger.example"
 
 // requireDB returns a connected pool or skips the test if no DSN
-// is provided. The Wave 1 v3 CI2 harness sets ATTESTA_TEST_DSN to
-// the docker-compose Postgres; local developers point it at any
-// disposable database.
+// is provided. The integration docker-compose harness sets
+// ATTESTA_TEST_DSN to its Postgres; local developers point it at
+// any disposable database.
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
@@ -216,7 +216,7 @@ func TestFindCommitmentEntries_SingleRow(t *testing.T) {
 // in ascending sequence order. The SDK's
 // *CommitmentEquivocationError construction depends on this multi-
 // row signal; collapsing here would silently destroy cryptographic
-// evidence per ADR-005 §3 / Wave 1 v3 Decision 3.
+// evidence verifiers depend on.
 func TestFindCommitmentEntries_Equivocation(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()

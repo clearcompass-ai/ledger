@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/errors_test.go
 
-Tests the PT-6 wiring:
+Tests the wiring:
 
   - InstallErrorCounter is idempotent on the same meter; a second
     install attempt is rejected (not silently overwritten).

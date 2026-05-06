@@ -4,7 +4,7 @@ FILE PATH: gossipstore/commitment_fetcher.go
 BadgerCommitmentFetcher — Postgres-free implementation of the
 SDK's types.CommitmentFetcher interface. Reads exclusively from
 the 0x0C entry-lookup projection populated by the sequencer at
-Phase 2 commit-time.
+commit time.
 
 # WHY HERE (NOT store/)
 
@@ -27,11 +27,9 @@ FindCommitmentEntries(schemaID, splitID) → []*EntryWithMetadata
   - len = 0 → SDK consumer treats as "no commitment on log"
     (the api handler maps this to 404).
   - len = 1 → normal admission case.
-  - len ≥ 2 → cryptographic equivocation per Decision 4
-    (admit both, surface as evidence). Returned in
-    seq-ascending order so the SDK's
-    CommitmentEquivocationError construction is
-    deterministic.
+  - len ≥ 2 → cryptographic equivocation: admit both, surface
+    as evidence. Returned in seq-ascending order so the SDK's
+    CommitmentEquivocationError construction is deterministic.
 
 Every returned EntryWithMetadata is reconstituted from the
 sequencer's at-write-time snapshot of canonical bytes + log time

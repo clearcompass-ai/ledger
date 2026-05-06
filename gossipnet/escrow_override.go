@@ -142,8 +142,8 @@ func NewEscrowOverrideService(cfg EscrowOverrideServiceConfig) (*EscrowOverrideS
 // request.
 // ProcessOverrideResult lives in apitypes/ so api/escrow_override.go
 // can consume it without importing gossipnet (which transitively
-// imports sequencer + pgx via PT-4). Re-exported here as a type
-// alias for backwards compatibility with internal call sites.
+// imports sequencer + pgx). Re-exported here as a type alias for
+// backwards compatibility with internal call sites.
 type ProcessOverrideResult = apitypes.EscrowOverrideResult
 
 // ProcessOverride runs the full escrow-override flow:

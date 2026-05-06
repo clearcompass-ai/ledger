@@ -1,7 +1,7 @@
 /*
 FILE PATH: api/middleware/auth_test.go
 
-Tests the SessionLookup-driven Auth middleware (PT-7). Pins:
+Tests the SessionLookup-driven Auth middleware. Pins:
 
   - No token → unauthenticated (Mode B); next handler invoked,
     ctx carries authenticated=false.

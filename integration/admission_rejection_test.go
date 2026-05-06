@@ -1,8 +1,8 @@
 /*
 FILE PATH: integration/admission_rejection_test.go
 
-Admission-rejection coverage per Wave 1 v3 §CI5. One test case per
-documented rejection error code, plus one test for the C2
+Admission-rejection coverage. One test case per documented
+rejection error code, plus one test for the schema-payload
 passthrough invariant.
 
 Why a mix of unit-level and HTTP-level tests:
@@ -16,19 +16,20 @@ Why a mix of unit-level and HTTP-level tests:
     errors.Is on the typed sentinel — a regression that drops
     the wrapping fails the test.
 
-  - For the SDK's commitment payload errors and the C2 passthrough
-    invariant: tests call the SDK schema parsers (or the ledger's
-    dispatch logic) directly because the rejection contract is the
-    error type returned, not the HTTP status code that wraps it.
-    The HTTP-status mapping is exercised in CI3's happy-path test
-    by inversion (anything other than 202 fails the happy path).
+  - For the SDK's commitment payload errors and the schema
+    passthrough invariant: tests call the SDK schema parsers
+    (or the ledger's dispatch logic) directly because the
+    rejection contract is the error type returned, not the HTTP
+    status code that wraps it. The HTTP-status mapping is
+    exercised in the happy-path test by inversion (anything
+    other than 202 fails the happy path).
 
 This split keeps each test focused on one assertion and avoids the
 combinatorial explosion of "construct a wire entry that passes the
 N-1 prior pipeline stages and fails on the Nth."
 
 Skip semantics: the database-touching helper resetTables in the
-shared CI2 harness fixtures is not invoked by these tests because
+shared harness fixtures is not invoked by these tests because
 they exercise admission-layer code paths that don't write to the
 database. ATTESTA_TEST_DSN is therefore not required, and these
 tests run unconditionally on every `go test`.
@@ -59,7 +60,7 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.1 — ErrIngressNotNFC
+// ErrIngressNotNFC
 // ─────────────────────────────────────────────────────────────────────
 
 // TestAdmission_RejectsNonNFCSignerDID confirms that the ledger's
@@ -71,9 +72,9 @@ import (
 func TestAdmission_RejectsNonNFCSignerDID(t *testing.T) {
 	// "Café" with the e-acute as a precomposed character (NFC, 5
 	// bytes) versus "Café" (NFD, 6 bytes). The visual
-	// rendering is identical; the byte sequences are not. SDK
-	// Decision 52 puts the normalization burden on the caller; the
-	// ledger MUST reject NFD-form input rather than silently
+	// rendering is identical; the byte sequences are not. The SDK's
+	// caller-normalizes contract puts the normalization burden on
+	// the caller; the ledger MUST reject NFD-form input rather than silently
 	// normalize it.
 	const nfdDID = "did:web:Café.example"
 	entry := &envelope.Entry{
@@ -108,7 +109,7 @@ func TestAdmission_AcceptsNFCSignerDID(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.2 — ErrSignatureInvalid
+// ErrSignatureInvalid
 // ─────────────────────────────────────────────────────────────────────
 
 // TestAdmission_RejectsBadSignature confirms that
@@ -179,7 +180,7 @@ func (s stubDIDResolver) ResolvePublicKey(_ context.Context, did string) (*ecdsa
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.3 — ErrCommitmentPayloadMalformed
+// ErrCommitmentPayloadMalformed
 // ─────────────────────────────────────────────────────────────────────
 
 // TestAdmission_RejectsMalformedCommitmentPayload confirms that
@@ -260,7 +261,7 @@ func TestAdmission_ParseSucceedsOnWellFormedCommitmentPayload(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.4 — ErrCommitmentSchemaIDMismatch
+// ErrCommitmentSchemaIDMismatch
 // ─────────────────────────────────────────────────────────────────────
 
 // TestAdmission_RejectsSchemaIDMismatch confirms that the SDK
@@ -292,7 +293,7 @@ func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.5 — ErrWitnessQuorumInsufficient
+// ErrWitnessQuorumInsufficient
 // ─────────────────────────────────────────────────────────────────────
 
 // TestAdmission_RejectsInsufficientWitnessQuorum confirms that
@@ -332,16 +333,15 @@ func TestAdmission_RejectsInsufficientWitnessQuorum(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// CI5.6 — C2 passthrough invariant
+// Schema passthrough invariant
 // ─────────────────────────────────────────────────────────────────────
 
 // TestC2Passthrough_UnknownSchemaID confirms the load-bearing
-// invariant from Wave 1 v3 §C2: an entry payload with an
-// unrecognized schema_id flows through the dispatcher unchanged
-// (no extracted SplitID, no error). This is what allows the F4
-// bootstrap script to admit schema-definition entries before any
-// commitment entry exists, and preserves the Domain/Protocol
-// Separation Principle.
+// invariant: an entry payload with an unrecognized schema_id
+// flows through the dispatcher unchanged (no extracted SplitID,
+// no error). This is what allows bootstrap scripts to admit
+// schema-definition entries before any commitment entry exists,
+// and preserves domain/protocol separation.
 //
 // Because dispatchCommitmentSchema is package-private to api/,
 // the test exercises the invariant via the SDK parsers' negative
@@ -377,10 +377,10 @@ func TestC2Passthrough_UnknownSchemaID(t *testing.T) {
 	// The dispatcher's contract: when neither parser matches, it
 	// returns (nil SplitID, "", nil) and admission proceeds with
 	// no SplitID indexed for this entry. The HTTP-level
-	// confirmation is in CI3's happy-path test (the synthetic
-	// commitment goes through admission and admits successfully);
-	// here we pin the unit-level invariant that the SDK parsers
-	// agree on the schema_id discriminator.
+	// confirmation is in the grant-lifecycle happy-path test
+	// (the synthetic commitment goes through admission and admits
+	// successfully); here we pin the unit-level invariant that the
+	// SDK parsers agree on the schema_id discriminator.
 }
 
 // TestC2Passthrough_NoDomainPayload confirms that an entry with

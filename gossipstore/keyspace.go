@@ -99,8 +99,8 @@ const (
 
 	// subSplitIDIndex is the ledger-side splitid index that
 	// the EquivocationScanner subscribes to. Populated by the
-	// sequencer at Phase 2 commit-time. The scanner sees every
-	// PUT under this prefix and prefix-scans for collisions at
+	// sequencer at commit time. The scanner sees every PUT
+	// under this prefix and prefix-scans for collisions at
 	// the same (schema_id, split_id).
 	//
 	//   Key:   0x07 0x0A <slen:2><schema><spid:32><seq:8>
@@ -134,7 +134,7 @@ const (
 	// subEntryLookup is the read-side projection that backs the
 	// /v1/commitments/by-split-id/{schema_id}/{hex} normal
 	// (non-equivocated) path. Populated by the sequencer at
-	// Phase 2 commit-time, in the same code path as the splitid
+	// commit time, in the same code path as the splitid
 	// detection index (0x0A) and immediately after the Postgres
 	// entry_index INSERT, so a Postgres rollback never leaves a
 	// stale Badger projection row.
@@ -147,8 +147,9 @@ const (
 	// at the same (schema_id, split_id) in admission order. A
 	// prefix scan returns every entry the ledger has admitted
 	// at that tuple — len 0 → 404, len 1 → normal, len ≥ 2 →
-	// surfaces as cryptographic equivocation evidence per
-	// Decision 4. The detection trigger (0x0A) and the
+	// surfaces as cryptographic equivocation evidence
+	// (admit both, surface as evidence). The detection
+	// trigger (0x0A) and the
 	// equivocation projection (0x0B) handle the gossip-event
 	// emission separately; the 0x0C projection is the stateless
 	// data source that the read endpoint serves verbatim.
@@ -161,7 +162,7 @@ const (
 	subEntryLookup byte = 0x0C
 
 	// subSplitIDReplayHWM is the singleton high-water-mark for
-	// the sequencer-driven replay-on-restart loop (PT-4). The
+	// the sequencer-driven replay-on-restart loop. The
 	// replayer scans commitment_split_id ⨝ entry_index ordered
 	// by sequence_number ASC for rows with sequence_number > HWM
 	// and back-populates 0x0A + 0x0C for each. The HWM advances

@@ -1,10 +1,10 @@
 /*
 FILE PATH: gossipstore/projections.go
 
-Public API for the v0.9.6 sub-prefixes:
+Public API for the projection sub-prefixes:
 
 	WriteSplitIDIndexEntry — sequencer writes one entry per
-	                         commitment_split_id INSERT (Phase 2).
+	                         commitment_split_id INSERT.
 	                         EquivocationScanner subscribes to
 	                         the prefix and detects collisions.
 
@@ -20,9 +20,9 @@ Public API for the v0.9.6 sub-prefixes:
 # WHY HERE (NOT badger_store.go)
 
 Keeps badger_store.go under the 300-LOC budget and isolates the
-v0.9.6-specific projection surface from the gossip-store core.
-The Store interface continues to be exactly what gossip.Store
-requires; these are ledger-internal extensions.
+projection surface from the gossip-store core. The Store interface
+continues to be exactly what gossip.Store requires; these are
+ledger-internal extensions.
 */
 package gossipstore
 
@@ -40,7 +40,7 @@ import (
 // SplitIDIndexEntry mapping under prefix 0x0A. Idempotent: writing
 // the same key twice produces the same on-disk state.
 //
-// Called by the sequencer at Phase 2 commit, in the same Postgres
+// Called by the sequencer at commit time, in the same Postgres
 // transaction span as the entry_index INSERT (the splitid index
 // write happens AFTER the Postgres commit so a Postgres rollback
 // doesn't leave a stale Badger entry).
@@ -222,8 +222,8 @@ type EntryLookupHit struct {
 
 // WriteEntryLookupEntry persists a (schema_id, split_id, seq) →
 // EntryLookupIndexEntry mapping under prefix 0x0C. Called by the
-// sequencer at Phase 2 commit-time, AFTER the Postgres entry_index
-// + commitment_split_id INSERT, in the same code path as
+// sequencer at commit time, AFTER the Postgres entry_index +
+// commitment_split_id INSERT, in the same code path as
 // WriteSplitIDIndexEntry. Idempotent on identical inputs.
 //
 // CQRS DISCIPLINE: write-only from the sequencer goroutine. The
@@ -345,8 +345,8 @@ func decodeReplayHWM(raw []byte) uint64 {
 // Length contract:
 //   - len = 0 → handler emits 404
 //   - len = 1 → normal admission (one entry on log)
-//   - len ≥ 2 → cryptographic equivocation (Decision 4 — admit
-//     both, surface as evidence)
+//   - len ≥ 2 → cryptographic equivocation (admit both, surface
+//     as evidence)
 //
 // Empty schemaID is rejected. A zero splitID is allowed
 // (defensive — the read endpoint validates input upstream;

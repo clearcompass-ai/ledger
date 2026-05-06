@@ -155,12 +155,12 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	entry := makeEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:fetcher-rule",
 	}, []byte("fetcher-rule-payload"))
-	hash := envelope.EntryIdentity(entry)
+	hash := mustEntryIdentity(entry)
 	// Wire bytes ARE the canonical bytes under — the multi-sig
 	// section is appended INSIDE Serialize. WriteEntry's legacy
 	// (canonical, sig) split takes nil for sig now (parallel to the
 	// api/submission.go and api/batch.go fixes on main).
-	wire := envelope.Serialize(entry)
+	wire := mustSerialize(entry)
 
 	// Insert index row in Postgres (no bytes).
 	seq := uint64(99901)
@@ -220,9 +220,9 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 		entry := makeEntry(t, envelope.ControlHeader{
 			SignerDID: "did:example:query-rule-signer",
 		}, []byte(fmt.Sprintf("query-payload-%d", i)))
-		hash := envelope.EntryIdentity(entry)
+		hash := mustEntryIdentity(entry)
 		hashesBySeq[i] = hash
-		wire := envelope.Serialize(entry)
+		wire := mustSerialize(entry)
 
 		tx, _ := pool.Begin(ctx)
 		tx.Exec(ctx, `
@@ -274,8 +274,8 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	entry := makeEntry(t, envelope.ControlHeader{
 		SignerDID: "did:example:authority-test",
 	}, []byte("original-payload"))
-	hash := envelope.EntryIdentity(entry)
-	wire := envelope.Serialize(entry)
+	hash := mustEntryIdentity(entry)
+	wire := mustSerialize(entry)
 
 	// Insert index in Postgres.
 	seq := uint64(77001)

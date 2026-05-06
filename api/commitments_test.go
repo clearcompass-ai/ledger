@@ -295,7 +295,7 @@ func TestCommitmentLookup_EndToEnd_BadgerCQRS(t *testing.T) {
 	st := inMemoryBadgerStore(t)
 	ctx := context.Background()
 
-	// Sequencer would write this row at Phase 2 commit-time.
+	// Sequencer would write this row at commit time.
 	splitID := [32]byte{0x12, 0x34}
 	canonical := []byte("end-to-end-canonical-bytes")
 	logTime := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
@@ -356,7 +356,7 @@ func TestCommitmentLookup_EndToEnd_BadgerCQRS(t *testing.T) {
 }
 
 // TestCommitmentLookup_EndToEnd_EquivocationCase pins the
-// Decision-4 contract: when the 0x0C projection holds two entries
+// equivocation contract: when the 0x0C projection holds two entries
 // at the same (schema, split_id), the handler returns 200 OK with
 // both entries in seq-ascending order (the SDK consumer surfaces
 // the equivocation via *CommitmentEquivocationError).

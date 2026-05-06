@@ -1,13 +1,11 @@
-# Wave 1 v3 §CI2 — Ledger integration test harness.
+# Ledger integration test harness.
 #
-# v3 changelog item "CI2 Database Emulator Fixed" replaces the v1/v2
-# Spanner emulator with a Postgres container so the ledger's
-# native pgxpool connections, embedded schemaDDL queries, and
-# pg_advisory_lock builder exclusivity all work without protocol
-# adapters. Tessera storage is fronted by fake-gcs-server because
-# the ledger currently writes Tessera tiles to GCS-shaped object
-# storage; in production this is real GCS, in CI it is the local
-# emulator.
+# Postgres container provides the ledger's pgxpool connections,
+# embedded schemaDDL queries, and pg_advisory_lock builder
+# exclusivity without protocol adapters. Tessera storage is fronted
+# by fake-gcs-server because the ledger writes Tessera tiles to
+# GCS-shaped object storage; in production this is real GCS, here
+# it is the local emulator.
 #
 # Bring-up:
 #
@@ -17,9 +15,9 @@
 #   ATTESTA_TEST_GCS_ENDPOINT="http://localhost:4443" \
 #   go test ./...
 #
-# CI3, CI4, CI5 integration tests skip when ATTESTA_TEST_DSN is
-# unset, so this harness is the gate that makes them run. The
-# unit-test suite is unaffected and runs unconditionally.
+# Integration tests skip when ATTESTA_TEST_DSN is unset, so this
+# harness is the gate that makes them run. The unit-test suite is
+# unaffected and runs unconditionally.
 #
 # Persistence: every container declares no volumes. State is
 # ephemeral — containers can be recreated freely between test

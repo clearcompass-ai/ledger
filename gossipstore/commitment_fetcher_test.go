@@ -9,7 +9,7 @@ implementation of types.CommitmentFetcher backing
   - Empty schemaID is rejected.
   - Zero rows → nil, nil (handler maps to 404).
   - Single row → one EntryWithMetadata with field round-trip.
-  - Multiple rows → seq-ascending order (Decision 4 equivocation).
+  - Multiple rows → seq-ascending order (equivocation evidence).
   - LogTime reconstruction from LogTimeMicros is UTC + correct.
   - LogDID is preserved per-row (multi-tenant ledger support).
   - CanonicalBytes are returned independently of the underlying
@@ -106,7 +106,7 @@ func TestBadgerCommitmentFetcher_MultipleRows_SeqAscending(t *testing.T) {
 	split := [32]byte{0x01}
 
 	// Write three entries at the same (schema, split_id) — the
-	// equivocation case (Decision 4: admit all, surface evidence).
+	// equivocation case (admit all, surface as evidence).
 	// Insert out of order to verify the fetcher orders by seq ASC.
 	rows := []struct {
 		seq uint64

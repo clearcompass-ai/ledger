@@ -156,7 +156,7 @@ func TestServer_MMDRouteWired(t *testing.T) {
 
 // TestServer_GossipFeedRoutes_Mounted pins all five v1
 // gossip feed routes — including /by-binding/{hash}, the
-// v0.9.6 zero-trust audit endpoint added by Tier 1 P9.
+// zero-trust audit endpoint.
 //
 // Without this test, /by-binding/{hash} could regress to 404
 // (the SDK FeedHandler internally dispatches the path; the

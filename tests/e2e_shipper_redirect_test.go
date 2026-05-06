@@ -255,7 +255,7 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 			DIDResolver: nil,
 		},
 		LogDID:           testLogDID,
-		LedgerDID:        testOperatorDID,
+		LedgerDID:        testLedgerDID,
 		LedgerSignerPriv: opSignerPriv,
 		MaxEntrySize:     1 << 20,
 		Logger:           logger,

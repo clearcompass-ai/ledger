@@ -2,7 +2,7 @@
 FILE PATH: gossipstore/replay_hwm_test.go
 
 Tests for the 0x0D singleton high-water-mark used by the
-sequencer-driven replay-on-restart loop (PT-4).
+sequencer-driven replay-on-restart loop.
 
 Coverage:
 

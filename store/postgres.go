@@ -18,17 +18,16 @@ INVARIANTS:
   - WithTransaction uses Serializable for builder commits, ReadCommitted
     for admission (configurable via TxOptions parameter).
 
-CHANGES:
-  - v0.3.0-tessera: Added derivation_commitments table + index.
-  -  Wave 1 (C3): Added commitment_split_id table + index for
-    cryptographic-commitment lookup; BTREE not UNIQUE per Decision 3
-    (equivocation evidence preservation).
-  -  Wave 1 (S2): Equivocation evidence persisted via
-    commitment_equivocation_proofs Postgres table — DROPPED in
-    v0.9.6. Entry-level equivocation now lives in the gossipstore
-    BadgerDB projection 0x0B (gossipnet.EquivocationScanner
-    detects + projects + publishes; FetchEquivocationByBinding
-    serves zero-trust reads).
+SCHEMA:
+  - derivation_commitments: SMT-batch derivation pins.
+  - commitment_split_id: secondary index from (schema_id, split_id)
+    to sequence_number; BTREE (not UNIQUE) so multiple admissions
+    at the same key persist as evidence rather than getting rejected
+    — equivocation detection requires both rows.
+  - Entry-level equivocation evidence lives in the gossipstore
+    BadgerDB projection 0x0B; the gossipnet equivocation scanner
+    detects + projects + publishes, and FetchEquivocationByBinding
+    serves zero-trust reads.
 */
 package store
 
@@ -233,7 +232,7 @@ var schemaDDL = []string{
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
-	// ── Equivocation proofs (tree-head fork; v0.3.0-tessera) ────────
+	// ── Equivocation proofs (tree-head fork) ────────────────────────
 	`CREATE TABLE IF NOT EXISTS equivocation_proofs (
 		id SERIAL PRIMARY KEY,
 		head_a BYTEA NOT NULL,
@@ -268,20 +267,19 @@ var schemaDDL = []string{
 	`CREATE INDEX IF NOT EXISTS idx_commitment_range
 		ON derivation_commitments (range_start_seq, range_end_seq)`,
 
-	// ── Commitment SplitID index ( — Wave 1 C3) ─────────────────
+	// ── Commitment SplitID index ───────────────────────────────────
 	// Maps the 32-byte SplitID embedded in pre-grant-commitment-v1 and
 	// escrow-split-commitment-v1 entry payloads to the entry's sequence
 	// number, enabling the SDK lookup primitives FetchPREGrantCommitment
-	// and FetchEscrowSplitCommitment per ADR-005 §6.2.
+	// and FetchEscrowSplitCommitment.
 	//
-	// Equivocation evidence preservation (Wave 1 v3 Decision 3): the
-	// (schema_id, split_id) index is BTREE, NOT UNIQUE. A malicious
-	// dealer publishing two distinct commitment entries under the same
-	// SplitID produces two rows here under the same key tuple; both
-	// MUST persist so the SDK can return *CommitmentEquivocationError
-	// to verifiers. Rejecting the second row on a UNIQUE constraint
-	// would silently destroy the cryptographic evidence the SDK's
-	// equivocation detection depends on.
+	// Equivocation evidence preservation: the (schema_id, split_id)
+	// index is BTREE, NOT UNIQUE. A malicious dealer publishing two
+	// distinct commitment entries under the same SplitID produces two
+	// rows here under the same key tuple; both MUST persist so the SDK
+	// can return *CommitmentEquivocationError to verifiers. Rejecting
+	// the second row on a UNIQUE constraint would silently destroy the
+	// cryptographic evidence the SDK's equivocation detection depends on.
 	//
 	// PRIMARY KEY on sequence_number is correct — two equivocating
 	// entries have distinct sequence numbers (each has its own admission)
@@ -297,15 +295,13 @@ var schemaDDL = []string{
 	`CREATE INDEX IF NOT EXISTS idx_commitment_split_id
 		ON commitment_split_id (schema_id, split_id)`,
 
-	// Equivocation evidence persistence moved to the gossipstore
-	// BadgerDB projection (prefix 0x0B) per the v0.9.6 design.
-	// Detection runs in gossipnet.EquivocationScanner (independent
-	// goroutine subscribed to the splitid index 0x0A); verified
-	// findings are persisted as KindEntryCommitmentEquivocation
-	// gossip events + projected to 0x0B for O(1) /by-binding lookup.
-	// The previous commitment_equivocation_proofs Postgres table +
-	// idx_commitment_equivocation_unalerted partial index were
-	// dropped — no Postgres surface owns equivocation evidence
+	// Equivocation evidence persistence lives in the gossipstore
+	// BadgerDB projection (prefix 0x0B). Detection runs in
+	// gossipnet.EquivocationScanner (independent goroutine subscribed
+	// to the splitid index 0x0A); verified findings are persisted as
+	// KindEntryCommitmentEquivocation gossip events + projected to
+	// 0x0B for O(1) /by-binding lookup. No Postgres surface owns
+	// equivocation evidence
 	// anymore.
 
 	// Sequence numbers are assigned by the embedded Tessera library
@@ -395,7 +391,7 @@ func WithReadCommittedTx(ctx context.Context, db *pgxpool.Pool, fn TxFunc) error
 
 // ErrInsufficientCredits signals balance = 0. Lives in apitypes/
 // so api/ can errors.Is against it without importing store/
-// (PT-7 — Pure CQRS). Re-exported here for backwards compatibility
+// (— Pure CQRS). Re-exported here for backwards compatibility
 // with existing in-package call sites + integration tests.
 var ErrInsufficientCredits = apitypes.ErrInsufficientCredits
 

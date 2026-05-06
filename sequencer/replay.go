@@ -2,7 +2,7 @@
 FILE PATH: sequencer/replay.go
 
 Replayer — sequencer-driven boot replay for the 0x0A splitid
-detection index + 0x0C entry-lookup projection (PT-4).
+detection index + 0x0C entry-lookup projection.
 
 # WHY THIS EXISTS
 
@@ -35,7 +35,7 @@ the sequencer's Run(), not the HTTP admission goroutine. The
 EntryLookupWriter interfaces the live admission path uses —
 ONE write surface, no duplication.
 
-# I9 IDEMPOTENCY (A13)
+# IDEMPOTENCY
 
 Every replay write is a Badger txn.Set on the SAME (key, value)
 pairs the live admission path already produced. Re-running the

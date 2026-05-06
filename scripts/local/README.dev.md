@@ -5,10 +5,16 @@ Two compose files live here, for two different audiences:
 | File | When to use | GCS backend |
 |---|---|---|
 | `docker-compose.dev.yml` | **Daily development.** What `make dev-up` runs. | **Real GCS** — your own buckets in your own GCP project. Same path as production. |
-| `docker-compose.integration.yml` | CI integration tests, offline / air-gapped runs. What `make integration-up` runs. | `fake-gcs-server` — in-process, anonymous, deterministic. |
+| `docker-compose.integration.yml` | Integration tests, offline / air-gapped runs. What `make integration-up` runs. | `fake-gcs-server` — in-process, anonymous, deterministic. |
 
 This document covers the dev topology (real GCS). For the
 integration-tests topology, jump to [§ Integration topology](#integration-topology) below.
+
+Both topologies are **domain-agnostic** by design: every log DID,
+database name, and bucket name is supplied via env vars. Domain-
+specific demos (judicial-network, supply-chain, etc.) live in
+their own repos and consume this generic 2-node topology with
+their own values.
 
 ---
 
@@ -16,32 +22,31 @@ integration-tests topology, jump to [§ Integration topology](#integration-topol
 
 | Service | Port (host) | Purpose |
 |---|---|---|
-| `ledger-davidson` | `:8080` | Trial-court ledger, `LogDID = did:web:state:tn:davidson` |
-| `ledger-coa` | `:8081` | Appellate-court ledger, `LogDID = did:web:state:tn:coa` |
-| `postgres` | `:5432` | Shared Postgres 18 with two databases (`attesta_davidson`, `attesta_coa`) |
-| (no GCS service) | — | Each ledger hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
+| `ledger-node-a` | `:8080` | Ledger node A; `LogDID = $LEDGER_DEV_NODE_A_LOG_DID` |
+| `ledger-node-b` | `:8081` | Ledger node B; `LogDID = $LEDGER_DEV_NODE_B_LOG_DID` |
+| `postgres` | `:5432` | Shared Postgres 18 with two databases (`attesta_node_a`, `attesta_node_b`) |
+| (no GCS service) | — | Each node hits `storage.googleapis.com` directly using your gcloud Application Default Credentials. |
 
-This is the runtime the **judicial-network walkthrough** runs
-against. It mirrors production: same GCS adapter code path, same
-IAM behaviour, same multipart upload thresholds, same
-ListObjects pagination.
+This mirrors production: same GCS adapter code path, same IAM
+behaviour, same multipart upload thresholds, same ListObjects
+pagination.
 
 ### One-time developer setup
 
-You need three things on your laptop **before** `make dev-up`:
+You need the following on your laptop **before** `make dev-up`:
 
 1. A Google Cloud project where you can create buckets.
 2. `gcloud auth application-default login` completed (writes
    `~/.config/gcloud/application_default_credentials.json`,
-   which the compose mounts read-only into both ledger
+   which the compose mounts read-only into both ledger node
    containers).
 3. Two GCS buckets created:
 
    ```bash
    export GOOGLE_PROJECT=your-gcp-project-id
-   gcloud storage buckets create gs://yourname-davidson-entries \
+   gcloud storage buckets create gs://yourname-node-a-entries \
      --location=US --project=$GOOGLE_PROJECT
-   gcloud storage buckets create gs://yourname-coa-entries \
+   gcloud storage buckets create gs://yourname-node-b-entries \
      --location=US --project=$GOOGLE_PROJECT
    ```
 
@@ -49,13 +54,19 @@ You need three things on your laptop **before** `make dev-up`:
    `gcloud storage buckets list --project=$GOOGLE_PROJECT`
    confirms they exist.
 
-4. Two env vars exported in the shell from which you run
+4. Four env vars exported in the shell from which you run
    `make dev-up`:
 
    ```bash
-   export LEDGER_DEV_BUCKET_DAVIDSON=yourname-davidson-entries
-   export LEDGER_DEV_BUCKET_COA=yourname-coa-entries
+   export LEDGER_DEV_BUCKET_NODE_A=yourname-node-a-entries
+   export LEDGER_DEV_BUCKET_NODE_B=yourname-node-b-entries
+   export LEDGER_DEV_NODE_A_LOG_DID=did:web:node-a.example
+   export LEDGER_DEV_NODE_B_LOG_DID=did:web:node-b.example
    ```
+
+   The two log DIDs are arbitrary — supply whatever your demo /
+   workflow needs. The dev compose threads them into both
+   `LEDGER_LOG_DID` and `LEDGER_TESSERA_ORIGIN` for each node.
 
 Persist them in your shell rc if you'll be doing this often.
 
@@ -66,7 +77,7 @@ make dev-up
 ```
 
 Behind the scenes, `dev-up` first runs `dev-preflight`, which
-verifies that ADC exists and that both bucket env vars are set.
+verifies that ADC exists and that all required env vars are set.
 On any preflight failure the target exits non-zero with a clear
 message — no half-built containers.
 
@@ -80,11 +91,11 @@ $ curl -fsS http://localhost:8081/healthz # → ok
 Inspect your real GCS buckets with `gcloud` or `gsutil`:
 
 ```bash
-gcloud storage ls gs://$LEDGER_DEV_BUCKET_DAVIDSON
-gcloud storage cat gs://$LEDGER_DEV_BUCKET_DAVIDSON/<object>
+gcloud storage ls gs://$LEDGER_DEV_BUCKET_NODE_A
+gcloud storage cat gs://$LEDGER_DEV_BUCKET_NODE_A/<object>
 ```
 
-(Empty until walkthrough or your own client submits entries.)
+(Empty until your client submits entries.)
 
 ### Tear down
 
@@ -97,19 +108,19 @@ data, Tessera state, WAL, antispam DBs). It does **NOT** delete
 your GCS buckets or the objects in them. To clear bucket state:
 
 ```bash
-gcloud storage rm 'gs://yourname-davidson-entries/**'
-gcloud storage rm 'gs://yourname-coa-entries/**'
+gcloud storage rm 'gs://yourname-node-a-entries/**'
+gcloud storage rm 'gs://yourname-node-b-entries/**'
 ```
 
 Re-running `make dev-up` after `dev-down` gives you a fresh log
-starting at sequence 1 on both exchanges (Postgres-side state was
+starting at sequence 1 on both nodes (Postgres-side state was
 wiped); orphaned objects in GCS get rewritten by sequence number.
 
 ### Logs and status
 
 ```bash
 make dev-status # `docker compose ps`
-make dev-logs # tail both ledgers (Ctrl-C to stop)
+make dev-logs # tail both ledger nodes (Ctrl-C to stop)
 ```
 
 ### Why real GCS for dev (not fake-gcs-server)
@@ -126,11 +137,11 @@ where deterministic offline runs matter more than GCS realism.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `dev-preflight` fails: missing ADC | Never ran `gcloud auth application-default login` | Run it; ADC lands at `~/.config/gcloud/application_default_credentials.json`. |
-| `dev-preflight` fails: bucket env unset | Forgot to `export LEDGER_DEV_BUCKET_*` | Export both, then re-run `make dev-up`. |
+| `dev-preflight` fails: env unset | Forgot to `export LEDGER_DEV_BUCKET_NODE_*` or `LEDGER_DEV_NODE_*_LOG_DID` | Export all four, then re-run `make dev-up`. |
 | Ledger startup: `bytestore init: ... permission denied` | ADC user lacks `roles/storage.objectAdmin` on the bucket | `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=user:you@example.com --role=roles/storage.objectAdmin` |
 | Ledger startup: `bytestore init: ... bucket doesn't exist` | Bucket name typo or bucket in different project | `gcloud storage buckets list --project=$GOOGLE_PROJECT` to confirm. |
-| `dev-up` hangs at "waiting for both ledgers" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
-| `/healthz` returns 503 from `ledger-coa` | `attesta_coa` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
+| `dev-up` hangs at "waiting for both ledger nodes" | Postgres init still running on first boot | `make dev-logs` to inspect; usually resolves in 20–30 sec. |
+| `/healthz` returns 503 from `ledger-node-b` | `attesta_node_b` database doesn't exist | `make dev-down && make dev-up` (full reset; init script only runs on fresh volumes). |
 | `docker compose: command not found` | Old docker-compose v1 only | Install Docker Compose v2. |
 
 ---
@@ -141,12 +152,16 @@ For tests that must run offline, deterministically, or in CI
 without GCS credentials. Uses `fake-gcs-server`
 (`fsouza/fake-gcs-server`) on port `:4443` instead of real GCS.
 
+The integration topology bakes in placeholder log DIDs
+(`did:web:node-a.example`, `did:web:node-b.example`) — it's for
+protocol-level testing, not domain-level demos.
+
 ### Quick start
 
 ```bash
 make integration-up
 
-# Once both ledgers are healthy:
+# Once both ledger nodes are healthy:
 curl -fsS http://localhost:8080/healthz # → ok
 curl -fsS http://localhost:8081/healthz # → ok
 curl -fsS http://localhost:4443/storage/v1/b # GCS-shape JSON
@@ -179,11 +194,11 @@ emulator's coverage of the spec. Always validate against
 
 ---
 
-## What's next
+## Domain-specific demos
 
-The walkthrough at
-`/home/user/judicial-network/docs/walkthrough/` (in the
-judicial-network repo) uses **`make dev-up` (real GCS)** to
-demonstrate two real-world Tennessee judicial cases plus web3
-(`did:pkh`) DIDs. Run `make dev-up` here, then follow the
-walkthrough there.
+This repo ships only the domain-agnostic 2-node ledger topology.
+End-to-end demos that drive specific domain workflows (judicial-
+network case filing, supply-chain attestations, identity issuance,
+etc.) live in their own repos and consume `make dev-up` here as
+their substrate. Each demo supplies its own `LEDGER_DEV_*` env
+values and its own application-layer client tooling.

@@ -43,11 +43,11 @@ catch drift.
 
 Total: 18 compile-time interface anchors.
 
-## Compliance test (every Principle + Alignment)
+## Compliance test (every architectural property)
 
 [testing.md](testing.md) holds the canonical compliance map — every
-Principle (P1-P15) and Alignment (A1-A13) anchored to a production
-file:line + a test file:line that pins the contract.
+named architectural property anchored to a production file:line + a
+test file:line that pins the contract.
 
 ## What "code-level checks" means here
 

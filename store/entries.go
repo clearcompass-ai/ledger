@@ -20,8 +20,10 @@ CanonicalBytes (extracted via envelope.Deserialize when needed);
 no sidecar fields exist.
 
 INVARIANTS:
-  - SDK-D5: all returned entries have verified signatures.
-  - Decision 47: Fetch returns nil for foreign log DIDs.
+  - All returned entries have verified signatures.
+  - Fetch returns nil for foreign log DIDs (this ledger's local
+    store only ever holds entries whose Destination matches its
+    own LogDID).
   - Duplicate canonical_hash → ErrDuplicateEntry (mapped to HTTP 409).
 */
 package store
@@ -144,8 +146,10 @@ func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bo
 // PostgresEntryFetcher implements builder.EntryFetcher.
 // Metadata from entry_index (Postgres). Bytes from EntryReader (Tessera).
 //
-// CONTRACT (SDK-D5): all returned entries have verified signatures.
-// CONTRACT (Decision 47): returns nil for foreign log DIDs.
+// CONTRACTS:
+//   - All returned entries have verified signatures.
+//   - Returns nil for foreign log DIDs (this fetcher only resolves
+//     entries written into this ledger's own log).
 type PostgresEntryFetcher struct {
 	db *pgxpool.Pool
 	reader bytestore.Reader
@@ -161,7 +165,7 @@ func NewPostgresEntryFetcher(db *pgxpool.Pool, reader bytestore.Reader, logDID s
 // Metadata from Postgres. Bytes from Tessera. Returns nil if not found.
 func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMetadata, error) {
 	if pos.LogDID != f.logDID {
-		return nil, nil // Foreign log — not found locally (Decision 47).
+		return nil, nil // Foreign log — not found locally.
 	}
 
 	ctx := context.TODO()

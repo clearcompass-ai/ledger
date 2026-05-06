@@ -3,11 +3,11 @@ FILE PATH: anchor/publisher.go
 
 Periodic anchor entry publisher. Creates commentary entries containing tree
 head references, submitting them to the parent log's admission API.
-Decision 44: anchors are standard entries, no special handling.
+Anchors are standard entries — no special handling.
 
 KEY ARCHITECTURAL DECISIONS:
   - Commentary entries: Target_Root=null, Authority_Path=null → zero SMT impact.
-  - Destination-bound (SDK v0.3.0+): anchor entries are published to THIS log,
+  - Destination-bound: anchor entries are published to THIS log,
     so Destination = LogDID. NewUnsignedEntry rejects empty destination at
     write time.
   - Domain Payload: source_log_did, tree_head_ref (SHA-256), tree_size, timestamp.
@@ -15,17 +15,15 @@ KEY ARCHITECTURAL DECISIONS:
   - Configurable interval: default 1 hour.
 
 SDK ALIGNMENT:
-  - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-  - split entry construction into two constructors:
-    envelope.NewEntry(header, payload, signatures)        — fully signed
-    envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
-    The publisher's flow is "construct, then submit through admission",
-    so it uses NewUnsignedEntry. Whatever path actually signs the
-    commentary (ledger's admission pipeline, SubmitViaHTTP, or a future
-    ledger-as-dealer signing surface) is responsible for populating
-    entry.Signatures before envelope.Serialize is invoked. An entry
-    without signatures fails entry.Validate() at admission, which is
-    the correct failure mode for a misconfigured deployment.
+  - envelope.NewEntry(header, payload, signatures)        — fully signed
+  - envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
+  The publisher's flow is "construct, then submit through admission",
+  so it uses NewUnsignedEntry. Whatever path actually signs the
+  commentary (ledger's admission pipeline, SubmitViaHTTP, or a future
+  ledger-as-dealer signing surface) is responsible for populating
+  entry.Signatures before envelope.Serialize is invoked. An entry
+  without signatures fails entry.Validate() at admission, which is
+  the correct failure mode for a misconfigured deployment.
 */
 package anchor
 
@@ -51,7 +49,7 @@ import (
 // PublisherConfig configures the anchor publisher.
 type PublisherConfig struct {
 	LedgerDID string
-	LogDID string // NEW (v0.3.0): destination-binding for self-published anchors.
+	LogDID string // destination-binding for self-published anchors.
 	Interval time.Duration
 	AnchorSources []AnchorSource
 }
@@ -163,7 +161,7 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 		"anchored_at":    time.Now().UTC().Format(time.RFC3339),
 	})
 
-	// Build commentary entry (Decision 44: standard entry, no special handling).
+	// Build commentary entry (standard entry, no special handling).
 	// Destination = LogDID (the anchor lands in THIS ledger's log).
 	//
 	// NewUnsignedEntry per the envelope API split:
@@ -212,7 +210,10 @@ func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
 	// reinventing the policy.
 	client := sdklog.DefaultClient(30 * time.Second)
 	return func(entry *envelope.Entry) error {
-		canonical := envelope.Serialize(entry)
+		canonical, err := envelope.Serialize(entry)
+		if err != nil {
+			return fmt.Errorf("anchor: serialize: %w", err)
+		}
 		resp, err := client.Post(targetURL+"/v1/entries", "application/octet-stream",
 			bytes.NewReader(canonical))
 		if err != nil {
