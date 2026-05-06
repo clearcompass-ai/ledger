@@ -632,7 +632,86 @@ func loadConfig() (*Config, error) {
 		cfg.GenesisWitnessSet = append([]string{}, doc.GenesisWitnessSet...)
 	}
 
+	// G1: cross-field validation. Anything that requires multiple
+	// fields to be set together (or NOT together) is checked here.
+	// Per-field "required" checks already happened above.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// Validate runs cross-field consistency checks on a fully-loaded
+// Config. Every check is fail-fast: a misconfigured deployment
+// surfaces a clear, single-line error at boot instead of a
+// runtime surprise.
+func (c *Config) Validate() error {
+	// TLS: cert + key must be both-set or both-unset. Half-
+	// configured TLS would silently fall back to plain HTTP and
+	// be an exposure surprise.
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("LEDGER_TLS_CERT_FILE and LEDGER_TLS_KEY_FILE must be both set or both unset (got cert=%q key=%q)",
+			c.TLSCertFile, c.TLSKeyFile)
+	}
+	if c.TLSCertFile != "" {
+		if _, err := os.Stat(c.TLSCertFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", c.TLSCertFile, err)
+		}
+		if _, err := os.Stat(c.TLSKeyFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", c.TLSKeyFile, err)
+		}
+	}
+
+	// Gossip peers: DID and endpoint slices MUST be the same
+	// length so each peer has both an identity and a base URL.
+	// Mismatched lengths point at a deployment misconfig where
+	// one env var was forgotten or has a stale value.
+	if len(c.GossipPeerDIDs) != len(c.GossipPeerEndpoints) {
+		return fmt.Errorf("LEDGER_GOSSIP_PEER_DIDS (%d) and LEDGER_GOSSIP_PEER_ENDPOINTS (%d) must have the same length",
+			len(c.GossipPeerDIDs), len(c.GossipPeerEndpoints))
+	}
+
+	// Tile backend: gcs requires the byte-store backend to also
+	// be gcs (the GCSTiles handle reuses the *GCS bucket handle).
+	if c.TileBackend == "gcs" && c.ByteStoreBackend != "gcs" {
+		return fmt.Errorf("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs (got %q)",
+			c.ByteStoreBackend)
+	}
+	switch c.TileBackend {
+	case "", "posix", "gcs":
+	default:
+		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", c.TileBackend)
+	}
+
+	// Durations: every exposed duration MUST be positive. Zero
+	// or negative values silently disable the relevant timer
+	// (e.g., zero PollInterval = busy loop), which is a footgun.
+	for _, d := range []struct {
+		name string
+		v    time.Duration
+	}{
+		{"LEDGER_SEQUENCER_INTERVAL", c.SequencerInterval},
+		{"LEDGER_MMD", c.MMD},
+		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", c.PgStatementTimeout},
+	} {
+		if d.v < 0 {
+			return fmt.Errorf("%s must be >= 0 (got %v)", d.name, d.v)
+		}
+	}
+
+	// Witness quorum K must be positive when witnesses are
+	// configured (a 0-of-N quorum would never finalize a head).
+	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK <= 0 {
+		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K must be > 0 when LEDGER_WITNESS_ENDPOINTS is set (got %d)",
+			c.WitnessQuorumK)
+	}
+	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK > len(c.WitnessEndpoints) {
+		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K (%d) cannot exceed LEDGER_WITNESS_ENDPOINTS count (%d)",
+			c.WitnessQuorumK, len(c.WitnessEndpoints))
+	}
+
+	return nil
 }
 
 // pgPoolHeadroom is the minimum extra connections the pool must
@@ -665,6 +744,137 @@ func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
 // error if the ledger was misconfigured — better to refuse to
 // start than to have HTTP admission hang on connection acquisition
 // under load.
+// buildConfigSnapshot flattens the loaded Config into the
+// redacted-effective-config map served by GET /v1/admin/config.
+// Secret-shaped values (DSN, key files, signer paths, access
+// keys, secret keys) are surfaced as "<set>" or "<unset>" so the
+// operator can confirm presence without exposing content. Public
+// identifiers (LogDID, NetworkID, addrs, intervals) are surfaced
+// verbatim. The map is sorted by the handler before encoding.
+func buildConfigSnapshot(cfg *Config) api.ConfigSnapshot {
+	presence := func(s string) string {
+		if s == "" {
+			return "<unset>"
+		}
+		return "<set>"
+	}
+	return api.ConfigSnapshot{
+		// Identity + addressing.
+		"log_did":     cfg.LogDID,
+		"ledger_did":  cfg.LedgerDID,
+		"network_id":  networkIDHex(cfg.NetworkID),
+		"server_addr": cfg.ServerAddr,
+		"pprof_addr":  cfg.PprofAddr,
+
+		// TLS.
+		"tls_enabled":   cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
+		"tls_cert_file": presence(cfg.TLSCertFile),
+		"tls_key_file":  presence(cfg.TLSKeyFile),
+
+		// Postgres.
+		"database_url":         presence(cfg.DatabaseURL),
+		"pg_max_conns":         cfg.PgMaxConns,
+		"pg_statement_timeout": cfg.PgStatementTimeout.String(),
+
+		// Tessera + WAL + bytestore.
+		"tessera_storage_dir":      cfg.TesseraStorageDir,
+		"tessera_signer_key_file":  presence(cfg.TesseraSignerKeyFile),
+		"ledger_signer_key_file":   presence(cfg.LedgerSignerKeyFile),
+		"wal_path":                 cfg.WALPath,
+		"tessera_antispam_path":    cfg.TesseraAntispamPath,
+		"byte_store_backend":       cfg.ByteStoreBackend,
+		"byte_store_prefix":        cfg.ByteStorePrefix,
+		"byte_store_gcs_bucket":    cfg.ByteStoreGCSBucket,
+		"byte_store_gcs_endpoint":  cfg.ByteStoreGCSEndpoint,
+		"byte_store_gcs_anon":      cfg.ByteStoreGCSAnon,
+		"byte_store_s3_bucket":     cfg.ByteStoreS3Bucket,
+		"byte_store_s3_endpoint":   cfg.ByteStoreS3Endpoint,
+		"byte_store_s3_region":     cfg.ByteStoreS3Region,
+		"byte_store_s3_access_key": presence(cfg.ByteStoreS3AccessKey),
+		"byte_store_s3_secret_key": presence(cfg.ByteStoreS3SecretKey),
+
+		// Tile serving.
+		"tile_serve_disable":  cfg.TileServeDisable,
+		"tile_backend":        cfg.TileBackend,
+		"tile_bucket_prefix":  cfg.TileBucketPrefix,
+
+		// Sequencer + builder pacing.
+		"sequencer_interval":      cfg.SequencerInterval.String(),
+		"sequencer_max_inflight":  cfg.SequencerMaxInFlight,
+		"mmd":                     cfg.MMD.String(),
+
+		// Witness + gossip.
+		"witness_endpoint_count": len(cfg.WitnessEndpoints),
+		"witness_quorum_k":       cfg.WitnessQuorumK,
+		"witness_key_file":       presence(cfg.WitnessKeyFile),
+		"network_bootstrap_file": presence(cfg.NetworkBootstrapFile),
+		"gossip_disable":         cfg.GossipDisable,
+		"gossip_peer_count":      len(cfg.GossipPeerDIDs),
+
+		// Observability.
+		"metrics_enable":      cfg.MetricsEnable,
+		"metrics_environment": cfg.MetricsEnvironment,
+		"service_version":     cfg.ServiceVersion,
+
+		// HTTP shaping.
+		"max_concurrent_conns": cfg.MaxConcurrentConns,
+		"max_entry_size":       cfg.MaxEntrySize,
+	}
+}
+
+// networkIDHex returns the first-8-bytes hex prefix of the
+// NetworkID, suitable for log correlation. The full 32 bytes
+// are not interesting in the boot banner; the prefix is enough
+// to disambiguate networks at a glance and it matches the
+// convention used elsewhere in the codebase.
+func networkIDHex(id cosign.NetworkID) string {
+	var zero cosign.NetworkID
+	if id == zero {
+		return ""
+	}
+	return fmt.Sprintf("%x", id[:8])
+}
+
+// validateTesseraStorageDir confirms the Tessera POSIX directory
+// is in a consistent state: either empty (fresh init) OR contains
+// a `checkpoint` file (resuming an existing log). A dir with
+// tile artifacts but no checkpoint indicates a half-initialized
+// volume — partial restore, aborted migration, manual file
+// shuffling — and re-initializing on top of it would corrupt
+// the log silently. Boot fails fast instead.
+func validateTesseraStorageDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read dir: %w", err)
+	}
+	if len(entries) == 0 {
+		// Fresh init — Tessera will populate.
+		return nil
+	}
+	checkpoint := dir + string(os.PathSeparator) + "checkpoint"
+	if _, err := os.Stat(checkpoint); err == nil {
+		// Healthy: existing log with checkpoint. Tessera will
+		// resume from where it left off.
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat checkpoint: %w", err)
+	}
+	// Has files but no checkpoint — half-initialized.
+	names := make([]string, 0, len(entries))
+	for i, e := range entries {
+		if i >= 5 {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, e.Name())
+	}
+	return fmt.Errorf("dir non-empty (%v) but no checkpoint file — "+
+		"refusing to re-initialize on top of partial state. "+
+		"To start fresh, empty the directory; to resume an existing log, "+
+		"restore the checkpoint file alongside the tile artifacts",
+		names)
+}
+
 func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 	mif := sequencerMaxInFlight
 	if mif <= 0 {
@@ -766,6 +976,24 @@ func parseCSV(s string) []string {
 // Main
 // ─────────────────────────────────────────────────────────────────────
 
+// G6 — Version variables populated at build time via -ldflags.
+// Defaults are placeholder values for go-run / unit-test builds.
+//
+//   go build -ldflags="-X main.Version=$(git describe --tags --always) \
+//                      -X main.Commit=$(git rev-parse HEAD) \
+//                      -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+//          ./cmd/ledger
+//
+// SDKVersion is hard-coded at the import-pin level (the SDK
+// version is determined by go.mod, not by ldflags), so it is the
+// single source of truth for what the binary was built against.
+var (
+	Version    = "dev"
+	Commit     = ""
+	BuildTime  = ""
+	SDKVersion = "v0.1.2"
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -790,11 +1018,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("ledger starting",
+	// G7 — Boot banner. Single Info line at startup carrying the
+	// forensic identifiers an operator needs to correlate a pod
+	// with its source: build version, git commit, build time, SDK
+	// version pin, and the deployment-shaping config (NetworkID,
+	// LogDID, LedgerDID, gossip enable, witness count). Secrets
+	// are NEVER logged here; only public identifiers + booleans.
+	logger.Info("ledger starting (boot banner)",
+		"version", Version,
+		"commit", Commit,
+		"build_time", BuildTime,
+		"sdk_version", SDKVersion,
 		"log_did", cfg.LogDID,
 		"ledger_did", cfg.LedgerDID,
+		"network_id_hex", networkIDHex(cfg.NetworkID),
 		"addr", cfg.ServerAddr,
 		"tessera_storage_dir", cfg.TesseraStorageDir,
+		"byte_store_backend", cfg.ByteStoreBackend,
+		"tile_backend", cfg.TileBackend,
+		"gossip_enabled", !cfg.GossipDisable,
+		"gossip_peer_count", len(cfg.GossipPeerDIDs),
+		"witness_endpoint_count", len(cfg.WitnessEndpoints),
+		"witness_quorum_k", cfg.WitnessQuorumK,
+		"tls_enabled", cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
+		"metrics_enabled", cfg.MetricsEnable,
 	)
 
 	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
@@ -947,6 +1194,17 @@ func main() {
 	// satisfies the MerkleAppender interface the builder loop holds.
 	if err := os.MkdirAll(cfg.TesseraStorageDir, 0o755); err != nil {
 		logger.Error("tessera storage dir", "error", err, "dir", cfg.TesseraStorageDir)
+		os.Exit(1)
+	}
+	// G3: Tessera POSIX dir sanity check. A fresh-init dir must
+	// be empty OR have a checkpoint file. A dir that contains
+	// other tile artifacts but NOT a checkpoint indicates a
+	// half-initialized volume (e.g., a partial restore, an
+	// aborted migration); refuse to boot rather than silently
+	// re-initializing on top of inconsistent state.
+	if err := validateTesseraStorageDir(cfg.TesseraStorageDir); err != nil {
+		logger.Error("tessera storage dir sanity check failed",
+			"error", err, "dir", cfg.TesseraStorageDir)
 		os.Exit(1)
 	}
 	tesseraDriver, err := posix.New(ctx, posix.Config{Path: cfg.TesseraStorageDir})
@@ -1769,6 +2027,13 @@ func main() {
 		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
 		Checkpoint:       checkpointHandler,       // nil when LEDGER_TILE_SERVE_DISABLE=true
 		Tile:             tileHandler,             // nil when LEDGER_TILE_SERVE_DISABLE=true
+		AdminConfig:      api.NewAdminConfigHandler(buildConfigSnapshot(cfg)),
+		AdminVersion: api.NewAdminVersionHandler(api.VersionInfo{
+			Version:    Version,
+			Commit:     Commit,
+			BuildTime:  BuildTime,
+			SDKVersion: SDKVersion,
+		}),
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────

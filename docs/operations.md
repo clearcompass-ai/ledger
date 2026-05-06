@@ -516,3 +516,157 @@ wiring. The lock acquisition fails fast on rolling-update conflict;
 the heartbeat starts immediately after acquisition and shares the
 supervisor's fatal channel so a lock loss exits the process via the
 same path as a sequencer or shipper panic.
+
+## Boot-time integrity + config validation (G category)
+
+The ledger refuses to start on misconfiguration rather than running
+in a half-broken state. Every check below is fail-fast at boot;
+nothing is "best effort, log and continue".
+
+### G1 — Config validation
+
+`Config.Validate()` runs at the end of `loadConfig()` and rejects
+the boot if any cross-field invariant is violated:
+
+| Check | Failure mode |
+|---|---|
+| `LEDGER_TLS_CERT_FILE` / `LEDGER_TLS_KEY_FILE` both-set or both-unset | Half-configured TLS would silently fall back to plain HTTP |
+| Both TLS files exist on disk | Misnamed path surfaces immediately |
+| `LEDGER_GOSSIP_PEER_DIDS` and `LEDGER_GOSSIP_PEER_ENDPOINTS` same length | Length mismatch points at a stale env var |
+| `LEDGER_TILE_BACKEND=gcs` requires `LEDGER_BYTE_STORE_BACKEND=gcs` | GCSTiles reuses the *GCS bucket handle |
+| `LEDGER_TILE_BACKEND` ∈ {posix, gcs} | Typo protection |
+| Durations >= 0 (`LEDGER_SEQUENCER_INTERVAL`, `LEDGER_MMD`, `LEDGER_PG_STATEMENT_TIMEOUT`) | Negative values would invert select branches |
+| `LEDGER_WITNESS_QUORUM_K > 0` when witnesses configured | 0-of-N would never finalize |
+| `LEDGER_WITNESS_QUORUM_K <= len(LEDGER_WITNESS_ENDPOINTS)` | Unreachable quorum |
+
+Pre-existing checks already enforced by `loadConfig`:
+`LEDGER_DATABASE_URL`, `LEDGER_LOG_DID`, `LEDGER_BYTE_STORE_BACKEND`,
+bytestore-bucket-when-backend-set, `LEDGER_NETWORK_BOOTSTRAP_FILE`
+when witness mode active.
+
+### G2 — Boot integrity reconcile
+
+`sequencer.Replayer.Replay(ctx)` runs on every boot via
+`Sequencer.Run`. It scans Postgres `entry_index` above the persisted
+HWM (gossipstore prefix `0x0D`) and back-populates `0x0A` (splitid
+index) + `0x0C` (entry lookup) for any rows missing — closing the
+gap between the Postgres source-of-truth and the best-effort Badger
+projection writes that happen AFTER the Postgres commit. Idempotent.
+
+Boot logs:
+
+```
+{"msg":"sequencer replay: starting","hwm":...}
+{"msg":"sequencer replay: caught up","rows_replayed":...}
+{"msg":"sequencer ready","boot_replayer":true,...}
+```
+
+Gated only on the gossipstore being wired (`LEDGER_GOSSIP_DISABLE`
+disables it; without gossip there are no projections to reconcile).
+
+### G3 — Tessera POSIX dir sanity check
+
+`validateTesseraStorageDir` runs immediately after `os.MkdirAll`:
+
+| State | Decision |
+|---|---|
+| Empty | Fresh init — Tessera will populate |
+| Has `checkpoint` file | Healthy — Tessera resumes |
+| Has files but no `checkpoint` | Half-initialized → boot fails |
+
+Surfaces the otherwise-silent "partial restore / aborted migration"
+class of failure where re-initializing on top of stale tile artifacts
+would corrupt the log.
+
+### G5 — `GET /v1/admin/config`
+
+Returns the EFFECTIVE runtime config as JSON with secrets redacted.
+Lets operators confirm what env the running pod actually loaded vs.
+what the deployment manifest said it should load.
+
+```sh
+curl -s http://ledger:8080/v1/admin/config | jq .
+```
+
+```json
+{
+  "byte_store_backend": "gcs",
+  "byte_store_gcs_bucket": "ledger-prod-bytes",
+  "database_url": "<set>",
+  "ledger_signer_key_file": "<set>",
+  "log_did": "did:web:ledger.example",
+  "max_entry_size": 1048576,
+  "metrics_enable": true,
+  "network_id": "0a1b2c3d4e5f6071",
+  "pg_max_conns": 24,
+  "pg_statement_timeout": "5s",
+  "sequencer_interval": "1s",
+  "sequencer_max_inflight": 4,
+  "tile_backend": "gcs",
+  "tls_enabled": true,
+  ...
+}
+```
+
+Secret-shaped fields (DSN, key files, signer paths, access keys)
+return `"<set>"` or `"<unset>"` so presence is confirmable without
+content exposure. Public identifiers (LogDID, NetworkID, addrs,
+intervals) are surfaced verbatim.
+
+UNAUTHENTICATED in this commit. Recommended deployment: mount on the
+pprof private listener (`LEDGER_PPROF_ADDR`) only, OR put a
+reverse-proxy auth filter in front. Future work: token-gated
+middleware via `LEDGER_ADMIN_AUTH_TOKEN`.
+
+### G6 — `GET /v1/admin/version`
+
+```json
+{
+  "version": "v0.42.1",
+  "commit": "abc123def456...",
+  "build_time": "2026-05-06T12:34:56Z",
+  "sdk_version": "v0.1.2"
+}
+```
+
+Populated at build time via `-ldflags`:
+
+```sh
+go build \
+  -ldflags="-X main.Version=$(git describe --tags --always) \
+            -X main.Commit=$(git rev-parse HEAD) \
+            -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  ./cmd/ledger
+```
+
+Same auth caveat as G5.
+
+### G7 — Boot banner
+
+A single Info line at startup carrying the forensic identifiers an
+operator needs to correlate a pod with its source build and
+deployment shape. Secrets NEVER logged here; only public identifiers
+plus booleans for capability flags.
+
+```json
+{
+  "msg":"ledger starting (boot banner)",
+  "version":"v0.42.1",
+  "commit":"abc123def456...",
+  "build_time":"2026-05-06T12:34:56Z",
+  "sdk_version":"v0.1.2",
+  "log_did":"did:web:ledger.example",
+  "ledger_did":"did:web:ledger.example",
+  "network_id_hex":"0a1b2c3d4e5f6071",
+  "addr":":8080",
+  "tessera_storage_dir":"/var/lib/attesta/tessera",
+  "byte_store_backend":"gcs",
+  "tile_backend":"gcs",
+  "gossip_enabled":true,
+  "gossip_peer_count":3,
+  "witness_endpoint_count":7,
+  "witness_quorum_k":4,
+  "tls_enabled":true,
+  "metrics_enabled":true
+}
+```

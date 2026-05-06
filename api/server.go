@@ -219,6 +219,17 @@ type Handlers struct {
 	// when {level} == "entries" to the entry-bundle path so the
 	// stdlib mux's pattern coverage stays unambiguous.
 	Tile http.HandlerFunc
+
+	// ── Admin endpoints (G5/G6) ─────────────────────────────────────
+	// AdminConfig serves GET /v1/admin/config — the EFFECTIVE
+	// runtime config with secrets redacted. Lets operators
+	// confirm what env the running pod actually loaded.
+	AdminConfig http.HandlerFunc
+
+	// AdminVersion serves GET /v1/admin/version — version, git
+	// commit, build time, SDK version. Required for op-stack
+	// debugging + audit; populated via -ldflags at build time.
+	AdminVersion http.HandlerFunc
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -404,6 +415,21 @@ func NewServer(
 		// /tile/entries/{...}. The handler routes internally so we
 		// avoid stdlib-mux specificity collisions.
 		mux.HandleFunc("GET /tile/{level}/{rest...}", handlers.Tile)
+	}
+
+	// ── Admin endpoints (G5/G6) ──────────────────────────────────────
+	// /v1/admin/config + /v1/admin/version. Mounted nil-guarded;
+	// cmd/ledger wires them at boot. Currently UNAUTHENTICATED —
+	// recommended deployment pattern is to expose these on the
+	// pprof private listener (LEDGER_PPROF_ADDR) only, OR put a
+	// reverse-proxy auth filter in front. Future work: add a
+	// LEDGER_ADMIN_AUTH_TOKEN env (separate from session auth)
+	// that gates the routes when set.
+	if handlers.AdminConfig != nil {
+		mux.HandleFunc("GET /v1/admin/config", handlers.AdminConfig)
+	}
+	if handlers.AdminVersion != nil {
+		mux.HandleFunc("GET /v1/admin/version", handlers.AdminVersion)
 	}
 
 	// -------------------------------------------------------------------------------------------------
