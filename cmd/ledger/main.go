@@ -285,6 +285,15 @@ type Config struct {
 	// disables pprof entirely.
 	PprofAddr string // LEDGER_PPROF_ADDR
 
+	// TileServeDisable, when true, suppresses the public Static-CT
+	// tile-serving routes (GET /checkpoint, GET /tile/{level}/...).
+	// Private deployments where auditors fetch via a designated
+	// witness — not directly from the ledger — set this to true.
+	// The default (false) serves tiles publicly so external
+	// auditors can use the SDK's log/tessera_fetcher primitive
+	// without bespoke ledger config.
+	TileServeDisable bool // LEDGER_TILE_SERVE_DISABLE
+
 	MaxEntrySize int64
 	BatchSize int
 	PollInterval time.Duration
@@ -516,6 +525,7 @@ func loadConfig() (*Config, error) {
 		TLSKeyFile:         os.Getenv("LEDGER_TLS_KEY_FILE"),
 		MaxConcurrentConns: envIntOr("LEDGER_MAX_CONCURRENT_CONNS", 0),
 		PprofAddr:          os.Getenv("LEDGER_PPROF_ADDR"),
+		TileServeDisable:   os.Getenv("LEDGER_TILE_SERVE_DISABLE") == "true",
 
 		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
@@ -1614,6 +1624,26 @@ func main() {
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 
+	// ── Static-CT tile serving (C1-C3, C6) ──────────────────────────
+	//
+	// Mount /checkpoint + /tile/{level}/{rest...} so external
+	// auditors can pull tiles directly with the SDK's
+	// log/tessera_fetcher primitive (which now applies the
+	// MaxTileBytes cap from attesta v0.1.2). Suppressed when
+	// LEDGER_TILE_SERVE_DISABLE=true — for private deployments
+	// where auditors go through a designated witness instead.
+	var checkpointHandler http.HandlerFunc
+	var tileHandler http.HandlerFunc
+	if !cfg.TileServeDisable {
+		checkpointHandler = api.NewCheckpointHandler(tileBackend, logger)
+		tileHandler = api.NewTileHandler(tileBackend, logger)
+		logger.Info("static-ct tile serving enabled",
+			"routes", []string{"/checkpoint", "/tile/{level}/{rest...}"},
+		)
+	} else {
+		logger.Info("static-ct tile serving disabled (LEDGER_TILE_SERVE_DISABLE=true)")
+	}
+
 	handlers := api.Handlers{
 		Submission:       submitHandler,
 		BatchSubmission:  batchSubmitHandler,
@@ -1643,6 +1673,8 @@ func main() {
 		SMTLeafBatch:     api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery:  api.NewDerivationCommitmentQueryHandler(commitDeps),
 		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
+		Checkpoint:       checkpointHandler,       // nil when LEDGER_TILE_SERVE_DISABLE=true
+		Tile:             tileHandler,             // nil when LEDGER_TILE_SERVE_DISABLE=true
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────
