@@ -91,6 +91,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/clearcompass-ai/ledger/admission"
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/anchor"
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -1848,57 +1849,62 @@ func main() {
 		}()
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	// All long-running goroutines are wrapped in lifecycle.SafeRun
+	// for bounded panic recovery. A panic in any background loop
+	// must surface to the fatal channel so the supervisor can
+	// terminate the process cleanly — never crash the binary
+	// silently. Mirrors the SDK's HTTP-handler self-encapsulating
+	// recovery pattern.
+
+	lifecycle.SafeRunInWG(ctx, &wg, "builder-loop", logger, fatal, func() error {
 		if err := bl.Run(ctx); err != nil {
 			logger.Error("builder loop exited with error", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "difficulty-controller", logger, fatal, func() error {
 		diffController.Run(ctx, 30*time.Second)
-	}()
+		return nil
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "anchor-publisher", logger, fatal, func() error {
 		anchorPub.Run(ctx)
-	}()
+		return nil
+	})
 
 	// Shipper: migrates WAL → bytestore. Returns ctx.Err() on shutdown
 	// (not fatal); other errors are fatal.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "shipper", logger, fatal, func() error {
 		if err := ship.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			fatal <- fmt.Errorf("shipper: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
 	// Sequencer: drains WAL StatePending → entry_index. Returns
 	// ctx.Err() on shutdown; any other return is fatal — without
 	// the Sequencer running, v2 SCTs become unredeemable promises.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "sequencer", logger, fatal, func() error {
 		if err := seq.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			fatal <- fmt.Errorf("sequencer: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
 	// Integrity Detector loop: returns ErrDiverged on disagreement,
 	// ctx.Err() on shutdown. Divergence is FATAL — must panic so
 	// consumers stop seeing corrupt proofs.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "integrity-detector", logger, fatal, func() error {
 		if err := detector.Loop(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			fatal <- fmt.Errorf("integrity detector: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
 	// ── Supervisor: shutdown OR fatal ────────────────────────────────
 	//
@@ -1922,10 +1928,43 @@ func main() {
 		cancel()
 	}
 
+	// ── Pre-drain handshake (B4) ──────────────────────────────────────
+	//
+	// Flip /readyz to 503 BEFORE httpServer.Shutdown so the load
+	// balancer / k8s readiness probe sees the pod as not-ready and
+	// removes it from rotation. Then sleep LEDGER_PREDRAIN_GRACE
+	// (default 5s) so any in-flight readiness-probe-cycle resolves
+	// against a 503 response. THEN call Shutdown which drains
+	// in-flight requests.
+	//
+	// Without this handshake, in-flight HTTP requests can be cut at
+	// SIGTERM if they arrive in the window between "process got
+	// SIGTERM" and "load balancer removed pod from rotation."
+	server.SetReady(false)
+	preDrainGrace := envDurationOr("LEDGER_PREDRAIN_GRACE", 5*time.Second)
+	if preDrainGrace > 0 {
+		logger.Info("pre-drain grace started",
+			"grace", preDrainGrace,
+			"reason", "load-balancer-rotation-removal",
+		)
+		select {
+		case <-time.After(preDrainGrace):
+		case <-time.After(60 * time.Second):
+			// Hard ceiling — never block shutdown indefinitely
+			// even if env-var is misconfigured to a huge value.
+		}
+	}
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http shutdown", "error", err)
+	}
+	if pprofServer != nil {
+		// pprof has no in-flight admission requests; quick close.
+		pprofShutdownCtx, pprofShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = pprofServer.Shutdown(pprofShutdownCtx)
+		pprofShutdownCancel()
 	}
 
 	wg.Wait()
