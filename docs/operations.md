@@ -670,3 +670,77 @@ plus booleans for capability flags.
   "metrics_enabled":true
 }
 ```
+
+## In-process audit + integrity jobs (H category)
+
+### H1/H2/H3 — Audit + freshness telemetry
+
+A single `audit-telemetry` goroutine emits three observability
+lines every 5 minutes, all read-only:
+
+```json
+{"msg":"integrity audit","invariant_failures_total":0,"samples_verified_total":42}
+{"msg":"checkpoint cosig age","age_seconds":12.3}
+{"msg":"gossip store growth","event_count":18742,"originator_count":12}
+```
+
+**H1** — `integrity.Detector` exposes
+`InvariantFailures()` + `SamplesVerified()` atomic counters.
+Sample-verify cycles increment `samples_verified_total` on success
+and `invariant_failures_total` on any divergence-detected or
+verifier/WAL error path. The metric pair lets SREs compute a
+failure rate over a window and alert when invariant_failures
+climbs above zero. The future D-category OTel mirror exposes them
+as `attesta_audit_invariant_failures_total{}` and
+`attesta_audit_samples_verified_total{}`.
+
+**H2** — `gossipnet.STHPublisher.LastCosignedAt()` records the
+unix-nanos of every successful PublishCosignedHead.
+`CosignAgeSeconds()` returns `now - LastCosignedAt()` in seconds,
+or -1 when no cosigned head has been published yet (fresh-boot
+disambiguator). Drives the future
+`attesta_checkpoint_cosig_age_seconds` gauge consumed by SRE
+dashboards to alert when witness fan-out has stalled.
+
+**H3** — `gossipstore.BadgerStore.Stats(ctx)` exposes the
+event_count + originator_count growth metric. The audit-telemetry
+goroutine logs them at Info every 5 min so operators see the
+gossip-store growth trajectory.
+
+Trim policy is **NOT implemented in this commit**. Trimming gossip
+events safely requires a consumer-cursor model (the oldest auditor
+cursor any peer might want to fetch from); we don't track that
+today. Disk pressure is currently bounded by Badger's value-log
+GC at the LSM side. Application-level trim is parked behind a
+future `LEDGER_GOSSIP_TRIM_AGE` env once the consumer-cursor
+model lands.
+
+### H4 — Append-only build-time guard
+
+`store/append_only_guard_test.go::TestAppendOnlyGuard` walks every
+non-test `.go` file in the repo (excluding vendor / .git) and
+fails the build if any source file constructs a SQL `UPDATE`,
+`DELETE FROM`, or `TRUNCATE` against the append-only tables:
+
+```
+entry_index
+commitment_split_id
+derivation_commitments
+tree_heads
+tree_head_sigs
+equivocation_proofs
+```
+
+Block + line comments are stripped before pattern matching so
+docstrings + file-header runbooks (which often quote the
+operator-run reset SQL for cmd/rebuild-tiles + similar one-shot
+tools) don't trip the guard.
+
+Defense-in-depth on top of F2 (`deploy/sql/grants.sql`):
+
+| Layer | Mechanism |
+|---|---|
+| F2 — DB role | `REVOKE UPDATE, DELETE, TRUNCATE` from the application role |
+| H4 — build time | `go test ./store/` fails the build if mutation SQL appears in source |
+
+A buggy commit can't slip past either layer.

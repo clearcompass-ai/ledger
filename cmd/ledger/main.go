@@ -2318,6 +2318,59 @@ func main() {
 		return nil
 	})
 
+	// H1/H2/H3 — Audit + freshness telemetry loop.
+	//
+	// One goroutine emits three observability lines every 5 minutes:
+	//   - integrity-detector invariant-failure / sample-verified counters
+	//   - cosignature freshness age (seconds since last successful publish)
+	//   - gossip-store growth (event count + originator count)
+	//
+	// All three are read-only observations. No fatal channel — a
+	// transient error (e.g., gossipstore Stats() temporarily failing
+	// due to a Badger compaction in-flight) logs and continues.
+	//
+	// Trim policy for gossip-store entries: NOT implemented in this
+	// commit. Trimming requires a consumer-cursor model (the oldest
+	// auditor cursor any peer might want to fetch from) which we
+	// don't track today. Disk pressure is currently bounded by
+	// Badger's value-log GC on the LSM side; application-level
+	// trim is parked behind a future LEDGER_GOSSIP_TRIM_AGE env
+	// once the consumer-cursor model lands.
+	lifecycle.SafeRunInWG(ctx, &wg, "audit-telemetry", logger, nil, func() error {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				logger.Info("integrity audit",
+					"invariant_failures_total", detector.InvariantFailures(),
+					"samples_verified_total", detector.SamplesVerified(),
+				)
+				if gossipPublisher != nil {
+					age := gossipPublisher.CosignAgeSeconds()
+					if age >= 0 {
+						logger.Info("checkpoint cosig age",
+							"age_seconds", age,
+						)
+					}
+				}
+				if gossipBStore != nil {
+					statsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					stats, err := gossipBStore.Stats(statsCtx)
+					cancel()
+					if err == nil {
+						logger.Info("gossip store growth",
+							"event_count", stats.EventCount,
+							"originator_count", stats.OriginatorCount,
+						)
+					}
+				}
+			}
+		}
+	})
+
 	// ── Supervisor: shutdown OR fatal ────────────────────────────────
 	//
 	// Two exit paths:

@@ -38,6 +38,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,6 +71,20 @@ type Detector struct {
 	logger *slog.Logger
 
 	rngMu sync.Mutex // guards rng — math/rand.Rand is not goroutine-safe
+
+	// invariantFailures is an atomic counter incremented every
+	// time a sample-verify cycle detects ErrDiverged OR returns
+	// any other verifier/WAL error. Exported via
+	// InvariantFailures() so cmd/ledger can periodically log
+	// the value (and a future D-category OTel mirror can scrape
+	// it as `attesta_audit_invariant_failures_total`). Atomic
+	// so the read path doesn't contend with the write path.
+	invariantFailures atomic.Uint64
+
+	// samplesVerified counts successful sample checks. Pairs
+	// with invariantFailures so operators can compute a failure
+	// rate (failures / (failures + verified)) over a window.
+	samplesVerified atomic.Uint64
 }
 
 // NewDetector returns a Detector wired to the supplied surfaces.
@@ -139,18 +154,37 @@ func (d *Detector) SampleVerify(ctx context.Context) error {
 		}
 		tesseraHash, err := d.verifier.HashAt(ctx, seq)
 		if err != nil {
+			d.invariantFailures.Add(1)
 			return fmt.Errorf("integrity/detector: verifier seq=%d: %w", seq, err)
 		}
 		if walHash != tesseraHash {
+			d.invariantFailures.Add(1)
 			return fmt.Errorf("%w: seq=%d wal=%x tessera=%x",
 				ErrDiverged, seq, walHash[:], tesseraHash[:])
 		}
+		d.samplesVerified.Add(1)
 		d.logger.Debug("integrity/detector: sample ok",
 			"seq", seq,
 			"hash", fmt.Sprintf("%x", walHash[:8]),
 		)
 	}
 	return nil
+}
+
+// InvariantFailures returns the cumulative count of sample-verify
+// cycles that detected divergence OR returned a verifier/WAL error.
+// Exposed for periodic operator logging + future D-category OTel
+// mirror as `attesta_audit_invariant_failures_total`. Read-only;
+// safe under any concurrency.
+func (d *Detector) InvariantFailures() uint64 {
+	return d.invariantFailures.Load()
+}
+
+// SamplesVerified returns the cumulative count of sample checks
+// that completed successfully (no divergence, no error). Pairs
+// with InvariantFailures to compute a failure rate.
+func (d *Detector) SamplesVerified() uint64 {
+	return d.samplesVerified.Load()
 }
 
 // Loop runs SampleVerify on a ticker until ctx is cancelled or the

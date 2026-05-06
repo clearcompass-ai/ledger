@@ -53,6 +53,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
+	"time"
 
 	sdkcosign "github.com/clearcompass-ai/attesta/crypto/cosign"
 	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
@@ -73,6 +75,16 @@ type STHPublisher struct {
 	originator string
 	ledgerEndpoint string
 	logger *slog.Logger
+
+	// lastCosignedAtUnixNano is the unix-nanos timestamp of the
+	// most-recent successful PublishCosignedHead. 0 means "no
+	// cosigned head ever published" (fresh boot, no witness
+	// quorum yet). Read via LastCosignedAt() / CosignAgeSeconds()
+	// — H2 telemetry: drives the
+	// `attesta_checkpoint_cosig_age_seconds` gauge consumed by
+	// the SRE observability stack to alert when witness fan-out
+	// has stalled.
+	lastCosignedAtUnixNano atomic.Int64
 }
 
 // PublisherConfig configures STHPublisher.
@@ -216,9 +228,41 @@ func (p *STHPublisher) PublishCosignedHead(ctx context.Context, head types.Cosig
 		return
 	}
 
+	// H2: record successful-publish timestamp for the
+	// `attesta_checkpoint_cosig_age_seconds` freshness gauge.
+	// SREs alert on stale cosignatures (witness fan-out
+	// stalled). The gauge reads `now - LastCosignedAt()`.
+	p.lastCosignedAtUnixNano.Store(time.Now().UnixNano())
+
 	p.logger.Info("gossip publisher: STH published",
 		"tree_size", head.TreeSize,
 		"signatures", len(head.Signatures),
 		"lamport", nextLamport,
 	)
+}
+
+// LastCosignedAt returns the unix-nanos timestamp of the most-
+// recent successful PublishCosignedHead. Returns 0 when no
+// cosigned head has ever been published from this process —
+// the gauge consumer should treat 0 as "no data yet" and not
+// emit a stale-cosig alert until a real value lands.
+func (p *STHPublisher) LastCosignedAt() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.lastCosignedAtUnixNano.Load()
+}
+
+// CosignAgeSeconds returns the seconds since the last successful
+// PublishCosignedHead. Returns -1 when no cosigned head has been
+// published yet (so callers can distinguish "fresh boot, no data"
+// from "very old data"). Drives the
+// `attesta_checkpoint_cosig_age_seconds` gauge consumed by SRE
+// dashboards.
+func (p *STHPublisher) CosignAgeSeconds() float64 {
+	t := p.LastCosignedAt()
+	if t == 0 {
+		return -1
+	}
+	return time.Since(time.Unix(0, t)).Seconds()
 }
