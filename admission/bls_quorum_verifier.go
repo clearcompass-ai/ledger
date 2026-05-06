@@ -7,7 +7,7 @@ Scope (Wave 1 v3, intentionally narrow): this verifier fires ONLY for
 entries whose payload embeds a cosigned tree head — anchor entries
 authored by peer ledgers, witness-attestation commentary, cross-log
 proof entries. Plain submissions that do not carry an embedded
-checkpoint skip this stage entirely; the v7.75 commitment-entry
+checkpoint skip this stage entirely; the commitment-entry
 surface (pre-grant-commitment-v1, escrow-split-commitment-v1) does
 not embed tree heads and therefore never triggers S1.
 
@@ -37,7 +37,7 @@ Detection vs. verification (separation of concerns):
     cross-log proof and peer-anchor surfaces grow. As long as the
     predicate returns false, this verifier is dead code and Wave 1
     ships with the admission pipeline correctly skipping S1 — which
-    is the intended behavior for the entry surface v7.75 introduces.
+    is the intended behavior for the entry surface introduces.
 
   - ExtractEmbeddedTreeHead parses the embedded head from the
     payload. Schema-specific. Stubbed for the same reason as the
@@ -122,9 +122,9 @@ type WitnessKeySet interface {
 // safe for concurrent use as long as the WitnessKeySet
 // implementation is.
 type BLSQuorumVerifier struct {
-	keySet      WitnessKeySet
+	keySet WitnessKeySet
 	blsVerifier cosign.BLSAggregateVerifier
-	networkID   cosign.NetworkID
+	networkID cosign.NetworkID
 }
 
 // NewBLSQuorumVerifier constructs a verifier with the supplied
@@ -249,7 +249,7 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 // EntryEmbedsTreeHead reports whether an entry's payload schema is
 // one the ledger knows to carry a cosigned tree head. Currently
 // a closed-set predicate that returns false for every schema; the
-// v7.75 commitment-entry surface introduced in Wave 1 (pre-grant-
+//  commitment-entry surface introduced in Wave 1 (pre-grant-
 // commitment-v1, escrow-split-commitment-v1) does NOT embed tree
 // heads, so S1 verification is correctly a no-op for those entries.
 //

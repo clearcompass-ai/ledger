@@ -8,8 +8,8 @@ asynchronous batch-submission wiring:
   - POST /v1/entries reaches the configured submission handler.
   - POST /v1/entries/batch reaches the configured batch handler
     when wired; returns 404 when not.
-  - GET  /v1/admission/mmd reaches the configured MMD handler.
-  - GET  /healthz and /readyz remain wired.
+  - GET /v1/admission/mmd reaches the configured MMD handler.
+  - GET /healthz and /readyz remain wired.
 
 Thin tests — only the routing surface, not handler internals.
 */

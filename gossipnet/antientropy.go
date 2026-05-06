@@ -114,16 +114,16 @@ type AntiEntropyConfig struct {
 
 // AntiEntropy is the catchup loop.
 type AntiEntropy struct {
-	store    sdkgossip.Store
-	peers    []antiEntropyPeerInternal
+	store sdkgossip.Store
+	peers []antiEntropyPeerInternal
 	interval time.Duration
-	batch    int
-	logger   *slog.Logger
+	batch int
+	logger *slog.Logger
 }
 
 type antiEntropyPeerInternal struct {
-	did    string
-	url    string
+	did string
+	url string
 	client sdkgossip.Client
 }
 

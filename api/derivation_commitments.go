@@ -5,9 +5,9 @@ SMT batch DERIVATION commitment query endpoint:
 
 	GET /v1/derivation-commitments?seq=N → commitment whose range covers sequence N
 
-This file is NOT about v7.75 cryptographic Pedersen commitments;
+This file is NOT about cryptographic Pedersen commitments;
 see store/derivation_commitments.go for the concept disambiguation.
-The v7.75 cryptographic-commitment surface lives in api/commitments.go
+The cryptographic-commitment surface lives in api/commitments.go
 (GET /v1/commitments/by-split-id/{schema_id}/{hex}).
 */
 package api
@@ -24,10 +24,10 @@ import (
 
 // DerivationCommitmentDeps groups the derivation-commitment query handler
 // dependencies. Distinct from CryptographicCommitmentDeps (api/commitments.go),
-// which serves the v7.75 cryptographic-commitment lookup endpoint.
+// which serves the cryptographic-commitment lookup endpoint.
 type DerivationCommitmentDeps struct {
 	CommitmentStore DerivationCommitmentFetcher
-	Logger          *slog.Logger
+	Logger *slog.Logger
 }
 
 // NewDerivationCommitmentQueryHandler returns the GET

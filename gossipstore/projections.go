@@ -67,7 +67,7 @@ func (s *BadgerStore) WriteSplitIDIndexEntry(
 // scanner consumers.
 type SplitIDIndexHit struct {
 	EntrySeq uint64
-	Entry    SplitIDIndexEntry
+	Entry SplitIDIndexEntry
 }
 
 // ListSplitIDIndexEntriesAt scans the splitid index for the
@@ -217,7 +217,7 @@ func (s *BadgerStore) GetEquivProjection(
 // types.EntryWithMetadata at the boundary.
 type EntryLookupHit struct {
 	EntrySeq uint64
-	Entry    EntryLookupIndexEntry
+	Entry EntryLookupIndexEntry
 }
 
 // WriteEntryLookupEntry persists a (schema_id, split_id, seq) →

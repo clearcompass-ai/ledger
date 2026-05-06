@@ -43,7 +43,7 @@ INTERFACE COMPATIBILITY:
 
 WIRE FORMAT:
 
-	Both sources return the same v7.75 wire bytes (single blob,
+	Both sources return the same wire bytes (single blob,
 	signatures section embedded). The composite is opaque w.r.t.
 	envelope structure — it just routes byte slices.
 */
@@ -73,9 +73,9 @@ type WALByteReader interface {
 // Either wal or bytestore may be nil for tests / degraded modes;
 // the composite handles each case.
 type CompositeByteReader struct {
-	wal       WALByteReader
+	wal WALByteReader
 	bytestore bytestore.Reader
-	logger    *slog.Logger
+	logger *slog.Logger
 }
 
 // NewCompositeByteReader returns a composite rooted at the supplied

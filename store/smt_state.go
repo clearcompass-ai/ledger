@@ -185,16 +185,16 @@ func (s *PostgresLeafStore) Count() (int, error) {
 // PostgresNodeCache implements sdk smt.NodeCache with write-through persistence.
 // Uses a simple map with access tracking for LRU eviction.
 type PostgresNodeCache struct {
-	db      *pgxpool.Pool
-	mu      sync.RWMutex
-	cache   map[[32]byte]cacheEntry
-	access  map[[32]byte]int64 // access counter for LRU
+	db *pgxpool.Pool
+	mu sync.RWMutex
+	cache map[[32]byte]cacheEntry
+	access map[[32]byte]int64 // access counter for LRU
 	counter int64
 	maxSize int
 }
 
 type cacheEntry struct {
-	hash  []byte
+	hash []byte
 	depth int
 }
 
@@ -303,7 +303,7 @@ func (c *PostgresNodeCache) evictLRU() {
 	// Find the access threshold: remove entries with lowest access counters.
 	// Simple approach: remove entries until below target.
 	type kv struct {
-		key    [32]byte
+		key [32]byte
 		access int64
 	}
 	entries := make([]kv, 0, len(c.cache))

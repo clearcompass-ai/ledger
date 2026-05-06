@@ -70,12 +70,12 @@ import (
 // proofs. Stateless — chain-discipline state is read from the
 // Store on every publish.
 type EquivocationPublisher struct {
-	store      sdkgossip.Store
-	sink       sdkgossip.Sink
-	signer     sdkcosign.WitnessSigner
-	networkID  sdkcosign.NetworkID
+	store sdkgossip.Store
+	sink sdkgossip.Sink
+	signer sdkcosign.WitnessSigner
+	networkID sdkcosign.NetworkID
 	originator string
-	logger     *slog.Logger
+	logger *slog.Logger
 }
 
 // EquivocationPublisherConfig configures the publisher.
@@ -86,9 +86,9 @@ type EquivocationPublisher struct {
 // signing key) so the ledger's chain in the gossip Store
 // covers all of its own emissions.
 type EquivocationPublisherConfig struct {
-	Store     sdkgossip.Store
-	Sink      sdkgossip.Sink
-	Signer    sdkcosign.WitnessSigner
+	Store sdkgossip.Store
+	Sink sdkgossip.Sink
+	Signer sdkcosign.WitnessSigner
 	NetworkID sdkcosign.NetworkID
 
 	// Originator is the ledger's own DID. Same DID used for

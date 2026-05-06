@@ -36,10 +36,10 @@ WHAT IT MEASURES:
 
 CONFIG VIA ENV (with defaults):
 
-	ATTESTA_SOAK_ENTRIES        total entries to submit (default 1_000_000)
-	ATTESTA_SOAK_CONCURRENCY    concurrent submitters    (default 8)
+	ATTESTA_SOAK_ENTRIES total entries to submit (default 1_000_000)
+	ATTESTA_SOAK_CONCURRENCY concurrent submitters (default 8)
 	ATTESTA_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
-	ATTESTA_SOAK_P99_BOUND_MS   HTTP admission p99 ceiling, ms (default 100)
+	ATTESTA_SOAK_P99_BOUND_MS HTTP admission p99 ceiling, ms (default 100)
 
 The defaults model a 1M-entry soak. Smaller numbers are useful for
 quick iteration; the same tests are valid at any size.
@@ -81,7 +81,7 @@ import (
 
 // soakSubmission records one accepted entry for the post-soak verify pass.
 type soakSubmission struct {
-	seq  uint64
+	seq uint64
 	hash [32]byte
 }
 
@@ -91,11 +91,11 @@ type soakSubmission struct {
 
 type soakOperator struct {
 	BaseURL string
-	Pool    *pgxpool.Pool
-	WAL     *wal.Committer
+	Pool *pgxpool.Pool
+	WAL *wal.Committer
 	Backend opbytestore.Backend
 	Shipper *shipper.Shipper
-	cancel  context.CancelFunc
+	cancel context.CancelFunc
 }
 
 func startSoakOperator(t *testing.T) *soakOperator {
@@ -263,11 +263,11 @@ func (op *soakOperator) seedSoakSession(t *testing.T, token, exchangeDID string,
 // ─────────────────────────────────────────────────────────────────────
 
 type latencySampler struct {
-	mu      sync.Mutex
+	mu sync.Mutex
 	samples []time.Duration
-	cap     int
-	seen    int
-	rng     *rand.Rand
+	cap int
+	seen int
+	rng *rand.Rand
 }
 
 func newLatencySampler(capacity int) *latencySampler {

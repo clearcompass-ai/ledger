@@ -10,26 +10,25 @@ ledger/
 ├── cmd/
 │   ├── ledger/         # main binary; loadConfig + wiring
 │   ├── ledger-reader/  # read-only sibling (no admission)
-│   ├── submit-stamp/     # CLI: build + sign + POST a v7.75 entry
-│   ├── seed-session/     # dev: create a sessions row
-│   ├── rebuild-tiles/    # ops: replay entry_index → Tessera
-│   └── bootstrap-v775-schemas/
+│   ├── submit-stamp/   # CLI: build + sign + POST an entry
+│   ├── seed-session/   # dev: create a sessions row
+│   └── rebuild-tiles/  # ops: replay entry_index → Tessera
 ├── api/                  # HTTP handlers (zero pgx imports)
-│   ├── server.go         # the route table — single source of truth
-│   ├── ports.go          # interfaces for store/* and middleware
-│   ├── errors.go         # writeTypedError + OTel counter
-│   ├── submission.go     # POST /v1/entries
-│   ├── batch.go          # POST /v1/entries/batch
-│   ├── commitments.go    # GET /v1/commitments/by-split-id
-│   ├── tree.go           # GET /v1/tree/{head,inclusion,consistency}
-│   ├── proofs.go         # GET /v1/smt/{proof,batch_proof,root}
-│   ├── queries.go        # GET /v1/query/* + /v1/entries-hash
-│   ├── entries_read.go   # GET /v1/entries/{seq,batch,raw}
+│   ├── server.go # the route table — single source of truth
+│   ├── ports.go # interfaces for store/* and middleware
+│   ├── errors.go # writeTypedError + OTel counter
+│   ├── submission.go # POST /v1/entries
+│   ├── batch.go # POST /v1/entries/batch
+│   ├── commitments.go # GET /v1/commitments/by-split-id
+│   ├── tree.go # GET /v1/tree/{head,inclusion,consistency}
+│   ├── proofs.go # GET /v1/smt/{proof,batch_proof,root}
+│   ├── queries.go # GET /v1/query/* + /v1/entries-hash
+│   ├── entries_read.go # GET /v1/entries/{seq,batch,raw}
 │   ├── escrow_override.go # POST /v1/escrow-override
-│   ├── smt_read.go       # GET /v1/smt/leaf/{key} + POST /v1/smt/leaves
-│   ├── derivation_commitments.go  # GET /v1/commitments?seq=N
-│   ├── mmd.go            # GET /v1/admission/mmd
-│   ├── sct.go            # SCT signing
+│   ├── smt_read.go # GET /v1/smt/leaf/{key} + POST /v1/smt/leaves
+│   ├── derivation_commitments.go # GET /v1/commitments?seq=N
+│   ├── mmd.go # GET /v1/admission/mmd
+│   ├── sct.go # SCT signing
 │   └── middleware/       # Auth (SessionLookup), SizeLimit, etc.
 ├── apitypes/             # leaf package — value types + sentinels (no pgx)
 ├── wal/                  # Badger WAL with state machine
@@ -62,19 +61,19 @@ HTTP request
    │  invalid token → 401
    │  valid token → ctx[authenticated]=true, ctx[exchange_did]=...
    │
-   ▼ NewSubmissionHandler.prepareSubmission          (submission.go:262)
+   ▼ NewSubmissionHandler.prepareSubmission (submission.go:262)
    │   step 1: read raw bytes + protocol-version preamble
    │   step 2: envelope.Deserialize + ValidateAlgorithmID
    │   step 3: entry.Validate + CheckNFC + destination + freshness
    │   step 4: admission.VerifyEntrySignature
-   │   step 4b: BLSQuorumVerifier.VerifyEntry (no-op for v7.75)
+   │   step 4b: BLSQuorumVerifier.VerifyEntry (no-op)
    │   step 5-6: size cap + evidence pointers cap
    │   step 7: Mode B stamp verify (unauthenticated only)
    │   step 8: canonical hash + idempotency probe via wal.MetaState
    │
    ├─ idempotent replay → SignSCT with persisted log_time → 202
    │
-   ▼ deductCreditModeA via CreditDeducter.Deduct     (submission.go:545)
+   ▼ deductCreditModeA via CreditDeducter.Deduct (submission.go:545)
    │  insufficient credits → 402
    │
    ▼ deps.Storage.WAL.Submit(hash, wire, logTimeMicros)  (submission.go:559)
@@ -107,8 +106,8 @@ ticker tick → drainOnce
    │       │   - INSERT INTO commitment_split_id (commitment schemas only)
    │       │
    │       ▼ AFTER Postgres commit, best-effort Badger writes:
-   │       │   - 0x0A WriteSplitIDIndexEntry  (detection trigger)
-   │       │   - 0x0C WriteEntryLookupEntry   (CQRS read path)
+   │       │   - 0x0A WriteSplitIDIndexEntry (detection trigger)
+   │       │   - 0x0C WriteEntryLookupEntry (CQRS read path)
    │       │
    │       ▼ wal.Sequence(hash, seq) → state pending → sequenced
    │
@@ -133,7 +132,7 @@ and best-effort Badger writes.
 ```
 GET /v1/commitments/by-split-id/{schema_id}/{hex}
    │
-   ▼ NewCommitmentLookupHandler                      (commitments.go:151)
+   ▼ NewCommitmentLookupHandler (commitments.go:151)
    │  uses types.CommitmentFetcher (SDK interface)
    │
    ▼ gossipstore.BadgerCommitmentFetcher
@@ -151,8 +150,8 @@ GET /v1/commitments/by-split-id/{schema_id}/{hex}
 Zero Postgres on this path. Pinned by `api/commitments_test.go`:
 
 ```
-TestCommitmentLookup_EndToEnd_BadgerCQRS         (line 294)
-TestCommitmentLookup_EndToEnd_EquivocationCase   (line 363)
+TestCommitmentLookup_EndToEnd_BadgerCQRS (line 294)
+TestCommitmentLookup_EndToEnd_EquivocationCase (line 363)
 ```
 
 ### Other reads
@@ -204,13 +203,13 @@ GET /v1/gossip/by-binding/{hash}     ← zero-trust audit primitive
 ## Trust split
 
 ```
-Ledger       Postgres + Tessera + WAL + bytestore. No artifact decryption keys.
+Ledger Postgres + Tessera + WAL + bytestore. No artifact decryption keys.
                 Signs SCTs + tree heads. Detects equivocation.
 
-Witnesses      Hold cosign keys. Sign tree heads (K-of-N). Pull-based: each
+Witnesses Hold cosign keys. Sign tree heads (K-of-N). Pull-based: each
                 witness scrapes the ledger's /v1/gossip/* feeds independently.
 
-Auditors       Pull /v1/gossip/* + Static-CT tiles. Recompute Merkle + SMT
+Auditors Pull /v1/gossip/* + Static-CT tiles. Recompute Merkle + SMT
                 roots locally. Fetch /v1/gossip/by-binding/{hash} to verify
                 equivocation findings without trusting the ledger's word.
 ```

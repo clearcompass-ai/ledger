@@ -16,7 +16,7 @@ KEY ARCHITECTURAL DECISIONS:
 
 SDK ALIGNMENT:
   - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-  - v7.75 split entry construction into two constructors:
+  - split entry construction into two constructors:
     envelope.NewEntry(header, payload, signatures)        — fully signed
     envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
     The publisher's flow is "construct, then submit through admission",
@@ -50,15 +50,15 @@ import (
 
 // PublisherConfig configures the anchor publisher.
 type PublisherConfig struct {
-	LedgerDID     string
-	LogDID        string // NEW (v0.3.0): destination-binding for self-published anchors.
-	Interval      time.Duration
+	LedgerDID string
+	LogDID string // NEW (v0.3.0): destination-binding for self-published anchors.
+	Interval time.Duration
 	AnchorSources []AnchorSource
 }
 
 // AnchorSource is a remote log to anchor.
 type AnchorSource struct {
-	LogDID      string
+	LogDID string
 	EndpointURL string // Base URL with /v1/tree/head
 }
 
@@ -69,12 +69,12 @@ type MerkleHeadProvider interface {
 
 // Publisher periodically anchors remote tree heads to the local log.
 type Publisher struct {
-	cfg    PublisherConfig
+	cfg PublisherConfig
 	merkle MerkleHeadProvider
 	// submitFn submits a signed entry to the local admission pipeline.
 	submitFn func(entry *envelope.Entry) error
-	client   *http.Client
-	logger   *slog.Logger
+	client *http.Client
+	logger *slog.Logger
 }
 
 // NewPublisher creates an anchor publisher. LogDID in cfg MUST be non-empty —
@@ -166,7 +166,7 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 	// Build commentary entry (Decision 44: standard entry, no special handling).
 	// Destination = LogDID (the anchor lands in THIS ledger's log).
 	//
-	// NewUnsignedEntry per the v7.75 envelope API split:
+	// NewUnsignedEntry per the envelope API split:
 	// fully-signed callers use envelope.NewEntry(header, payload, sigs);
 	// build-then-sign callers use envelope.NewUnsignedEntry. The
 	// signing step happens in submitFn / SubmitViaHTTP downstream.

@@ -63,18 +63,18 @@ import (
 // validate signatures use the SDK's cosign verifier on the
 // Signatures slice.
 type CosignedTreeHead struct {
-	TreeSize   uint64
-	RootHash   [32]byte
-	HashAlgo   uint16
+	TreeSize uint64
+	RootHash [32]byte
+	HashAlgo uint16
 	Signatures []TreeHeadSignature
-	CreatedAt  time.Time
+	CreatedAt time.Time
 }
 
 // TreeHeadSignature is a single attestation: "signer vouches for
 // this root."
 type TreeHeadSignature struct {
-	Signer    string
-	SigAlgo   uint16
+	Signer string
+	SigAlgo uint16
 	Signature []byte
 	CreatedAt time.Time
 }
@@ -86,14 +86,14 @@ type TreeHeadSignature struct {
 // CommitmentRow represents a derivation commitment in the database.
 // Returned by DerivationCommitmentFetcher.QueryBySequence.
 type CommitmentRow struct {
-	ID            int64
+	ID int64
 	RangeStartSeq uint64
-	RangeEndSeq   uint64
-	PriorSMTRoot  [32]byte
-	PostSMTRoot   [32]byte
+	RangeEndSeq uint64
+	PriorSMTRoot [32]byte
+	PostSMTRoot [32]byte
 	MutationsJSON []byte
 	CommentarySeq *uint64 // nullable — set when commentary entry submitted
-	CreatedAt     time.Time
+	CreatedAt time.Time
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -105,9 +105,9 @@ type CommitmentRow struct {
 // escrow-override handler doesn't need to import gossipnet (which
 // transitively imports sequencer + pgx via PT-4).
 type EscrowOverrideResult struct {
-	EventID    [32]byte
+	EventID [32]byte
 	Signatures int
-	Lamport    uint64
+	Lamport uint64
 }
 
 // ─────────────────────────────────────────────────────────────────────

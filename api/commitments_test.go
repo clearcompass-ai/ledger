@@ -55,7 +55,7 @@ import (
 // without bringing up Badger.
 type stubFetcher struct {
 	rows []*types.EntryWithMetadata
-	err  error
+	err error
 }
 
 func (s *stubFetcher) FindCommitmentEntries(
@@ -237,7 +237,7 @@ func TestCommitmentLookupHandler_SingleRow_Returns200JSON(t *testing.T) {
 }
 
 func TestCommitmentLookupHandler_AllowsBothCommitmentSchemas(t *testing.T) {
-	// Both v7.75 commitment schemas must be accepted on the path.
+	// Both commitment schemas must be accepted on the path.
 	for _, schema := range []string{
 		artifact.PREGrantCommitmentSchemaID,
 		escrow.EscrowSplitCommitmentSchemaID,
@@ -366,8 +366,8 @@ func TestCommitmentLookup_EndToEnd_EquivocationCase(t *testing.T) {
 
 	splitID := [32]byte{0xAA, 0xBB}
 	for _, row := range []struct {
-		seq    uint64
-		bytes  []byte
+		seq uint64
+		bytes []byte
 		micros int64
 	}{
 		{99, []byte("entry-99"), 99000},

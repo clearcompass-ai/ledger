@@ -13,7 +13,7 @@ zero-pgx read paths.
      ┌──────────────────────────────────┐
      │  api/  (HTTP handlers)           │   Auth → SizeLimit → handler
      │  go list -deps ./api/ | grep pgx │
-     │     == 0   ✓                     │
+     │     == 0 ✓                     │
      └────────────┬─────────────────────┘
                   │
                   ▼  wal.Submit (durable on local NVMe)
@@ -31,17 +31,17 @@ zero-pgx read paths.
        ▼            ▼
    ┌─────────┐  ┌─────────────────────────┐
    │ tessera │  │ gossipstore/            │
-   │ tiles   │  │  0x0A splitid index     │  (detection trigger)
-   │ +       │  │  0x0B equiv projection  │  (verified findings)
-   │ Postgres│  │  0x0C entry lookup      │  (Pure CQRS read path)
-   └─────────┘  │  0x0D replay HWM        │  (boot back-population)
+   │ tiles │  │  0x0A splitid index │  (detection trigger)
+   │ +       │  │  0x0B equiv projection │  (verified findings)
+   │ Postgres│  │  0x0C entry lookup │  (Pure CQRS read path)
+   └─────────┘  │  0x0D replay HWM │  (boot back-population)
                 └─────────────────────────┘
                           │
                           ▼  EquivocationScanner subscribes 0x0A
                 ┌─────────────────────────┐
                 │ gossipnet/              │   pull-based gossip
-                │  /v1/gossip/since       │   /v1/gossip/by-binding
-                │  /v1/gossip/by-kind     │   /v1/gossip/event/{id}
+                │  /v1/gossip/since │   /v1/gossip/by-binding
+                │  /v1/gossip/by-kind │   /v1/gossip/event/{id}
                 └─────────────────────────┘
 ```
 
@@ -82,13 +82,13 @@ $ go vet ./...
 (clean)
 
 $ go test -count=1 -short ./...
-ok  ...admission       ok  ...api            ok  ...api/middleware
-ok  ...apitypes        ok  ...anchor         ok  ...builder
-ok  ...bytestore       ok  ...cmd/ledger   ok  ...cmd/submit-stamp
-ok  ...gossipnet       ok  ...gossipstore    ok  ...integration
-ok  ...integrity       ok  ...lifecycle      ok  ...sequencer
-ok  ...shipper         ok  ...store          ok  ...tessera
-ok  ...tests           ok  ...wal
+ok ...admission ok ...api ok ...api/middleware
+ok ...apitypes ok ...anchor ok ...builder
+ok ...bytestore ok ...cmd/ledger ok ...cmd/submit-stamp
+ok ...gossipnet ok ...gossipstore ok ...integration
+ok ...integrity ok ...lifecycle ok ...sequencer
+ok ...shipper ok ...store ok ...tessera
+ok ...tests ok ...wal
 ```
 
 Read-side handlers consume the SDK's `types.CommitmentFetcher`
@@ -111,7 +111,7 @@ go build ./cmd/ledger
 # Required env vars (cmd/ledger/main.go: loadConfig)
 export LEDGER_DATABASE_URL="postgres://..."
 export LEDGER_LOG_DID="did:web:ledger.example"
-export LEDGER_BYTE_STORE_BACKEND=s3       # or gcs
+export LEDGER_BYTE_STORE_BACKEND=s3 # or gcs
 export LEDGER_BYTE_STORE_S3_BUCKET=...
 
 # Run

@@ -84,9 +84,9 @@ type AppenderBackend interface {
 // TesseraAdapter implements the ledger's MerkleAppender interface
 // over an AppenderBackend and uses tiles for proof computation.
 type TesseraAdapter struct {
-	backend    AppenderBackend
+	backend AppenderBackend
 	tileReader *TileReader
-	logger     *slog.Logger
+	logger *slog.Logger
 }
 
 // NewTesseraAdapter creates an adapter over the supplied backend.

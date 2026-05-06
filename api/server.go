@@ -17,38 +17,38 @@ KEY ARCHITECTURAL DECISIONS:
     nil HandlerFunc.
 
 ROUTE TABLE (write side, with middleware):
-  - POST /v1/entries          — single-entry SCT/MMD admission.
-  - POST /v1/entries/batch    — async batch admission; returns SCT
+  - POST /v1/entries — single-entry SCT/MMD admission.
+  - POST /v1/entries/batch — async batch admission; returns SCT
     array. Bounded at
     AbsoluteMaxBatchPayloadBytes.
 
 ROUTE TABLE (read side, no middleware):
-  - GET  /v1/entries/{seq}            — JSON metadata
-  - GET  /v1/entries/{seq}/raw        — wire bytes (200 inline /
+  - GET /v1/entries/{seq}            — JSON metadata
+  - GET /v1/entries/{seq}/raw — wire bytes (200 inline /
     302 redirect to bytestore)
-  - GET  /v1/entries/batch?...        — JSON list of metadata
-  - GET  /v1/entries-hash/{hashHex}   — hash-keyed lookup; surfaces
+  - GET /v1/entries/batch?...        — JSON list of metadata
+  - GET /v1/entries-hash/{hashHex}   — hash-keyed lookup; surfaces
     the SCT inflight state
-  - GET  /v1/admission/mmd            — ledger's promised MMD
-  - GET  /v1/admission/difficulty     — Mode B PoW difficulty
-  - GET  /v1/tree/head[?size=N]       — cosigned tree head
-  - GET  /v1/tree/inclusion/{seq}     — Merkle inclusion proof
-  - GET  /v1/tree/consistency/{old}/{new}
-  - GET  /v1/smt/proof/{key}          — SMT membership/non-mem proof
-  - POST /v1/smt/batch_proof          — batch SMT proof
-  - GET  /v1/smt/root                 — current SMT root
-  - GET  /v1/smt/leaf/{key}           — SMT leaf data
-  - POST /v1/smt/leaves               — batch leaf data
-  - GET  /v1/query/cosignature_of/{pos}
-  - GET  /v1/query/target_root/{pos}
-  - GET  /v1/query/signer_did/{did}
-  - GET  /v1/query/schema_ref/{pos}
-  - GET  /v1/query/scan?start&count
-  - GET  /v1/commitments?seq=N        — derivation commitment lookup
-  - GET  /v1/commitments/by-split-id/{schema_id}/{hex}
-    — v7.75 cryptographic commitment
+  - GET /v1/admission/mmd — ledger's promised MMD
+  - GET /v1/admission/difficulty — Mode B PoW difficulty
+  - GET /v1/tree/head[?size=N]       — cosigned tree head
+  - GET /v1/tree/inclusion/{seq}     — Merkle inclusion proof
+  - GET /v1/tree/consistency/{old}/{new}
+  - GET /v1/smt/proof/{key}          — SMT membership/non-mem proof
+  - POST /v1/smt/batch_proof — batch SMT proof
+  - GET /v1/smt/root — current SMT root
+  - GET /v1/smt/leaf/{key}           — SMT leaf data
+  - POST /v1/smt/leaves — batch leaf data
+  - GET /v1/query/cosignature_of/{pos}
+  - GET /v1/query/target_root/{pos}
+  - GET /v1/query/signer_did/{did}
+  - GET /v1/query/schema_ref/{pos}
+  - GET /v1/query/scan?start&count
+  - GET /v1/commitments?seq=N — derivation commitment lookup
+  - GET /v1/commitments/by-split-id/{schema_id}/{hex}
+    —  cryptographic commitment
     lookup (Pure CQRS — Badger 0x0C)
-  - POST /v1/cosign                   — witness cosign endpoint
+  - POST /v1/cosign — witness cosign endpoint
     (only when WitnessCosign set)
 */
 package api
@@ -71,11 +71,11 @@ import (
 
 // ServerConfig configures the HTTP server.
 type ServerConfig struct {
-	Addr            string
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
+	Addr string
+	ReadTimeout time.Duration
+	WriteTimeout time.Duration
 	ShutdownTimeout time.Duration
-	MaxEntrySize    int64
+	MaxEntrySize int64
 }
 
 // DefaultServerConfig returns production defaults.
@@ -96,8 +96,8 @@ func DefaultServerConfig() ServerConfig {
 // Server is the ledger HTTP server.
 type Server struct {
 	httpServer *http.Server
-	ready      atomic.Bool
-	logger     *slog.Logger
+	ready atomic.Bool
+	logger *slog.Logger
 }
 
 // Handlers holds all registered handler functions. Nil fields
@@ -105,29 +105,29 @@ type Server struct {
 // (cmd/ledger-reader) and trimmed-down test harnesses.
 type Handlers struct {
 	// ── Admission (write) ───────────────────────────────────────────
-	Submission      http.HandlerFunc // POST /v1/entries        — single-entry SCT
-	BatchSubmission http.HandlerFunc // POST /v1/entries/batch  — async batch SCT array
+	Submission http.HandlerFunc // POST /v1/entries — single-entry SCT
+	BatchSubmission http.HandlerFunc // POST /v1/entries/batch — async batch SCT array
 
 	// ── Tree heads + Merkle proofs ──────────────────────────────────
-	TreeHead        http.HandlerFunc
-	TreeInclusion   http.HandlerFunc
+	TreeHead http.HandlerFunc
+	TreeInclusion http.HandlerFunc
 	TreeConsistency http.HandlerFunc
 
 	// ── SMT proofs ──────────────────────────────────────────────────
-	SMTProof      http.HandlerFunc
+	SMTProof http.HandlerFunc
 	SMTBatchProof http.HandlerFunc
-	SMTRoot       http.HandlerFunc
+	SMTRoot http.HandlerFunc
 
 	// ── Index queries ───────────────────────────────────────────────
 	CosignatureOf http.HandlerFunc
-	TargetRoot    http.HandlerFunc
-	SignerDID     http.HandlerFunc
-	SchemaRef     http.HandlerFunc
-	Scan          http.HandlerFunc
+	TargetRoot http.HandlerFunc
+	SignerDID http.HandlerFunc
+	SchemaRef http.HandlerFunc
+	Scan http.HandlerFunc
 
 	// ── Admission info ──────────────────────────────────────────────
 	Difficulty http.HandlerFunc // GET /v1/admission/difficulty — Mode B PoW difficulty
-	MMD        http.HandlerFunc // GET /v1/admission/mmd        — Maximum Merge Delay
+	MMD http.HandlerFunc // GET /v1/admission/mmd — Maximum Merge Delay
 
 	// ── Witness cosign (optional) ───────────────────────────────────
 	WitnessCosign http.Handler // nil unless serving as a witness
@@ -162,12 +162,12 @@ type Handlers struct {
 
 	// ── Read endpoints (entry fetch + SMT leaf + commitments) ───────
 	EntryBySequence http.HandlerFunc // GET /v1/entries/{sequence}      (JSON metadata)
-	EntryBatch      http.HandlerFunc // GET /v1/entries/batch           (JSON list)
-	EntryByHash     http.HandlerFunc // GET /v1/entries-hash/{hashHex}  (WAL-aware metadata; surfaces SCT pending state)
-	EntryRaw        http.HandlerFunc // GET /v1/entries/{sequence}/raw  (wire bytes; 200 inline OR 302 redirect)
+	EntryBatch http.HandlerFunc // GET /v1/entries/batch (JSON list)
+	EntryByHash http.HandlerFunc // GET /v1/entries-hash/{hashHex}  (WAL-aware metadata; surfaces SCT pending state)
+	EntryRaw http.HandlerFunc // GET /v1/entries/{sequence}/raw (wire bytes; 200 inline OR 302 redirect)
 
 	// SMT leaf data — blocks origin_evaluator.
-	SMTLeaf      http.HandlerFunc // GET /v1/smt/leaf/{key}
+	SMTLeaf http.HandlerFunc // GET /v1/smt/leaf/{key}
 	SMTLeafBatch http.HandlerFunc // POST /v1/smt/leaves
 
 	// Commitment query — blocks fraud_proofs.
@@ -175,7 +175,7 @@ type Handlers struct {
 
 	// CommitmentLookup serves
 	//   GET /v1/commitments/by-split-id/{schema_id}/{hex}
-	// the v7.75 cryptographic-commitment lookup endpoint backed
+	// the cryptographic-commitment lookup endpoint backed
 	// by the Pure CQRS read-side projection (Badger 0x0C). nil
 	// disables the route; the server returns 404 for the path.
 	CommitmentLookup http.HandlerFunc
@@ -291,8 +291,8 @@ func NewServer(
 	}
 
 	// ── Gossip endpoints (optional) ────────────────────────────────────
-	// POST /v1/gossip      — peer publish (signed events)
-	// GET  /v1/gossip/sth/latest, /v1/gossip/since,
+	// POST /v1/gossip — peer publish (signed events)
+	// GET /v1/gossip/sth/latest, /v1/gossip/since,
 	//      /v1/gossip/by-kind, /v1/gossip/event/{eventID},
 	//      /v1/gossip/by-binding/{hash}
 	//                       — audit pull (CDN-cacheable)

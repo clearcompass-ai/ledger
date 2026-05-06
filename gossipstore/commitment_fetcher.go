@@ -24,10 +24,10 @@ Compliance test:
 
 FindCommitmentEntries(schemaID, splitID) → []*EntryWithMetadata
 
-  - len = 0  → SDK consumer treats as "no commitment on log"
+  - len = 0 → SDK consumer treats as "no commitment on log"
     (the api handler maps this to 404).
-  - len = 1  → normal admission case.
-  - len ≥ 2  → cryptographic equivocation per Decision 4
+  - len = 1 → normal admission case.
+  - len ≥ 2 → cryptographic equivocation per Decision 4
     (admit both, surface as evidence). Returned in
     seq-ascending order so the SDK's
     CommitmentEquivocationError construction is

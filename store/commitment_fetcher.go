@@ -2,7 +2,7 @@
 FILE PATH: store/commitment_fetcher.go
 
 PostgresCommitmentFetcher — implements the SDK's
-types.CommitmentFetcher interface for v7.75 cryptographic commitment
+types.CommitmentFetcher interface for cryptographic commitment
 lookup. The SDK primitives FetchPREGrantCommitment and
 FetchEscrowSplitCommitment depend on this fetcher to resolve a
 SplitID to its on-log entries.
@@ -57,7 +57,7 @@ import (
 // LogPosition (uniquely one row), this one is keyed by SplitID
 // (potentially multiple rows under equivocation).
 type PostgresCommitmentFetcher struct {
-	db     *pgxpool.Pool
+	db *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
 }
@@ -126,7 +126,7 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	rows, err := f.db.Query(ctx, `
 		SELECT csi.sequence_number, ei.log_time, ei.canonical_hash
 		FROM commitment_split_id AS csi
-		JOIN entry_index           AS ei  USING (sequence_number)
+		JOIN entry_index AS ei USING (sequence_number)
 		WHERE csi.schema_id = $1 AND csi.split_id = $2
 		ORDER BY csi.sequence_number ASC`,
 		schemaID, splitID[:],
@@ -140,9 +140,9 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	defer rows.Close()
 
 	type rowMeta struct {
-		seq     uint64
+		seq uint64
 		logTime time.Time
-		hash    [32]byte
+		hash [32]byte
 	}
 	var rowMetas []rowMeta
 	for rows.Next() {

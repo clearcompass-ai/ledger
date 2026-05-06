@@ -167,13 +167,13 @@ func TestV1Handler_HappyPath_ReturnsValidSCT(t *testing.T) {
 // The full SLA-correctness assertion chain:
 //
 //	Claim equivalency:
-//	  1. SCT_A.SignerDID     == SCT_B.SignerDID
+//	  1. SCT_A.SignerDID == SCT_B.SignerDID
 //	  2. SCT_A.CanonicalHash == SCT_B.CanonicalHash
-//	  3. SCT_A.LogTime       == SCT_B.LogTime
+//	  3. SCT_A.LogTime == SCT_B.LogTime
 //	     (clamping the LogTime is what makes MMD honor the
 //	     original admission moment — a fresh LogTime on retry
 //	     would reset the MMD clock = SLA violation)
-//	  4. SCT_A.LogDID        == SCT_B.LogDID
+//	  4. SCT_A.LogDID == SCT_B.LogDID
 //
 //	Cryptographic validity (both bytes-distinct, both valid):
 //	  5. Verify(opPubKey, SCT_A) == nil

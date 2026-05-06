@@ -308,7 +308,7 @@ func TestFindCommitmentEntries_EmptySchemaID(t *testing.T) {
 
 // assertEntryShape pins the v6 EntryWithMetadata field set:
 // CanonicalBytes, LogTime, Position. Wire bytes ARE the canonical
-// bytes under v7.75 (signatures section embedded); callers that
+// bytes under (signatures section embedded); callers that
 // need the signature call envelope.Deserialize.
 func assertEntryShape(
 	t *testing.T,

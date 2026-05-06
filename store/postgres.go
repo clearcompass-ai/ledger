@@ -20,10 +20,10 @@ INVARIANTS:
 
 CHANGES:
   - v0.3.0-tessera: Added derivation_commitments table + index.
-  - v7.75 Wave 1 (C3): Added commitment_split_id table + index for
+  -  Wave 1 (C3): Added commitment_split_id table + index for
     cryptographic-commitment lookup; BTREE not UNIQUE per Decision 3
     (equivocation evidence preservation).
-  - v7.75 Wave 1 (S2): Equivocation evidence persisted via
+  -  Wave 1 (S2): Equivocation evidence persisted via
     commitment_equivocation_proofs Postgres table — DROPPED in
     v0.9.6. Entry-level equivocation now lives in the gossipstore
     BadgerDB projection 0x0B (gossipnet.EquivocationScanner
@@ -49,15 +49,15 @@ import (
 
 // Pool wraps pgxpool.Pool with ledger lifecycle.
 type Pool struct {
-	DB  *pgxpool.Pool
+	DB *pgxpool.Pool
 	cfg PoolConfig
 }
 
 // PoolConfig configures the Postgres connection.
 type PoolConfig struct {
-	DSN             string
-	MaxConns        int32
-	MinConns        int32
+	DSN string
+	MaxConns int32
+	MinConns int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
 }
@@ -92,7 +92,7 @@ func (p *Pool) Close() { p.DB.Close() }
 // Pools holds separate write and read connection pools.
 type Pools struct {
 	Write *pgxpool.Pool
-	Read  *pgxpool.Pool
+	Read *pgxpool.Pool
 }
 
 // InitPools creates write and read pools.
@@ -134,13 +134,13 @@ func (p *Pools) Close() {
 var schemaDDL = []string{
 	// ── Entry index (Postgres is an index, not byte storage) ──────────
 	`CREATE TABLE IF NOT EXISTS entry_index (
-		sequence_number  BIGINT       PRIMARY KEY,
-		canonical_hash   BYTEA        NOT NULL UNIQUE,
-		log_time         TIMESTAMPTZ  NOT NULL,
-		signer_did       TEXT         NOT NULL CHECK (signer_did <> ''),
-		target_root      BYTEA,
-		cosignature_of   BYTEA,
-		schema_ref       BYTEA
+		sequence_number BIGINT PRIMARY KEY,
+		canonical_hash BYTEA NOT NULL UNIQUE,
+		log_time TIMESTAMPTZ NOT NULL,
+		signer_did TEXT NOT NULL CHECK (signer_did <> ''),
+		target_root BYTEA,
+		cosignature_of BYTEA,
+		schema_ref BYTEA
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_signer_did ON entry_index (signer_did)`,
 	`CREATE INDEX IF NOT EXISTS idx_target_root ON entry_index (target_root) WHERE target_root IS NOT NULL`,
@@ -149,51 +149,51 @@ var schemaDDL = []string{
 
 	// ── SMT state ────────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS smt_leaves (
-		leaf_key      BYTEA    PRIMARY KEY,
-		origin_tip    BYTEA    NOT NULL,
-		authority_tip BYTEA    NOT NULL,
-		updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		leaf_key BYTEA PRIMARY KEY,
+		origin_tip BYTEA NOT NULL,
+		authority_tip BYTEA NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 	`CREATE TABLE IF NOT EXISTS smt_nodes (
-		path_key   BYTEA    PRIMARY KEY,
-		hash       BYTEA    NOT NULL,
-		depth      INT      NOT NULL,
+		path_key BYTEA PRIMARY KEY,
+		hash BYTEA NOT NULL,
+		depth INT NOT NULL,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Credits ──────────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS credits (
-		exchange_did    TEXT    PRIMARY KEY,
-		balance         BIGINT NOT NULL DEFAULT 0,
+		exchange_did TEXT PRIMARY KEY,
+		balance BIGINT NOT NULL DEFAULT 0,
 		total_purchased BIGINT NOT NULL DEFAULT 0,
-		total_consumed  BIGINT NOT NULL DEFAULT 0,
-		updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		total_consumed BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Tree heads (normalized: one row per attestation) ─────────────
 	`CREATE TABLE IF NOT EXISTS tree_heads (
-		tree_size    BIGINT      NOT NULL,
-		root_hash    BYTEA       NOT NULL,
-		hash_algo    SMALLINT    NOT NULL DEFAULT 1,
-		created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		tree_size BIGINT NOT NULL,
+		root_hash BYTEA NOT NULL,
+		hash_algo SMALLINT NOT NULL DEFAULT 1,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (tree_size, hash_algo)
 	)`,
 	`CREATE TABLE IF NOT EXISTS tree_head_sigs (
-		tree_size    BIGINT      NOT NULL,
-		hash_algo    SMALLINT    NOT NULL DEFAULT 1,
-		signer       TEXT        NOT NULL,
-		sig_algo     SMALLINT    NOT NULL,
-		signature    BYTEA       NOT NULL,
-		created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		tree_size BIGINT NOT NULL,
+		hash_algo SMALLINT NOT NULL DEFAULT 1,
+		signer TEXT NOT NULL,
+		sig_algo SMALLINT NOT NULL,
+		signature BYTEA NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (tree_size, hash_algo, signer, sig_algo),
 		FOREIGN KEY (tree_size, hash_algo) REFERENCES tree_heads (tree_size, hash_algo)
 	)`,
 
 	// ── Delta buffer ─────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS delta_window_buffers (
-		leaf_key    BYTEA   PRIMARY KEY,
-		tip_history BYTEA   NOT NULL,
-		updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		leaf_key BYTEA PRIMARY KEY,
+		tip_history BYTEA NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Builder cursor (CT-native log-tailing follower) ──────────────
@@ -212,10 +212,10 @@ var schemaDDL = []string{
 	// key fixed at 1. INSERT...ON CONFLICT(id) DO NOTHING keeps it
 	// idempotent on bootstrap.
 	`CREATE TABLE IF NOT EXISTS builder_cursor (
-		id                      SMALLINT    PRIMARY KEY DEFAULT 1
+		id SMALLINT PRIMARY KEY DEFAULT 1
 		                                    CONSTRAINT builder_cursor_singleton CHECK (id = 1),
-		last_processed_sequence BIGINT      NOT NULL DEFAULT 0,
-		updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		last_processed_sequence BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 	// Seed the singleton row so SELECT FOR UPDATE always finds
 	// something to lock. ON CONFLICT keeps reruns of RunMigrations
@@ -226,28 +226,28 @@ var schemaDDL = []string{
 
 	// ── Witness sets ─────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS witness_sets (
-		version     SERIAL   PRIMARY KEY,
-		set_hash    BYTEA    NOT NULL,
-		keys_json   BYTEA    NOT NULL,
-		scheme_tag  SMALLINT NOT NULL,
-		created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		version SERIAL PRIMARY KEY,
+		set_hash BYTEA NOT NULL,
+		keys_json BYTEA NOT NULL,
+		scheme_tag SMALLINT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Equivocation proofs (tree-head fork; v0.3.0-tessera) ────────
 	`CREATE TABLE IF NOT EXISTS equivocation_proofs (
-		id         SERIAL      PRIMARY KEY,
-		head_a     BYTEA       NOT NULL,
-		head_b     BYTEA       NOT NULL,
-		tree_size  BIGINT      NOT NULL,
+		id SERIAL PRIMARY KEY,
+		head_a BYTEA NOT NULL,
+		head_b BYTEA NOT NULL,
+		tree_size BIGINT NOT NULL,
 		detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Sessions ─────────────────────────────────────────────────────
 	`CREATE TABLE IF NOT EXISTS sessions (
-		token       TEXT        PRIMARY KEY,
-		exchange_did TEXT       NOT NULL,
-		expires_at  TIMESTAMPTZ NOT NULL,
-		created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		token TEXT PRIMARY KEY,
+		exchange_did TEXT NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 
 	// ── Derivation commitments (fraud proof lookup index) ────────────
@@ -256,19 +256,19 @@ var schemaDDL = []string{
 	// See store/derivation_commitments.go for full crash recovery
 	// semantics.
 	`CREATE TABLE IF NOT EXISTS derivation_commitments (
-		id              SERIAL      PRIMARY KEY,
-		range_start_seq BIGINT      NOT NULL,
-		range_end_seq   BIGINT      NOT NULL,
-		prior_smt_root  BYTEA       NOT NULL,
-		post_smt_root   BYTEA       NOT NULL,
-		mutations_json  BYTEA       NOT NULL,
-		commentary_seq  BIGINT,
-		created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		id SERIAL PRIMARY KEY,
+		range_start_seq BIGINT NOT NULL,
+		range_end_seq BIGINT NOT NULL,
+		prior_smt_root BYTEA NOT NULL,
+		post_smt_root BYTEA NOT NULL,
+		mutations_json BYTEA NOT NULL,
+		commentary_seq BIGINT,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_commitment_range
 		ON derivation_commitments (range_start_seq, range_end_seq)`,
 
-	// ── Commitment SplitID index (v7.75 — Wave 1 C3) ─────────────────
+	// ── Commitment SplitID index ( — Wave 1 C3) ─────────────────
 	// Maps the 32-byte SplitID embedded in pre-grant-commitment-v1 and
 	// escrow-split-commitment-v1 entry payloads to the entry's sequence
 	// number, enabling the SDK lookup primitives FetchPREGrantCommitment
@@ -289,8 +289,8 @@ var schemaDDL = []string{
 	// uniqueness key.
 	`CREATE TABLE IF NOT EXISTS commitment_split_id (
 		sequence_number BIGINT NOT NULL,
-		schema_id       TEXT   NOT NULL,
-		split_id        BYTEA  NOT NULL,
+		schema_id TEXT NOT NULL,
+		split_id BYTEA NOT NULL,
 		PRIMARY KEY (sequence_number),
 		FOREIGN KEY (sequence_number) REFERENCES entry_index (sequence_number)
 	)`,

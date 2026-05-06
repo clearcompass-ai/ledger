@@ -26,8 +26,8 @@ import (
 
 type fakeSessions struct {
 	exchangeDID string
-	expiresAt   time.Time
-	err         error
+	expiresAt time.Time
+	err error
 }
 
 func (f *fakeSessions) LookupSession(_ context.Context, _ string) (string, time.Time, error) {

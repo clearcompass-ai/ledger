@@ -12,7 +12,7 @@ $ go vet ./...
 (clean)
 
 $ go test -count=1 -short ./...
-ok    20 packages
+ok 20 packages
 ```
 
 ## Per-package SDK surface
@@ -85,9 +85,9 @@ Integration tests in `integration/` and `tests/` use
 Credential resolution (matches `bytestore.NewGCS`):
 
 ```
-1. GOOGLE_APPLICATION_CREDENTIALS  → service-account key file
+1. GOOGLE_APPLICATION_CREDENTIALS → service-account key file
 2. gcloud application-default login → workstation default
-3. Workload Identity                → GKE / Cloud Run / GCE metadata
+3. Workload Identity → GKE / Cloud Run / GCE metadata
 ```
 
 Required IAM on the test bucket:
@@ -97,7 +97,7 @@ storage.objects.create
 storage.objects.get
 storage.objects.list
 storage.objects.delete
-iam.serviceAccounts.signBlob       # for V4 PresignGet
+iam.serviceAccounts.signBlob # for V4 PresignGet
 ```
 
 The unit-level GCS tests in `bytestore/gcs_test.go` retain their

@@ -48,14 +48,14 @@ DESIGN: WHY PANIC ON DIVERGENCE?
 
 PACKAGE LAYOUT:
 
-	integrity.go          types + sentinels + minimal interfaces from
+	integrity.go types + sentinels + minimal interfaces from
 	                      the WAL surface (decoupled from wal/ package
 	                      proper)
-	verifier.go           Verifier interface + tile-reader-backed impl
-	reasserter.go         Reasserter interface + appender-backed impl
-	tessera_adapter.go    one struct that satisfies both, wrapping
+	verifier.go Verifier interface + tile-reader-backed impl
+	reasserter.go Reasserter interface + appender-backed impl
+	tessera_adapter.go one struct that satisfies both, wrapping
 	                      an embedded Tessera appender + tile reader
-	detector.go           Reconcile (boot) + Loop (periodic sample-verify)
+	detector.go Reconcile (boot) + Loop (periodic sample-verify)
 */
 package integrity
 

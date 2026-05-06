@@ -64,13 +64,13 @@ import (
 // -------------------------------------------------------------------------------------------------
 
 type testOperator struct {
-	BaseURL     string
-	Pool        *pgxpool.Pool
-	Cursor      *store.SequenceCursor
+	BaseURL string
+	Pool *pgxpool.Pool
+	Cursor *store.SequenceCursor
 	CreditStore *store.CreditStore
-	EntryStore  *store.EntryStore
-	EntryBytes  *opbytestore.Memory
-	cancel      context.CancelFunc
+	EntryStore *store.EntryStore
+	EntryBytes *opbytestore.Memory
+	cancel context.CancelFunc
 }
 
 func startTestOperator(t *testing.T) *testOperator {
@@ -372,7 +372,7 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 
 type testServer struct {
 	URL string
-	op  *testOperator // kept for lifetime ownership; teardown is via t.Cleanup.
+	op *testOperator // kept for lifetime ownership; teardown is via t.Cleanup.
 }
 
 // Close is a no-op. startTestOperator registers a t.Cleanup that

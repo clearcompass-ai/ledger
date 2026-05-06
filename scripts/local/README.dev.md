@@ -73,8 +73,8 @@ message — no half-built containers.
 After ~15 seconds:
 
 ```bash
-$ curl -fsS http://localhost:8080/healthz   # → ok
-$ curl -fsS http://localhost:8081/healthz   # → ok
+$ curl -fsS http://localhost:8080/healthz # → ok
+$ curl -fsS http://localhost:8081/healthz # → ok
 ```
 
 Inspect your real GCS buckets with `gcloud` or `gsutil`:
@@ -108,8 +108,8 @@ wiped); orphaned objects in GCS get rewritten by sequence number.
 ### Logs and status
 
 ```bash
-make dev-status     # `docker compose ps`
-make dev-logs       # tail both ledgers (Ctrl-C to stop)
+make dev-status # `docker compose ps`
+make dev-logs # tail both ledgers (Ctrl-C to stop)
 ```
 
 ### Why real GCS for dev (not fake-gcs-server)
@@ -147,9 +147,9 @@ without GCS credentials. Uses `fake-gcs-server`
 make integration-up
 
 # Once both ledgers are healthy:
-curl -fsS http://localhost:8080/healthz   # → ok
-curl -fsS http://localhost:8081/healthz   # → ok
-curl -fsS http://localhost:4443/storage/v1/b   # GCS-shape JSON
+curl -fsS http://localhost:8080/healthz # → ok
+curl -fsS http://localhost:8081/healthz # → ok
+curl -fsS http://localhost:4443/storage/v1/b # GCS-shape JSON
 ```
 
 No `gcloud` setup required. No real cloud cost. No flaky network.
@@ -157,7 +157,7 @@ No `gcloud` setup required. No real cloud cost. No flaky network.
 ### Tear down
 
 ```bash
-make integration-down       # also wipes fake-gcs-server bucket data
+make integration-down # also wipes fake-gcs-server bucket data
 ```
 
 ### Limits

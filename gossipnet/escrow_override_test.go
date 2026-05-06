@@ -124,7 +124,7 @@ func TestEscrowOverrideService_HappyPath(t *testing.T) {
 func TestEscrowOverrideService_RejectsConfig(t *testing.T) {
 	cases := []struct {
 		name string
-		cfg  EscrowOverrideServiceConfig
+		cfg EscrowOverrideServiceConfig
 		want string
 	}{
 		{

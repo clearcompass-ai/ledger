@@ -98,15 +98,15 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	var (
-		databaseURL       = flag.String("database-url", os.Getenv("LEDGER_DATABASE_URL"), "Postgres connection string")
-		logDID            = flag.String("log-did", os.Getenv("LEDGER_LOG_DID"), "log DID (must match production)")
+		databaseURL = flag.String("database-url", os.Getenv("LEDGER_DATABASE_URL"), "Postgres connection string")
+		logDID = flag.String("log-did", os.Getenv("LEDGER_LOG_DID"), "log DID (must match production)")
 		tesseraStorageDir = flag.String("tessera-storage-dir", os.Getenv("LEDGER_TESSERA_STORAGE_DIR"), "POSIX directory for the rebuilt Tessera (MUST be empty / fresh)")
-		tesseraOrigin     = flag.String("tessera-origin", os.Getenv("LEDGER_TESSERA_ORIGIN"), "tlog-tiles origin string for the rebuilt log (defaults to log-did)")
-		batchSize         = flag.Int("batch-size", 1000, "builder batch size")
-		pollInterval      = flag.Duration("poll-interval", 10*time.Millisecond, "queue poll interval")
+		tesseraOrigin = flag.String("tessera-origin", os.Getenv("LEDGER_TESSERA_ORIGIN"), "tlog-tiles origin string for the rebuilt log (defaults to log-did)")
+		batchSize = flag.Int("batch-size", 1000, "builder batch size")
+		pollInterval = flag.Duration("poll-interval", 10*time.Millisecond, "queue poll interval")
 		idleShutdownAfter = flag.Duration("idle-shutdown-after", 30*time.Second, "exit cleanly after this much idle time")
-		nodeCacheSize     = flag.Int("node-cache-size", 100_000, "SMT node cache max size")
-		deltaWindow       = flag.Int("delta-window", 10, "delta buffer window size (match production)")
+		nodeCacheSize = flag.Int("node-cache-size", 100_000, "SMT node cache max size")
+		deltaWindow = flag.Int("delta-window", 10, "delta buffer window size (match production)")
 	)
 	flag.Parse()
 

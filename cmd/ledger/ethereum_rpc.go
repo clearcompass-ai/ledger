@@ -13,10 +13,10 @@ DESCRIPTION:
 
 KEY ARCHITECTURAL DECISIONS:
   - Strict three-tier env-var contract:
-    LEDGER_ETH_RPC_ENABLED        (true/false; default false)
-    LEDGER_ETH_RPC_ENDPOINT       (https URL; required when enabled)
-    LEDGER_ETH_RPC_TIMEOUT_MS     (int ms; default 5000)
-    LEDGER_ETH_RPC_ALLOW_HTTP     (true/false; default false)
+    LEDGER_ETH_RPC_ENABLED (true/false; default false)
+    LEDGER_ETH_RPC_ENDPOINT (https URL; required when enabled)
+    LEDGER_ETH_RPC_TIMEOUT_MS (int ms; default 5000)
+    LEDGER_ETH_RPC_ALLOW_HTTP (true/false; default false)
     "enabled" is the master switch — flipping it on without
     LEDGER_ETH_RPC_ENDPOINT is a startup error, not a silent
     degrade-to-disabled.
@@ -33,9 +33,9 @@ KEY ARCHITECTURAL DECISIONS:
 
 OVERVIEW:
 
-	EthereumRPCConfig          — the parsed env-var config
-	LoadEthereumRPCConfig      — populate from environment
-	BuildEthereumRPCClient     — construct *HTTPEthereumRPC; returns
+	EthereumRPCConfig — the parsed env-var config
+	LoadEthereumRPCConfig — populate from environment
+	BuildEthereumRPCClient — construct *HTTPEthereumRPC; returns
 	                             (nil, nil) when disabled, (rpc, nil)
 	                             on success, (nil, err) on misconfig
 

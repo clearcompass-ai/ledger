@@ -86,7 +86,7 @@ func TestMemory_RoundTrip_PreservesBytes(t *testing.T) {
 				t.Fatalf("ReadEntry: %v", err)
 			}
 			if !bytes.Equal(got, tc.wire) {
-				t.Fatalf("round-trip mismatch:\n  got=%x\n want=%x", got, tc.wire)
+				t.Fatalf("round-trip mismatch:\n got=%x\n want=%x", got, tc.wire)
 			}
 			if sha256.Sum256(got) != h {
 				t.Fatal("hash differs after round-trip")

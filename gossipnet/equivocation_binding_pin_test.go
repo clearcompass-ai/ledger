@@ -32,9 +32,9 @@ import (
 // migration.
 func TestEquivocationBinding_LedgerMatchesSDK(t *testing.T) {
 	cases := []struct {
-		name     string
+		name string
 		schemaID string
-		splitID  [32]byte
+		splitID [32]byte
 	}{
 		{"empty-split", "schema-x", [32]byte{}},
 		{"common", "attesta.network/schema/pre-grant-commitment/v1",

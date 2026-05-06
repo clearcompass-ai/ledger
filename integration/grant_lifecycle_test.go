@@ -1,7 +1,7 @@
 /*
 FILE PATH: integration/grant_lifecycle_test.go
 
-End-to-end happy-path test for the v7.75 cryptographic-commitment
+End-to-end happy-path test for the cryptographic-commitment
 lifecycle per Wave 1 v3 §CI3.
 
 Flow under test:
@@ -269,7 +269,7 @@ func seedCommitmentEntry(
 // orthogonal and tested in tessera_integration_test.go.
 // stubEntryReader satisfies bytestore.Reader for the integration
 // tests' lookup-endpoint round-trip fixtures. Wire bytes ARE the
-// canonical bytes under v7.75 (signatures section embedded inside
+// canonical bytes under (signatures section embedded inside
 // the canonical form), so the stub stores a single blob per sequence.
 // The hash arg is ignored — these tests don't exercise the
 // hash-suffix layout.

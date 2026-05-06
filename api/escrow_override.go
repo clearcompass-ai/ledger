@@ -19,10 +19,10 @@ KindEscrowOverrideAuth gossip event.
 
 # RESPONSE SHAPES
 
-	200 OK   — the override was authorized; body carries the gossip
+	200 OK — the override was authorized; body carries the gossip
 	           event ID + the K signatures' aggregate count.
-	400      — malformed request (bad JSON / non-hex / wrong length).
-	502      — K-of-N collection or gossip publish failed; details
+	400 — malformed request (bad JSON / non-hex / wrong length).
+	502 — K-of-N collection or gossip publish failed; details
 	           in the body. The HTTP layer treats this as a
 	           retriable upstream failure.
 
@@ -57,16 +57,16 @@ import (
 
 // EscrowOverrideRequest is the JSON request body shape.
 type EscrowOverrideRequest struct {
-	EscrowID     string `json:"escrow_id"`
+	EscrowID string `json:"escrow_id"`
 	DecisionHash string `json:"decision_hash"`
-	Effective    uint64 `json:"effective"`
+	Effective uint64 `json:"effective"`
 }
 
 // EscrowOverrideResponse is the JSON success response shape.
 type EscrowOverrideResponse struct {
-	EventID    string `json:"event_id"`
-	Signatures int    `json:"signatures"`
-	Lamport    uint64 `json:"lamport"`
+	EventID string `json:"event_id"`
+	Signatures int `json:"signatures"`
+	Lamport uint64 `json:"lamport"`
 }
 
 // EscrowOverrideHandler returns an http.HandlerFunc backed by

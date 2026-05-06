@@ -71,11 +71,11 @@ func (s EntryState) String() string {
 // Meta is the in-memory representation of meta:<hash>. The disk
 // encoding is fixed-width binary (see metaEncodedSize).
 type Meta struct {
-	State         EntryState
-	Sequence      uint64    // valid iff State >= StateSequenced
-	Attempts      uint32    // shipper retry counter
-	LastErrTs     time.Time // wall-clock of last error; zero on success
-	LogTimeMicros int64     // unix-micros log_time assigned at first Submit (v0.9.6)
+	State EntryState
+	Sequence uint64 // valid iff State >= StateSequenced
+	Attempts uint32 // shipper retry counter
+	LastErrTs time.Time // wall-clock of last error; zero on success
+	LogTimeMicros int64 // unix-micros log_time assigned at first Submit (v0.9.6)
 }
 
 // metaEncodedSize is the on-disk size of a Meta record.

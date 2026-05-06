@@ -31,8 +31,8 @@ KEY ARCHITECTURAL DECISIONS:
   - Context-aware: every Postgres call checks ctx.Done() first.
 
 SDK ALIGNMENT:
-  - Pre-v7.75: builder.EntryFetcher was the read-side abstraction.
-  - v7.75: per types/fetcher.go's docblock, "Decision 52 consolidates
+  - Pre-: builder.EntryFetcher was the read-side abstraction.
+  - : per types/fetcher.go's docblock, "Decision 52 consolidates
     the definition here as part of the core/scope/ primitive layering.
     Previously it lived in builder/ and was duplicated in verifier/."
     The interface now lives at types.EntryFetcher with the same
@@ -50,7 +50,7 @@ OVERVIEW:
 	commit and append → re-append on restart is safe (Tessera deduplicates
 	by identity hash). The ledger's atomic state is in Postgres.
 
-CONSUMER VERIFICATION FLOW (v7.75 contract):
+CONSUMER VERIFICATION FLOW ( contract):
  1. Fetch wire bytes from ledger's byte store.
  2. envelope.Deserialize(canonical) → entry (signatures inline).
  3. envelope.EntryIdentity(entry) → 32-byte hash.
@@ -69,7 +69,7 @@ KEY DEPENDENCIES:
     SchemaResolver, DeltaWindowBuffer.
   - github.com/clearcompass-ai/attesta/core/envelope: EntryIdentity.
   - github.com/clearcompass-ai/attesta/types: EntryFetcher (read-side
-    abstraction, moved from builder/ in v7.75).
+    abstraction, moved from builder/ in ).
   - tessera/proof_adapter.go: TesseraAdapter implements MerkleAppender.
   - store/smt_state.go: PostgresLeafStore.SetTx for atomic leaf writes.
   - store/entries.go: PostgresEntryFetcher implements types.EntryFetcher.
@@ -102,10 +102,10 @@ import (
 
 // LoopConfig configures the builder loop.
 type LoopConfig struct {
-	LogDID       string
-	BatchSize    int
+	LogDID string
+	BatchSize int
 	PollInterval time.Duration
-	DeltaWindow  int
+	DeltaWindow int
 }
 
 // DefaultLoopConfig returns production defaults.
@@ -147,28 +147,28 @@ type WitnessCosigner interface {
 
 // BuilderLoop is the continuous builder goroutine.
 type BuilderLoop struct {
-	cfg       LoopConfig
-	db        *pgxpool.Pool
-	tree      *smt.Tree
+	cfg LoopConfig
+	db *pgxpool.Pool
+	tree *smt.Tree
 	leafStore *store.PostgresLeafStore
 	nodeCache *store.PostgresNodeCache
 	// reader is the CT-native log-tailing follower that reads new
 	// sequences from entry_index and advances builder_cursor in the
 	// builder's atomic commit. See builder/cursor_reader.go.
-	reader      BatchReader
-	fetcher     types.EntryFetcher
-	schema      sdkbuilder.SchemaResolver
-	buffer      *sdkbuilder.DeltaWindowBuffer
+	reader BatchReader
+	fetcher types.EntryFetcher
+	schema sdkbuilder.SchemaResolver
+	buffer *sdkbuilder.DeltaWindowBuffer
 	bufferStore *DeltaBufferStore
-	commitPub   *CommitmentPublisher
-	merkle      MerkleAppender
-	witness     WitnessCosigner
-	logger      *slog.Logger
+	commitPub *CommitmentPublisher
+	merkle MerkleAppender
+	witness WitnessCosigner
+	logger *slog.Logger
 
 	// Observability counters (atomic, lock-free).
-	totalBatches   atomic.Int64
-	totalEntries   atomic.Int64
-	totalErrors    atomic.Int64
+	totalBatches atomic.Int64
+	totalEntries atomic.Int64
+	totalErrors atomic.Int64
 	consecutiveErr atomic.Int32
 }
 

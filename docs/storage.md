@@ -18,11 +18,11 @@ the file that owns each.
 `wal/meta.go`:
 
 ```
-StateUnknown   = 0   // never written; reading 0 = decode bug
-StatePending   = 1   // bytes durable; tessera.Add not yet called
-StateSequenced = 2   // tessera assigned a sequence number
-StateShipped   = 3   // bytestore upload complete; WAL bytes safe to GC
-StateManual    = 4   // sequencer gave up after MaxAttempts
+StateUnknown = 0 // never written; reading 0 = decode bug
+StatePending = 1 // bytes durable; tessera.Add not yet called
+StateSequenced = 2 // tessera assigned a sequence number
+StateShipped = 3 // bytestore upload complete; WAL bytes safe to GC
+StateManual = 4 // sequencer gave up after MaxAttempts
 ```
 
 Transitions:
@@ -32,24 +32,24 @@ Transitions:
                │
                ▼
          ┌──────────┐  sequencer.Sequence(seq)  ┌─────────────┐
-         │ Pending  │──────────────────────────▶│  Sequenced  │
+         │ Pending │──────────────────────────▶│  Sequenced │
          └────┬─────┘                           └──────┬──────┘
               │                                        │
-              │ MaxAttempts exhausted        shipper.MarkShipped
+              │ MaxAttempts exhausted shipper.MarkShipped
               ▼                                        ▼
          ┌──────────┐                           ┌─────────────┐
-         │  Manual  │                           │   Shipped   │
+         │  Manual │                           │   Shipped │
          └──────────┘                           └─────────────┘
 ```
 
 `wal.Meta` (29 bytes on disk — `wal/meta.go::metaEncodedSize`):
 
 ```
-State          uint8     1 byte
-Sequence       uint64    8 bytes
-Attempts       uint32    4 bytes
-LastErrTs      int64     8 bytes (unix nanos)
-LogTimeMicros  int64     8 bytes (unix micros — pinned at first Submit)
+State uint8 1 byte
+Sequence uint64 8 bytes
+Attempts uint32 4 bytes
+LastErrTs int64 8 bytes (unix nanos)
+LogTimeMicros int64 8 bytes (unix micros — pinned at first Submit)
                          ─────
                          29 bytes total
 ```

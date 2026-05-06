@@ -16,7 +16,7 @@ import (
 
 func TestDefaultPgMaxConns_FloorsAt20(t *testing.T) {
 	cases := []struct {
-		mif  int
+		mif int
 		want int32
 	}{
 		{0, 20},  // zero → uses sequencer default (4) → 4*4=16, floored to 20
@@ -54,8 +54,8 @@ func TestDefaultPgMaxConns_ZeroFallsBackToSequencerDefault(t *testing.T) {
 func TestValidatePgPoolSizing_RejectsBelowFloor(t *testing.T) {
 	cases := []struct {
 		maxConns int32
-		mif      int
-		wantErr  bool
+		mif int
+		wantErr bool
 	}{
 		// MaxInFlight=4, headroom=8 → required=12.
 		{maxConns: 1, mif: 4, wantErr: true},

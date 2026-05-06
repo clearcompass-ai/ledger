@@ -70,23 +70,23 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type shutdownHarnessOpts struct {
-	walPath    string
-	backend    *localPresignBackend
-	merkle     *stubMerkleAppender
+	walPath string
+	backend *localPresignBackend
+	merkle *stubMerkleAppender
 	cleanFirst bool
 }
 
 type shutdownHarness struct {
 	BaseURL string
-	Pool    *pgxpool.Pool
-	WAL     *wal.Committer
-	walDB   walDBCloser
+	Pool *pgxpool.Pool
+	WAL *wal.Committer
+	walDB walDBCloser
 	Backend *localPresignBackend
-	Merkle  *stubMerkleAppender
-	Server  *api.Server
+	Merkle *stubMerkleAppender
+	Server *api.Server
 	Shipper *shipper.Shipper
-	cancel  context.CancelFunc
-	done    chan struct{}
+	cancel context.CancelFunc
+	done chan struct{}
 }
 
 // walDBCloser is a tiny shim — the wal.Open return type lives in
@@ -303,7 +303,7 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 	h1.seedSession(t, "tok-shutdown", "did:example:shutdown-exchange", 1000)
 
 	type submitted struct {
-		seq  uint64
+		seq uint64
 		hash [32]byte
 	}
 	all := make([]submitted, 0, n)
@@ -372,9 +372,9 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 	// Every entry's meta state must be either Sequenced or Shipped —
 	// there is no half-state. Group by state for the assertion.
 	var (
-		shipped   int
+		shipped int
 		sequenced int
-		other     int
+		other int
 	)
 	ctx := context.Background()
 	for _, e := range all {

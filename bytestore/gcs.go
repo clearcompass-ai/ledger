@@ -84,16 +84,16 @@ type GCSConfig struct {
 // GCS satisfies Backend (Store + Presigner) against a GCS bucket
 // with an LRU cache layer.
 type GCS struct {
-	client       *storage.Client
-	bucket       *storage.BucketHandle
-	bucketName   string
+	client *storage.Client
+	bucket *storage.BucketHandle
+	bucketName string
 	objectPrefix string
 	writeTimeout time.Duration
-	readTimeout  time.Duration
+	readTimeout time.Duration
 
-	mu      sync.Mutex
-	cache   map[string][]byte
-	access  map[string]int64
+	mu sync.Mutex
+	cache map[string][]byte
+	access map[string]int64
 	counter int64
 	maxSize int
 }

@@ -59,18 +59,18 @@ const defaultScanCount = 100
 
 // QueryDeps is the dependency surface for the query + difficulty handlers.
 //
-//	EntryStore     — hash → sequence lookup (FetchByHash).
-//	QueryAPI       — joined metadata + byte view. Hydrates bytes via
+//	EntryStore — hash → sequence lookup (FetchByHash).
+//	QueryAPI — joined metadata + byte view. Hydrates bytes via
 //	                 bytestore.Reader internally.
 //	DiffController — live difficulty source for /v1/admission/difficulty.
 //	                 Nil-safe: the handler responds 503 when absent, which
 //	                 is what the read-only ledger wants.
-//	Logger         — slog handle.
+//	Logger — slog handle.
 type QueryDeps struct {
-	EntryStore     EntryStore
-	QueryAPI       QueryAPI
+	EntryStore EntryStore
+	QueryAPI QueryAPI
 	DiffController *middleware.DifficultyController
-	Logger         *slog.Logger
+	Logger *slog.Logger
 
 	// WAL is the optional WAL probe surface used by
 	// NewHashLookupHandler to detect entries that have been
@@ -95,12 +95,12 @@ type QueryDeps struct {
 // GET /v1/entries/{seq} and inspect the envelope locally.
 type EntryResponse struct {
 	SequenceNumber uint64 `json:"sequence_number"`
-	CanonicalHash  string `json:"canonical_hash"`
-	LogTime        string `json:"log_time"`
-	SignerDID      string `json:"signer_did,omitempty"`
-	ProtocolVer    uint16 `json:"protocol_version"`
-	PayloadSize    int    `json:"payload_size"`
-	CanonicalSize  int    `json:"canonical_size"`
+	CanonicalHash string `json:"canonical_hash"`
+	LogTime string `json:"log_time"`
+	SignerDID string `json:"signer_did,omitempty"`
+	ProtocolVer uint16 `json:"protocol_version"`
+	PayloadSize int `json:"payload_size"`
+	CanonicalSize int `json:"canonical_size"`
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -210,20 +210,20 @@ func NewRangeQueryHandler(deps *QueryDeps) http.HandlerFunc {
 //
 // Routing decision matrix:
 //
-//	WAL.MetaState (when configured)   entry_index    Outcome
+//	WAL.MetaState (when configured)   entry_index Outcome
 //	───────────────────────────────   ──────────     ──────────────────
-//	StatePending                      —              200 {state:pending}
-//	StateManual                       —              200 {state:manual}
-//	StateSequenced / StateShipped     row exists     200 + full metadata
-//	StateSequenced / StateShipped     no row         500 (state machine
+//	StatePending —              200 {state:pending}
+//	StateManual —              200 {state:manual}
+//	StateSequenced / StateShipped row exists 200 + full metadata
+//	StateSequenced / StateShipped no row 500 (state machine
 //	                                                    desync; sequencer
 //	                                                    will catch up)
-//	wal.ErrNotFound                   row exists     200 + full metadata
+//	wal.ErrNotFound row exists 200 + full metadata
 //	                                                    (post-GC-retention
 //	                                                    case; sequencer
 //	                                                    processed long ago)
-//	wal.ErrNotFound                   no row         404
-//	WAL transport error               —              500
+//	wal.ErrNotFound no row 404
+//	WAL transport error —              500
 //
 // When deps.WAL is nil (read-only ledger), the WAL probe is
 // skipped and the handler falls through to entry_index directly.

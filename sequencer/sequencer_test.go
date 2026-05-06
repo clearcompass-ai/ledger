@@ -72,17 +72,17 @@ type fakeWAL struct {
 	// per-hash error injection knobs. Each call increments a
 	// counter; tests can configure "fail first N calls" by
 	// initializing failsRemaining.
-	readErr     error
-	metaErr     error
+	readErr error
+	metaErr error
 	sequenceErr error
 
 	// per-hash sequence advance record.
 	sequenced map[[32]byte]uint64
 
 	// counters for assertions.
-	markRetryCalls  atomic.Uint64
+	markRetryCalls atomic.Uint64
 	markManualCalls atomic.Uint64
-	sequenceCalls   atomic.Uint64
+	sequenceCalls atomic.Uint64
 }
 
 func newFakeWAL() *fakeWAL {
@@ -173,7 +173,7 @@ type fakeTessera struct {
 	assigned map[[32]byte]uint64
 	// per-call error injection: fail first N calls then succeed.
 	failsRemaining atomic.Int64
-	calls          atomic.Uint64
+	calls atomic.Uint64
 }
 
 func newFakeTessera() *fakeTessera {
@@ -209,7 +209,7 @@ func (f *fakeTessera) AppendLeaf(data []byte) (uint64, error) {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-// buildEntry produces a v7.75-shape envelope.Entry suitable for
+// buildEntry produces a canonical envelope.Entry suitable for
 // envelope.Serialize → envelope.Deserialize round-trip. The hash
 // of Serialize's output IS the canonical hash; tests use that
 // as the WAL key.
@@ -263,9 +263,9 @@ type fakeEntryLookupWriter struct {
 
 type fakeLookupCall struct {
 	schemaID string
-	splitID  [32]byte
-	seq      uint64
-	entry    EntryLookupIndexEntry
+	splitID [32]byte
+	seq uint64
+	entry EntryLookupIndexEntry
 }
 
 func (f *fakeEntryLookupWriter) WriteEntryLookupEntry(
@@ -565,7 +565,7 @@ func TestSequencer_processOne_TesseraDedup_Idempotent(t *testing.T) {
 func TestSequencer_isUniqueViolation_MatchesPgxShapes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		err  error
+		err error
 		want bool
 	}{
 		{"nil", nil, false},
@@ -591,12 +591,12 @@ func TestSequencer_isUniqueViolation_MatchesPgxShapes(t *testing.T) {
 // AppendLeaf path so tests can prove that no more than MaxInFlight
 // goroutines are inside it at once.
 type concurrencyTrackingTessera struct {
-	mu             sync.Mutex
-	concurrent     int
+	mu sync.Mutex
+	concurrent int
 	peakConcurrent int
-	holdInside     time.Duration
-	nextSeq        uint64
-	assigned       map[[32]byte]uint64
+	holdInside time.Duration
+	nextSeq uint64
+	assigned map[[32]byte]uint64
 }
 
 func newConcurrencyTrackingTessera(holdInside time.Duration) *concurrencyTrackingTessera {

@@ -4,7 +4,7 @@ FILE PATH: store/derivation_commitments.go
 SMT batch DERIVATION commitment persistence — fast-lookup index for
 fraud proof verification: "give me the commitment covering tree_size=N."
 
-This file is NOT about v7.75 cryptographic Pedersen commitments
+This file is NOT about cryptographic Pedersen commitments
 (escrow_split_commitments.go and pre_grant_commitments.go cover those).
 The word "commitment" is overloaded across two distinct concepts:
 
@@ -14,7 +14,7 @@ The word "commitment" is overloaded across two distinct concepts:
     verifiers to attest that a specific run of the builder against
     a specific entry range produced a specific SMT mutation set.
 
-  - CRYPTOGRAPHIC commitments (v7.75): Pedersen commitments published
+  - CRYPTOGRAPHIC commitments: Pedersen commitments published
     on-log alongside escrow shares and PRE grants per ADR-005 §4.
     Verifier-side equivocation detection and cross-share consistency
     rely on these.

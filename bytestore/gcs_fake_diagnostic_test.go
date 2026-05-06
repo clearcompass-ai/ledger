@@ -14,10 +14,10 @@ this pattern, so running there is wasted I/O.
 Each experiment validates one hypothesis with a controlled change
 and explicit logging:
 
-	E1 PathExactMatch       — Does LIST return the same string GET
+	E1 PathExactMatch — Does LIST return the same string GET
 	                           constructs? (validates path-shape bug
 	                           vs. handler bug.)
-	E2 FlatPath             — Same write/read flow, but objects live
+	E2 FlatPath — Same write/read flow, but objects live
 	                           at <prefix>/<seq:016x> instead of
 	                           <prefix>/<seq:016x>/data. (Validates
 	                           nested-directory-creation bug.)
@@ -26,7 +26,7 @@ and explicit logging:
 	                           Attrs sees it but NewReader doesn't,
 	                           fake-gcs's read paths disagree among
 	                           themselves.)
-	E4 BurstWriteSettle     — Same eviction-style burst, but sleep
+	E4 BurstWriteSettle — Same eviction-style burst, but sleep
 	                           5s before reading seq=0. (If 5s fixes
 	                           it but 1.5s doesn't, the bug IS just
 	                           a long settle window.)
@@ -129,7 +129,7 @@ func TestFakeGCS_Diagnostic_E1_PathExactMatchAfterEviction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LIST iter: %v", err)
 		}
-		t.Logf("LIST: %q  size=%d  generation=%d", attrs.Name, attrs.Size, attrs.Generation)
+		t.Logf("LIST: %q size=%d generation=%d", attrs.Name, attrs.Size, attrs.Generation)
 		listed[attrs.Name] = true
 	}
 	t.Logf("LIST returned %d entries", len(listed))

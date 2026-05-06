@@ -3,9 +3,9 @@ FILE PATH: gossipstore/keyspace_extras.go
 
 Key encoders/decoders + on-disk shapes for the v0.9.6 sub-prefixes:
 
-	0x09  binding inverted index   (Filter.Binding O(1) lookup)
-	0x0A  splitid index            (EquivocationScanner subscribes here)
-	0x0B  equivocation projection  (read-side cache for /by-split-id)
+	0x09 binding inverted index (Filter.Binding O(1) lookup)
+	0x0A splitid index (EquivocationScanner subscribes here)
+	0x0B equivocation projection (read-side cache for /by-split-id)
 
 Split from keyspace.go to keep both files under the 300-LOC budget.
 */
@@ -18,7 +18,7 @@ import (
 )
 
 // MaxSchemaIDLen caps the schema_id stored in the splitid index.
-// 256 bytes is generous for v7.75-style identifiers
+// 256 bytes is generous for -style identifiers
 // ("attesta.network/schema/pre-grant-commitment/v1").
 const MaxSchemaIDLen = 256
 
@@ -212,8 +212,8 @@ func equivProjKey(binding [32]byte) []byte {
 // rows from multiple log DIDs without ambiguity).
 type EntryLookupIndexEntry struct {
 	CanonicalBytes []byte `json:"canonical_bytes"`
-	LogTimeMicros  int64  `json:"log_time_micros"`
-	LogDID         string `json:"log_did"`
+	LogTimeMicros int64 `json:"log_time_micros"`
+	LogDID string `json:"log_did"`
 }
 
 // entryLookupKey builds a key under 0x0C. Sort order is

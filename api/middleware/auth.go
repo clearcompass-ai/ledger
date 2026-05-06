@@ -31,7 +31,7 @@ type contextKey string
 
 const (
 	ctxAuthenticated contextKey = "authenticated"
-	ctxExchangeDID   contextKey = "exchange_did"
+	ctxExchangeDID contextKey = "exchange_did"
 )
 
 // ErrSessionNotFound is the sentinel a SessionLookup returns when

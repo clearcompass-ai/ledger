@@ -103,7 +103,7 @@ func scopeAuth() *envelope.AuthorityPath {
 // admission resolver.
 type synSigner struct {
 	priv *ecdsa.PrivateKey
-	did  string
+	did string
 }
 
 // resolveSyntheticSigner returns a stable keypair for a test label.
@@ -123,7 +123,7 @@ type synSigner struct {
 // suite relies on cross-process determinism). Concurrent-safe.
 var (
 	synSignersMu sync.Mutex
-	synSigners   = make(map[string]synSigner)
+	synSigners = make(map[string]synSigner)
 )
 
 func resolveSyntheticSigner(label string) synSigner {
@@ -341,7 +341,7 @@ func didForUser(i int) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type mockFetcher struct {
-	mu      sync.RWMutex
+	mu sync.RWMutex
 	entries map[types.LogPosition]*types.EntryWithMetadata
 }
 
@@ -385,10 +385,10 @@ func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher types.EntryF
 // ─────────────────────────────────────────────────────────────────────────────
 
 type testHarness struct {
-	tree    *smt.Tree
+	tree *smt.Tree
 	fetcher *mockFetcher
-	schema  builder.SchemaResolver
-	buffer  *builder.DeltaWindowBuffer
+	schema builder.SchemaResolver
+	buffer *builder.DeltaWindowBuffer
 }
 
 func newHarness() *testHarness {
@@ -511,7 +511,7 @@ func (h *testHarness) root(t *testing.T) [32]byte {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // generateEntries builds n bulk-test entries via makeEntry so each one
-// satisfies the v7.75 Serialize-safety invariant. Takes *testing.T so
+// satisfies the Serialize-safety invariant. Takes *testing.T so
 // the underlying SignEntry / Validate failures fail the test loudly
 // instead of dropping a nil entry into the slice.
 func generateEntries(t *testing.T, n int) ([]*envelope.Entry, []types.LogPosition) {
@@ -646,7 +646,7 @@ func insertTestEntry(t *testing.T, pool *pgxpool.Pool, seq uint64, entry *envelo
 	}
 
 	// Wire bytes in testEntryBytes (the ONLY source of entry bytes).
-	// Wire bytes ARE the canonical bytes under v7.75 (signatures
+	// Wire bytes ARE the canonical bytes under (signatures
 	// section embedded inside the canonical form by envelope.Serialize).
 	if err := testEntryBytes.WriteEntry(ctx, seq, hash, canonical); err != nil {
 		t.Fatalf("write entry bytes seq=%d: %v", seq, err)

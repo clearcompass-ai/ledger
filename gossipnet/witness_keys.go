@@ -20,7 +20,7 @@ without a single canonical helper.
 Per witness DID:
 
 	pubBytes, _ = did.ParseDIDKey(witnessDID)
-	pubKeyID    = SHA-256(pubBytes)            // matches signatures.PubKeyBytes hash form
+	pubKeyID = SHA-256(pubBytes)            // matches signatures.PubKeyBytes hash form
 
 For ECDSA secp256k1 keys: ParseDIDKey returns the COMPRESSED
 33-byte form. The witness signing path (cosign.NewECDSAWitnessSigner)

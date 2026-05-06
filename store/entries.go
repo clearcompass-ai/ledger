@@ -58,12 +58,12 @@ func NewEntryStore(db *pgxpool.Pool) *EntryStore {
 // EntryRow is the index record for insertion. No canonical_bytes, no sig_bytes.
 type EntryRow struct {
 	SequenceNumber uint64
-	CanonicalHash  [32]byte
-	LogTime        time.Time
-	SignerDID      string
-	TargetRoot     []byte // nil if null
-	CosignatureOf  []byte // nil if null
-	SchemaRef      []byte // nil if null
+	CanonicalHash [32]byte
+	LogTime time.Time
+	SignerDID string
+	TargetRoot []byte // nil if null
+	CosignatureOf []byte // nil if null
+	SchemaRef []byte // nil if null
 }
 
 // Insert persists an entry's index columns. Called within the admission transaction.
@@ -147,7 +147,7 @@ func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bo
 // CONTRACT (SDK-D5): all returned entries have verified signatures.
 // CONTRACT (Decision 47): returns nil for foreign log DIDs.
 type PostgresEntryFetcher struct {
-	db     *pgxpool.Pool
+	db *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
 }
@@ -198,7 +198,7 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 	}
 
 	// (3) Assemble — three-field EntryWithMetadata per the v6 SDK
-	// type. Wire bytes ARE the canonical bytes under v7.75 (signatures
+	// type. Wire bytes ARE the canonical bytes under (signatures
 	// section embedded). Callers that need the primary signature's
 	// algoID call envelope.Deserialize and read entry.Signatures[0].
 	return &types.EntryWithMetadata{

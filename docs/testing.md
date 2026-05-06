@@ -8,23 +8,23 @@ listed below — the table is the canonical compliance map.
 ## Test layout
 
 ```
-admission/*_test.go        SDK-validation pin tests (NFC, signature, resolver)
-api/*_test.go              HTTP handler tests (routes, idempotency, error_class)
-api/middleware/*_test.go   Auth middleware (SessionLookup interface)
-apitypes/*_test.go         ErrorClass taxonomy + value-type round-trips
-bytestore/*_test.go        GCS / S3 / memory backend conformance
-gossipnet/*_test.go        Gossip pipeline (scanner, publisher, sink, anti-entropy)
-gossipstore/*_test.go      Badger keyspace + projections + replay HWM
-integrity/*_test.go        Boot reconciliation + sample-verify detector
-lifecycle/*_test.go        Graceful shutdown components
-sequencer/*_test.go        WAL drain + boot replayer
-shipper/*_test.go          WAL → bytestore migrator
-store/*_test.go            Postgres-backed stores (gated by ATTESTA_TEST_DSN)
-tessera/*_test.go          Embedded Tessera appender
-wal/*_test.go              Badger WAL state machine
-integration/*_test.go      Full-stack (Postgres + bytestore) — gated by ATTESTA_TEST_DSN
-tests/*_test.go            End-to-end (HTTP + Postgres + Badger) — gated
-cmd/*/*_test.go            CLI binaries (submit-stamp, ledger pool sizing)
+admission/*_test.go SDK-validation pin tests (NFC, signature, resolver)
+api/*_test.go HTTP handler tests (routes, idempotency, error_class)
+api/middleware/*_test.go Auth middleware (SessionLookup interface)
+apitypes/*_test.go ErrorClass taxonomy + value-type round-trips
+bytestore/*_test.go GCS / S3 / memory backend conformance
+gossipnet/*_test.go Gossip pipeline (scanner, publisher, sink, anti-entropy)
+gossipstore/*_test.go Badger keyspace + projections + replay HWM
+integrity/*_test.go Boot reconciliation + sample-verify detector
+lifecycle/*_test.go Graceful shutdown components
+sequencer/*_test.go WAL drain + boot replayer
+shipper/*_test.go WAL → bytestore migrator
+store/*_test.go Postgres-backed stores (gated by ATTESTA_TEST_DSN)
+tessera/*_test.go Embedded Tessera appender
+wal/*_test.go Badger WAL state machine
+integration/*_test.go Full-stack (Postgres + bytestore) — gated by ATTESTA_TEST_DSN
+tests/*_test.go End-to-end (HTTP + Postgres + Badger) — gated
+cmd/*/*_test.go CLI binaries (submit-stamp, ledger pool sizing)
 ```
 
 Total: 316 test functions across 20 packages.
@@ -146,7 +146,7 @@ Anything passed across the api ↔ store boundary is a value type
 ```go
 // apitypes/apitypes.go
 type SomeRow struct {
-    ID    int64
+    ID int64
     Bytes []byte
     // ... pure stdlib types only
 }

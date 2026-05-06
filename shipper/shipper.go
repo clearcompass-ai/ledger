@@ -7,16 +7,16 @@ high-water mark through contiguous runs.
 
 PIPELINE STAGES:
 
- 1. scan         — every PollInterval, IterateSequenced(fromSeq=HWM)
+ 1. scan — every PollInterval, IterateSequenced(fromSeq=HWM)
     yields candidate entries. Per-entry meta is
     consulted to enforce exponential backoff on
     retried uploads.
- 2. dispatch     — entries are pushed onto a bounded work channel.
+ 2. dispatch — entries are pushed onto a bounded work channel.
     Workers pull from the channel.
- 3. ship         — N concurrent workers Read wire bytes from the
+ 3. ship — N concurrent workers Read wire bytes from the
     WAL, WriteEntry to the bytestore, MarkShipped
     in the WAL, then signal completion.
- 4. advance HWM  — single hwmAdvancer goroutine drains completion
+ 4. advance HWM — single hwmAdvancer goroutine drains completion
     signals and advances the WAL's HWM only through
     contiguous runs. Out-of-order completions are
     held in an in-memory above-HWM set until their
@@ -109,13 +109,13 @@ type Config struct {
 
 // Shipper is the sequenced→shipped pipeline.
 type Shipper struct {
-	wal       WAL
+	wal WAL
 	bytestore Bytestore
-	cfg       Config
-	logger    *slog.Logger
+	cfg Config
+	logger *slog.Logger
 
 	completion chan uint64 // worker → hwmAdvancer
-	metrics    Metrics
+	metrics Metrics
 }
 
 // NewShipper wires the pipeline. Both wal and bytestore are

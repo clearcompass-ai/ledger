@@ -4,9 +4,9 @@ FILE PATH: gossipnet/sequencer_adapter.go
 Adapters that let the sequencer publish into the gossipstore-backed
 projections without importing gossipstore directly:
 
-  - SequencerSplitIDAdapter        — sequencer.SplitIDIndexWriter (0x0A)
-  - SequencerEntryLookupAdapter    — sequencer.EntryLookupWriter (0x0C)
-  - SequencerReplayCursorAdapter   — sequencer.SplitIDReplayCursor (0x0D)
+  - SequencerSplitIDAdapter — sequencer.SplitIDIndexWriter (0x0A)
+  - SequencerEntryLookupAdapter — sequencer.EntryLookupWriter (0x0C)
+  - SequencerReplayCursorAdapter — sequencer.SplitIDReplayCursor (0x0D)
 
 # WHY THIS THIN ADAPTER EXISTS
 

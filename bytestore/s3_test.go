@@ -22,13 +22,13 @@ Coverage mirrors gcs_test.go so the two adapters stay at parity:
 
 Env vars:
 
-	ATTESTA_TEST_S3_ENDPOINT     e.g. http://localhost:9000
-	ATTESTA_TEST_S3_BUCKET       e.g. attesta-test-bytes
-	ATTESTA_TEST_S3_ACCESS_KEY   e.g. rustfsadmin
-	ATTESTA_TEST_S3_SECRET_KEY   e.g. rustfsadmin
-	ATTESTA_TEST_S3_REGION       e.g. us-east-1 (default)
-	ATTESTA_TEST_S3_PATH_STYLE   "true" for RustFS, unset for AWS S3
-	ATTESTA_TEST_S3_REAL         "1" → real AWS S3 mode (uses default
+	ATTESTA_TEST_S3_ENDPOINT e.g. http://localhost:9000
+	ATTESTA_TEST_S3_BUCKET e.g. attesta-test-bytes
+	ATTESTA_TEST_S3_ACCESS_KEY e.g. rustfsadmin
+	ATTESTA_TEST_S3_SECRET_KEY e.g. rustfsadmin
+	ATTESTA_TEST_S3_REGION e.g. us-east-1 (default)
+	ATTESTA_TEST_S3_PATH_STYLE "true" for RustFS, unset for AWS S3
+	ATTESTA_TEST_S3_REAL "1" → real AWS S3 mode (uses default
 	                               credential chain, virtual-host style,
 	                               no endpoint override)
 
@@ -211,7 +211,7 @@ func TestS3_WriteThenRead_RoundTrip(t *testing.T) {
 		t.Fatalf("ReadEntry: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Errorf("round-trip mismatch:\n  got=%x\n want=%x", got, wire)
+		t.Errorf("round-trip mismatch:\n got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -258,7 +258,7 @@ func TestS3_ReadAfterWrite_HitsCache(t *testing.T) {
 		t.Fatalf("ReadEntry: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Errorf("cached read mismatch:\n  got=%x\n want=%x", got, wire)
+		t.Errorf("cached read mismatch:\n got=%x\n want=%x", got, wire)
 	}
 }
 
@@ -463,7 +463,7 @@ func TestS3_PresignGet_FetchesBytes(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 	if !bytes.Equal(got, wire) {
-		t.Fatalf("presigned GET returned wrong bytes:\n  got=%x\n want=%x", got, wire)
+		t.Fatalf("presigned GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
 	}
 }
 

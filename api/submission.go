@@ -22,29 +22,29 @@ CONTRACT:
 
 FAST-PATH SHAPE (admission steps run inline):
 
- 1. Read & validate preamble                  (prepareSubmission step 1)
+ 1. Read & validate preamble (prepareSubmission step 1)
 
- 2. Deserialize wire bytes                    (step 2)
+ 2. Deserialize wire bytes (step 2)
 
- 3. NFC normalization check                   (step 3a)
+ 3. NFC normalization check (step 3a)
 
- 4. Destination binding                       (step 3b)
+ 4. Destination binding (step 3b)
 
- 5. Late-replay freshness                     (step 3c)
+ 5. Late-replay freshness (step 3c)
 
- 6. Signature verification                    (step 4)
+ 6. Signature verification (step 4)
 
- 7. Entry size + Evidence_Pointers cap        (steps 5, 6)
+ 7. Entry size + Evidence_Pointers cap (steps 5, 6)
 
- 8. Mode A auth probe / Mode B PoW verify     (step 7)
+ 8. Mode A auth probe / Mode B PoW verify (step 7)
 
- 9. Canonical hash + early duplicate probe    (steps 8, 8a)
+ 9. Canonical hash + early duplicate probe (steps 8, 8a)
 
- 10. Mode A credit deduction                  (its own pg tx; pre-WAL)
+ 10. Mode A credit deduction (its own pg tx; pre-WAL)
 
  11. WAL.Submit (durable)                     (step 10)
 
- 12. Sign + return SCT                        (step 11)
+ 12. Sign + return SCT (step 11)
 
     Mode A credit deduction stays synchronous in the fast path so a
     credit-exhausted caller receives 402 before the WAL is touched —
@@ -164,14 +164,14 @@ type TesseraAppender interface {
 // (entry_index INSERT) lives entirely in the sequencer goroutine.
 type StorageDeps struct {
 	EntryStore EntryStore
-	WAL        WALCommitter
-	Tessera    TesseraAppender
+	WAL WALCommitter
+	Tessera TesseraAppender
 }
 
 // AdmissionConfig groups parameters that govern admission proof verification.
 type AdmissionConfig struct {
-	DiffController        *middleware.DifficultyController
-	EpochWindowSeconds    int
+	DiffController *middleware.DifficultyController
+	EpochWindowSeconds int
 	EpochAcceptanceWindow int
 }
 
@@ -182,19 +182,19 @@ type AdmissionConfig struct {
 // The interface's tx-less Deduct(ctx, exchangeDID) signature lets
 // the api package hold zero pgx imports.
 type IdentityDeps struct {
-	Credits     CreditDeducter
+	Credits CreditDeducter
 	DIDResolver DIDResolver
 }
 
 // SubmissionDeps is the dependency surface for the POST /v1/entries handler.
 type SubmissionDeps struct {
-	Storage      StorageDeps
-	Admission    AdmissionConfig
-	Identity     IdentityDeps
-	LogDID       string
-	LedgerDID    string
+	Storage StorageDeps
+	Admission AdmissionConfig
+	Identity IdentityDeps
+	LogDID string
+	LedgerDID string
 	MaxEntrySize int64
-	Logger       *slog.Logger
+	Logger *slog.Logger
 
 	// LedgerSignerPriv signs SCTs returned by asynchronous
 	// submission endpoints, including POST /v1/entries/batch.
@@ -209,8 +209,7 @@ type SubmissionDeps struct {
 	// (anchor entries authored by peer ledgers, witness-attestation
 	// commentary, cross-log proof entries). Wave 1 v3 §S1.
 	//
-	// Optional: nil disables the check entirely (existing v7.75
-	// commitment-entry surfaces don't embed tree heads, so the
+	// Optional: nil disables the check entirely (existing 	// commitment-entry surfaces don't embed tree heads, so the
 	// detector returns false unconditionally and the verifier is
 	// dead code today). Wired by cmd/ledger/main.go iff a
 	// witness key set is loaded.
@@ -225,12 +224,12 @@ type SubmissionDeps struct {
 // admission fast path. The handler diverges at step 10+ to deduct
 // credits, persist to the WAL, and sign the SCT.
 type preparedSubmission struct {
-	raw           []byte
-	entry         *envelope.Entry
+	raw []byte
+	entry *envelope.Entry
 	canonicalHash [32]byte
-	logTime       time.Time
+	logTime time.Time
 	authenticated bool
-	exchangeDID   string
+	exchangeDID string
 
 	// idempotentReplay is true when the canonical hash already
 	// has a Meta record in the WAL (byte-identical resubmission).
@@ -246,9 +245,9 @@ type preparedSubmission struct {
 // the helper free of *http.ResponseWriter so it can be unit-tested
 // without httptest plumbing.
 type submissionError struct {
-	Status  int
+	Status int
 	Message string
-	Class   apitypes.ErrorClass
+	Class apitypes.ErrorClass
 }
 
 // submissionFail constructs a typed *submissionError. PT-6: every
@@ -503,9 +502,9 @@ func deductCreditModeA(
 // Panics if any of these are missing — without them the handler
 // cannot honor its contract and the ledger should refuse to start:
 //   - AdmissionConfig.EpochWindowSeconds (Mode B stamp verification)
-//   - LogDID                              (destination-binding)
-//   - LedgerDID                         (SCT signer identity)
-//   - LedgerSignerPriv                  (SCT signing key)
+//   - LogDID (destination-binding)
+//   - LedgerDID (SCT signer identity)
+//   - LedgerSignerPriv (SCT signing key)
 //
 // Returns 202 + SignedCertificateTimestamp on success. The SCT is
 // signed by LedgerSignerPriv against the ledger-published
@@ -569,7 +568,7 @@ func NewSubmissionHandler(deps *SubmissionDeps) http.HandlerFunc {
 		// Pre-WAL so a credit-exhausted caller never gets an SCT.
 		// Failure modes:
 		//   - insufficient credits → 402
-		//   - transient DB error   → 500
+		//   - transient DB error → 500
 		if err := deductCreditModeA(ctx, deps, prep.authenticated, prep.exchangeDID); err != nil {
 			if errors.Is(err, apitypes.ErrInsufficientCredits) {
 				writeTypedError(ctx, w, apitypes.ErrorClassInsufficientCredits,
