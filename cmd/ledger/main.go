@@ -760,6 +760,14 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	// fatal is the supervisor's single-source-of-truth error channel.
+	// Declared early so any background goroutine wired during boot
+	// (gossip subsystem, HTTP server, pprof listener) can surface a
+	// recovered panic to the supervisor for clean process exit.
+	// The supervisor reads from this channel below; sends are
+	// non-blocking via lifecycle.SafeRun.
+	fatal := make(chan error, 8)
+
 	cfg, err := loadConfig()
 	if err != nil {
 		logger.Error("config", "error", err)
@@ -1245,13 +1253,16 @@ func main() {
 				os.Exit(1)
 			}
 			aeCtx, aeCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			// Anti-entropy is best-effort: a non-canceled exit is
+			// logged but does NOT terminate the supervisor. A
+			// panic, however, is surfaced to fatal via SafeRunInWG's
+			// recover branch — bugs that panic deserve restart.
+			lifecycle.SafeRunInWG(aeCtx, &gossipWG, "anti-entropy", logger, fatal, func() error {
 				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("anti-entropy: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer aeCancel()
 			logger.Info("anti-entropy: enabled", "peers", len(peers))
 		} else if len(cfg.GossipPeerDIDs) > 0 {
@@ -1333,13 +1344,12 @@ func main() {
 				os.Exit(1)
 			}
 			eqCtx, eqCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			lifecycle.SafeRunInWG(eqCtx, &gossipWG, "equivocation-monitor", logger, fatal, func() error {
 				if rerr := eqMon.Run(eqCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation monitor: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer eqCancel()
 			logger.Info("equivocation monitor: enabled",
 				"peers", len(equivPeers),
@@ -1382,14 +1392,13 @@ func main() {
 				os.Exit(1)
 			}
 			scanCtx, scanCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			lifecycle.SafeRunInWG(scanCtx, &gossipWG, "equivocation-scanner", logger, fatal, func() error {
 				if rerr := scanner.Run(scanCtx); rerr != nil &&
 					!errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation scanner: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer scanCancel()
 			logger.Info("equivocation scanner: enabled (subscribed to splitid index 0x0A)")
 		}
@@ -1872,7 +1881,9 @@ func main() {
 	// the supervisor closes ctx via the parent cancel before
 	// panicking, giving other goroutines a chance to flush, but
 	// the panic surfaces the originating error.
-	fatal := make(chan error, 8)
+	//
+	// fatal channel is declared at the top of main() — see the
+	// boot-phase comment there. Re-declaring would shadow it.
 	var wg sync.WaitGroup
 
 	// ── Public HTTP listener (TLS-aware + LimitListener-capped) ─────
@@ -1898,12 +1909,12 @@ func main() {
 		"tls", serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "",
 	)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// In-binary TLS if both cert + key are configured.
-		// Otherwise plain HTTP. HTTP/2 enablement is documented
-		// in api/server.go::ListenAndServeTLS.
+	// HTTP server: stdlib's per-handler recovery covers handler
+	// panics, but a panic in TLS-handshake / accept-loop / connection
+	// state machine still kills the goroutine. SafeRunInWG catches
+	// those and surfaces them via fatal so the supervisor restarts
+	// the process cleanly.
+	lifecycle.SafeRunInWG(ctx, &wg, "http-server", logger, fatal, func() error {
 		if serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "" {
 			// ServeTLS reuses the listener wrapped by
 			// netutil.LimitListener, so the connection cap applies
@@ -1913,24 +1924,25 @@ func main() {
 			if err := server.ServeTLSWithListener(cappedListener); err != nil {
 				logger.Error("http server (tls)", "error", err)
 			}
-			return
+			return nil
 		}
 		if err := server.Serve(cappedListener); err != nil {
 			logger.Error("http server", "error", err)
 		}
-	}()
+		return nil
+	})
 
 	if pprofServer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// pprof is bound to a private address (typically
-			// 127.0.0.1:6060). Failure to bind is non-fatal —
-			// pprof is diagnostic, not load-bearing.
+		// pprof is bound to a private address (typically
+		// 127.0.0.1:6060). Failure to bind is non-fatal — pprof is
+		// diagnostic, not load-bearing. Panic in pprof handlers
+		// does NOT terminate the supervisor (no fatal channel).
+		lifecycle.SafeRunInWG(ctx, &wg, "pprof-server", logger, nil, func() error {
 			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Warn("pprof server", "error", err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	// All long-running goroutines are wrapped in lifecycle.SafeRun

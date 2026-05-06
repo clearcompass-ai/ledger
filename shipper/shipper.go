@@ -59,6 +59,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
@@ -169,13 +170,22 @@ func (s *Shipper) Run(ctx context.Context) error {
 	var workersWG sync.WaitGroup
 	for i := 0; i < s.cfg.MaxInFlight; i++ {
 		workersWG.Add(1)
-		go s.worker(ctx, workCh, &workersWG)
+		// Each worker wrapped in SafeRun so a panic in
+		// per-entry processing logs + exits cleanly without
+		// crashing the binary. wg.Done is called inside s.worker.
+		go lifecycle.SafeRun(ctx, "shipper-worker", s.logger, nil, func() error {
+			s.worker(ctx, workCh, &workersWG)
+			return nil
+		})
 	}
 
 	advancerDone := make(chan struct{})
 	go func() {
 		defer close(advancerDone)
-		s.hwmAdvancer(ctx)
+		_ = lifecycle.SafeRun(ctx, "shipper-hwm-advancer", s.logger, nil, func() error {
+			s.hwmAdvancer(ctx)
+			return nil
+		})
 	}()
 
 	ticker := time.NewTicker(s.cfg.PollInterval)

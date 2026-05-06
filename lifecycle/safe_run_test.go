@@ -22,9 +22,12 @@ KEY ARCHITECTURAL DECISIONS:
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,5 +177,52 @@ func TestSafeRunInWG_NormalCompletion(t *testing.T) {
 	case fatalErr := <-fatalCh:
 		t.Errorf("fatalCh should be empty on normal exit; got %v", fatalErr)
 	default:
+	}
+}
+
+// -------------------------------------------------------------------------------------------------
+// 3) Entry / exit Info logs (E2)
+// -------------------------------------------------------------------------------------------------
+
+// TestSafeRun_EmitsStartedAndStoppedLogs pins the E2 contract:
+// every wrapped goroutine emits a "goroutine started" line at
+// Info on entry AND a matching "goroutine stopped" line on exit.
+// Operators rely on this pair to prove from logs alone that each
+// supervisor child launched and terminated cleanly.
+func TestSafeRun_EmitsStartedAndStoppedLogs(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	_ = SafeRun(context.Background(), "logged-goroutine", logger, nil, func() error {
+		return nil
+	})
+	out := buf.String()
+	if !strings.Contains(out, "goroutine started") || !strings.Contains(out, "logged-goroutine") {
+		t.Errorf("expected 'goroutine started' + name in log; got %q", out)
+	}
+	if !strings.Contains(out, "goroutine stopped") {
+		t.Errorf("expected 'goroutine stopped' in log; got %q", out)
+	}
+}
+
+// TestSafeRun_EmitsStoppedLogEvenOnPanic pins the symmetric-pair
+// guarantee: a panic still emits the matching "stopped" line so
+// `grep started/stopped` pairs up across normal + panic exits.
+func TestSafeRun_EmitsStoppedLogEvenOnPanic(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	_ = SafeRun(context.Background(), "panic-logged", logger, nil, func() error {
+		panic("synthetic")
+	})
+	out := buf.String()
+	if !strings.Contains(out, "goroutine started") {
+		t.Errorf("expected 'goroutine started' line even on panic path; got %q", out)
+	}
+	if !strings.Contains(out, "goroutine stopped") {
+		t.Errorf("expected 'goroutine stopped' line on panic path; got %q", out)
+	}
+	if !strings.Contains(out, "panic recovered") {
+		t.Errorf("expected 'panic recovered' line; got %q", out)
 	}
 }

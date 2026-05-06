@@ -70,6 +70,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -340,19 +341,23 @@ func (s *Sequencer) Run(ctx context.Context) error {
 	// abrupt ctx cancellation. The deferred wg.Wait runs AFTER
 	// the for-select loop exits, so the replayer sees ctx.Done()
 	// at the same instant the loop does.
+	//
+	// Wrapped in lifecycle.SafeRun so a panic in Replay logs +
+	// exits the goroutine cleanly without crashing the supervisor.
+	// Replay is best-effort — boot replay failure is logged but
+	// not fatal; the steady-state drain loop catches up later.
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	if s.replayer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		lifecycle.SafeRunInWG(ctx, &wg, "sequencer-replay", s.logger, nil, func() error {
 			if err := s.replayer.Replay(ctx); err != nil &&
 				!errors.Is(err, context.Canceled) &&
 				!errors.Is(err, context.DeadlineExceeded) {
 				s.logger.Error("sequencer: boot replay failed",
 					"error", err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	// First drain immediately on Run start so a freshly-booted

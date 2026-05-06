@@ -47,6 +47,7 @@ import (
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/tessera"
@@ -221,14 +222,18 @@ func run(logger *slog.Logger) error {
 	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool.DB), handlers, logger)
 
 	// ── Start + shutdown ───────────────────────────────────────────────
+	// HTTP server panic surfaces via the recover branch in
+	// SafeRunInWG. ledger-reader has no fatal channel (no
+	// supervisor goroutines beyond the HTTP server), so panics are
+	// caught + logged and the goroutine exits; the signal-driven
+	// shutdown path still drives the cleanup.
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "http-server", logger, nil, func() error {
 		if err := server.ListenAndServe(); err != nil {
 			logger.Error("http server exited", "error", err)
 		}
-	}()
+		return nil
+	})
 	logger.Info("HTTP server started (read-only)", "addr", cfg.ServerAddr)
 
 	sigCh := make(chan os.Signal, 1)

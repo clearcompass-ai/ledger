@@ -115,9 +115,26 @@ func SafeRun(
 	fatalCh chan<- error,
 	run func() error,
 ) (retErr error) {
+	// Entry log: every wrapped goroutine emits a "goroutine started"
+	// line at Info so operators can prove from logs alone that each
+	// supervisor child actually launched. The corresponding "stopped"
+	// line fires from the deferred branch below — including on panic
+	// — so the start/stop pair is symmetric.
+	if logger != nil {
+		logger.InfoContext(ctx, "goroutine started", "goroutine", name)
+	}
 	defer func() {
 		rec := recover()
 		if rec == nil {
+			// Normal exit. Log the terminal error class (nil,
+			// context.Canceled, or other) so operators can
+			// distinguish graceful shutdown from premature exit.
+			if logger != nil {
+				logger.InfoContext(ctx, "goroutine stopped",
+					"goroutine", name,
+					"err", retErr,
+				)
+			}
 			return
 		}
 		// Stdlib idiom: ErrAbortHandler is the in-band abort
@@ -137,6 +154,13 @@ func SafeRun(
 				"goroutine", name,
 				"panic", fmt.Sprint(rec),
 				"stack", string(stack),
+			)
+			// Symmetric stopped log even on panic so
+			// `grep "goroutine stopped"` always pairs with the
+			// matching "started" line.
+			logger.InfoContext(ctx, "goroutine stopped",
+				"goroutine", name,
+				"panic", true,
 			)
 		}
 		// Surface to fatal channel so supervisor can terminate

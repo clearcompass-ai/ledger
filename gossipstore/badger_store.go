@@ -71,6 +71,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"time"
@@ -78,6 +79,8 @@ import (
 	"github.com/dgraph-io/badger/v4"
 
 	"github.com/clearcompass-ai/attesta/gossip"
+
+	"github.com/clearcompass-ai/ledger/lifecycle"
 )
 
 // Config tunes the BadgerStore.
@@ -143,7 +146,16 @@ func New(cfg Config) (*BadgerStore, error) {
 		gcCtx, cancel := context.WithCancel(context.Background())
 		s.gcCancel = cancel
 		s.gcDone = make(chan struct{})
-		go s.runGC(gcCtx, cfg.GCInterval, cfg.GCRatio)
+		// runGC wrapped in SafeRun so a panic during Badger value-
+		// log compaction logs + exits the goroutine cleanly. GC is
+		// best-effort; a panic here does not terminate the process.
+		// slog.Default() picks up the supervisor-installed handler.
+		go func() {
+			_ = lifecycle.SafeRun(gcCtx, "gossipstore-gc", slog.Default(), nil, func() error {
+				s.runGC(gcCtx, cfg.GCInterval, cfg.GCRatio)
+				return nil
+			})
+		}()
 	}
 
 	return s, nil
