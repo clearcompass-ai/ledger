@@ -59,9 +59,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +72,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/net/netutil"
 
 	"github.com/transparency-dev/tessera/storage/posix"
 	posixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
@@ -256,6 +260,30 @@ type Config struct {
 	PgMaxConns int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
 	LogDID string // Destination for self-published entries (anchors, commitments).
 	LedgerDID string // Signer DID for ledger-authored commentary.
+
+	// TLSCertFile / TLSKeyFile, when both non-empty, switch the
+	// HTTP listener to ListenAndServeTLS. Operator deployments
+	// fronted by a TLS-terminating proxy leave both empty (plain
+	// HTTP). Standalone (VM / bare-metal / sigsum-witness) operators
+	// populate both for in-binary TLS termination.
+	TLSCertFile string // LEDGER_TLS_CERT_FILE
+	TLSKeyFile  string // LEDGER_TLS_KEY_FILE
+
+	// MaxConcurrentConns caps the total simultaneous TCP sockets
+	// the public HTTP listener will accept. Defends host physics
+	// (sockets, ephemeral ports, file descriptors) independent of
+	// per-request body size. 0 disables the cap (NOT recommended
+	// in production); the default is computed from runtime.NumCPU
+	// at boot.
+	MaxConcurrentConns int // LEDGER_MAX_CONCURRENT_CONNS
+
+	// PprofAddr, when non-empty, mounts net/http/pprof on a
+	// SEPARATE listener bound to the supplied address (typically
+	// "127.0.0.1:6060"). pprof is NEVER mixed onto the public
+	// listener — it's diagnostic surface, not user surface. Empty
+	// disables pprof entirely.
+	PprofAddr string // LEDGER_PPROF_ADDR
+
 	MaxEntrySize int64
 	BatchSize int
 	PollInterval time.Duration
@@ -481,6 +509,12 @@ func loadConfig() (*Config, error) {
 		ServiceVersion:       envOr("LEDGER_SERVICE_VERSION", "dev"),
 		WALPath:              envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
 		TesseraAntispamPath:  envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
+
+		// HTTP-server hardening knobs.
+		TLSCertFile:        os.Getenv("LEDGER_TLS_CERT_FILE"),
+		TLSKeyFile:         os.Getenv("LEDGER_TLS_KEY_FILE"),
+		MaxConcurrentConns: envIntOr("LEDGER_MAX_CONCURRENT_CONNS", 0),
+		PprofAddr:          os.Getenv("LEDGER_PPROF_ADDR"),
 
 		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
@@ -1702,10 +1736,43 @@ func main() {
 	ship := shipper.NewShipper(walc, byteStore, shipper.Config{Logger: logger})
 
 	// ── HTTP server ───────────────────────────────────────────────────
+	//
+	// DoS-immune timeouts come from DefaultServerConfig (Slowloris
+	// cap via ReadHeaderTimeout, keep-alive zombie cap via
+	// IdleTimeout). TLS termination is in-binary when TLSCertFile +
+	// TLSKeyFile are both populated; otherwise the binary speaks
+	// plain HTTP and a TLS-terminating proxy (k8s ingress, sidecar)
+	// is the operator's responsibility.
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = cfg.ServerAddr
 	serverCfg.MaxEntrySize = cfg.MaxEntrySize
+	serverCfg.TLSCertFile = cfg.TLSCertFile
+	serverCfg.TLSKeyFile = cfg.TLSKeyFile
 	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
+
+	// ── pprof on a private listener (optional) ───────────────────────
+	//
+	// Production-grade profiling: pprof MUST live on a separate
+	// listener bound to a non-public address so the public HTTP
+	// surface never exposes /debug/pprof. Empty PprofAddr disables.
+	var pprofServer *http.Server
+	if cfg.PprofAddr != "" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofServer = &http.Server{
+			Addr:              cfg.PprofAddr,
+			Handler:           pprofMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      120 * time.Second, // CPU profiles take time
+			IdleTimeout:       60 * time.Second,
+		}
+		logger.Info("pprof listener ready", "addr", cfg.PprofAddr)
+	}
 
 	// ── Goroutines + fatal supervisor ─────────────────────────────────
 	//
@@ -1723,13 +1790,63 @@ func main() {
 	fatal := make(chan error, 8)
 	var wg sync.WaitGroup
 
+	// ── Public HTTP listener (TLS-aware + LimitListener-capped) ─────
+	//
+	// The connection cap defends host physics independent of
+	// per-request body size. A cap of 0 (LEDGER_MAX_CONCURRENT_CONNS
+	// unset) defaults to 8 × runtime.NumCPU; production deployments
+	// typically tune this to match their pod-side ulimits.
+	connCap := cfg.MaxConcurrentConns
+	if connCap <= 0 {
+		connCap = 8 * runtime.NumCPU()
+	}
+	listenAddr := serverCfg.Addr
+	rawListener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		logger.Error("http listen", "addr", listenAddr, "error", err)
+		os.Exit(1)
+	}
+	cappedListener := netutil.LimitListener(rawListener, connCap)
+	logger.Info("http listener ready",
+		"addr", listenAddr,
+		"max_concurrent_conns", connCap,
+		"tls", serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "",
+	)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := server.ListenAndServe(); err != nil {
+		// In-binary TLS if both cert + key are configured.
+		// Otherwise plain HTTP. HTTP/2 enablement is documented
+		// in api/server.go::ListenAndServeTLS.
+		if serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "" {
+			// ServeTLS reuses the listener wrapped by
+			// netutil.LimitListener, so the connection cap applies
+			// to TLS-terminated traffic too. Manually call
+			// http.Server.ServeTLS via a tiny adapter that
+			// populates TLSConfig with explicit ALPN.
+			if err := server.ServeTLSWithListener(cappedListener); err != nil {
+				logger.Error("http server (tls)", "error", err)
+			}
+			return
+		}
+		if err := server.Serve(cappedListener); err != nil {
 			logger.Error("http server", "error", err)
 		}
 	}()
+
+	if pprofServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// pprof is bound to a private address (typically
+			// 127.0.0.1:6060). Failure to bind is non-fatal —
+			// pprof is diagnostic, not load-bearing.
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Warn("pprof server", "error", err)
+			}
+		}()
+	}
 
 	wg.Add(1)
 	go func() {
