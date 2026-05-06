@@ -63,8 +63,8 @@ import (
 // appended INSIDE envelope.Serialize, so the wire bytes ARE the
 // canonical bytes — no separate MustAppendSignature step.
 //
-// The test server is configured with DIDResolver: nil (Phase 2 trust
-// mode) per testserver_test.go:166, so the signature is not crypto-
+// The test server is configured with DIDResolver: nil (wire-format-
+// integrity-only mode) per testserver_test.go:166, so the signature is not crypto-
 // verified end-to-end; we just need it to be structurally well-formed
 // so envelope.Serialize / Deserialize round-trip cleanly. makeEntry
 // gives us exactly that. The ledger now wires
@@ -451,7 +451,7 @@ func TestHTTP_Middleware_OversizeBody_413(t *testing.T) {
 	// defense-in-depth fallback for direct (test) calls.
 	oversized := make([]byte, (1<<20)+2048)
 	oversized[0] = 0x00
-	oversized[1] = 0x05 // valid v5 preamble (Wave 1.5)
+	oversized[1] = 0x05 // structurally-valid wire-version preamble byte
 
 	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader(oversized))
 	req.Header.Set("Authorization", "Bearer tok-big")

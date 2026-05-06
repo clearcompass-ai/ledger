@@ -233,9 +233,7 @@ func encodeTileIndex(index uint64) string {
 	return strings.Join(parts, "/")
 }
 
-// HTTPTileBackend was removed in Phase 1B alongside the
-// standalone tessera-personality binary. The ledger now reads
-// tiles directly from a POSIX directory via POSIXTileBackend
-// (defined in posix_tile_backend.go), shared with the embedded
-// upstream Tessera writer. See tessera/embedded_appender.go for
-// the in-process construction path.
+// The ledger reads tiles directly from a POSIX directory via
+// POSIXTileBackend (defined in posix_tile_backend.go), shared with
+// the embedded upstream Tessera writer. See
+// tessera/embedded_appender.go for the in-process construction path.

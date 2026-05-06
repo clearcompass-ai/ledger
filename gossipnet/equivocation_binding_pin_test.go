@@ -6,7 +6,7 @@ producer (the EquivocationScanner) and every consumer (the SDK's
 findings.FetchEquivocationByBinding, the ledger's
 GetEquivProjection callers) MUST compute the binding identically.
 
-Before PT-3 the ledger re-implemented findings.EntryCommitmentBinding
+Before the ledger re-implemented findings.EntryCommitmentBinding
 locally as sha256SchemaSplit, "to avoid an import cycle." That
 duplication is exactly the kind of silent drift this file pins —
 if the SDK ever adds a domain separator to gossip.BindingHash,
@@ -50,8 +50,7 @@ func TestEquivocationBinding_LedgerMatchesSDK(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Ledger-side construction (was sha256SchemaSplit
-			// pre-PT-3): raw SHA-256(schemaID || splitID).
+			// Ledger-side construction: raw SHA-256(schemaID || splitID).
 			var input []byte
 			input = append(input, []byte(tc.schemaID)...)
 			input = append(input, tc.splitID[:]...)

@@ -2,7 +2,7 @@
 FILE PATH: store/pre_grant_commitments.go
 
 Typed insert + lookup helpers for pre-grant-commitment-v1 entries
-(ADR-005 §4 cryptographic-commitment surface).
+on the cryptographic-commitment surface.
 
 Two responsibilities:
 
@@ -15,8 +15,8 @@ Two responsibilities:
  2. LookupBySplitID returns every entry sequence number indexed under
     the supplied (PREGrantCommitmentSchemaID, splitID) tuple. Returns
     a slice — length 1 in the normal case, length 2+ when the dealer
-    has equivocated. Decision 3 of Wave 1 v3 mandates that both rows
-    persist; this lookup surfaces them all.
+    has equivocated. Equivocation evidence preservation requires both
+    rows to persist; this lookup surfaces them all.
 
 Domain disambiguation: this file is about CRYPTOGRAPHIC commitments
 (Pedersen on the secp256k1 curve, used to bind every escrow share
@@ -66,8 +66,8 @@ func NewPREGrantCommitmentStore(db *pgxpool.Pool) *PREGrantCommitmentStore {
 // as fatal for the surrounding transaction.
 //
 // The (schema_id, split_id) tuple is intentionally NOT unique — see
-// store/postgres.go schemaDDL commentary on commitment_split_id and
-// Wave 1 v3 Decision 3.
+// store/postgres.go schemaDDL commentary on commitment_split_id
+// (equivocation evidence preservation).
 func (s *PREGrantCommitmentStore) InsertSplitID(
 	ctx context.Context, tx pgx.Tx, sequenceNumber uint64, splitID [32]byte,
 ) error {
@@ -88,9 +88,9 @@ func (s *PREGrantCommitmentStore) InsertSplitID(
 // LookupBySplitID returns every sequence number indexed under the
 // supplied splitID for the pre-grant-commitment-v1 schema.
 //
-// Multi-row contract (Wave 1 v3 Decision 3): the slice is length 1
-// in the normal case, length 2+ when the dealer has equivocated.
-// Callers MUST NOT collapse the result to a single row; the SDK's
+// Multi-row contract: the slice is length 1 in the normal case,
+// length 2+ when the dealer has equivocated. Callers MUST NOT
+// collapse the result to a single row; the SDK's
 // FetchPREGrantCommitment uses the multi-row signal to construct
 // *artifact.CommitmentEquivocationError.
 //

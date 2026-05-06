@@ -1,7 +1,7 @@
 /*
 FILE PATH: gossipstore/keyspace_extras.go
 
-Key encoders/decoders + on-disk shapes for the v0.9.6 sub-prefixes:
+Key encoders/decoders + on-disk shapes for the projection sub-prefixes:
 
 	0x09 binding inverted index (Filter.Binding O(1) lookup)
 	0x0A splitid index (EquivocationScanner subscribes here)

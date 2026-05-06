@@ -9,7 +9,7 @@ KEY ARCHITECTURAL DECISIONS:
   - Invalid/expired token → HTTP 401 (not silent fallthrough to Mode B).
   - Valid token → context carries exchangeDID + authenticated=true.
 
-PT-7 — Pure CQRS:
+— Pure CQRS:
 
 	Auth takes a SessionLookup interface (NOT *pgxpool.Pool). The
 	production wiring in cmd/ledger/main.go constructs a thin

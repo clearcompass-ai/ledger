@@ -143,8 +143,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 }
 
 // SplitIDIndexWriter is the ledger-internal hook the
-// Sequencer invokes after a successful Phase 2 commit to
-// populate the splitid index (Badger prefix 0x0A) — the
+// Sequencer invokes after a successful commit to populate the
+// splitid index (Badger prefix 0x0A) — the
 // gossipnet.EquivocationScanner subscribes to this index and
 // detects collisions on the same (schema_id, split_id) tuple.
 //
@@ -175,9 +175,9 @@ type SplitIDIndexEntry struct {
 }
 
 // EntryLookupWriter is the ledger-internal hook the Sequencer
-// invokes after a successful Phase 2 commit to populate the
-// entry-lookup projection (Badger prefix 0x0C) that backs
-// /v1/commitments/by-split-id under the Pure CQRS principle (P8).
+// invokes after a successful commit to populate the entry-lookup
+// projection (Badger prefix 0x0C) that backs
+// /v1/commitments/by-split-id under the pure CQRS discipline.
 //
 // CQRS DISCIPLINE: the sequencer is the ONLY writer of 0x0C.
 // The api/ read-path consumes it via types.CommitmentFetcher (a
@@ -277,7 +277,7 @@ func NewSequencer(
 //
 // Returns the receiver for fluent wiring. Idempotent against a
 // nil writer. Race-free against drain cycles only when called
-// before Run starts; the v0.9.6 wiring respects that.
+// before Run starts; the wiring respects that.
 func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
 	s.splitIDIndex = w
 	return s
@@ -296,11 +296,11 @@ func (s *Sequencer) WithEntryLookup(w EntryLookupWriter, logDID string) *Sequenc
 	return s
 }
 
-// WithReplayer wires the boot replayer (PT-4) that back-populates
+// WithReplayer wires the boot replayer that back-populates
 // 0x0A + 0x0C from Postgres above the persisted HWM. Run starts
 // the replayer on a child goroutine; ctx cancellation propagates
 // and Run waits for the replayer to drain before returning
-// (P11 graceful teardown).
+// (graceful teardown).
 //
 // Optional; nil receiver is a no-op (test mode + transitional
 // state where Postgres / bytestore aren't fully wired).
@@ -322,12 +322,12 @@ func (s *Sequencer) Metrics() MetricsSnapshot {
 // "Reconcile" entry point — the polling loop IS the
 // reconciliation, and on a quiet log it idles cheaply.
 //
-// Boot replay (PT-4): when WithReplayer is wired, Run spawns the
+// Boot replay: when WithReplayer is wired, Run spawns the
 // replayer on a child goroutine that scans Postgres above the
 // HWM and back-populates 0x0A + 0x0C. The replayer runs in
 // parallel with the drain loop — admission is never blocked.
 // On ctx cancellation, Run waits for the replayer to drain
-// before returning (P11 graceful teardown).
+// before returning (graceful teardown).
 //
 // Returns ctx.Err() on graceful shutdown.
 func (s *Sequencer) Run(ctx context.Context) error {

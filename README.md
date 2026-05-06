@@ -1,10 +1,16 @@
 # Attesta Ledger
 
-Single-binary log ledger. Receives signed entries, sequences them via
-embedded Tessera, publishes cryptographically-verified findings to a
-gossip network, serves Merkle + SMT proofs and commitment lookups.
-Postgres-backed write side; Badger-backed read projections for
-zero-pgx read paths.
+Single-binary log ledger speaking the **Attesta** protocol. Receives
+signed entries, sequences them via embedded Tessera, publishes
+cryptographically-verified findings to a gossip network, serves
+Merkle + SMT proofs and commitment lookups. Postgres-backed write
+side; Badger-backed read projections for zero-pgx read paths.
+
+The ledger is **domain-agnostic by construction** — every log DID,
+database name, and bucket name is supplied via env vars at deployment
+time. Domain-specific demos (judicial-network, supply-chain, identity,
+etc.) live in their own repos and consume this generic 2-node topology
+with their own values.
 
 ```
        Clients
@@ -61,10 +67,9 @@ Every page links to the file:line that backs it.
 | [docs/storage.md](docs/storage.md) | WAL state machine, gossipstore keyspace (`0x07 0x01..0x0D`), Postgres role |
 | [docs/operations.md](docs/operations.md) | Boot order, Kubernetes deployment, test suite |
 | [docs/observability.md](docs/observability.md) | OpenTelemetry wiring, the typed `error_class` taxonomy |
-| [docs/testing.md](docs/testing.md) | Test plan, compliance map (Principle/Alignment → test), clean-extension rules |
+| [docs/testing.md](docs/testing.md) | Test plan, compliance map (named property → test), clean-extension rules |
 | [docs/sdk-validation.md](docs/sdk-validation.md) | Per-package SDK contract validation (compile-time anchors, code-level checks) |
-| [docs/rebrand-plan.md](docs/rebrand-plan.md) | Plan for `attesta → attesta` + `ledger → ledger` (no execution yet) |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [scripts/local/README.dev.md](scripts/local/README.dev.md) | Local 2-node dev + integration topology (real GCS / fake-gcs-server) |
 
 ## Compliance evidence
 
@@ -119,6 +124,10 @@ export LEDGER_BYTE_STORE_S3_BUCKET=...
 ```
 
 Full env-var reference: [docs/configuration.md](docs/configuration.md).
+
+For local development against a 2-node topology with real GCS or
+`fake-gcs-server`, see [scripts/local/README.dev.md](scripts/local/README.dev.md)
+or run `make help`.
 
 ## License
 

@@ -11,7 +11,8 @@ POST-WAVE-1.5 CHANGES:
   - Test helpers buildStampParams + verifyStampForTest (helpers_test.go) keep
     call sites readable. They wire Epoch from currentTestEpoch() so the test
     matches what the ledger's runtime computes.
-  - Wire format is protocol v5 (Wave 1.5). All preamble references updated.
+  - Wire format is the SDK's current single protocol version
+    (envelope.CurrentProtocolVersion()).
 
 Run without Postgres:  go test ./tests/ -v -count=1
 Run with Postgres:     ATTESTA_TEST_DSN="postgres://..." go test ./tests/ -v -count=1
@@ -185,11 +186,12 @@ func TestAdmission_OverMaxSize_SDK_D11(t *testing.T) {
 	}
 }
 
-// TestAdmission_EvidenceCapNonSnapshot_Decision51 verifies that a non-snapshot
-// entry carrying more than envelope.MaxEvidencePointers (32) is rejected by
-// NewEntry. Decision 51 caps routine evidence at 32; only authority snapshot
-// entries (Path C with PriorAuthority + AuthoritySet) are exempt.
-func TestAdmission_EvidenceCapNonSnapshot_Decision51(t *testing.T) {
+// TestAdmission_EvidenceCapNonSnapshot verifies that a non-snapshot
+// entry carrying more than envelope.MaxEvidencePointers (32) is rejected
+// by NewEntry. Routine entries are capped at 32 evidence pointers; only
+// authority snapshot entries (Path C with PriorAuthority + AuthoritySet)
+// are exempt.
+func TestAdmission_EvidenceCapNonSnapshot(t *testing.T) {
 	if envelope.MaxEvidencePointers != 32 {
 		t.Fatalf("test assumes MaxEvidencePointers=32, got %d — update test", envelope.MaxEvidencePointers)
 	}
@@ -645,9 +647,9 @@ func TestQuery_Scan_PastEnd(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestTreeHead_Assembly(t *testing.T) {
-	//  / Wave 2: SchemeTag moved from CosignedTreeHead to each
-	// WitnessSignature (types/tree_head.go:156-169). Per-head scheme
-	// is gone; per-signature scheme is now the canonical surface.
+	// SchemeTag lives on each WitnessSignature, not on CosignedTreeHead
+	// (types/tree_head.go:156-169). Per-signature scheme is the
+	// canonical surface.
 	cosigned := types.CosignedTreeHead{
 		TreeHead: types.TreeHead{TreeSize: 1000, RootHash: [32]byte{1, 2, 3}},
 		Signatures: []types.WitnessSignature{
@@ -1054,33 +1056,40 @@ func TestGov_EnforcementCosignatures(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Category 13: Judicial End-to-End (6 tests)
+// End-to-End domain workflows (6 tests)
+//
+// Generic exercises of the four control-header authority paths
+// (Path A self-signed, Path B delegated, Path C scoped, Path D
+// commentary) against the SDK envelope + builder. The fixtures use
+// neutral identities (`did:example:*`) and abstract payload shapes
+// (e.g. {"action":"X"}); domain-specific demos that rely on the
+// same paths live in their own repos.
 // ═════════════════════════════════════════════════════════════════════════════
 
-func TestJudicial_CaseFiling(t *testing.T) {
+func TestEndToEnd_DelegatedRecordFiling(t *testing.T) {
 	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:division")
-	h.addDelegation(t, pos(2), "did:example:division", "did:example:judge")
-	h.addDelegation(t, pos(3), "did:example:judge", "did:example:clerk")
-	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:clerk", AuthorityPath: sameSigner()}, []byte("case: Davidson v. Smith")), pos(4))
+	h.addDelegation(t, pos(2), "did:example:division", "did:example:agent")
+	h.addDelegation(t, pos(3), "did:example:agent", "did:example:assistant")
+	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assistant", AuthorityPath: sameSigner()}, []byte("record: A v. B")), pos(4))
 	if r.NewLeafCounts != 1 {
-		t.Fatal("case should create leaf")
+		t.Fatal("record should create leaf")
 	}
-	r2 := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:clerk", TargetRoot: ptrTo(pos(1)), AuthorityPath: delegation(), DelegationPointers: []types.LogPosition{pos(3), pos(2)}}, []byte("motion")), pos(5))
+	r2 := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assistant", TargetRoot: ptrTo(pos(1)), AuthorityPath: delegation(), DelegationPointers: []types.LogPosition{pos(3), pos(2)}}, []byte("amendment")), pos(5))
 	if r2.PathBCounts != 1 {
-		t.Fatal("clerk filing should be Path B")
+		t.Fatal("delegated filing should be Path B")
 	}
 }
 
-func TestJudicial_SealingLifecycle(t *testing.T) {
+func TestEndToEnd_SealUnsealLifecycle(t *testing.T) {
 	h := newHarness()
-	h.addRootEntity(t, pos(1), "did:example:case")
-	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
-	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, []byte("seal")), pos(3))
+	h.addRootEntity(t, pos(1), "did:example:record")
+	h.addScopeEntity(t, pos(2), "did:example:agent", map[string]struct{}{"did:example:agent": {}})
+	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:agent", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, []byte("seal")), pos(3))
 	if !h.leafAuthorityTip(t, pos(1)).Equal(pos(3)) {
 		t.Fatal("seal should update AuthorityTip")
 	}
-	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2)), PriorAuthority: ptrTo(pos(3))}, []byte("unseal")), pos(4))
+	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:agent", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2)), PriorAuthority: ptrTo(pos(3))}, []byte("unseal")), pos(4))
 	if !h.leafAuthorityTip(t, pos(1)).Equal(pos(4)) {
 		t.Fatal("unseal should advance AuthorityTip")
 	}
@@ -1089,10 +1098,10 @@ func TestJudicial_SealingLifecycle(t *testing.T) {
 	}
 }
 
-func TestJudicial_EvidenceGrantCommentary(t *testing.T) {
+func TestEndToEnd_EvidenceGrantCommentary(t *testing.T) {
 	h := newHarness()
 	rootBefore := h.root(t)
-	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:clerk"}, mustJSON(map[string]string{"grant": "evidence", "cid": "sha256:abc"})), pos(1))
+	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assistant"}, mustJSON(map[string]string{"grant": "evidence", "cid": "sha256:abc"})), pos(1))
 	if r.CommentaryCounts != 1 {
 		t.Fatal("evidence grant should be commentary")
 	}
@@ -1101,10 +1110,10 @@ func TestJudicial_EvidenceGrantCommentary(t *testing.T) {
 	}
 }
 
-func TestJudicial_AppellateRelay(t *testing.T) {
+func TestEndToEnd_CrossLogRelayCommentary(t *testing.T) {
 	h := newHarness()
 	rootBefore := h.root(t)
-	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:appellate"}, mustJSON(map[string]any{"relay": "cross_jurisdiction", "source": "did:attesta:davidson", "seq": 42})), pos(1))
+	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:relay"}, mustJSON(map[string]any{"relay": "cross_log", "source": "did:example:node-a", "seq": 42})), pos(1))
 	if r.CommentaryCounts != 1 {
 		t.Fatal("relay should be commentary")
 	}
@@ -1113,7 +1122,7 @@ func TestJudicial_AppellateRelay(t *testing.T) {
 	}
 }
 
-func TestJudicial_BulkImport(t *testing.T) {
+func TestEndToEnd_BulkImport(t *testing.T) {
 	entries, positions := generateEntries(t, 1000)
 	r := runSDKBuilder(t, entries, positions)
 	if r.NewLeafCounts == 0 {
@@ -1126,10 +1135,10 @@ func TestJudicial_BulkImport(t *testing.T) {
 	t.Logf("bulk: %d leaves, %d commentary, %d pathA, %d pathD", r.NewLeafCounts, r.CommentaryCounts, r.PathACounts, r.PathDCounts)
 }
 
-func TestJudicial_DailyAssignment(t *testing.T) {
+func TestEndToEnd_DailyAssignmentCommentary(t *testing.T) {
 	h := newHarness()
 	rootBefore := h.root(t)
-	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:clerk-office"}, mustJSON(map[string]any{"type": "daily_assignment", "date": "2024-01-15", "courtroom": "3A"})), pos(1))
+	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assigner"}, mustJSON(map[string]any{"type": "daily_assignment", "date": "2024-01-15", "slot": "3A"})), pos(1))
 	if r.CommentaryCounts != 1 {
 		t.Fatal("assignment should be commentary")
 	}

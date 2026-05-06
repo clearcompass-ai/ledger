@@ -2,7 +2,7 @@
 FILE PATH: builder/commitment_publisher.go
 
 Publishes SMT derivation commitments as commentary entries on the log.
-Commentary: Target_Root=null, Authority_Path=null → zero SMT impact (Fix 1).
+Commentary: Target_Root=null, Authority_Path=null → zero SMT impact.
 
 KEY ARCHITECTURAL DECISIONS:
   - Commentary entry: no SMT leaf created or modified.
@@ -13,30 +13,27 @@ KEY ARCHITECTURAL DECISIONS:
     nil submitFn = commitments computed but not published on the log.
   - WithCommitmentStore: optional persistence to derivation_commitments
     table for indexed lookup by fraud proof verifiers.
-  - Destination-bound (SDK v0.3.0+): commitments are commentary on THIS log,
+  - Destination-bound: commitments are commentary on THIS log,
     so Destination = LogDID. Threaded through constructor.
 
-PERSISTENCE NOTE (correction #4): Commitment persistence runs POST-COMMIT
-(loop.go step 7). A crash between atomic commit and persistence loses the
+PERSISTENCE NOTE: Commitment persistence runs POST-COMMIT (loop.go
+step 7). A crash between atomic commit and persistence loses the
 commitment row. This is acceptable — the table is a lookup index, not
 consensus-critical state. Rebuild by replaying entries if diverged.
 
-submitFn NOTE (correction #6): submitFn must be wired to a real submission
-path for commentary entries to appear on the log. The anchor/publisher.go
-pattern (SubmitViaHTTP) is the reference implementation. Until submitFn is
-wired, the commentary_seq column in derivation_commitments has no value.
+submitFn NOTE: submitFn must be wired to a real submission path for
+commentary entries to appear on the log. The anchor/publisher.go
+pattern (SubmitViaHTTP) is the reference implementation. Until
+submitFn is wired, the commentary_seq column in derivation_commitments
+has no value.
 
 SDK ALIGNMENT:
-  - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-  - : entry construction split into two constructors per
-    core/envelope/entry.go's docblock —
-    envelope.NewEntry(header, payload, signatures)  — fully signed
-    envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
-    The publisher constructs the commentary unsigned and hands it to
-    submitFn for signing and submission, so the right constructor is
-    NewUnsignedEntry. submitFn (or SubmitViaHTTP) is responsible for
-    populating entry.Signatures before envelope.Serialize is invoked
-    on the entry.
+  - envelope.NewEntry(header, payload, signatures)  — fully signed
+  - envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
+  The publisher constructs the commentary unsigned and hands it to
+  submitFn for signing and submission, so the right constructor is
+  NewUnsignedEntry. submitFn (or SubmitViaHTTP) is responsible for
+  populating entry.Signatures before envelope.Serialize is invoked.
 */
 package builder
 
@@ -63,7 +60,7 @@ type CommitmentPublisherConfig struct {
 // CommitmentPublisher publishes derivation commitments.
 type CommitmentPublisher struct {
 	ledgerDID string
-	logDID string // NEW (v0.3.0): destination for self-published commentary.
+	logDID string // destination for self-published commentary.
 	cfg CommitmentPublisherConfig
 	logger *slog.Logger
 	mu sync.Mutex
@@ -79,7 +76,7 @@ type CommitmentPublisher struct {
 // logDID:      the destination the commentary binds to (this ledger's log).
 //
 // logDID MUST be non-empty — envelope.NewUnsignedEntry will reject
-// construction otherwise (SDK v0.3.0 destination-binding).
+// construction otherwise (destination-binding).
 func NewCommitmentPublisher(
 	ledgerDID string,
 	logDID string,

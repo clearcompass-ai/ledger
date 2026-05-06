@@ -24,11 +24,13 @@ When `LEDGER_BYTE_STORE_BACKEND=s3`:
 |---|---|
 | `LEDGER_BYTE_STORE_S3_BUCKET` | `main.go:464` |
 
-When `cfg.WitnessQuorumK > 0` (witness mode active):
+When witness mode is active — i.e., when EITHER
+`LEDGER_WITNESS_KEY_FILE` is set OR `LEDGER_WITNESS_ENDPOINTS` is
+non-empty (see `cmd/ledger/main.go::loadConfig`):
 
 | Variable | Read at | Purpose |
 |---|---|---|
-| `LEDGER_NETWORK_BOOTSTRAP_FILE` | `main.go:477` | Network bootstrap definition |
+| `LEDGER_NETWORK_BOOTSTRAP_FILE` | `main.go:477` | Network bootstrap definition (defines the genesis witness DIDs + NetworkID) |
 
 ## Optional with defaults
 

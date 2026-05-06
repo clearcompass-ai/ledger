@@ -6,7 +6,7 @@ or github.com/clearcompass-ai/ledger/store.
 
 # WHY THIS PACKAGE EXISTS
 
-PT-7 closes the api/ pgx-purge: api/ depends on interfaces (defined
+closes the api/ pgx-purge: api/ depends on interfaces (defined
 at the api/ side, in api/ports.go) instead of concrete *store.X
 types. Some payloads exchanged across that boundary are PURE DATA —
 they carry no behavior and don't need an interface. Examples:
@@ -103,7 +103,7 @@ type CommitmentRow struct {
 // EscrowOverrideResult is the return shape of
 // EscrowOverrideProcessor.ProcessOverride. Lives here so api/'s
 // escrow-override handler doesn't need to import gossipnet (which
-// transitively imports sequencer + pgx via PT-4).
+// transitively imports sequencer + pgx).
 type EscrowOverrideResult struct {
 	EventID [32]byte
 	Signatures int
@@ -123,7 +123,7 @@ type EscrowOverrideResult struct {
 var ErrInsufficientCredits = errors.New("apitypes: insufficient credits")
 
 // ─────────────────────────────────────────────────────────────────────
-// Error dimensionality (PT-6 — A10 + P10)
+// Error dimensionality
 // ─────────────────────────────────────────────────────────────────────
 
 // ErrorClass is the typed, bounded-cardinality taxonomy of

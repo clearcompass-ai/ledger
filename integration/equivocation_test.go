@@ -8,39 +8,29 @@ End-to-end test for the cryptographic-commitment surface.
 A malicious dealer publishes two distinct commitment entries
 under the same (schema_id, split_id) tuple. The ledger's
 admission pipeline admits both — the (schema_id, split_id)
-BTREE index is non-UNIQUE per Decision 3 specifically so this
-case lands as cryptographic evidence rather than being silently
-destroyed by a constraint violation.
+BTREE index is non-UNIQUE specifically so this case lands as
+cryptographic evidence rather than being silently destroyed by
+a constraint violation.
 
-Surviving guarantees (post legacy-monitor retirement):
+Surviving guarantees:
 
  1. Both entries are durable in commitment_split_id.
     A regression here destroys evidence at admission time.
 
- 2. The C7 lookup endpoint
+ 2. The lookup endpoint
     (GET /v1/commitments/by-split-id/{schema_id}/{hex})
     returns BOTH entries in ascending sequence order.
-    Surfaces directly from commitment_split_id; no monitor
-    dependency.
 
  3. The SDK's *artifact.CommitmentEquivocationError construction
     wraps the two-entry response correctly. Confirms the error
     shape callers see in production.
 
-# RETIRED GUARANTEES
-
-The legacy witness/commitment_equivocation_monitor.go was
-retired (HTTP-webhook publisher already gone; monitor itself
-deleted). The proofs-table writer (S2) and HTTP alert dispatch
-(S3) are no longer wired. v0.9.6 closes the loop: entry-level
-equivocation transparency flows through KindEntryCommitmentEquivocation
+Equivocation transparency flows through KindEntryCommitmentEquivocation
 via gossipnet.EquivocationScanner (subscribed to the splitid
 index 0x0A), with cryptographically-verified findings projected
-into the BadgerDB equivocation projection 0x0B. The previous
-commitment_equivocation_proofs Postgres table was dropped in
-the v0.9.6 adoption.
+into the BadgerDB equivocation projection 0x0B.
 
-Skip semantics match CI3: skipped when ATTESTA_TEST_DSN is unset.
+Skip semantics: skipped when ATTESTA_TEST_DSN is unset.
 */
 package integration
 

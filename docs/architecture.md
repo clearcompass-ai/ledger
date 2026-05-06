@@ -54,14 +54,14 @@ POST /v1/entries (`api/submission.go`):
 ```
 HTTP request
    │
-   ▼ middleware.SizeLimit(MaxEntrySize+1024)        (server.go:217)
+   ▼ middleware.SizeLimit(MaxEntrySize+1024)        (server.go:218)
    │
-   ▼ middleware.Auth(SessionLookup)                  (server.go:219)
+   ▼ middleware.Auth(SessionLookup)                  (server.go:220)
    │  no token → ctx[authenticated]=false (Mode B)
    │  invalid token → 401
    │  valid token → ctx[authenticated]=true, ctx[exchange_did]=...
    │
-   ▼ NewSubmissionHandler.prepareSubmission (submission.go:262)
+   ▼ NewSubmissionHandler.prepareSubmission (submission.go:283)
    │   step 1: read raw bytes + protocol-version preamble
    │   step 2: envelope.Deserialize + ValidateAlgorithmID
    │   step 3: entry.Validate + CheckNFC + destination + freshness
@@ -69,14 +69,14 @@ HTTP request
    │   step 4b: BLSQuorumVerifier.VerifyEntry (no-op)
    │   step 5-6: size cap + evidence pointers cap
    │   step 7: Mode B stamp verify (unauthenticated only)
-   │   step 8: canonical hash + idempotency probe via wal.MetaState
+   │   step 8: canonical hash + idempotency probe via wal.MetaState (submission.go:450)
    │
    ├─ idempotent replay → SignSCT with persisted log_time → 202
    │
-   ▼ deductCreditModeA via CreditDeducter.Deduct (submission.go:545)
+   ▼ deductCreditModeA via CreditDeducter.Deduct (submission.go:488)
    │  insufficient credits → 402
    │
-   ▼ deps.Storage.WAL.Submit(hash, wire, logTimeMicros)  (submission.go:559)
+   ▼ deps.Storage.WAL.Submit(hash, wire, logTimeMicros)  (submission.go:588)
    │  wal.ErrQueueFull → 503 + Retry-After
    │
    ▼ SignSCT → write 202 + JSON SignedCertificateTimestamp
@@ -222,7 +222,7 @@ artifact encryption + key management lives outside this binary.
 | Property | Where it's enforced |
 |---|---|
 | Durability before 202 | `wal.Submit` blocks until fsync (`wal/committer.go`) |
-| Idempotent admission | WAL.MetaState probe + persisted `LogTimeMicros` (`api/submission.go:432`) |
+| Idempotent admission | WAL.MetaState probe + persisted `LogTimeMicros` (`api/submission.go:450`) |
 | Hot-path isolation | HTTP handler is WAL-fsync only; Tessera + Postgres run on sequencer goroutine |
 | Zero-pgx read path | `api/commitments.go` consumes `types.CommitmentFetcher`, served by `gossipstore.BadgerCommitmentFetcher` |
 | Boot reconciliation | `sequencer.Replayer` back-populates 0x0A + 0x0C from Postgres on every boot |
@@ -246,22 +246,22 @@ artifact goes through SDK primitives:
 - `crypto/sct.SignSCT` (admission promise)
 - `crypto/cosign.NewWitnessKeySet` (encapsulated K-of-N topology)
 - `crypto/cosign.WitnessCollector` (K-of-N collection)
-- `crypto/cosign.Verify(payload, set, algo, sigs)` (single-arg verification)
+- `crypto/cosign.Verify(payload, set, algo, sigs)` (single-set verification)
 - `findings.NewEquivocationFinding` + `Verify(set)` (witness-attested gossip events)
 - `findings.NewEntryCommitmentEquivocationFinding` (signer-attested gossip events)
 - `gossip.FeedHandler` + `BufferedSink` + `MultiSink` (pull-based egress)
+- `types.CommitmentFetcher` (read-side abstraction satisfied by both
+  the Postgres-backed and Badger-backed implementations)
 
-### v0.1.1 alignment notes
+### Witness keyset wiring
 
-The v0.1.1 break collapsed the previous `(keys, K, networkID,
-blsVerifier)` parameter group into a single `*cosign.WitnessKeySet`
-constructed once at boot (`cmd/ledger/main.go`) from
-`LEDGER_WITNESS_QUORUM_K` + the genesis witness DIDs. The same
-keyset is shared between the admission `BLSQuorumVerifier` and the
-gossipnet `EquivocationMonitor` — one source of truth for
-witness topology. Phantom-typed `Verified...Finding` wrappers were
-removed; the publish gate is now developer discipline at the call
-site, enforced by tests in `gossipnet/equivocation_monitor_test.go`
-and the contract conformance tests in
+The boot path (`cmd/ledger/main.go`) calls
+`cosign.NewWitnessKeySet(witKeys, NetworkID, LEDGER_WITNESS_QUORUM_K, blsv)`
+once and shares the resulting `*cosign.WitnessKeySet` between the
+admission `BLSQuorumVerifier` and the gossipnet
+`EquivocationMonitor` — one source of truth for witness topology
+(keys, NetworkID, K-of-N quorum, BLS verifier). The publish gate
+on equivocation findings is developer discipline at the call site,
+enforced by tests in `gossipnet/equivocation_monitor_test.go` and
+the contract conformance tests in
 `admission/v011_contract_test.go` + `gossipnet/v011_contract_test.go`.
-- `types.CommitmentFetcher` (read-side abstraction)

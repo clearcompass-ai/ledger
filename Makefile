@@ -83,83 +83,87 @@ audit-sdk: ## Fail if SDK ships any muEnable*=false
 
 # ─── Dev topology (REAL GCS) ────────────────────────────────────────────
 #
-# Two ledgers (Davidson trial on :8080, COA on :8081) backed by a
+# Two ledger nodes (node-a on :8080, node-b on :8081) backed by a
 # shared Postgres and REAL Google Cloud Storage (the developer's own
-# GCS buckets). Powers the judicial-network walkthrough.
+# GCS buckets). Domain-agnostic: every log DID, database name, and
+# bucket name is supplied via env vars at deployment time. Domain-
+# specific demos (judicial-network, supply-chain, etc.) live in
+# their own repos and consume this generic topology.
 #
 # Required developer setup BEFORE `make dev-up`:
 #   gcloud auth application-default login
-#   export LEDGER_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
-#   export LEDGER_DEV_BUCKET_COA=<your-coa-bucket>
+#   export LEDGER_DEV_BUCKET_NODE_A=<your-node-a-bucket>
+#   export LEDGER_DEV_BUCKET_NODE_B=<your-node-b-bucket>
+#   export LEDGER_DEV_NODE_A_LOG_DID=<did:web:...>  (e.g. did:web:node-a.example)
+#   export LEDGER_DEV_NODE_B_LOG_DID=<did:web:...>
 # See scripts/local/README.dev.md for full prerequisites.
 
-dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
+dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env + log-DID env)
 	@if [ ! -f "$$HOME/.config/gcloud/application_default_credentials.json" ]; then \
 	  echo "FAIL: missing $$HOME/.config/gcloud/application_default_credentials.json"; \
 	  echo "      run: gcloud auth application-default login"; \
 	  exit 1; \
 	fi
-	@if [ -z "$$LEDGER_DEV_BUCKET_DAVIDSON" ]; then \
-	  echo "FAIL: LEDGER_DEV_BUCKET_DAVIDSON is unset"; \
-	  echo "      see scripts/local/README.dev.md"; \
-	  exit 1; \
-	fi
-	@if [ -z "$$LEDGER_DEV_BUCKET_COA" ]; then \
-	  echo "FAIL: LEDGER_DEV_BUCKET_COA is unset"; \
-	  echo "      see scripts/local/README.dev.md"; \
-	  exit 1; \
-	fi
-	@echo "preflight ok: ADC found, bucket env vars set"
+	@for var in LEDGER_DEV_BUCKET_NODE_A LEDGER_DEV_BUCKET_NODE_B \
+	            LEDGER_DEV_NODE_A_LOG_DID LEDGER_DEV_NODE_B_LOG_DID; do \
+	  eval "val=\$$$$var"; \
+	  if [ -z "$$val" ]; then \
+	    echo "FAIL: $$var is unset"; \
+	    echo "      see scripts/local/README.dev.md"; \
+	    exit 1; \
+	  fi; \
+	done
+	@echo "preflight ok: ADC found, bucket + log-DID env vars set"
 
-dev-up: dev-preflight ## Boot dev topology against REAL GCS (Davidson :8080 + COA :8081)
+dev-up: dev-preflight ## Boot dev topology against REAL GCS (node-a :8080 + node-b :8081)
 	$(DEV_COMPOSE) up -d --build
-	@echo "waiting for both ledgers to report healthy..."
+	@echo "waiting for both ledger nodes to report healthy..."
 	@for i in $$(seq 1 60); do \
-	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
-	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
-	  [ "$$d" = "ok" ] && [ "$$c" = "ok" ] && \
-	    echo "ready: davidson=:8080  coa=:8081  gcs=storage.googleapis.com" && exit 0; \
+	  a=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
+	  b=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
+	  [ "$$a" = "ok" ] && [ "$$b" = "ok" ] && \
+	    echo "ready: node-a=:8080  node-b=:8081  gcs=storage.googleapis.com" && exit 0; \
 	  sleep 2; \
 	done; \
-	echo "ledgers did not report healthy in time; run 'make dev-logs'"; exit 1
+	echo "ledger nodes did not report healthy in time; run 'make dev-logs'"; exit 1
 
 dev-down: ## Tear down dev topology AND delete volumes (full reset; GCS buckets unchanged)
 	$(DEV_COMPOSE) down -v
 
-dev-logs: ## Tail logs from both ledgers
-	$(DEV_COMPOSE) logs -f ledger-davidson ledger-coa
+dev-logs: ## Tail logs from both ledger nodes
+	$(DEV_COMPOSE) logs -f ledger-node-a ledger-node-b
 
 dev-status: ## Show service status
 	$(DEV_COMPOSE) ps
 
 dev-rebuild: ## Rebuild ledger image and restart both services
-	$(DEV_COMPOSE) build ledger-davidson
-	$(DEV_COMPOSE) up -d ledger-davidson ledger-coa
+	$(DEV_COMPOSE) build ledger-node-a
+	$(DEV_COMPOSE) up -d ledger-node-a ledger-node-b
 
 # ─── Integration topology (fake-gcs-server, offline) ────────────────────
 #
 # Same ledger + database shape but the GCS dependency is satisfied
 # by fake-gcs-server (in-process, anonymous, deterministic). Used for
-# CI integration tests + offline / air-gapped local runs. Use the
+# integration tests + offline / air-gapped local runs. Use the
 # real-GCS topology (above) for daily development.
 
 integration-up: ## Boot integration topology (fake-gcs-server, offline)
 	$(INT_COMPOSE) up -d --build
-	@echo "waiting for both ledgers to report healthy..."
+	@echo "waiting for both ledger nodes to report healthy..."
 	@for i in $$(seq 1 60); do \
-	  d=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
-	  c=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
-	  [ "$$d" = "ok" ] && [ "$$c" = "ok" ] && \
-	    echo "ready: davidson=:8080  coa=:8081  fake-gcs=:4443" && exit 0; \
+	  a=$$(curl -fsS http://localhost:8080/healthz 2>/dev/null || echo ""); \
+	  b=$$(curl -fsS http://localhost:8081/healthz 2>/dev/null || echo ""); \
+	  [ "$$a" = "ok" ] && [ "$$b" = "ok" ] && \
+	    echo "ready: node-a=:8080  node-b=:8081  fake-gcs=:4443" && exit 0; \
 	  sleep 2; \
 	done; \
-	echo "ledgers did not report healthy in time; run 'make integration-logs'"; exit 1
+	echo "ledger nodes did not report healthy in time; run 'make integration-logs'"; exit 1
 
 integration-down: ## Tear down integration topology AND delete volumes
 	$(INT_COMPOSE) down -v
 
-integration-logs: ## Tail logs from both ledgers (integration topology)
-	$(INT_COMPOSE) logs -f ledger-davidson ledger-coa
+integration-logs: ## Tail logs from both ledger nodes (integration topology)
+	$(INT_COMPOSE) logs -f ledger-node-a ledger-node-b
 
 integration-status: ## Show service status (integration topology)
 	$(INT_COMPOSE) ps

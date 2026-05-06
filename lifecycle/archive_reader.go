@@ -32,13 +32,9 @@ OVERVIEW:
 	FetchHash(pos) → resolve shard → fetch hash from entry tile → return.
 
 SDK ALIGNMENT:
-  - v0.3.0-tessera: envelope.StripSignature split a wire entry into
-    (canonical, algoID, sigBytes) so EntryWithMetadata could carry the
-    sidecar fields SignatureAlgoID and SignatureBytes.
-  - : signatures live INSIDE the canonical bytes (the v6
-    multi-sig section appended by envelope.Serialize). The wire bytes
-    ARE the canonical bytes; envelope.StripSignature is removed.
-    EntryWithMetadata now exposes only CanonicalBytes, LogTime, and
+  - Signatures live INSIDE the canonical bytes (the multi-sig section
+    appended by envelope.Serialize). The wire bytes ARE the canonical
+    bytes. EntryWithMetadata exposes only CanonicalBytes, LogTime, and
     Position. Callers that need the primary signature's algoID or raw
     bytes call envelope.Deserialize(meta.CanonicalBytes) and read
     entry.Signatures[0].

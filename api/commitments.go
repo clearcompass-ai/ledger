@@ -1,9 +1,8 @@
 /*
 FILE PATH: api/commitments.go
 
-GET /v1/commitments/by-split-id/{schema_id}/{hex} — 
-cryptographic-commitment lookup endpoint per Wave 1 v3 §C7 +
-Decision 4.
+GET /v1/commitments/by-split-id/{schema_id}/{hex} —
+cryptographic-commitment lookup endpoint.
 
 Path parameters:
 
@@ -12,7 +11,7 @@ Path parameters:
 	               escrow-split-commitment-v1
 	{hex}        32-byte SplitID, hex-encoded (lowercase, no 0x prefix)
 
-Response shape (Decision 4):
+Response shape:
 
 	{
 	  "entries": [
@@ -97,9 +96,9 @@ type CommitmentLookupPosition struct {
 // by GET /v1/commitments/by-split-id. Field set is the strict subset
 // of types.EntryWithMetadata required to reconstruct the SDK
 // EntryWithMetadata at the consumer (CanonicalBytes, LogTime,
-// Position) per Wave 1 v3 changelog item "EntryWithMetadata
-// Corrected" — sidecar fields like signatures and tree-head hashes
-// are NOT included.
+// Position) — sidecar fields like signatures and tree-head hashes
+// are NOT included; signatures live inside CanonicalBytes and are
+// extracted via envelope.Deserialize when needed.
 type CommitmentLookupEntry struct {
 	CanonicalBytesHex string `json:"canonical_bytes_hex"`
 	LogTime string `json:"log_time"`
@@ -201,10 +200,9 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 			return
 		}
 
-		// Decision 4: 404 when the result is empty; the array is
-		// always non-empty when 200 is returned. SDK consumers
-		// treat 404 as "no commitment on log" — a normal recovery
-		// outcome.
+		// 404 when the result is empty; the array is always non-
+		// empty when 200 is returned. SDK consumers treat 404 as
+		// "no commitment on log" — a normal recovery outcome.
 		if len(entries) == 0 {
 			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
 				http.StatusNotFound,
@@ -242,8 +240,7 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 
 // marshalLookupEntry converts an SDK EntryWithMetadata to the
 // API-layer wire form. Kept as a tight pure function so the schema
-// is easy to keep in sync with Decision 4 if the response shape
-// evolves.
+// is easy to keep in sync if the response shape evolves.
 func marshalLookupEntry(e *types.EntryWithMetadata) CommitmentLookupEntry {
 	if e == nil {
 		// Defensive: a nil entry from the fetcher would be a

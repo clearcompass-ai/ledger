@@ -8,7 +8,7 @@ the sessions table.
 
 # WHY THIS EXISTS
 
-PT-7 — Pure CQRS: api/middleware/auth.go used to take a
+— Pure CQRS: api/middleware/auth.go used to take a
 *pgxpool.Pool and inline the SELECT directly, which made
 api/middleware (and transitively api/) import pgx. The middleware
 now takes a SessionLookup interface; this file is the production

@@ -1,15 +1,15 @@
 /*
 FILE PATH: admission/bls_quorum_verifier.go
 
-BLS quorum verification at admission time per Wave 1 v3 §S1.
+BLS quorum verification at admission time.
 
-Scope (Wave 1 v3, intentionally narrow): this verifier fires ONLY for
-entries whose payload embeds a cosigned tree head — anchor entries
-authored by peer ledgers, witness-attestation commentary, cross-log
-proof entries. Plain submissions that do not carry an embedded
-checkpoint skip this stage entirely; the commitment-entry surface
+Scope (intentionally narrow): this verifier fires ONLY for entries
+whose payload embeds a cosigned tree head — anchor entries authored
+by peer ledgers, witness-attestation commentary, cross-log proof
+entries. Plain submissions that do not carry an embedded checkpoint
+skip this stage entirely; the commitment-entry surface
 (pre-grant-commitment-v1, escrow-split-commitment-v1) does not embed
-tree heads and therefore never triggers S1.
+tree heads and therefore never triggers it.
 
 The verifier routes through cosign.Verify against the SDK's universal
 cosignature surface. cosign.Verify enforces, in one path:
@@ -28,15 +28,12 @@ switches. The ledger's job is to invoke the primitive and map its
 quorum-class errors to the admission-layer's
 ErrWitnessQuorumInsufficient.
 
-# v0.1.1 API SHAPE
+# API SHAPE
 
 The verifier holds a *cosign.WitnessKeySet directly — keys,
 NetworkID, K-of-N quorum, and BLS aggregate verifier are all
 encapsulated topology constructed once at boot via
-cosign.NewWitnessKeySet. The previous (keys, K, networkID,
-blsVerifier) parameter group is collapsed into one argument; the
-single-impl WitnessKeySet interface and StaticWitnessKeySet wrapper
-that existed to bridge v0.1.0's separate-args shape are removed.
+cosign.NewWitnessKeySet.
 
 Detection vs. verification (separation of concerns):
 
@@ -45,9 +42,10 @@ Detection vs. verification (separation of concerns):
     closed-set predicate that returns false for every schema; future
     commits add specific schema_id matches as the ledger's
     cross-log proof and peer-anchor surfaces grow. As long as the
-    predicate returns false, this verifier is dead code and Wave 1
-    ships with the admission pipeline correctly skipping S1 — which
-    is the intended behavior for the entry surface introduces.
+    predicate returns false, this verifier is dead code on the
+    entry surface — wiring it now means the moment a schema starts
+    embedding tree heads the K-of-N check fires without an
+    additional code change.
 
   - ExtractEmbeddedTreeHead parses the embedded head from the
     payload. Schema-specific. Stubbed for the same reason as the
@@ -61,7 +59,7 @@ Active witness key set: loaded from ledger config at startup as a
 *cosign.WitnessKeySet (config-backed construction lives in
 cmd/ledger/main.go wiring, not here). Refresh-on-rotation is the
 ledger wiring's responsibility — atomic.Pointer[cosign.WitnessKeySet]
-is the canonical pattern when rotation lands; v0.1.1 is single-set.
+is the canonical pattern when rotation lands.
 */
 package admission
 
@@ -221,8 +219,8 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 // one the ledger knows to carry a cosigned tree head. Currently
 // a closed-set predicate that returns false for every schema; the
 // commitment-entry surface (pre-grant-commitment-v1, escrow-split-
-// commitment-v1) does NOT embed tree heads, so S1 verification is
-// correctly a no-op for those entries.
+// commitment-v1) does NOT embed tree heads, so quorum verification
+// is correctly a no-op for those entries.
 //
 // Future commits add matches for:
 //
@@ -235,8 +233,8 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 // Each addition is a trivial schema_id match against the entry's
 // SchemaRef-resolved manifest or a known-DID match on the signer
 // for ledger-owned schemas. The closed-set discipline ensures
-// the ledger never invokes S1 on payloads it does not own —
-// the Domain/Protocol Separation Principle remains intact.
+// the ledger never invokes the quorum check on payloads it does not
+// own — domain/protocol separation remains intact.
 func EntryEmbedsTreeHead(entry *envelope.Entry) bool {
 	if entry == nil {
 		return false
@@ -247,7 +245,7 @@ func EntryEmbedsTreeHead(entry *envelope.Entry) bool {
 
 // ExtractEmbeddedTreeHead parses a cosigned tree head from the
 // entry's DomainPayload. Returns (zero, false, nil) when the
-// schema is unrecognized — the typical case for Wave 1 because
+// schema is unrecognized — the typical case today because
 // EntryEmbedsTreeHead also returns false for every schema. Wired
 // alongside detector additions in future commits.
 //

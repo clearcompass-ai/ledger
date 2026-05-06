@@ -3,17 +3,17 @@ FILE PATH: tests/destination_binding_test.go
 
 DESCRIPTION:
 
-	Integration tests that lock in the v0.3.0-tessera security invariants
-	at the ledger's HTTP admission boundary. Every test here is
-	load-bearing — a failure is either a real security regression or a
-	protocol change that requires explicit review.
+	Integration tests that lock in the destination-binding security
+	invariants at the ledger's HTTP admission boundary. Every test
+	here is load-bearing — a failure is either a real security
+	regression or a protocol change that requires explicit review.
 
 INVARIANTS LOCKED (5 total):
 
  1. Cross-destination rejection (step 3b → 403 Forbidden)
-    Entry signed for exchange A is rejected at exchange B, even
-    though the cryptographic signature is valid. This is the runtime
-    defense that the destination-binding hash scheme enables.
+    Entry signed for log A is rejected at log B, even though the
+    cryptographic signature is valid. This is the runtime defense
+    that the destination-binding hash scheme enables.
 
  2. Malformed-destination rejection (step 3a → 422 Unprocessable)
     Entry wire-forged with empty Destination (bypassing NewEntry) is
@@ -32,25 +32,15 @@ INVARIANTS LOCKED (5 total):
 
  5. Tessera leaf is envelope.EntryIdentity, not sha256(wire)
     Inclusion proof fetched after submission commits to
-    envelope.EntryIdentity(entry), NOT sha256(canonical+sig). Locks
-    the Tessera leaf-scheme migration against regression.
+    envelope.EntryIdentity(entry), NOT sha256(canonical+sig).
+    Locks the Tessera leaf scheme against regression.
 
 KEY DEPENDENCIES:
   - newTestServer(t): test harness returning *httptest.Server configured
-    with testLogDID as cfg.LogDID and testOperatorDID as cfg.LedgerDID.
-    Assumed present in testserver_test.go (the location of line 311's
-    sha256 suppressor). If unavailable, port the factory pattern from
-    http_integration_test.go.
+    with testLogDID as cfg.LogDID and testLedgerDID as cfg.LedgerDID.
+    Assumed present in testserver_test.go.
   - testLogDID constant: the DID the test server is bound to. Defined
-    in helpers_test.go per the v0.3.0 migration patch.
-
-WHY THIS FILE IS NEW, NOT A PATCH:
-
-	These five tests are net-new behavior guarantees introduced by the
-	v0.3.0 migration. Bundling them together rather than scattering
-	across existing files makes them discoverable as a single security
-	spec — any regression here means a specific defense has broken, not
-	an unrelated refactor.
+    in helpers_test.go.
 */
 package tests
 
@@ -496,7 +486,7 @@ var (
 	_ = policy.FreshnessDeliberative
 	_ = policy.MaxFreshnessTolerance
 	_ = policy.ClockSkewTolerance
-	_ = did.ErrDestinationMismatch // sentinel that Phase 4 swap will depend on
+	_ = did.ErrDestinationMismatch // sentinel the DID-resolved verification path returns
 	_ = errors.Is
 	_ = binary.BigEndian
 )

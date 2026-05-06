@@ -140,11 +140,11 @@ type Handlers struct {
 
 	// GossipFeed mounts at GET /v1/gossip/{since,sth/latest,event,
 	// by-kind,by-binding}. Audit consumers + peer ledgers pull
-	// catchup events here. /by-binding/{hash} (v0.9.6) is the
-	// zero-trust audit primitive — content-keyed lookup that
-	// powers findings.FetchEquivocationByBinding. nil disables
-	// read-side gossip; the publish path can still be served if
-	// GossipPost is set.
+	// catchup events here. /by-binding/{hash} is the zero-trust
+	// audit primitive — content-keyed lookup that powers
+	// findings.FetchEquivocationByBinding. nil disables read-side
+	// gossip; the publish path can still be served if GossipPost
+	// is set.
 	GossipFeed http.Handler
 
 	// EscrowOverride mounts at POST /v1/escrow-override. Accepts
@@ -183,7 +183,7 @@ type Handlers struct {
 
 // NewServer creates the HTTP server with all routes and middleware applied.
 //
-// PT-7 — Pure CQRS: the second parameter is middleware.SessionLookup
+// — Pure CQRS: the second parameter is middleware.SessionLookup
 // (NOT *pgxpool.Pool). The production wiring passes
 // store.NewPostgresSessionLookup(pool); tests pass nil for the
 // always-unauthenticated path. This keeps api/ pgx-free.
@@ -304,11 +304,11 @@ func NewServer(
 		mux.Handle("GET /v1/gossip/since", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/by-kind", handlers.GossipFeed)
 		mux.Handle("GET /v1/gossip/event/{eventID}", handlers.GossipFeed)
-		// /v1/gossip/by-binding/{hash} — v0.9.6 zero-trust audit
-		// endpoint. Returns every event whose Bindings slice
-		// contains the supplied 32-byte hash; the SDK helper
-		// findings.FetchEquivocationByBinding queries it +
-		// re-Verifies cryptographically.
+		// /v1/gossip/by-binding/{hash} — zero-trust audit endpoint.
+		// Returns every event whose Bindings slice contains the
+		// supplied 32-byte hash; the SDK helper
+		// findings.FetchEquivocationByBinding queries it + re-
+		// Verifies cryptographically.
 		mux.Handle("GET /v1/gossip/by-binding/{hash}", handlers.GossipFeed)
 	}
 	if handlers.EscrowOverride != nil {
@@ -371,8 +371,8 @@ func NewServer(
 	// Pinned by api/server_test.go::
 	//   TestServer_CommitmentLookupRoute_*
 	// Served from the 0x0C entry-lookup projection populated by
-	// the sequencer at Phase 2 commit-time; the read-path holds
-	// no Postgres dependency.
+	// the sequencer at commit time; the read-path holds no
+	// Postgres dependency.
 	if handlers.CommitmentLookup != nil {
 		mux.HandleFunc(
 			"GET /v1/commitments/by-split-id/{schema_id}/{hex}",

@@ -17,11 +17,10 @@ DESCRIPTION:
 
 KEY ARCHITECTURAL DECISIONS:
 
-  - DIDResolver is an interface, not a concrete type. Phase 4 wires
-    a real did.VerifierRegistry; tests wire stubs. The Phase 2 trust
-    model (nil resolver = wire-format integrity only) is preserved
-    via the explicit nil check — the ledger can run without DID
-    resolution during the v0.3.0-tessera →  cutover.
+  - DIDResolver is an interface, not a concrete type. Production
+    wiring supplies a real did.VerifierRegistry; tests wire stubs.
+    The wire-format-integrity-only trust model (nil resolver =
+    verification skipped) is preserved via the explicit nil check.
   - Error mapping is the only ledger-side logic. The SDK's
     signatures.VerifyEntry already enforces the cryptographic
     invariants (length, on-curve, ecdsa.Verify) gated by the
@@ -68,15 +67,12 @@ var ErrSignatureInvalid = errors.New("admission: entry signature invalid")
 var ErrSignerDIDResolution = errors.New("admission: signer DID resolution failed")
 
 // DIDResolver resolves a signer DID to its current secp256k1 public
-// key. Phase 4 wires a real did.VerifierRegistry that dispatches
-// across DID methods (web/key/pkh); tests wire stubs.
+// key. Production wiring supplies a real did.VerifierRegistry that
+// dispatches across DID methods (web/key/pkh); tests wire stubs.
 //
 // A nil DIDResolver is permitted at the call site of
-// VerifyEntrySignature and triggers the Phase 2 trust model
-// (verification skipped, wire-format integrity only). This is a
-// transitional accommodation for the v0.3.0-tessera →  cutover
-// and will be tightened in a later commit once the DID resolver is
-// wired in production.
+// VerifyEntrySignature and triggers the wire-format-integrity-only
+// trust model (cryptographic verification skipped).
 type DIDResolver interface {
 	ResolvePublicKey(ctx context.Context, did string) (*ecdsa.PublicKey, error)
 }
@@ -86,9 +82,8 @@ type DIDResolver interface {
 //
 // Returns:
 //   - nil when verification succeeds.
-//   - nil when resolver is nil (Phase 2 trust model — the caller
-//     has explicitly opted out of DID resolution and is operating
-//     under wire-format integrity only).
+//   - nil when resolver is nil (wire-format-integrity-only trust
+//     model — the caller has explicitly opted out of DID resolution).
 //   - ErrSignerDIDResolution wrapped with the resolver error when
 //     resolution fails.
 //   - ErrSignatureInvalid wrapped with the SDK error when the SDK
@@ -117,10 +112,10 @@ func VerifyEntrySignature(
 		return fmt.Errorf("admission: VerifyEntrySignature called with nil entry")
 	}
 	if resolver == nil {
-		// Phase 2 trust model: caller has opted out of DID
-		// resolution. The signature is still on the wire and was
-		// length-validated during envelope deserialize; we just
-		// don't crypto-verify it here.
+		// Wire-format-integrity-only trust model: caller has
+		// opted out of DID resolution. The signature is still on
+		// the wire and was length-validated during envelope
+		// deserialize; we just don't crypto-verify it here.
 		return nil
 	}
 

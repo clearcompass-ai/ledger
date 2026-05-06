@@ -7,7 +7,7 @@ lookup. The SDK primitives FetchPREGrantCommitment and
 FetchEscrowSplitCommitment depend on this fetcher to resolve a
 SplitID to its on-log entries.
 
-Wave 1 v3 §C5 contract:
+Contract:
 
 	FindCommitmentEntries(schemaID string, splitID [32]byte)
 	    ([]*types.EntryWithMetadata, error)
@@ -22,11 +22,10 @@ Wave 1 v3 §C5 contract:
 	  PostgresEntryFetcher.Fetch produces — same canonical bytes,
 	  same log_time, same position.
 
-EntryWithMetadata field set: under v6 the SDK type carries only
-CanonicalBytes, LogTime, Position. Signatures live inside
-CanonicalBytes (extracted via envelope.Deserialize when needed).
-The earlier SignatureAlgoID/SignatureBytes sidecar fields were
-removed; this fetcher reads only what the type carries.
+EntryWithMetadata field set: the SDK type carries CanonicalBytes,
+LogTime, Position. Signatures live inside CanonicalBytes (extracted
+via envelope.Deserialize when needed); this fetcher reads only what
+the type carries.
 
 DESIGN RULE (mirrors store/entries.go): Postgres is an index;
 Tessera is the source of truth for entry bytes. The fetcher reads
@@ -76,8 +75,8 @@ func NewPostgresCommitmentFetcher(
 // FindCommitmentEntries returns every entry in the ledger's log
 // whose (schema_id, split_id) tuple matches the supplied arguments.
 //
-// Multi-row contract (Wave 1 v3 Decision 3): the slice is length 1
-// in the normal case, length 2+ when the dealer has equivocated. The
+// Multi-row contract: the slice is length 1 in the normal case,
+// length 2+ when the dealer has equivocated. The
 // SDK's FetchPREGrantCommitment and FetchEscrowSplitCommitment
 // primitives interpret length > 1 as cryptographic equivocation
 // evidence and construct *artifact.CommitmentEquivocationError

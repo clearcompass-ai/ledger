@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/run-cursor-tests.sh
 #
-# Runs the Phase 1A cursor tests against the integration
+# Runs the SequenceCursor tests against the integration
 # docker-compose harness. Self-contained — brings up the harness,
 # waits for BOTH the container's pg_isready AND the host's port
 # 5544 to actually accept connections (Docker Desktop on macOS

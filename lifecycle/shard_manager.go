@@ -7,14 +7,12 @@ DESCRIPTION:
 	commentary entry that carries forward the prior shard's final state.
 
 SDK ALIGNMENT:
-  - v0.3.0: envelope.NewEntry required Destination via ValidateDestination.
-  - split entry construction into two constructors:
-    envelope.NewEntry(header, payload, signatures)  — fully signed
-    envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
-    The genesis commentary is constructed here and signed downstream
-    (the ledger that calls StartNewShard owns the institutional key
-    and signs the GenesisEntry before announcing the new shard's
-    DID), so this file uses NewUnsignedEntry.
+  - envelope.NewEntry(header, payload, signatures)  — fully signed
+  - envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
+  The genesis commentary is constructed here and signed downstream
+  (the ledger that calls StartNewShard owns the institutional key
+  and signs the GenesisEntry before announcing the new shard's
+  DID), so this file uses NewUnsignedEntry.
   - EventTime set to frozen-at timestamp to anchor the shard rotation
     in wall-clock time (freshness policy uses this).
 
@@ -115,7 +113,7 @@ func StartNewShard(cfg NewShardConfig) (*ShardRotationResult, error) {
 	// signing path, distinct from this lifecycle helper).
 	genesisEntry, err := envelope.NewUnsignedEntry(envelope.ControlHeader{
 		SignerDID:   cfg.LedgerDID,
-		Destination: cfg.NewShardDID, // SDK v0.3.0: required field.
+		Destination: cfg.NewShardDID, // required field — destination-binding
 		EventTime:   frozenAt.Unix(), // Binds rotation to wall-clock time.
 		// Target_Root=nil, Authority_Path=nil → commentary.
 	}, payloadBytes)

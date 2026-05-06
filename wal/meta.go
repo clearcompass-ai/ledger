@@ -11,10 +11,10 @@ Total: 29 bytes. Fixed-width so iterators can decode without bounds-
 checking in the hot path. The format is internal — Badger keys + values
 are not exposed outside the wal package.
 
-LogTimeMicros (added v0.9.6): the unix-microsecond log_time
-assigned at first Submit. Persisted so a byte-identical
-resubmission can re-issue the SAME SCT bytes (P5 deterministic
-idempotency) instead of returning 409 Conflict.
+LogTimeMicros: the unix-microsecond log_time assigned at first
+Submit. Persisted so a byte-identical resubmission can re-issue
+the SAME SCT bytes (deterministic idempotency) instead of
+returning 409 Conflict.
 */
 package wal
 
@@ -75,7 +75,7 @@ type Meta struct {
 	Sequence uint64 // valid iff State >= StateSequenced
 	Attempts uint32 // shipper retry counter
 	LastErrTs time.Time // wall-clock of last error; zero on success
-	LogTimeMicros int64 // unix-micros log_time assigned at first Submit (v0.9.6)
+	LogTimeMicros int64 // unix-micros log_time assigned at first Submit
 }
 
 // metaEncodedSize is the on-disk size of a Meta record.

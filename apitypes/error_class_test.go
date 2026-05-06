@@ -1,7 +1,8 @@
 /*
 FILE PATH: apitypes/error_class_test.go
 
-Tests for the typed ErrorClass taxonomy (PT-6 — A10 + P10):
+Tests for the typed ErrorClass taxonomy (strict error
+dimensionality + SRE-grade observability):
 
   - Every defined ErrorClass constant has a non-empty, kebab-case
     String() (the OTel attribute value).
@@ -117,7 +118,7 @@ func TestErrorClass_OutOfRangeFallsBackToUnknown(t *testing.T) {
 func TestErrorClass_HostileNamesAreDistinct(t *testing.T) {
 	// Hostile-flavor classes (the ones SREs alert on) must NOT
 	// collide with network-noise classes. This list guards the
-	// PT-6 contract: SREs distinguish active attacks from
+	// contract: SREs distinguish active attacks from
 	// caller bugs without parsing log lines.
 	hostile := []apitypes.ErrorClass{
 		apitypes.ErrorClassSignatureInvalid,

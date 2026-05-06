@@ -18,7 +18,7 @@ SCANNER goroutine, on its own scheduling.
 # DETECTION FLOW
 
  1. badger.DB.Subscribe(prefix=0x0A) wakes on every splitid
-    index PUT (the sequencer's Phase 2 commit).
+    index PUT (one per sequencer commit).
  2. Subscribe callback receives (schema_id, split_id, seq).
  3. Scanner re-loads via gossipstore.ListSplitIDIndexEntriesAt
     (one View transaction, fresh consistent snapshot).

@@ -6,9 +6,9 @@ FILE PATH:
 DESCRIPTION:
 
 	Defensive NFC normalization assertion at the ledger's trust
-	boundary. The SDK's caller-normalizes contract (Decision 52)
-	places NFC normalization at the caller boundary; the ledger
-	asserts the caller honored that contract and rejects mismatches.
+	boundary. The SDK's caller-normalizes contract places NFC
+	normalization at the caller boundary; the ledger asserts the
+	caller honored that contract and rejects mismatches.
 
 	The ledger never normalizes on the caller's behalf. Silent
 	normalization at admission would diverge the bytes the caller

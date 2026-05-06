@@ -5,10 +5,8 @@ Tests for the BLSQuorumVerifier wiring contract.
 
 # WHAT THIS PINS
 
-The R1 audit revealed BLSQuorumVerifier was constructed in code
-but unwired — defined here, referenced only from a test. The
-cmd/ledger/main.go wiring + LEDGER_WITNESS_QUORUM_K env-var
-injection is now mandatory. These tests pin the contract:
+The cmd/ledger/main.go wiring + LEDGER_WITNESS_QUORUM_K env-var
+injection is mandatory; these tests pin the contract:
 
  1. NewBLSQuorumVerifier with a valid *cosign.WitnessKeySet
     constructs cleanly.
@@ -33,14 +31,11 @@ tests (TestVerify_QuorumReached, TestVerify_QuorumFailure_*).
 The wiring contract is what's ledger-side; the crypto path is
 the SDK's responsibility.
 
-# v0.1.1 ALIGNMENT
+# SDK ALIGNMENT
 
 The SDK's *cosign.WitnessKeySet encapsulates keys + NetworkID +
-quorum + BLS verifier. The previous admission.WitnessKeySet
-interface + StaticWitnessKeySet wrapper that bridged v0.1.0's
-separate-args shape are deleted. Tests construct the keyset
-directly via cosign.NewWitnessKeySet — the same path
-cmd/ledger/main.go uses.
+quorum + BLS verifier. Tests construct the keyset directly via
+cosign.NewWitnessKeySet — the same path cmd/ledger/main.go uses.
 */
 package admission_test
 

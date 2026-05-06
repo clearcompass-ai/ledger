@@ -2,7 +2,7 @@
 FILE PATH: store/escrow_split_commitments.go
 
 Typed insert + lookup helpers for escrow-split-commitment-v1 entries
-(ADR-005 §4 cryptographic-commitment surface, escrow side).
+on the cryptographic-commitment surface (escrow side).
 
 Mirrors store/pre_grant_commitments.go field-for-field; the only
 material difference is the schema_id constant (sourced from
@@ -56,8 +56,8 @@ func NewEscrowSplitCommitmentStore(db *pgxpool.Pool) *EscrowSplitCommitmentStore
 // as fatal for the surrounding transaction.
 //
 // The (schema_id, split_id) tuple is intentionally NOT unique — see
-// store/postgres.go schemaDDL commentary on commitment_split_id and
-// Wave 1 v3 Decision 3.
+// store/postgres.go schemaDDL commentary on commitment_split_id
+// (equivocation evidence preservation).
 func (s *EscrowSplitCommitmentStore) InsertSplitID(
 	ctx context.Context, tx pgx.Tx, sequenceNumber uint64, splitID [32]byte,
 ) error {
@@ -78,9 +78,9 @@ func (s *EscrowSplitCommitmentStore) InsertSplitID(
 // LookupBySplitID returns every sequence number indexed under the
 // supplied splitID for the escrow-split-commitment-v1 schema.
 //
-// Multi-row contract (Wave 1 v3 Decision 3): the slice is length 1
-// in the normal case, length 2+ when the dealer has equivocated.
-// Callers MUST NOT collapse the result to a single row; the SDK's
+// Multi-row contract: the slice is length 1 in the normal case,
+// length 2+ when the dealer has equivocated. Callers MUST NOT
+// collapse the result to a single row; the SDK's
 // FetchEscrowSplitCommitment uses the multi-row signal to construct
 // *artifact.CommitmentEquivocationError.
 //

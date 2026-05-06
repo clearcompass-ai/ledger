@@ -11,7 +11,7 @@ DESIGN:
 	This Verifier wraps it with the seq → (tile, offset) arithmetic
 	and the 32-byte hash extractor.
 
-	Hash-only tiles (Phase 1B): each entry tile carries 32-byte SHA-256
+	Hash-only tiles: each entry tile carries 32-byte SHA-256
 	identities, so HashAt is one tile fetch + one slice. No envelope
 	deserialization happens at this layer; the ledger only checks
 	hashes here.

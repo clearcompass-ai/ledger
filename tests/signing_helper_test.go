@@ -1,8 +1,7 @@
 /*
 FILE PATH: tests/signing_helper_test.go
 
-The signed-entry test helper. Replaces the v0.3.0 NewEntry +
-MustAppendSignature flow with the canonical post-Wave-1 signing path:
+The signed-entry test helper. Canonical signing path:
 
  1. envelope.NewUnsignedEntry(hdr, payload)
     structural validation; Signatures left nil per the builder
@@ -78,7 +77,7 @@ func testKeypair(t *testing.T) (*ecdsa.PrivateKey, string) {
 // or any caller that consumes a fully-validated entry.
 //
 // hdr.Destination defaults to testLogDID when empty (matches the
-// makeV030Entry contract so existing tests keep working).
+// makeUnsignedEntry contract so existing tests keep working).
 //
 // hdr.SignerDID is overwritten with signerDID — this closes the most
 // common test-fixture bug (priv and Header.SignerDID out of sync,

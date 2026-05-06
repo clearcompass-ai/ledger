@@ -1,10 +1,10 @@
 #!/bin/bash
 # scripts/run-gcs-tests.sh
 #
-# Runs the Phase 2 GCS byte-store tests against the
-# fake-gcs-server in docker-compose. Same readiness pattern as
-# run-cursor-tests.sh — waits for both container readiness and
-# host port reachability before invoking go test.
+# Runs the GCS byte-store tests against fake-gcs-server in
+# docker-compose. Same readiness pattern as run-cursor-tests.sh —
+# waits for both container readiness and host port reachability
+# before invoking go test.
 
 set -euo pipefail
 

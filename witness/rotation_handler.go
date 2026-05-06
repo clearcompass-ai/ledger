@@ -2,7 +2,7 @@
 FILE PATH: witness/rotation_handler.go
 
 Witness set rotation handling. Accepts rotation messages signed by the
-current K-of-N quorum. Supports dual-sign for scheme transition (Decision 41).
+current K-of-N quorum. Supports dual-sign for scheme transition.
 
 KEY ARCHITECTURAL DECISIONS:
   - Rotation requires K-of-N signatures from CURRENT set (verified).
@@ -59,10 +59,11 @@ func (rh *RotationHandler) ProcessRotation(
 		return nil, fmt.Errorf("witness/rotation: no rotation signatures")
 	}
 
-	// Signature verification for rotations is Phase 4 (DID resolution + key registry).
-	// Phase 2 validates structural constraints: non-empty set, non-empty sigs,
-	// dual-sign flag consistency. Signature verification against public keys
-	// requires the same key registry infrastructure as entry signature verification.
+	// Signature verification for rotations is gated on the DID
+	// resolver + key registry being wired (the same infrastructure
+	// as entry signature verification). Today we only validate
+	// structural constraints: non-empty set, non-empty sigs,
+	// dual-sign flag consistency.
 
 	isDualSign := rotation.IsDualSigned()
 	if isDualSign {

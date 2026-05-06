@@ -465,7 +465,7 @@ func TestDeductCreditModeA_NilStoresReturnNil(t *testing.T) {
 // Sentinel coverage for the 402 mapping at the handler boundary.
 // deductCreditModeA's full DB-side test is in store_test.go.
 //
-// PT-7: the sentinel now lives in apitypes/. The store-side
+// Pure CQRS: the sentinel lives in apitypes/. The store-side
 // re-export (store.ErrInsufficientCredits = apitypes.ErrInsufficientCredits)
 // preserves backwards compatibility with tests/integration_test.go.
 func TestErrInsufficientCreditsIsRecognized(t *testing.T) {

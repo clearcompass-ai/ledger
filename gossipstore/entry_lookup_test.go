@@ -219,7 +219,7 @@ func TestWriteAndListEntryLookupEntriesAt_EquivocationOrder(t *testing.T) {
 	split := [32]byte{0xff}
 
 	// Write three entries at the same (schema, split_id) — the
-	// equivocation case (Decision 4: admit all, surface as evidence).
+	// equivocation case (admit all, surface as evidence).
 	// Insert out of order to verify the iterator returns by seq ASC.
 	for _, seq := range []uint64{42, 7, 100} {
 		entry := EntryLookupIndexEntry{

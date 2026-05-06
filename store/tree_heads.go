@@ -34,7 +34,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 // CosignedTreeHead and TreeHeadSignature live in apitypes/ so
-// api/ can consume them without importing store/ (PT-7 — Pure
+// api/ can consume them without importing store/ (— Pure
 // CQRS). Re-exported as type aliases here for backwards
 // compatibility with existing in-package call sites.
 type (

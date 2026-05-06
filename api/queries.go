@@ -13,7 +13,7 @@ DESCRIPTION:
 	or to DiffController — zero business logic, just HTTP → internal-API
 	adapters.
 
-SDK v0.3.0 ALIGNMENT:
+CANONICAL HASH:
   - toEntryResponses computes the canonical hash via envelope.EntryIdentity(entry)
     when deserialization succeeds. Byte-identical to sha256.Sum256(ewm.CanonicalBytes)
     but the vocabulary is explicit: the returned hash IS the Tessera
@@ -50,7 +50,7 @@ import (
 )
 
 // defaultScanCount mirrors store/indexes.DefaultScanCount;
-// duplicated here so api/ holds zero pgx imports (PT-7).
+// duplicated here so api/ holds zero pgx imports.
 const defaultScanCount = 100
 
 // ─────────────────────────────────────────────────────────────────────

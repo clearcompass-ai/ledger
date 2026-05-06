@@ -1,7 +1,7 @@
 /*
 FILE PATH: sequencer/replay_test.go
 
-Unit-level coverage for the sequencer.Replayer (PT-4):
+Unit-level coverage for the sequencer.Replayer:
 
   - NewReplayer config validation: every required field is checked.
   - BatchSize defaults to DefaultReplayBatchSize when zero.
@@ -476,8 +476,9 @@ func (b *blockingReplayCursor) SetSplitIDReplayHWM(_ context.Context, _ uint64) 
 }
 
 // TestSequencer_Run_DrainsReplayerOnCtxCancel pins the WaitGroup
-// discipline (P11): the replayer goroutine must complete before
-// Run returns. The blocking cursor parks the replayer in
+// graceful-teardown discipline: the replayer goroutine must
+// complete before Run returns. The blocking cursor parks the
+// replayer in
 // SplitIDReplayHWM until ctx cancels — at that point Replay
 // returns, and Run.wg.Wait drains it before returning.
 func TestSequencer_Run_DrainsReplayerOnCtxCancel(t *testing.T) {

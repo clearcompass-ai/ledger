@@ -16,7 +16,7 @@ KEY ARCHITECTURAL DECISIONS:
   - Overlay SMT Store: SDK ProcessBatch runs against an in-memory overlay
     to guarantee functional purity. If batch validation fails, the overlay
     is discarded and Postgres remains completely untouched.
-  - Entry-identity Merkle tree (SDK v0.3.0 alignment):
+  - Entry-identity Merkle tree:
     Step 6 sends envelope.EntryIdentity(entry) — SHA-256 of the entry's
     canonical bytes, NOT the wire-bytes-including-signature hash — to
     the Tessera personality, which wraps it with RFC 6962's 0x00 leaf
@@ -31,15 +31,9 @@ KEY ARCHITECTURAL DECISIONS:
   - Context-aware: every Postgres call checks ctx.Done() first.
 
 SDK ALIGNMENT:
-  - Pre-: builder.EntryFetcher was the read-side abstraction.
-  - : per types/fetcher.go's docblock, "Decision 52 consolidates
-    the definition here as part of the core/scope/ primitive layering.
-    Previously it lived in builder/ and was duplicated in verifier/."
-    The interface now lives at types.EntryFetcher with the same
+  - Read-side abstraction is types.EntryFetcher with the
     Fetch(pos LogPosition) (*EntryWithMetadata, error) signature.
-    sdkbuilder.ProcessBatch accepts types.EntryFetcher, so swapping
-    the field's declared type to types.EntryFetcher is a clean
-    follow-the-SDK rename.
+    sdkbuilder.ProcessBatch accepts types.EntryFetcher.
 
 OVERVIEW:
 
@@ -50,19 +44,12 @@ OVERVIEW:
 	commit and append → re-append on restart is safe (Tessera deduplicates
 	by identity hash). The ledger's atomic state is in Postgres.
 
-CONSUMER VERIFICATION FLOW ( contract):
+CONSUMER VERIFICATION FLOW:
  1. Fetch wire bytes from ledger's byte store.
  2. envelope.Deserialize(canonical) → entry (signatures inline).
  3. envelope.EntryIdentity(entry) → 32-byte hash.
  4. Fetch inclusion proof for position N, verify path hashes to the
     tree head published in the signed checkpoint.
-
-MIGRATION NOTE:
-
-	Pre-v0.3.0 tiles contained SHA-256(canonical + sig_envelope). Those
-	tiles must be rebuilt — inclusion proofs against them will fail with
-	the new identity-based verification. Rebuild by replaying entries
-	through the builder against a fresh Tessera backend.
 
 KEY DEPENDENCIES:
   - github.com/clearcompass-ai/attesta/builder: ProcessBatch, BatchResult,
@@ -411,7 +398,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 
 	// ── Step 6: Append to Merkle tree — ENTRY IDENTITY (post-commit) ──
 	//
-	// SDK v0.3.0 alignment: send envelope.EntryIdentity(entry) — the
+	// SDK alignment: send envelope.EntryIdentity(entry) — the
 	// 32-byte SHA-256 of the entry's canonical bytes. This is the
 	// Tessera "Entry.Identity()" value. The signature is NOT part of
 	// entry identity — multiple valid signatures over the same entry

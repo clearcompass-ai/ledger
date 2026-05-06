@@ -5,12 +5,10 @@ POSIXTileBackend — filesystem-backed TileBackend.
 
 WHY THIS EXISTS:
 
-	Phase 1B of the ledger's CT-native consolidation embeds the
-	Tessera library in-process (eliminating the standalone
-	tessera-personality binary). When Tessera is configured with
-	the POSIX storage driver, it writes tiles, entry bundles, and
-	the checkpoint file into a directory tree following the
-	c2sp.org/tlog-tiles layout EXACTLY:
+	The ledger embeds the Tessera library in-process. When Tessera
+	is configured with the POSIX storage driver, it writes tiles,
+	entry bundles, and the checkpoint file into a directory tree
+	following the c2sp.org/tlog-tiles layout EXACTLY:
 
 	  <root>/checkpoint
 	  <root>/tile/<level>/<index_groups>/<final>
@@ -47,10 +45,9 @@ ALTERNATIVES CONSIDERED:
     TileBackend interface would require parsing the c2sp.org
     path back into the (level, index, p) tuple — a detour that
     adds no value while POSIX is the only Tessera backend. Once
-    a remote Tessera storage driver (GCS / S3) is wired
-    (Phase 2-extension, out of scope for now), the ledger can
-    switch to a LogReader-backed TileBackend without touching
-    proof_adapter.go's call sites.
+    a remote Tessera storage driver (GCS / S3) is wired the
+    ledger can switch to a LogReader-backed TileBackend without
+    touching proof_adapter.go's call sites.
 */
 package tessera
 
