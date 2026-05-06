@@ -2,55 +2,45 @@
 FILE PATH: gossipnet/equivocation_publisher.go
 
 EquivocationPublisher signs + broadcasts a KindEquivocationFinding
-event for a detected equivocation. Gates publishing through the
-SDK's VerifiedEquivocationFinding type-safety wrapper so the
-network can only ever receive cryptographically-verified proofs.
+event for a detected, cryptographically-verified equivocation.
+The publisher is the egress mechanism only; the verification
+discipline lives at the call site (the EquivocationMonitor below).
 
 # WHY VERIFY BEFORE PUBLISHING
 
 The SDK's findings.EquivocationFinding is the wire-shape adapter;
 NOT cryptographic evidence by itself. A peer producing two
 unsigned conflicting heads + claiming "equivocation" is denial-of-
-service noise, not a proof. The Verify method runs cosign.Verify
-against both heads' signatures + a known WitnessKeySet, and ONLY
-on success returns a *VerifiedEquivocationFinding. The verified
-type's unexported fields make it impossible to construct without
-running the verification.
+service noise, not a proof. The Verify(set) method runs
+cosign.VerifyTreeHeadCosignatures against both heads' signatures
++ the network's *cosign.WitnessKeySet (K-of-N read from
+set.Quorum()) and returns nil only on success.
 
-This publisher takes only the verified type as input. Constructing
-the verified type elsewhere in the ledger (the equivocation
-monitor) is the entry point; this publisher is the egress point.
-That separation closes the "I have an EquivocationFinding, let me
-just publish it" trap.
+# v0.1.1 API SHAPE
+
+The previous *VerifiedEquivocationFinding phantom-typed wrapper
+was removed in v0.1.1. The Verify(set) call returns error-only;
+type-safety is replaced by the developer discipline of "publish
+only after Verify returned nil." The EquivocationMonitor below
+enforces that discipline at the only construction site; this
+publisher is the egress and accepts *findings.EquivocationFinding
+directly. Calling Publish without first Verify-ing is a programmer
+error caught by code review and the load-bearing tests in
+gossipnet/equivocation_monitor_test.go.
 
 # OPERATIONAL FLOW
 
-	monitor (witness/equivocation_monitor.go)
+	monitor (gossipnet/equivocation_monitor.go)
 	  │   detects local-vs-peer disagreement
 	  │   reconstructs witness.EquivocationProof
 	  │   constructs findings.NewEquivocationFinding(proof, ourEndpoint)
-	  │   calls finding.Verify(witnessKeySet, K)
-	  │     ↓ (only on cryptographic verification success)
-	  │   *findings.VerifiedEquivocationFinding
-	  └── EquivocationPublisher.Publish(verified)
-	        ├── extracts the inner *EquivocationFinding via verified.AsEvent()
+	  │   calls finding.Verify(set)
+	  │     ↓ (only on cryptographic verification success — err == nil)
+	  └── EquivocationPublisher.Publish(finding)
 	        ├── reads gossip.Store.Head() for chain-discipline state
 	        ├── gossip.Sign as KindEquivocationFinding
 	        ├── gossip.Store.Append (local persistence)
 	        └── gossip.Sink.Broadcast (fan-out via BufferedSink)
-
-# RECONSTRUCTION FROM EXISTING MONITOR
-
-The current witness.EquivocationMonitor (ledger side) detects
-divergence by comparing tree_size + root_hash but does NOT capture
-peer cosignatures. To produce a *VerifiedEquivocationFinding the
-monitor needs full types.CosignedTreeHead values for both sides;
-the cleanest path is to fetch /v1/gossip/sth/latest from the peer
-(which carries full sigs) instead of /v1/tree/head.
-
-The monitor upgrade is a follow-up; this publisher provides the
-egress mechanism so when the upgrade lands the wiring is one
-config field.
 */
 package gossipnet
 
@@ -70,12 +60,12 @@ import (
 // proofs. Stateless — chain-discipline state is read from the
 // Store on every publish.
 type EquivocationPublisher struct {
-	store sdkgossip.Store
-	sink sdkgossip.Sink
-	signer sdkcosign.WitnessSigner
-	networkID sdkcosign.NetworkID
+	store      sdkgossip.Store
+	sink       sdkgossip.Sink
+	signer     sdkcosign.WitnessSigner
+	networkID  sdkcosign.NetworkID
 	originator string
-	logger *slog.Logger
+	logger     *slog.Logger
 }
 
 // EquivocationPublisherConfig configures the publisher.
@@ -86,9 +76,9 @@ type EquivocationPublisher struct {
 // signing key) so the ledger's chain in the gossip Store
 // covers all of its own emissions.
 type EquivocationPublisherConfig struct {
-	Store sdkgossip.Store
-	Sink sdkgossip.Sink
-	Signer sdkcosign.WitnessSigner
+	Store     sdkgossip.Store
+	Sink      sdkgossip.Sink
+	Signer    sdkcosign.WitnessSigner
 	NetworkID sdkcosign.NetworkID
 
 	// Originator is the ledger's own DID. Same DID used for
@@ -131,26 +121,31 @@ func NewEquivocationPublisher(cfg EquivocationPublisherConfig) (*EquivocationPub
 	}, nil
 }
 
-// Publish signs the verified equivocation finding as a
+// Publish signs the (already-verified) equivocation finding as a
 // KindEquivocationFinding event, appends it to the local Store,
 // and broadcasts it to peers via the Sink.
 //
 // Errors are logged + swallowed: the verification (already
-// performed by the caller to obtain the verified type) is the
+// performed by the caller before calling Publish) is the
 // authoritative event; gossip transport is best-effort.
 //
-// Takes the verified type by pointer. Passing nil is a programmer
+// Takes the finding by pointer. Passing nil is a programmer
 // error and panics — there is no safe interpretation of "publish
-// a nil verified equivocation".
-func (p *EquivocationPublisher) Publish(ctx context.Context, verified *findings.VerifiedEquivocationFinding) {
+// a nil equivocation finding".
+//
+// CONTRACT: callers MUST have called finding.Verify(set) and
+// observed nil before invoking Publish. The v0.1.1 SDK collapsed
+// the phantom-typed VerifiedEquivocationFinding wrapper; this
+// publisher trusts the call site instead of the type system.
+// The only call site is gossipnet/equivocation_monitor.go's
+// checkPeer flow — which always Verify-s before publishing.
+func (p *EquivocationPublisher) Publish(ctx context.Context, finding *findings.EquivocationFinding) {
 	if p == nil {
 		return
 	}
-	if verified == nil {
-		panic("gossipnet/equivocation: nil verified finding (programmer error)")
+	if finding == nil {
+		panic("gossipnet/equivocation: nil finding (programmer error)")
 	}
-
-	finding := verified.AsEvent()
 
 	prev, lamport, err := p.store.Head(ctx, p.originator)
 	if err != nil {
@@ -186,8 +181,10 @@ func (p *EquivocationPublisher) Publish(ctx context.Context, verified *findings.
 	}
 
 	p.logger.Error("EQUIVOCATION PUBLISHED",
-		"verified_quorum", verified.VerifiedAtQuorum(),
-		"ledger_endpoint", verified.LedgerEndpoint(),
+		"valid_sigs_a", finding.Proof.ValidSigsA,
+		"valid_sigs_b", finding.Proof.ValidSigsB,
+		"tree_size", finding.Proof.TreeSize,
+		"ledger_endpoint", finding.LedgerEndpoint,
 		"lamport", nextLamport,
 	)
 }

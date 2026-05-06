@@ -299,33 +299,36 @@ func TestAdmission_RejectsSchemaIDMismatch(t *testing.T) {
 // admission/bls_quorum_verifier.go's VerifyEmbeddedTreeHead wraps
 // cosign quorum failures in ErrWitnessQuorumInsufficient.
 //
-// We pass a zero CosignedTreeHead with no signatures; cosign.Verify
-// rejects with cosign.ErrEmptySignatures before it touches the
-// witness key set. The ledger wrapper catches this (and any other
-// quorum-class error) and remaps to the ledger-side typed sentinel.
+// v0.1.1: build a real *cosign.WitnessKeySet (NewWitnessKeySet
+// rejects empty-keys + impossible-quorum at construction time, so
+// the previous "emptyKeySet returning ([], 1, nil)" mock is no
+// longer constructible — that's a feature, not a regression).
+// Passing a zero CosignedTreeHead with no signatures still hits
+// cosign.ErrEmptySignatures, which the ledger wrapper remaps to
+// the typed sentinel.
 func TestAdmission_RejectsInsufficientWitnessQuorum(t *testing.T) {
-	v := admission.NewBLSQuorumVerifier(
-		emptyKeySet{},
-		nil,                 // BLS verifier not needed; ECDSA path handles empty sigs
-		cosign.NetworkID{1}, // any non-zero NetworkID; unreached here but required by the API
+	witKey := types.WitnessPublicKey{}
+	witKey.ID[0] = 1
+	witKey.PublicKey = []byte{0x04, 1, 2, 3}
+	set, err := cosign.NewWitnessKeySet(
+		[]types.WitnessPublicKey{witKey},
+		cosign.NetworkID{1},
+		1,   // K=1 with one key in the set
+		nil, // BLS verifier not needed; ECDSA path handles empty sigs
 	)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
+	v := admission.NewBLSQuorumVerifier(set)
 	// A zero CosignedTreeHead has no signatures — cosign.Verify
 	// rejects with ErrEmptySignatures before any cryptographic work.
-	err := v.VerifyEmbeddedTreeHead(types.CosignedTreeHead{})
+	err = v.VerifyEmbeddedTreeHead(types.CosignedTreeHead{})
 	if err == nil {
 		t.Fatal("expected ErrWitnessQuorumInsufficient, got nil")
 	}
 	if !errors.Is(err, admission.ErrWitnessQuorumInsufficient) {
 		t.Fatalf("expected ErrWitnessQuorumInsufficient, got %v", err)
 	}
-}
-
-// emptyKeySet returns ([], 1, nil) — a configuration where the
-// quorum K=1 cannot be met because the witness set is empty.
-type emptyKeySet struct{}
-
-func (emptyKeySet) Active() ([]types.WitnessPublicKey, int, error) {
-	return nil, 1, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────

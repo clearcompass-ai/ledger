@@ -167,14 +167,16 @@ func TestEquivocationMonitor_DetectsAndPublishes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	witnessSet, err := cosign.NewWitnessKeySet(ws.keys, netID, K, nil)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
 	monitor, err := NewEquivocationMonitor(EquivocationMonitorConfig{
-		Store:       store,
-		Peers:       []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
-		WitnessKeys: ws.keys,
-		QuorumK:     K,
-		NetworkID:   netID,
-		Publisher:   publisher,
-		Interval:    1 * time.Hour, // long; we tick manually
+		Store:      store,
+		Peers:      []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
+		WitnessSet: witnessSet,
+		Publisher:  publisher,
+		Interval:   1 * time.Hour, // long; we tick manually
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,13 +217,15 @@ func TestEquivocationMonitor_NoFalsePositiveOnIdenticalHeads(t *testing.T) {
 	srv := stubLatestSTH(t, localSTH) // identical event
 	defer srv.Close()
 
+	witnessSet, err := cosign.NewWitnessKeySet(ws.keys, netID, K, nil)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
 	monitor, err := NewEquivocationMonitor(EquivocationMonitorConfig{
-		Store:       store,
-		Peers:       []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
-		WitnessKeys: ws.keys,
-		QuorumK:     K,
-		NetworkID:   netID,
-		Publisher:   nil, // detection-only mode
+		Store:      store,
+		Peers:      []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
+		WitnessSet: witnessSet,
+		Publisher:  nil, // detection-only mode
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -256,12 +260,14 @@ func TestEquivocationMonitor_NoFalsePositiveOnDifferentSizes(t *testing.T) {
 	srv := stubLatestSTH(t, signSTHEvent(t, peerSigner, peerKP.DID, cosB, netID))
 	defer srv.Close()
 
+	witnessSet, err := cosign.NewWitnessKeySet(ws.keys, netID, K, nil)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
 	monitor, err := NewEquivocationMonitor(EquivocationMonitorConfig{
-		Store:       store,
-		Peers:       []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
-		WitnessKeys: ws.keys,
-		QuorumK:     K,
-		NetworkID:   netID,
+		Store:      store,
+		Peers:      []AntiEntropyPeer{{DID: peerKP.DID, BaseURL: srv.URL}},
+		WitnessSet: witnessSet,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,47 +281,43 @@ func TestEquivocationMonitor_NoFalsePositiveOnDifferentSizes(t *testing.T) {
 	}
 }
 
-// TestEquivocationMonitor_RejectsZeroQuorum + nil store etc. exercise
-// constructor validation paths.
+// TestEquivocationMonitor_RejectsConfig exercises the constructor's
+// validation surface. v0.1.1: keys/K/networkID/blsVerifier are
+// encapsulated in *cosign.WitnessKeySet, so the cfg surface
+// rejects on a missing Store or a nil WitnessSet — the SDK's
+// NewWitnessKeySet handles the rest at boot.
 func TestEquivocationMonitor_RejectsConfig(t *testing.T) {
+	validSet, err := cosign.NewWitnessKeySet(
+		[]types.WitnessPublicKey{
+			func() types.WitnessPublicKey {
+				k := types.WitnessPublicKey{}
+				k.ID[0] = 1
+				return k
+			}(),
+		},
+		nonZeroNetworkID(), 1, nil,
+	)
+	if err != nil {
+		t.Fatalf("NewWitnessKeySet: %v", err)
+	}
 	cases := []struct {
 		name string
-		cfg EquivocationMonitorConfig
+		cfg  EquivocationMonitorConfig
 		want string
 	}{
 		{
 			name: "nil store",
 			cfg: EquivocationMonitorConfig{
-				WitnessKeys: []types.WitnessPublicKey{{}},
-				QuorumK:     1, NetworkID: nonZeroNetworkID(),
+				WitnessSet: validSet,
 			},
 			want: "Store",
 		},
 		{
-			name: "empty witness keys",
+			name: "nil witness set",
 			cfg: EquivocationMonitorConfig{
-				Store:   sdkgossip.NewInMemoryStore(),
-				QuorumK: 1, NetworkID: nonZeroNetworkID(),
+				Store: sdkgossip.NewInMemoryStore(),
 			},
-			want: "WitnessKeys",
-		},
-		{
-			name: "zero K",
-			cfg: EquivocationMonitorConfig{
-				Store:       sdkgossip.NewInMemoryStore(),
-				WitnessKeys: []types.WitnessPublicKey{{}},
-				NetworkID:   nonZeroNetworkID(),
-			},
-			want: "QuorumK",
-		},
-		{
-			name: "zero NetworkID",
-			cfg: EquivocationMonitorConfig{
-				Store:       sdkgossip.NewInMemoryStore(),
-				WitnessKeys: []types.WitnessPublicKey{{}},
-				QuorumK:     1,
-			},
-			want: "NetworkID",
+			want: "WitnessSet",
 		},
 	}
 	for _, tc := range cases {

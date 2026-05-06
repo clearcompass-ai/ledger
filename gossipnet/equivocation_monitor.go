@@ -3,8 +3,8 @@ FILE PATH: gossipnet/equivocation_monitor.go
 
 EquivocationMonitor compares the local view of an originator's
 latest STH against each peer's view. On divergence it constructs
-a *VerifiedEquivocationFinding (only path: K-of-N verification of
-both sides) and hands it to the EquivocationPublisher.
+a *findings.EquivocationFinding, verifies it (K-of-N from
+*cosign.WitnessKeySet) and hands it to the EquivocationPublisher.
 
 # WHY THIS REPLACES witness/equivocation_monitor.go
 
@@ -19,6 +19,16 @@ SignedEvent, whose body carries the complete types.CosignedTreeHead
 including K-of-N signatures. Building the monitor on the gossip
 feed gives us cryptographic proofs from the wire — no manual sig
 plumbing on our side.
+
+# v0.1.1 API SHAPE
+
+The witness keys, NetworkID, K-of-N quorum, and BLS verifier
+are all encapsulated in *cosign.WitnessKeySet (constructed at
+boot in cmd/ledger/main.go from LEDGER_WITNESS_QUORUM_K +
+genesis witness DIDs). The previous (witnessKeys, quorumK,
+networkID, blsVerifier) parameter group is collapsed into one
+field. witness.DetectEquivocation, finding.Verify, and the
+underlying cosign.Verify primitive all read K from set.Quorum().
 
 # DETECTION ALGORITHM
 
@@ -36,12 +46,14 @@ Per tick:
  2. Fetch our local Store.LatestSTH(originatorDID). Decode same
     way.
  3. If both exist, both at the same tree_size, but different
-    root_hash → call witness.DetectEquivocation. The SDK helper
-    verifies BOTH heads against the WitnessKeySet at K-of-N and
-    returns *witness.EquivocationProof on success.
- 4. Wrap in findings.NewEquivocationFinding, call .Verify(set, K)
-    to obtain *VerifiedEquivocationFinding (the type-safety
-    constructor — only path).
+    root_hash → call witness.DetectEquivocation(headA, headB, set).
+    The SDK helper verifies BOTH heads against the WitnessKeySet
+    at K-of-N (read from set.Quorum()) and returns
+    *witness.EquivocationProof on success.
+ 4. Wrap in findings.NewEquivocationFinding, call .Verify(set)
+    to confirm cryptographic admissibility of the wire-shape
+    finding (independent of step 3 — Verify guards the publish
+    contract; DetectEquivocation guards the detection contract).
  5. Publish via EquivocationPublisher (signs as
     KindEquivocationFinding + appends + broadcasts).
 
@@ -60,9 +72,9 @@ The verification gate also fires on:
   - Heads with signatures from non-witness-set keys
   - Heads where K-of-N is not reached for either side
 
-This monitor only ever publishes verified evidence. The
-*VerifiedEquivocationFinding type system enforces this property
-at the call site (see EquivocationPublisher.Publish).
+This monitor only ever publishes verified evidence. The Verify-
+before-Publish contract (see EquivocationPublisher.Publish doc)
+is enforced by this monitor's checkPeer flow.
 
 # CADENCE
 
@@ -93,6 +105,12 @@ import (
 const DefaultEquivocationInterval = 60 * time.Second
 
 // EquivocationMonitorConfig configures the equivocation monitor.
+//
+// v0.1.1 SHAPE: WitnessKeys / QuorumK / NetworkID / BLSVerifier
+// are collapsed into a single WitnessSet *cosign.WitnessKeySet
+// field. The constructor at cmd/ledger/main.go calls
+// cosign.NewWitnessKeySet(witKeys, networkID, quorumK, blsVerifier)
+// once at boot and passes the result here.
 type EquivocationMonitorConfig struct {
 	// Store is the local gossip Store. Required. Used for
 	// LatestSTH(originator) lookups against the ledger's own
@@ -105,24 +123,11 @@ type EquivocationMonitorConfig struct {
 	// Empty disables the monitor (Run returns immediately).
 	Peers []AntiEntropyPeer
 
-	// WitnessKeys is the witness public-key set the monitor
-	// verifies cosignatures against. Loaded from the network
-	// bootstrap document at startup. Required.
-	WitnessKeys []types.WitnessPublicKey
-
-	// QuorumK is the K-of-N quorum threshold. Required (>0).
-	// Cosignatures with fewer than K valid sigs cannot prove
-	// equivocation.
-	QuorumK int
-
-	// NetworkID is the deployment's cosign-domain identifier.
-	// Required (non-zero).
-	NetworkID sdkcosign.NetworkID
-
-	// BLSVerifier is the BLS aggregate verifier. nil ⇒
-	// ECDSA-only deployment (cosign.Verify dispatches per
-	// SchemeTag and only invokes BLSVerifier for BLS sigs).
-	BLSVerifier sdkcosign.BLSAggregateVerifier
+	// WitnessSet is the *cosign.WitnessKeySet the monitor verifies
+	// cosignatures against. Encapsulates witness public keys,
+	// NetworkID, K-of-N quorum threshold, and BLS aggregate
+	// verifier. Required (non-nil).
+	WitnessSet *sdkcosign.WitnessKeySet
 
 	// Publisher is the egress hook. nil disables publishing —
 	// detected equivocations are logged but not broadcast (useful
@@ -141,20 +146,17 @@ type EquivocationMonitorConfig struct {
 
 // EquivocationMonitor polls peers for STH divergence.
 type EquivocationMonitor struct {
-	store sdkgossip.Store
-	peers []equivocationPeerInternal
-	witnessKeys []types.WitnessPublicKey
-	quorumK int
-	networkID sdkcosign.NetworkID
-	blsVerifier sdkcosign.BLSAggregateVerifier
-	publisher *EquivocationPublisher
-	interval time.Duration
-	logger *slog.Logger
+	store      sdkgossip.Store
+	peers      []equivocationPeerInternal
+	witnessSet *sdkcosign.WitnessKeySet
+	publisher  *EquivocationPublisher
+	interval   time.Duration
+	logger     *slog.Logger
 }
 
 type equivocationPeerInternal struct {
-	did string
-	url string
+	did    string
+	url    string
 	client sdkgossip.Client
 }
 
@@ -164,15 +166,10 @@ func NewEquivocationMonitor(cfg EquivocationMonitorConfig) (*EquivocationMonitor
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("gossipnet/equivocation_monitor: Store required")
 	}
-	if len(cfg.WitnessKeys) == 0 {
-		return nil, fmt.Errorf("gossipnet/equivocation_monitor: WitnessKeys required (load from bootstrap doc)")
-	}
-	if cfg.QuorumK <= 0 {
-		return nil, fmt.Errorf("gossipnet/equivocation_monitor: QuorumK > 0 required")
-	}
-	var zero sdkcosign.NetworkID
-	if cfg.NetworkID == zero {
-		return nil, fmt.Errorf("gossipnet/equivocation_monitor: NetworkID required (non-zero)")
+	if cfg.WitnessSet == nil {
+		return nil, fmt.Errorf(
+			"gossipnet/equivocation_monitor: WitnessSet required " +
+				"(construct via cosign.NewWitnessKeySet at boot)")
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = DefaultEquivocationInterval
@@ -203,15 +200,12 @@ func NewEquivocationMonitor(cfg EquivocationMonitorConfig) (*EquivocationMonitor
 	}
 
 	return &EquivocationMonitor{
-		store:       cfg.Store,
-		peers:       peers,
-		witnessKeys: append([]types.WitnessPublicKey{}, cfg.WitnessKeys...),
-		quorumK:     cfg.QuorumK,
-		networkID:   cfg.NetworkID,
-		blsVerifier: cfg.BLSVerifier,
-		publisher:   cfg.Publisher,
-		interval:    cfg.Interval,
-		logger:      cfg.Logger,
+		store:      cfg.Store,
+		peers:      peers,
+		witnessSet: cfg.WitnessSet,
+		publisher:  cfg.Publisher,
+		interval:   cfg.Interval,
+		logger:     cfg.Logger,
 	}, nil
 }
 
@@ -225,8 +219,8 @@ func (m *EquivocationMonitor) Run(ctx context.Context) error {
 	m.logger.Info("equivocation monitor: started",
 		"peers", len(m.peers),
 		"interval", m.interval,
-		"quorum_k", m.quorumK,
-		"witness_set_size", len(m.witnessKeys),
+		"quorum_k", m.witnessSet.Quorum(),
+		"witness_set_size", m.witnessSet.Size(),
 		"publisher_wired", m.publisher != nil,
 	)
 
@@ -304,11 +298,8 @@ func (m *EquivocationMonitor) checkPeer(ctx context.Context, p equivocationPeerI
 
 	// Compare. DetectEquivocation handles the "same root" and
 	// "different sizes" cases internally — we don't pre-filter.
-	proof, err := sdkwitness.DetectEquivocation(
-		localHead, peerHead,
-		m.witnessKeys, m.quorumK,
-		m.networkID, m.blsVerifier,
-	)
+	// v0.1.1: K, networkID, blsVerifier all live in m.witnessSet.
+	proof, err := sdkwitness.DetectEquivocation(localHead, peerHead, m.witnessSet)
 	if err != nil {
 		// A non-equivocation outcome is signalled by err == nil
 		// + proof == nil. err != nil means a verification or
@@ -324,23 +315,18 @@ func (m *EquivocationMonitor) checkPeer(ctx context.Context, p equivocationPeerI
 		return // no divergence
 	}
 
-	// Hand the proof to the type-safety gate. Verify on the
-	// resulting EquivocationFinding produces the verified type
-	// the publisher requires.
+	// Hand the proof to the wire-shape constructor + verifier.
+	// Verify(set) returns nil iff cosignatures pass K-of-N on
+	// both heads. The publish contract requires the caller to
+	// have observed Verify == nil before invoking Publish; we
+	// enforce that here.
 	finding, err := findings.NewEquivocationFinding(*proof, p.url)
 	if err != nil {
 		m.logger.Warn("equivocation monitor: NewEquivocationFinding rejected proof",
 			"peer", p.url, "error", err)
 		return
 	}
-	witnessSet, err := sdkcosign.NewWitnessKeySet(m.witnessKeys, m.networkID, m.blsVerifier)
-	if err != nil {
-		m.logger.Warn("equivocation monitor: NewWitnessKeySet failed",
-			"error", err)
-		return
-	}
-	verified, err := finding.Verify(witnessSet, m.quorumK)
-	if err != nil {
+	if err := finding.Verify(m.witnessSet); err != nil {
 		m.logger.Warn("equivocation monitor: Verify rejected finding",
 			"peer", p.url, "error", err)
 		return
@@ -352,11 +338,12 @@ func (m *EquivocationMonitor) checkPeer(ctx context.Context, p equivocationPeerI
 		"tree_size", proof.TreeSize,
 		"local_root", fmt.Sprintf("%x", localHead.RootHash[:8]),
 		"peer_root", fmt.Sprintf("%x", peerHead.RootHash[:8]),
-		"verified_at_quorum", verified.VerifiedAtQuorum(),
+		"valid_sigs_a", proof.ValidSigsA,
+		"valid_sigs_b", proof.ValidSigsB,
 	)
 
 	if m.publisher != nil {
-		m.publisher.Publish(ctx, verified)
+		m.publisher.Publish(ctx, finding)
 	}
 }
 

@@ -106,9 +106,10 @@ type PublisherConfig struct {
 	// LedgerEndpoint is the ledger's public base URL, embedded in
 	// the finding body for diagnostics. Not part of the
 	// cryptographic content. Passed to the SDK's
-	// findings.NewCosignedTreeHeadFinding which exposes it via
-	// VerifiedCosignedTreeHeadFinding.LedgerEndpoint() — the SDK
-	// keeps the historical "ledger" naming on its public method.
+	// findings.NewCosignedTreeHeadFinding which exposes it as a
+	// public field (LedgerEndpoint) — v0.1.1 collapsed the
+	// VerifiedCosignedTreeHeadFinding wrapper, so it's a direct
+	// struct field rather than an accessor method now.
 	LedgerEndpoint string
 
 	// Logger receives publish diagnostics. nil ⇒ slog.Default.

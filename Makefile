@@ -14,8 +14,8 @@ SDK_MODULE  := github.com/clearcompass-ai/attesta
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
         integration-up integration-down integration-logs integration-status
 
-DEV_COMPOSE := docker compose -f deployment/local/docker-compose.dev.yml
-INT_COMPOSE := docker compose -f deployment/local/docker-compose.integration.yml
+DEV_COMPOSE := docker compose -f scripts/local/docker-compose.dev.yml
+INT_COMPOSE := docker compose -f scripts/local/docker-compose.integration.yml
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -91,7 +91,7 @@ audit-sdk: ## Fail if SDK ships any muEnable*=false
 #   gcloud auth application-default login
 #   export LEDGER_DEV_BUCKET_DAVIDSON=<your-davidson-bucket>
 #   export LEDGER_DEV_BUCKET_COA=<your-coa-bucket>
-# See deployment/local/README.dev.md for full prerequisites.
+# See scripts/local/README.dev.md for full prerequisites.
 
 dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
 	@if [ ! -f "$$HOME/.config/gcloud/application_default_credentials.json" ]; then \
@@ -101,12 +101,12 @@ dev-preflight: ## Validate dev-up prerequisites (gcloud ADC + bucket env)
 	fi
 	@if [ -z "$$LEDGER_DEV_BUCKET_DAVIDSON" ]; then \
 	  echo "FAIL: LEDGER_DEV_BUCKET_DAVIDSON is unset"; \
-	  echo "      see deployment/local/README.dev.md"; \
+	  echo "      see scripts/local/README.dev.md"; \
 	  exit 1; \
 	fi
 	@if [ -z "$$LEDGER_DEV_BUCKET_COA" ]; then \
 	  echo "FAIL: LEDGER_DEV_BUCKET_COA is unset"; \
-	  echo "      see deployment/local/README.dev.md"; \
+	  echo "      see scripts/local/README.dev.md"; \
 	  exit 1; \
 	fi
 	@echo "preflight ok: ADC found, bucket env vars set"

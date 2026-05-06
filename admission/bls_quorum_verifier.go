@@ -7,9 +7,9 @@ Scope (Wave 1 v3, intentionally narrow): this verifier fires ONLY for
 entries whose payload embeds a cosigned tree head — anchor entries
 authored by peer ledgers, witness-attestation commentary, cross-log
 proof entries. Plain submissions that do not carry an embedded
-checkpoint skip this stage entirely; the commitment-entry
-surface (pre-grant-commitment-v1, escrow-split-commitment-v1) does
-not embed tree heads and therefore never triggers S1.
+checkpoint skip this stage entirely; the commitment-entry surface
+(pre-grant-commitment-v1, escrow-split-commitment-v1) does not embed
+tree heads and therefore never triggers S1.
 
 The verifier routes through cosign.Verify against the SDK's universal
 cosignature surface. cosign.Verify enforces, in one path:
@@ -17,16 +17,26 @@ cosignature surface. cosign.Verify enforces, in one path:
   - Per-signature scheme dispatch (rejects SchemeTag==0 with
     cosign.ErrSchemeUnspecified; rejects unknown schemes with
     cosign.ErrSchemeUnsupported).
-  - Per-signature pubkey membership in the supplied witness set
+  - Per-signature pubkey membership in the *cosign.WitnessKeySet
     (rejects unknown PubKeyID with per-signature
     cosign.ErrUnknownPublicKey).
-  - K-of-N quorum across ECDSA + BLS signatures (rejects below-
-    threshold counts with top-level cosign.ErrQuorumNotReached).
+  - K-of-N quorum read from set.Quorum() (rejects below-threshold
+    counts with top-level cosign.ErrQuorumNotReached).
 
 All three are mandatory in cosign.Verify; they are not gated mutation
 switches. The ledger's job is to invoke the primitive and map its
 quorum-class errors to the admission-layer's
 ErrWitnessQuorumInsufficient.
+
+# v0.1.1 API SHAPE
+
+The verifier holds a *cosign.WitnessKeySet directly — keys,
+NetworkID, K-of-N quorum, and BLS aggregate verifier are all
+encapsulated topology constructed once at boot via
+cosign.NewWitnessKeySet. The previous (keys, K, networkID,
+blsVerifier) parameter group is collapsed into one argument; the
+single-impl WitnessKeySet interface and StaticWitnessKeySet wrapper
+that existed to bridge v0.1.0's separate-args shape are removed.
 
 Detection vs. verification (separation of concerns):
 
@@ -47,11 +57,11 @@ Detection vs. verification (separation of concerns):
     and complete — it would fire correctly the moment the detector
     matches a real schema.
 
-Active witness key set: loaded from ledger config at startup via
-the WitnessKeySet interface (config-backed implementations live in
-cmd/ledger/main.go wiring, not here). Refresh on signal is the
-ledger wiring's responsibility — this verifier reads a fresh
-snapshot on every Verify call so updates propagate without restart.
+Active witness key set: loaded from ledger config at startup as a
+*cosign.WitnessKeySet (config-backed construction lives in
+cmd/ledger/main.go wiring, not here). Refresh-on-rotation is the
+ledger wiring's responsibility — atomic.Pointer[cosign.WitnessKeySet]
+is the canonical pattern when rotation lands; v0.1.1 is single-set.
 */
 package admission
 
@@ -79,38 +89,12 @@ import (
 var ErrWitnessQuorumInsufficient = errors.New(
 	"admission: witness quorum insufficient")
 
-// ErrWitnessKeySetUnavailable is returned when the active witness
-// key set provider returns an error. The HTTP layer maps this to
-// 503 — the entry is structurally valid but the ledger cannot
-// presently verify it.
+// ErrWitnessKeySetUnavailable is returned when the verifier was
+// constructed without a *cosign.WitnessKeySet. The HTTP layer
+// maps this to 503 — the entry is structurally valid but the
+// ledger cannot presently verify it.
 var ErrWitnessKeySetUnavailable = errors.New(
 	"admission: witness key set unavailable")
-
-// ─────────────────────────────────────────────────────────────────────
-// Witness key set provider
-// ─────────────────────────────────────────────────────────────────────
-
-// WitnessKeySet provides the active witness public keys and quorum
-// threshold to the BLS quorum verifier. Implementations are config-
-// backed (ledger startup loads from YAML) or remote-DID-backed
-// (resolver fetches the current set from a witness coordinator).
-//
-// Active is called on every Verify invocation; implementations
-// should cache aggressively. The contract is "give me the snapshot
-// to use for THIS verification" — staleness handling lives in the
-// implementation.
-//
-// Returns:
-//
-//   - keys:    the active witness public keys (BLS or ECDSA)
-//   - quorumK: the K threshold for the K-of-N quorum
-//   - err:     non-nil only on config / resolver failure; an empty
-//     key set is still a successful return that the
-//     verifier rejects with ErrWitnessQuorumInsufficient
-//     wrapping the SDK's ErrEmptyWitnessSet.
-type WitnessKeySet interface {
-	Active() (keys []types.WitnessPublicKey, quorumK int, err error)
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Verifier
@@ -118,47 +102,36 @@ type WitnessKeySet interface {
 
 // BLSQuorumVerifier verifies cosigned tree heads embedded in
 // admission-time entry payloads. Constructed once at ledger
-// startup and shared across the admission handler's request pool;
-// safe for concurrent use as long as the WitnessKeySet
-// implementation is.
+// startup with a *cosign.WitnessKeySet built from
+// LEDGER_WITNESS_QUORUM_K + the genesis witness DIDs, and shared
+// across every admission request; safe for concurrent use because
+// *cosign.WitnessKeySet is immutable after construction.
 type BLSQuorumVerifier struct {
-	keySet WitnessKeySet
-	blsVerifier cosign.BLSAggregateVerifier
-	networkID cosign.NetworkID
+	set *cosign.WitnessKeySet
 }
 
 // NewBLSQuorumVerifier constructs a verifier with the supplied
-// witness key set provider, BLS aggregate verifier, and the
-// deployment's NetworkID.
+// *cosign.WitnessKeySet. The keyset encapsulates the witness
+// public keys, NetworkID, K-of-N quorum threshold, and BLS
+// aggregate verifier — all of which were separate constructor
+// arguments under v0.1.0 and are now topology held by the set
+// itself.
 //
-// blsVerifier MAY be nil if the deployment expects only ECDSA
-// cosignatures — cosign.Verify dispatches on each signature's
-// SchemeTag and only invokes blsVerifier when at least one
-// SchemeBLS signature is present. Production deployments inject
-// cosign.NewProductionBLSVerifier(); tests pass nil or a fake.
-//
-// networkID binds every verification to a specific network/fork.
-// Signatures produced under a different NetworkID never satisfy
-// the quorum, even if the underlying key material matches.
-func NewBLSQuorumVerifier(
-	keySet WitnessKeySet,
-	blsVerifier cosign.BLSAggregateVerifier,
-	networkID cosign.NetworkID,
-) *BLSQuorumVerifier {
-	return &BLSQuorumVerifier{
-		keySet:      keySet,
-		blsVerifier: blsVerifier,
-		networkID:   networkID,
-	}
+// set MUST be non-nil. Construction time is the right place to
+// fail on a missing set; VerifyEntry / VerifyEmbeddedTreeHead
+// surface a missing set as ErrWitnessKeySetUnavailable so the
+// HTTP layer can map to 503 instead of crashing the admission
+// goroutine.
+func NewBLSQuorumVerifier(set *cosign.WitnessKeySet) *BLSQuorumVerifier {
+	return &BLSQuorumVerifier{set: set}
 }
 
-// VerifyEmbeddedTreeHead is the cryptographic check: load the
-// active witness set and invoke cosign.Verify against a
-// PurposeTreeHead payload. Maps cosign.Verify's quorum-class
-// errors (ErrQuorumNotReached, ErrEmptySignatures) to
-// ErrWitnessQuorumInsufficient so the admission layer can route
-// a single status code without branching on the SDK error
-// vocabulary.
+// VerifyEmbeddedTreeHead is the cryptographic check: invoke
+// cosign.Verify against a PurposeTreeHead payload. Maps
+// cosign.Verify's quorum-class errors (ErrQuorumNotReached,
+// ErrEmptySignatures) to ErrWitnessQuorumInsufficient so the
+// admission layer can route a single status code without
+// branching on the SDK error vocabulary.
 //
 // All structural checks (scheme dispatch, pubkey membership,
 // signature length) are enforced inside cosign.Verify; this
@@ -169,20 +142,14 @@ func (v *BLSQuorumVerifier) VerifyEmbeddedTreeHead(
 	if v == nil {
 		return errors.New("admission: nil BLSQuorumVerifier")
 	}
-	if v.keySet == nil {
-		return fmt.Errorf("%w: nil key set provider",
+	if v.set == nil {
+		return fmt.Errorf("%w: nil *cosign.WitnessKeySet",
 			ErrWitnessKeySetUnavailable)
-	}
-
-	keys, quorumK, err := v.keySet.Active()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrWitnessKeySetUnavailable, err)
 	}
 
 	payload := cosign.NewTreeHeadPayload(head.TreeHead)
 	_, verifyErr := cosign.Verify(
-		payload, v.networkID, cosign.HashAlgoSHA256,
-		head.Signatures, keys, quorumK, v.blsVerifier,
+		payload, v.set, cosign.HashAlgoSHA256, head.Signatures,
 	)
 	if verifyErr == nil {
 		return nil
@@ -195,7 +162,11 @@ func (v *BLSQuorumVerifier) VerifyEmbeddedTreeHead(
 	switch {
 	case errors.Is(verifyErr, cosign.ErrQuorumNotReached),
 		errors.Is(verifyErr, cosign.ErrEmptySignatures):
-		return fmt.Errorf("%w: %v", ErrWitnessQuorumInsufficient, verifyErr)
+		// Multi-%w preserves both sentinels in the unwrap chain so
+		// callers can errors.Is on either ErrWitnessQuorumInsufficient
+		// (the ledger-side dispatch sentinel for HTTP 401) OR the
+		// underlying cosign cause for diagnostics.
+		return fmt.Errorf("%w: %w", ErrWitnessQuorumInsufficient, verifyErr)
 	default:
 		// A non-quorum SDK failure (config bug, malformed head,
 		// signature math failure) surfaces unchanged. The HTTP
@@ -249,9 +220,9 @@ func (v *BLSQuorumVerifier) VerifyEntry(entry *envelope.Entry) error {
 // EntryEmbedsTreeHead reports whether an entry's payload schema is
 // one the ledger knows to carry a cosigned tree head. Currently
 // a closed-set predicate that returns false for every schema; the
-//  commitment-entry surface introduced in Wave 1 (pre-grant-
-// commitment-v1, escrow-split-commitment-v1) does NOT embed tree
-// heads, so S1 verification is correctly a no-op for those entries.
+// commitment-entry surface (pre-grant-commitment-v1, escrow-split-
+// commitment-v1) does NOT embed tree heads, so S1 verification is
+// correctly a no-op for those entries.
 //
 // Future commits add matches for:
 //
