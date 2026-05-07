@@ -5,7 +5,7 @@ FILE PATH:
 DESCRIPTION:
     D3 — wal Submit duration histogram.
 
-        attesta_wal_submit_duration_seconds
+        attesta_wal_submit_duration_seconds{outcome}
 
     Records the wall time of every wal.Committer.Submit call:
     queue-wait + group-commit batch-window + Badger txn + fsync.
@@ -14,9 +14,20 @@ DESCRIPTION:
     fsync-latency degradation.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Single histogram, no labels. The wal is a singleton in the
-      process; per-route or per-tenant breakdown belongs at the
-      api layer. Cardinality budget: ~14 buckets × 1 series.
+    - One label, "outcome", with bounded cardinality 2:
+        outcome="committed" — group commit completed; submitter
+                              got a definitive (nil or err) result.
+        outcome="canceled"  — submitter ctx expired before the
+                              group commit completed. The
+                              submission may have flushed
+                              afterwards, but the SUBMITTER
+                              observed a deadline.
+      Without this label, the histogram has a blind spot in the
+      saturated case (clients time out → no observation → p99
+      looks artificially healthy under WAL backlog). With it,
+      operators alert on canceled-rate spikes AND compare
+      committed-p99 to canceled-p99 to distinguish "WAL is slow"
+      from "clients have aggressive timeouts".
     - Buckets tuned for 1ms-2s typical fsync windows (NVMe = sub-
       ms; spinning rust = double-digit ms). Outliers >2s flag a
       stuck batcher.
@@ -30,7 +41,15 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+)
+
+// Submit-outcome label values. Bounded set of 2; total
+// cardinality of the histogram = 2 series × N buckets.
+const (
+	OutcomeCommitted = "committed"
+	OutcomeCanceled  = "canceled"
 )
 
 var submitDurationState struct {
@@ -52,7 +71,7 @@ func InstallSubmitDurationHistogram(meter metric.Meter) bool {
 	}
 	h, err := meter.Float64Histogram(
 		"attesta_wal_submit_duration_seconds",
-		metric.WithDescription("wal.Committer.Submit wall time (queue + batch + fsync)."),
+		metric.WithDescription("wal.Committer.Submit wall time (queue + batch + fsync), by outcome."),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(
 			0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5,
@@ -65,14 +84,24 @@ func InstallSubmitDurationHistogram(meter metric.Meter) bool {
 	return true
 }
 
-// recordSubmitDuration is called from Submit on success path.
+// recordSubmitDuration is called from Submit on BOTH the
+// success path (outcome=committed) AND the cancel path
+// (outcome=canceled). The cancel-path observation is the
+// load-bearing one for SRE alerting: it captures the saturated
+// case where the WAL is so slow the submitter's ctx expired
+// first. Without the cancel-path observation, p99 stays
+// artificially healthy precisely when WAL pressure is
+// hurting clients.
+//
 // nil histogram is a no-op.
-func recordSubmitDuration(ctx context.Context, d time.Duration) {
+func recordSubmitDuration(ctx context.Context, outcome string, d time.Duration) {
 	submitDurationState.mu.RLock()
 	h := submitDurationState.histogram
 	submitDurationState.mu.RUnlock()
 	if h == nil {
 		return
 	}
-	h.Record(ctx, d.Seconds())
+	h.Record(ctx, d.Seconds(),
+		metric.WithAttributes(attribute.String("outcome", outcome)),
+	)
 }

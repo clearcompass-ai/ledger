@@ -260,9 +260,14 @@ release-build: ## Build ./bin/ledger with version + reproducible flags
 # K3 — verify checked-in module sums against the upstream registry.
 # Trivial; this is the supply-chain integrity floor every Go project
 # inherits free with go.sum in source control.
+#
+# `go mod download` (no args) downloads every module required by
+# the main module — that's the supply-chain check. It does NOT
+# accept `./...` (which is for go-build/go-test path patterns,
+# not module patterns).
 verify-deps: ## go mod verify + go mod download check
 	$(GO) mod verify
-	$(GO) mod download -x ./...
+	$(GO) mod download -x
 
 # K4 — `make lint`. Three orthogonal checks:
 #

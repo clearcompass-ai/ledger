@@ -181,11 +181,18 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 	}
 	select {
 	case err := <-s.done:
-		recordSubmitDuration(ctx, time.Since(t0))
+		recordSubmitDuration(ctx, OutcomeCommitted, time.Since(t0))
 		return err
 	case <-ctx.Done():
-		// Submitter gave up before group commit completed. The
-		// submission is still in flight; the commit goroutine will
+		// Submitter gave up before group commit completed.
+		// Record the wait time under outcome=canceled so the
+		// histogram sees the saturated path — without this
+		// observation, p99 stays artificially healthy precisely
+		// when WAL pressure is hurting clients (clients time out
+		// first → no observation under outcome=committed → SREs
+		// miss the alert).
+		recordSubmitDuration(ctx, OutcomeCanceled, time.Since(t0))
+		// The submission is still in flight; the commit goroutine will
 		// flush its batch normally and write to a now-orphaned
 		// done channel (buffered, so non-blocking). The bytes will
 		// be durable on disk regardless — at-least-once semantics.

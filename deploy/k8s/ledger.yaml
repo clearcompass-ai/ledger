@@ -83,8 +83,14 @@ stringData:
   # Operator fills these via SOPS / Vault / external-secrets-operator.
   # Plain-text placeholders here are illustrative ONLY.
   LEDGER_DATABASE_URL: "postgres://ledger_app:<SET-AT-DEPLOY>@postgres.ledger:5432/ledger?sslmode=require"
-  LEDGER_SIGNER_KEY_FILE: "/etc/ledger/keys/signer.pem"
-  LEDGER_TESSERA_SIGNER_KEY_FILE: "/etc/ledger/keys/tessera-signer.pem"
+  # Signer key paths intentionally OMITTED here — see the
+  # "Production-keys overlay" section at the bottom of this
+  # file for the production-stable-identity wiring. With these
+  # env vars unset, the ledger generates ephemeral signing keys
+  # at boot (logs a clear warning) and runs cleanly. Suitable
+  # for laptop-K8s, smoke deploys, and CI integration tests;
+  # NOT suitable for production (witnesses + auditors will see
+  # a fresh DID on every restart).
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -161,7 +167,9 @@ spec:
             - { name: wal,      mountPath: /var/lib/attesta/wal }
             - { name: tessera,  mountPath: /var/lib/attesta/tessera }
             - { name: antispam, mountPath: /var/lib/attesta/antispam }
-            - { name: keys,     mountPath: /etc/ledger/keys, readOnly: true }
+            # keys volumeMount intentionally OMITTED — see the
+            # production-keys overlay section at the bottom of
+            # this file for the stable-identity deployment.
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
@@ -180,10 +188,8 @@ spec:
         - { name: wal,      persistentVolumeClaim: { claimName: ledger-wal } }
         - { name: tessera,  persistentVolumeClaim: { claimName: ledger-tessera } }
         - { name: antispam, persistentVolumeClaim: { claimName: ledger-antispam } }
-        - name: keys
-          secret:
-            secretName: ledger-signer-keys  # operator-managed (separate from ledger-secrets)
-            optional: true
+        # keys volume intentionally OMITTED — see the production-
+        # keys overlay section at the bottom of this file.
 ---
 apiVersion: v1
 kind: Service
@@ -226,3 +232,61 @@ spec:
 #     - port: metrics
 #       path: /metrics
 #       interval: 15s
+
+# =============================================================================
+# Production-keys overlay (apply to STABLE-IDENTITY deployments only)
+# =============================================================================
+#
+# By default this manifest runs the ledger with EPHEMERAL signing
+# keys (cmd/ledger logs a "NOT for production" warning at boot).
+# Witnesses and auditors will see a fresh DID on every restart;
+# fine for laptop-K8s, smoke deploys, and CI integration tests.
+#
+# For PRODUCTION (stable identity across pod restarts) you MUST:
+#
+#   1. Generate the keys (off-cluster):
+#        openssl ecparam -genkey -name prime256v1 -noout -out signer.pem
+#        openssl ecparam -genkey -name prime256v1 -noout -out tessera-signer.pem
+#
+#   2. Create the Secret in the ledger namespace:
+#        kubectl -n ledger create secret generic ledger-signer-keys \
+#            --from-file=signer.pem=signer.pem \
+#            --from-file=tessera-signer.pem=tessera-signer.pem
+#
+#   3. Apply the overlay below (kubectl apply -f - <<EOF ... EOF, or via
+#      Kustomize / Helm). Each block is a `kubectl patch`-shaped fragment
+#      that augments the resources defined above.
+#
+# Two key-file env vars are added to the Secret (NOT the ConfigMap, so
+# overlays can rotate the file paths without rewriting non-secret config):
+#
+#   apiVersion: v1
+#   kind: Secret
+#   metadata:
+#     name: ledger-secrets
+#     namespace: ledger
+#   type: Opaque
+#   stringData:
+#     LEDGER_SIGNER_KEY_FILE: /etc/ledger/keys/signer.pem
+#     LEDGER_TESSERA_SIGNER_KEY_FILE: /etc/ledger/keys/tessera-signer.pem
+#
+# A volume + mount are added to the Deployment. NOTE: optional: false
+# (the default) so the pod fails at admission control if the Secret
+# doesn't exist — clean error at apply-time, NOT a CrashLoopBackOff
+# at runtime.
+#
+#   spec:
+#     template:
+#       spec:
+#         containers:
+#           - name: ledger
+#             volumeMounts:
+#               - name: keys
+#                 mountPath: /etc/ledger/keys
+#                 readOnly: true
+#         volumes:
+#           - name: keys
+#             secret:
+#               secretName: ledger-signer-keys
+#               # optional NOT set → defaults to false → pod refuses
+#               # to start if the Secret is missing.

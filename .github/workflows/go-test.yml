@@ -32,8 +32,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: go mod verify
-        run: go mod verify
+      - name: verify-deps (go mod verify + download)
+        run: make verify-deps
 
       - name: go vet
         run: go vet ./...
