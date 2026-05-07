@@ -144,6 +144,50 @@ services:
       '
 
   # ─────────────────────────────────────────────────────────────────
+  # SeaweedFS — second S3-compatible bytestore option
+  # ─────────────────────────────────────────────────────────────────
+  #
+  # SeaweedFS is the production-pivot target for the bytestore. Its
+  # S3 endpoint (port 8333) speaks the same SigV4 wire as RustFS,
+  # AWS S3, R2, and MinIO — so the bytestore.S3 adapter handles it
+  # without any code change. We ship it here so the soak harness
+  # can validate the SeaweedFS path locally before any production
+  # cutover.
+  #
+  # Differences vs RustFS:
+  #   - "weed mini" mode runs the FULL stack in one process
+  #     (master, volume, filer, S3) — closer to production shape
+  #     than RustFS's S3-only gateway.
+  #   - Pre-creates the bucket via S3_BUCKET env var (no separate
+  #     init container needed).
+  #   - SeaweedFS auto-shards across volumes; the prefix-hotspot
+  #     pathology the soak observed against GCS at 1M scale does
+  #     NOT apply (different sharding model).
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: attesta_test_seaweedfs
+    # The image's default entrypoint is `weed`. `mini` starts the
+    # all-in-one stack (master, volume, filer, S3, WebDAV). We only
+    # expose S3 (8333) to the host; the rest is internal.
+    command: ["mini", "-dir=/data"]
+    environment:
+      # S3 credentials. The bytestore.S3 adapter sends SigV4 with
+      # these. Tests pass them in via ATTESTA_TEST_S3_ACCESS_KEY/SECRET_KEY.
+      AWS_ACCESS_KEY_ID: seaweedadmin
+      AWS_SECRET_ACCESS_KEY: seaweedsecret
+      # Auto-creates the bucket on startup. Soak hits it directly.
+      S3_BUCKET: attesta-test-seaweed
+    ports:
+      - "127.0.0.1:8333:8333"   # S3 API
+    healthcheck:
+      # Alpine-based image ships wget. Master health is the most
+      # reliable up-signal — S3 endpoint comes up after it.
+      test: ["CMD-SHELL", "wget -q -t 1 --timeout 2 -O- http://localhost:9333/cluster/status > /dev/null 2>&1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # ─────────────────────────────────────────────────────────────────
   # Observability profile — Prometheus + Jaeger for laptop dev
   # Activate via: docker compose --profile observability up -d
   # ─────────────────────────────────────────────────────────────────
