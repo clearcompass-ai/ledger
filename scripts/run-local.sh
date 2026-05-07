@@ -131,6 +131,26 @@ export LEDGER_WITNESS_QUORUM_K="${LEDGER_WITNESS_QUORUM_K:-1}"
 # overridden to match. Set LEDGER_SIGNER_KEY_FILE for a stable
 # DID across restarts.
 
+# ── Observability (D1-D7) ─────────────────────────────────────────
+# Metrics ON by default (D1). Tracing endpoint defaults to
+# "stdout" so spans land in the ledger's stderr alongside Info
+# logs — no second process needed for laptop dev.
+#
+# To get UIs, start the observability profile in a second shell:
+#
+#   docker compose -f scripts/local/docker-compose.testharness.yml \
+#       --profile observability up -d
+#   # Prometheus UI: http://localhost:9090
+#   # Jaeger UI:     http://localhost:16686
+#
+# Then re-run with LEDGER_OTLP_TRACES_ENDPOINT pointed at Jaeger:
+#   LEDGER_OTLP_TRACES_ENDPOINT=http://localhost:4318 ./scripts/run-local.sh
+export LEDGER_METRICS_ENABLE="${LEDGER_METRICS_ENABLE:-true}"
+export LEDGER_METRICS_ENVIRONMENT="${LEDGER_METRICS_ENVIRONMENT:-laptop-dev}"
+export LEDGER_OTLP_TRACES_ENDPOINT="${LEDGER_OTLP_TRACES_ENDPOINT:-stdout}"
+# pprof on loopback only (A4) — diagnostic, never public.
+export LEDGER_PPROF_ADDR="${LEDGER_PPROF_ADDR:-127.0.0.1:6060}"
+
 echo "== env ready =="
 echo "  LEDGER_DATABASE_URL=${LEDGER_DATABASE_URL}"
 echo "  LEDGER_LOG_DID=${LEDGER_LOG_DID}"
@@ -138,6 +158,9 @@ echo "  LEDGER_ADDR=${LEDGER_ADDR}"
 echo "  LEDGER_BYTE_STORE_BACKEND=${LEDGER_BYTE_STORE_BACKEND} (bucket=${LEDGER_BYTE_STORE_GCS_BUCKET})"
 echo "  LEDGER_WAL_PATH=${LEDGER_WAL_PATH}"
 echo "  LEDGER_WITNESS_ENDPOINTS=${LEDGER_WITNESS_ENDPOINTS} (quorum_k=${LEDGER_WITNESS_QUORUM_K})"
+echo "  LEDGER_METRICS_ENABLE=${LEDGER_METRICS_ENABLE}"
+echo "  LEDGER_OTLP_TRACES_ENDPOINT=${LEDGER_OTLP_TRACES_ENDPOINT}"
+echo "  LEDGER_PPROF_ADDR=${LEDGER_PPROF_ADDR}"
 echo
 
 # ── Run ───────────────────────────────────────────────────────────

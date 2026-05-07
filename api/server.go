@@ -444,6 +444,14 @@ func NewServer(
 	// and read paths all carry the same X-Request-ID surface.
 	root := middleware.WithRequestID(mux)
 
+	// D3 — Request duration histogram. Outermost wrap so
+	// authn + every other middleware is included in the
+	// measurement. route="*" — when callers want per-route
+	// breakdown they can mount the middleware around a specific
+	// handler; here we use a wildcard label rather than echoing
+	// r.URL.Path (which would explode label cardinality).
+	root = RequestDurationMiddleware("*", root)
+
 	// -------------------------------------------------------------------------------------------------
 	// 5) http.Server with DoS-immune timeouts
 	// -------------------------------------------------------------------------------------------------

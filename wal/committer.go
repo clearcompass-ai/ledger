@@ -165,6 +165,7 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 	if len(wire) == 0 {
 		return ErrEmptyWire
 	}
+	t0 := time.Now() // D3 — wall-time histogram
 	s := &submission{
 		hash:          hash,
 		wire:          wire,
@@ -180,6 +181,7 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 	}
 	select {
 	case err := <-s.done:
+		recordSubmitDuration(ctx, time.Since(t0))
 		return err
 	case <-ctx.Done():
 		// Submitter gave up before group commit completed. The

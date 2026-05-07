@@ -769,6 +769,165 @@ step's error string (empty on success). An SRE post-mortem on
 a slow pod-eviction reads these lines to identify which
 component stalled.
 
+## Observability (D category)
+
+D1-D7 deliver SRE-grade telemetry:
+
+| # | Item | Anchor |
+|---|---|---|
+| D1 | `LEDGER_METRICS_ENABLE` defaults to `true`; opt-out via `false` | `cmd/ledger/main.go::loadConfig` |
+| D2 | OTel tracing via `LEDGER_OTLP_TRACES_ENDPOINT` ("" / `stdout` / `host:port` / `https://...`) | `lifecycle/tracing.go::NewTracerProvider` |
+| D3 | Histograms — `attesta_api_request_duration_seconds`, `_wal_submit_`, `_tessera_append_`, `_postgres_pool_acquire_`, `_bytestore_put_` | one Install per package |
+| D4 | Counters — `attesta_witness_quorum_failures_total{network_id}`, `_equivocation_detected_total{kind, originator}` | `gossipnet/instruments.go` |
+| D5 | Gauges — `attesta_sequencer_drain_lag_seconds`, `_shipper_pending_total` | `sequencer/instruments.go`, `shipper/instruments.go` |
+| D6 | slog redaction helpers: `lifecycle.HashHex`, `PresenceFlag`, `NetworkIDHex`, `HexShort` — never log payloads/sigs/raw | `lifecycle/logsafe.go` |
+| D7 | `pprof.Do` labels around every wrapped goroutine — pprof samples carry the supervisor-assigned name | `lifecycle/safe_run.go` |
+
+### Endpoints
+
+```
+GET /metrics       Prometheus exposition (when LEDGER_METRICS_ENABLE=true)
+GET /version       build provenance (G6) — JSON, public
+GET /v1/log-info   public deployment posture (G5) — JSON, public
+GET /healthz       liveness — 200 while process runs
+GET /readyz        readiness — 503 during shutdown OR when DB breaker is open
+GET /debug/pprof/* private listener on LEDGER_PPROF_ADDR (default 127.0.0.1:6060)
+```
+
+### LEDGER_OTLP_TRACES_ENDPOINT semantics
+
+| Value | Behavior | Use case |
+|---|---|---|
+| unset / `""` | NoOp tracer (zero overhead, default) | unit tests, one-shot tools |
+| `stdout` | Pretty-print spans to stderr | laptop dev, single operator |
+| `localhost:4318` | OTLP HTTP (insecure) | Jaeger / OTel collector on the same host |
+| `http://otel:4318` | OTLP HTTP (insecure, explicit) | sidecar collector |
+| `https://otel.example.com` | OTLP HTTP over TLS | hosted Honeycomb / Datadog / Tempo |
+
+## Local-runnable bring-up
+
+The ledger is environment-agnostic (Ledger principle #14). Same
+binary + same env contract runs on:
+
+| Target | Orchestrator | Wiring |
+|---|---|---|
+| Laptop (with Docker) | `scripts/run-local.sh` | docker-compose for Postgres + fake-gcs; ledger as a host process |
+| VM / bare-metal | `systemd` | `deploy/systemd/ledger.service`; binary at `/usr/local/bin/ledger`; env at `/etc/ledger/env` |
+| Kubernetes | k8s Deployment | `deploy/k8s/ledger.yaml`; ConfigMap + Secret + 3 PVCs + Service |
+
+### Laptop bring-up (5 minutes)
+
+```sh
+# Required: Docker + Go 1.21+
+git clone https://github.com/clearcompass-ai/ortholog-operator.git
+cd ortholog-operator
+
+# Boots Postgres + fake-gcs, then runs the ledger as the foreground process.
+./scripts/run-local.sh
+
+# In a second shell, submit an entry:
+go run ./cmd/submit-stamp -log-did did:attesta:ledger:local
+
+# Tear down infra (preserves .run/ data):
+./scripts/run-local.sh down
+# Wipe state + restart:
+./scripts/run-local.sh clean
+```
+
+Default observability for laptop dev:
+- Metrics: scrape `http://localhost:8080/metrics` (Prometheus exposition format)
+- Traces: spans pretty-printed to stderr (`LEDGER_OTLP_TRACES_ENDPOINT=stdout`)
+- pprof: `go tool pprof http://localhost:6060/debug/pprof/profile`
+
+### Laptop bring-up — with Prometheus + Jaeger UI
+
+```sh
+# Start the observability profile (Prometheus on :9090, Jaeger on :16686):
+docker compose -f scripts/local/docker-compose.testharness.yml \
+  --profile observability up -d
+
+# Run the ledger with traces pointed at Jaeger:
+LEDGER_OTLP_TRACES_ENDPOINT=http://localhost:4318 ./scripts/run-local.sh
+
+# Open the UIs:
+open http://localhost:9090     # Prometheus
+open http://localhost:16686    # Jaeger
+```
+
+Prometheus scrapes `host.docker.internal:8080/metrics` every 5s
+(see `scripts/local/prometheus.yml`).
+
+### VM / bare-metal bring-up
+
+```sh
+# 1. Build a static binary
+go build -o ./bin/ledger ./cmd/ledger
+sudo install -o root -g root -m 0755 ./bin/ledger /usr/local/bin/ledger
+
+# 2. Create the ledger user + data dirs
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ledger
+sudo mkdir -p /var/lib/attesta/{wal,tessera,antispam}
+sudo chown -R ledger:ledger /var/lib/attesta
+
+# 3. Create /etc/ledger/env with LEDGER_* vars (mode 0600)
+sudo install -o ledger -g ledger -m 0600 /dev/stdin /etc/ledger/env <<'EOF'
+LEDGER_DATABASE_URL=postgres://ledger_app:...@db.example:5432/ledger?sslmode=require
+LEDGER_LOG_DID=did:web:ledger.example
+LEDGER_BYTE_STORE_BACKEND=gcs
+LEDGER_BYTE_STORE_GCS_BUCKET=ledger-prod-bytes
+LEDGER_TILE_BACKEND=gcs
+LEDGER_METRICS_ENABLE=true
+LEDGER_OTLP_TRACES_ENDPOINT=http://otel-collector.example:4318
+LEDGER_PG_STATEMENT_TIMEOUT=5s
+EOF
+
+# 4. Install + start the systemd unit
+sudo install -o root -g root -m 0644 \
+    deploy/systemd/ledger.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ledger
+
+# 5. After first boot, apply F2 grants
+sudo -u postgres psql ledger -v ledger_app=ledger_app \
+    -f /path/to/deploy/sql/grants.sql
+
+# 6. Verify
+curl http://localhost:8080/healthz       # → "ok"
+curl http://localhost:8080/readyz        # → "ready"
+curl http://localhost:8080/version       # → JSON
+curl http://localhost:8080/v1/log-info   # → JSON
+journalctl -u ledger -f                  # stream logs
+```
+
+### Kubernetes bring-up
+
+```sh
+# 1. Edit deploy/k8s/ledger.yaml — replace every <SET-AT-DEPLOY>:
+#      - log_did
+#      - byte_store_gcs_bucket
+#      - storageClassName (× 3 PVCs)
+#      - container image
+#      - DATABASE_URL secret value (use SOPS / Vault / external-secrets)
+
+# 2. Apply
+kubectl apply -f deploy/k8s/ledger.yaml
+
+# 3. After first boot, apply F2 grants
+kubectl exec -n ledger deploy/ledger -- \
+  psql "$LEDGER_DATABASE_URL_ADMIN" -f /etc/ledger/grants.sql
+
+# 4. Verify
+kubectl -n ledger logs deploy/ledger -f
+kubectl -n ledger port-forward svc/ledger 8080
+curl http://localhost:8080/v1/log-info
+```
+
+The Deployment uses `strategy: Recreate` (NOT rolling) because
+the Postgres advisory lock (F4) enforces singleton-writer; a
+rolling-update would race and the new pod would fail-fast within
+30s. For zero-downtime read upgrades, run `cmd/ledger-reader`
+behind a Service with as many replicas as you need.
+
 ## Misc protocol/correctness (L category)
 
 L1-L4 are a mix of code changes and audits. The audits are

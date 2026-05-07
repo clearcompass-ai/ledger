@@ -58,6 +58,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"runtime/pprof"
 	"sync"
 )
 
@@ -115,6 +116,16 @@ func SafeRun(
 	fatalCh chan<- error,
 	run func() error,
 ) (retErr error) {
+	// D7 — pprof.Do label so goroutine attribution in profile
+	// samples is immediately readable. Without this, a `go tool
+	// pprof` cpu profile shows anonymous goroutines; with it,
+	// the "goroutine" label tags every sample with the
+	// supervisor-assigned name (sequencer, shipper, http-server,
+	// audit-telemetry, etc.). Pure observability — no behavior
+	// change. The label is INHERITED by any goroutine spawned
+	// inside run() (Go propagates pprof labels via runtime).
+	pprof.SetGoroutineLabels(pprof.WithLabels(ctx, pprof.Labels("goroutine", name)))
+	defer pprof.SetGoroutineLabels(ctx)
 	// Entry log: every wrapped goroutine emits a "goroutine started"
 	// line at Info so operators can prove from logs alone that each
 	// supervisor child actually launched. The corresponding "stopped"

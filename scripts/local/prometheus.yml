@@ -1,0 +1,40 @@
+# =============================================================================
+# FILE PATH:
+#     scripts/local/prometheus.yml
+#
+# DESCRIPTION:
+#     Prometheus scrape config for the laptop-dev `--profile observability`
+#     stack. Scrapes the host-mode ledger (run via scripts/run-local.sh)
+#     plus the Jaeger collector's own metrics for self-observability.
+#
+#     Activate via:
+#       docker compose -f scripts/local/docker-compose.testharness.yml \
+#         --profile observability up -d
+#       ./scripts/run-local.sh
+#       # Prometheus UI:  http://localhost:9090
+#       # Jaeger UI:      http://localhost:16686
+# =============================================================================
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ledger
+    static_configs:
+      # The ledger runs on the laptop host (not in Docker); use
+      # host.docker.internal to reach it from inside the Prometheus
+      # container.
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          environment: laptop-dev
+          service: ledger
+    metrics_path: /metrics
+
+  - job_name: jaeger
+    static_configs:
+      - targets: ["jaeger:14269"]
+        labels:
+          environment: laptop-dev
+          service: jaeger
+    metrics_path: /metrics
