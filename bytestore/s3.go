@@ -50,6 +50,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -59,6 +60,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 )
 
 // S3Config configures NewS3.
@@ -161,8 +164,24 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		cfg.Region = "us-east-1"
 	}
 
+	// HTTP transport tuned for high-concurrency workloads. The SDK's
+	// default BuildableClient uses Go's stdlib defaults
+	// (MaxIdleConnsPerHost=2), which exhausts the loopback ephemeral
+	// port range under sustained shipper concurrency (10s of req/sec
+	// with TIME_WAIT pinning ports for 15-30s on most kernels).
+	//
+	// 256 idle conns per host matches the upper bound of the shipper's
+	// MaxInFlight × ledger replica fan-out without wasting kernel
+	// memory on idle sockets the soak doesn't keep warm.
+	httpClient := awshttp.NewBuildableClient().
+		WithTransportOptions(func(t *http.Transport) {
+			t.MaxIdleConns = 512
+			t.MaxIdleConnsPerHost = 256
+		})
+
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithHTTPClient(httpClient),
 	}
 	if cfg.AccessKey != "" && cfg.SecretKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(

@@ -91,6 +91,44 @@ import (
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
+// newTunedHTTPClient returns an *http.Client whose Transport is
+// keep-alive-friendly under the soak's connection density.
+//
+// EVIDENCE-BASED RATIONALE:
+//
+//	Default http.Transport caps MaxIdleConnsPerHost at 2. Under 8
+//	admission workers × ~590 req/sec to a single host, the pool
+//	churns: every request opens, returns, and the 3rd+ idle conn
+//	closes — the kernel parks the closed socket in TIME_WAIT
+//	(~15-30s on macOS/Linux) and burns one ephemeral port.
+//
+//	macOS ephemeral range is 49152-65535 (~16,384 ports). At
+//	~5,360 closing conns/sec the pool drains in ~3s and the soak
+//	starts failing with "dial tcp: bind: address already in use"
+//	or "connect: cannot assign requested address".
+//
+//	MaxIdleConnsPerHost=256 lets the worker pool fully reuse
+//	connections; MaxIdleConns=512 caps the global idle set;
+//	IdleConnTimeout stays at the default 90s so idle conns are
+//	eventually reaped without thrashing.
+func newTunedHTTPClient(timeout time.Duration) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 512
+	t.MaxIdleConnsPerHost = 256
+	return &http.Client{Transport: t, Timeout: timeout}
+}
+
+// newTunedNoRedirectClient mirrors newTunedHTTPClient but disables
+// auto-follow on redirects, so the verify pass can inspect Location
+// headers directly without burning the redirect target connection.
+func newTunedNoRedirectClient(timeout time.Duration) *http.Client {
+	c := newTunedHTTPClient(timeout)
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return c
+}
+
 // soakSubmission records one accepted entry for the post-soak verify
 // pass. We hold ONLY the canonical hash because POST /v1/entries
 // returns an SCT (Signed Certificate Timestamp), NOT a sequence
@@ -468,7 +506,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			client := &http.Client{Timeout: 30 * time.Second}
+			client := newTunedHTTPClient(30 * time.Second)
 			for i := 0; i < per; i++ {
 				idx := workerID*per + i
 				wire := buildWireEntry(t, envelope.ControlHeader{
@@ -647,12 +685,9 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		rng.Shuffle(len(results), func(i, j int) { results[i], results[j] = results[j], results[i] })
 		results = results[:verifySamples]
 	}
-	verifyClient := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       30 * time.Second,
-	}
-	follow := &http.Client{Timeout: 30 * time.Second}
-	lookupClient := &http.Client{Timeout: 30 * time.Second}
+	verifyClient := newTunedNoRedirectClient(30 * time.Second)
+	follow := newTunedHTTPClient(30 * time.Second)
+	lookupClient := newTunedHTTPClient(30 * time.Second)
 	verified := 0
 	for i, r := range results {
 		hashHex := hex.EncodeToString(r.hash[:])
