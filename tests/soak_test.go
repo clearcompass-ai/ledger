@@ -69,6 +69,7 @@ import (
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -159,6 +160,14 @@ func startSoakOperator(t *testing.T) *soakOperator {
 		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
 
+	opSignerPriv, err := signatures.GenerateKey()
+	if err != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("ledger signer key: %v", err)
+	}
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
 			EntryStore: entryStore, WAL: walc, Tessera: merkle,
@@ -168,10 +177,12 @@ func startSoakOperator(t *testing.T) *soakOperator {
 			EpochWindowSeconds:    testEpochWindowSeconds,
 			EpochAcceptanceWindow: testEpochAcceptanceWindow,
 		},
-		Identity:     api.IdentityDeps{Credits: creditStore, DIDResolver: nil},
-		LogDID:       testLogDID,
-		MaxEntrySize: 1 << 20,
-		Logger:       logger,
+		Identity:         api.IdentityDeps{Credits: creditStore, DIDResolver: nil},
+		LogDID:           testLogDID,
+		LedgerDID:        testLedgerDID,
+		LedgerSignerPriv: opSignerPriv,
+		MaxEntrySize:     1 << 20,
+		Logger:           logger,
 	}
 	queryDeps := &api.QueryDeps{
 		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
