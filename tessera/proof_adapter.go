@@ -77,7 +77,7 @@ import (
 // through, they only care about the immutable tiles those
 // integrations produced.
 type AppenderBackend interface {
-	AppendLeaf(data []byte) (uint64, error)
+	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 	Head() (types.TreeHead, error)
 }
 
@@ -112,11 +112,11 @@ func NewTesseraAdapter(backend AppenderBackend, tileReader *TileReader, logger *
 //
 // STRICT: returns an error if data is not exactly 32 bytes. This is
 // a programming error in the caller, not a runtime condition.
-func (a *TesseraAdapter) AppendLeaf(data []byte) (uint64, error) {
+func (a *TesseraAdapter) AppendLeaf(ctx context.Context, data []byte) (uint64, error) {
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/proof_adapter: AppendLeaf requires exactly 32 bytes (SHA-256 hash), got %d — this is a programming error in the caller", len(data))
 	}
-	return a.backend.AppendLeaf(data)
+	return a.backend.AppendLeaf(ctx, data)
 }
 
 // Head returns the current Merkle tree head from the underlying

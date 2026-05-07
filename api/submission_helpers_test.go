@@ -82,7 +82,7 @@ func (s *stubSubmissionDiffController) HashFunction() string { return "sha256" }
 // /v1 fast path — Tessera lives behind the Sequencer now.
 type stubSubmissionTessera struct{}
 
-func (s *stubSubmissionTessera) AppendLeaf(data []byte) (uint64, error) {
+func (s *stubSubmissionTessera) AppendLeaf(_ context.Context, data []byte) (uint64, error) {
 	return 0, errors.New("submission fast path should not call AppendLeaf")
 }
 

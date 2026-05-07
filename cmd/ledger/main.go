@@ -2501,6 +2501,28 @@ func main() {
 	}
 	shutdownChain.Add("builder-advisory-lock", 5*time.Second, closeBuilderLock)
 	shutdownChain.Add("pgxpool", 10*time.Second, closePgxpool)
+	// L2 — Defensive zero-out of in-memory key material on
+	// shutdown. Reduces memory-dump exposure on a subsequent
+	// crash + core dump, and makes the post-shutdown live
+	// process show the keys as zeroed if an attacker manages
+	// to read /proc/self/mem during the brief shutdown window.
+	//
+	// Runs AFTER background goroutines drain so no signing
+	// goroutine is in-flight, BEFORE OTel meter shutdown so the
+	// step's duration + outcome is observable.
+	//
+	// Caveat: Go's GC may retain key copies in scratch buffers
+	// from prior signing operations; we zero only the
+	// authoritative *ecdsa.PrivateKey.D field. Tessera's
+	// note.Signer doesn't expose its bytes (SDK ownership), so
+	// it's not zeroable from this layer.
+	shutdownChain.Add("zero-key-material", time.Second, func(ctx context.Context) error {
+		if ledgerSignerPriv != nil && ledgerSignerPriv.D != nil {
+			ledgerSignerPriv.D.SetInt64(0)
+		}
+		return nil
+	})
+
 	if closeOTelMeter != nil {
 		shutdownChain.Add("otel-meter", 5*time.Second, closeOTelMeter)
 	}

@@ -183,7 +183,7 @@ func newFakeTessera() *fakeTessera {
 	}
 }
 
-func (f *fakeTessera) AppendLeaf(data []byte) (uint64, error) {
+func (f *fakeTessera) AppendLeaf(_ context.Context, data []byte) (uint64, error) {
 	f.calls.Add(1)
 	if remaining := f.failsRemaining.Load(); remaining > 0 {
 		f.failsRemaining.Add(-1)
@@ -610,7 +610,7 @@ func newConcurrencyTrackingTessera(holdInside time.Duration) *concurrencyTrackin
 	}
 }
 
-func (f *concurrencyTrackingTessera) AppendLeaf(data []byte) (uint64, error) {
+func (f *concurrencyTrackingTessera) AppendLeaf(_ context.Context, data []byte) (uint64, error) {
 	f.mu.Lock()
 	f.concurrent++
 	if f.concurrent > f.peakConcurrent {

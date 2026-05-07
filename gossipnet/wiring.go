@@ -229,12 +229,14 @@ func (v *RotationCachedVerifier) Invalidate(originator string) {
 // Build constructs the ledger's gossip stack from cfg. Returns
 // the Bundle and any construction error.
 func Build(cfg Config) (*Bundle, error) {
-	if cfg.Store == nil {
-		return nil, fmt.Errorf("gossipnet: Config.Store required")
-	}
+	// NetworkID FIRST — security-critical (T-9 domain separation).
+	// Other "required" checks below are correctness-critical.
 	var zero sdkcosign.NetworkID
 	if cfg.NetworkID == zero {
 		return nil, fmt.Errorf("gossipnet: Config.NetworkID required (non-zero)")
+	}
+	if cfg.Store == nil {
+		return nil, fmt.Errorf("gossipnet: Config.Store required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()

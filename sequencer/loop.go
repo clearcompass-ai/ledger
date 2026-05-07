@@ -177,7 +177,7 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 
 	// Step 4: Tessera AppendLeaf — antispam-idempotent under
 	// retries.
-	seq, err := s.tessera.AppendLeaf(hash[:])
+	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
 	if err != nil {
 		s.handleEntryError(ctx, hash, "tessera AppendLeaf", err)
 		return

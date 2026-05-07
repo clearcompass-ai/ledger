@@ -131,6 +131,15 @@ type PublisherConfig struct {
 // NewSTHPublisher constructs the publisher. Returns an error when
 // any required field is missing.
 func NewSTHPublisher(cfg PublisherConfig) (*STHPublisher, error) {
+	// NetworkID FIRST — it's the cryptographic-domain-separation
+	// invariant (T-9). A zero NetworkID would let signatures from
+	// "Network A" verify on "Network B", breaking cross-network
+	// replay defense. Other "required" checks below are
+	// correctness gates; this one is security-critical.
+	var zero sdkcosign.NetworkID
+	if cfg.NetworkID == zero {
+		return nil, fmt.Errorf("gossipnet/publisher: NetworkID required (non-zero)")
+	}
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("gossipnet/publisher: Store required")
 	}
@@ -139,10 +148,6 @@ func NewSTHPublisher(cfg PublisherConfig) (*STHPublisher, error) {
 	}
 	if cfg.Signer == nil {
 		return nil, fmt.Errorf("gossipnet/publisher: Signer required")
-	}
-	var zero sdkcosign.NetworkID
-	if cfg.NetworkID == zero {
-		return nil, fmt.Errorf("gossipnet/publisher: NetworkID required (non-zero)")
 	}
 	if cfg.Originator == "" {
 		return nil, fmt.Errorf("gossipnet/publisher: Originator required")

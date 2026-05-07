@@ -324,7 +324,7 @@ type stubMerkleAppender struct {
 	mt *smt.StubMerkleTree
 }
 
-func (s *stubMerkleAppender) AppendLeaf(data []byte) (uint64, error) {
+func (s *stubMerkleAppender) AppendLeaf(_ context.Context, data []byte) (uint64, error) {
 	return s.mt.AppendLeaf(data)
 }
 

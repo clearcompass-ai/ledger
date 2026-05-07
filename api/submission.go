@@ -146,7 +146,7 @@ type WALCommitter interface {
 // again. This is the load-bearing safety property under concurrent
 // admission of the same content.
 type TesseraAppender interface {
-	AppendLeaf(data []byte) (uint64, error)
+	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

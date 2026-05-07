@@ -769,6 +769,89 @@ step's error string (empty on success). An SRE post-mortem on
 a slow pod-eviction reads these lines to identify which
 component stalled.
 
+## Misc protocol/correctness (L category)
+
+L1-L4 are a mix of code changes and audits. The audits are
+captured here so a future review can re-verify the property
+holds.
+
+### L1 — Constant-time crypto comparison
+
+**Audit conclusion: structurally clean.**
+
+No production code in the ledger does cryptographic byte
+comparison. Verification paths go through:
+
+| Surface | Mechanism |
+|---|---|
+| Signature verify (ECDSA, Ed25519, BLS) | SDK calls into `crypto/ecdsa`, `crypto/ed25519`, BLS12-381 lib — already constant-time at the library level |
+| Session token equality | Postgres-side `WHERE token = $1` — DB-side indexed equality on TEXT, attacker-observable timing leaks "row exists or not", which is presence not content |
+| `[32]byte` projection-state comparison | Internal integrity-detector / projection writes — not attacker-observable (no oracle path) |
+
+A `crypto/subtle.ConstantTimeCompare` import is therefore not
+needed today. **If a future feature introduces a comparison of
+attacker-supplied bytes to a stored secret in-process, that call
+site MUST use `subtle.ConstantTimeCompare`** — code review
+discipline.
+
+### L2 — Defensive zero-out on shutdown
+
+`zero-key-material` is a step in the shutdown chain (between
+`gossipstore` and `otel-meter`). Runs after every signing
+goroutine has drained, before OTel shuts down. Zeroes the
+authoritative `*ecdsa.PrivateKey.D` field for the ledger
+signer.
+
+Caveats:
+- Tessera's `note.Signer` doesn't expose its bytes (SDK
+  ownership), so it's not zeroable from this layer.
+- Go's GC may retain key copies in scratch buffers from prior
+  signing operations; this is a defense-in-depth measure
+  reducing memory-dump exposure on a subsequent crash, not a
+  hard guarantee against post-mortem extraction.
+
+### L3 — NetworkID enforcement
+
+**Audit conclusion: structurally clean + pinned by tests.**
+
+Every gossipnet constructor checks NetworkID FIRST (security-
+critical T-9 cryptographic domain separation, ahead of all other
+required-field checks):
+
+| Constructor | Check |
+|---|---|
+| `gossipnet.NewSTHPublisher` | `cfg.NetworkID == zero` → error |
+| `gossipnet.NewEquivocationPublisher` | same |
+| `gossipnet.Build` (Bundle) | same |
+
+Pinned by `gossipnet/networkid_audit_test.go::TestNetworkIDAudit_*`.
+The ledger never bypasses the SDK's NetworkID enforcement
+because every cosign payload is signed/verified through SDK
+primitives that bind to the publisher/verifier's NetworkID at
+construction.
+
+### L4 — ctx propagation
+
+`AppendLeaf` now accepts `ctx` across all four affected
+interfaces (`sequencer.Tessera`, `tessera.AppenderBackend`,
+`builder.MerkleAppender`, `api.TesseraAppender`) so a sequencer
+drain that hits SIGTERM mid-batch cancels the in-flight Tessera
+integration future cleanly.
+
+Remaining `context.Background()` call sites in production code,
+each documented:
+
+| Site | Rationale |
+|---|---|
+| `cmd/ledger/main.go` (top-level) | Root ctx for the process |
+| `cmd/ledger-reader/main.go`, `cmd/rebuild-tiles/main.go` (top-level) | Same |
+| `wal/committer.go::commitLoop` | Lifetime tied to WAL close-channel, not any caller ctx |
+| `gossipstore/badger_store.go::runGC` | Internal goroutine; lifetime tied to `gcCancel` |
+| `tessera/embedded_appender.go::Head`, `ReadCheckpoint` | Synchronous local-disk reads; fast; threading ctx is a future cleanup |
+| `gossipstore/commitment_fetcher.go::FindCommitmentEntries` | SDK interface is ctx-free; documented in code |
+| `api/server.go::BaseContext` | Stdlib http.Server requires non-nil; per-request ctx is created by net/http itself |
+| Boot-panic close-fns (e.g., `closeOTelMeterOnce`) | Parent ctx already cancelled at shutdown; Background + per-component timeout is the correct shape |
+
 ## In-process audit + integrity jobs (H category)
 
 ### H1/H2/H3 — Audit + freshness telemetry

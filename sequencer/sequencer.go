@@ -88,8 +88,14 @@ type WAL interface {
 
 // Tessera is the append-side surface. The integration backend on
 // *tessera.EmbeddedAppender satisfies this; tests inject fakes.
+//
+// L4 — ctx propagation: AppendLeaf accepts the caller's context
+// so a sequencer drain that hits a SIGTERM mid-batch can cancel
+// the in-flight Tessera Add. Without this, Tessera's batcher
+// would continue trying to integrate after the rest of the
+// process has unwound.
 type Tessera interface {
-	AppendLeaf(data []byte) (uint64, error)
+	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 }
 
 // Config tunes Sequencer behaviour. Zero-valued fields fall back
