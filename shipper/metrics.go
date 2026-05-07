@@ -8,13 +8,18 @@ prom-client dependencies.
 */
 package shipper
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // Metrics holds the Shipper's atomic counters. All operations are
 // goroutine-safe by virtue of sync/atomic. Read snapshots via
 // Snapshot.
 type Metrics struct {
-	shipped atomic.Uint64 // entries that completed bytestore upload + MarkShipped
+	shipped atomic.Uint64 // ship-complete events (includes idempotent re-ships)
+	uniqueShipped atomic.Uint64 // distinct seqs that completed (1-per-seq)
+	shippedSeen sync.Map // seq → struct{}{} ; powers uniqueShipped dedupe
 	retries atomic.Uint64 // failed-and-MarkRetry events
 	manual atomic.Uint64 // entries that hit MaxAttempts and were marked manual
 	markShippedFailures atomic.Uint64 // bytestore succeeded but MarkShipped failed
@@ -25,10 +30,24 @@ type Metrics struct {
 
 // MetricsSnapshot is an immutable view of the Shipper's counters.
 type MetricsSnapshot struct {
-	// Shipped is the count of entries successfully migrated from
-	// the WAL to the bytestore (bytestore upload returned nil AND
-	// wal.MarkShipped returned nil).
+	// Shipped is the count of ship-complete events: bytestore
+	// upload returned nil AND wal.MarkShipped returned nil. NOTE:
+	// MarkShipped is idempotent (returns nil on already-shipped
+	// state), so concurrent scans + workers can re-process the
+	// same seq before its first MarkShipped commit and double-
+	// count this counter. Use UniqueShipped for the distinct-seq
+	// count; the difference is the ship-event-amplification
+	// factor under concurrent scan windows.
 	Shipped uint64
+
+	// UniqueShipped is the count of DISTINCT sequence numbers that
+	// completed the ship pipeline. Always <= Shipped. The gap
+	// (Shipped - UniqueShipped) measures how many ship events were
+	// idempotent re-completions of an already-shipped entry —
+	// useful for detecting scanner/worker-window racing without
+	// crashing the test (correctness is unaffected; bytestore is
+	// content-addressed and MarkShipped is idempotent).
+	UniqueShipped uint64
 
 	// Retries is the count of retried-after-failure events.
 	// Increments once per failed bytestore upload (or WAL read
@@ -65,6 +84,7 @@ type MetricsSnapshot struct {
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	out := MetricsSnapshot{
 		Shipped:             m.shipped.Load(),
+		UniqueShipped:       m.uniqueShipped.Load(),
 		Retries:             m.retries.Load(),
 		Manual:              m.manual.Load(),
 		MarkShippedFailures: m.markShippedFailures.Load(),

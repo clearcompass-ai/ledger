@@ -524,16 +524,25 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		_ = op.Pool.QueryRow(context.Background(),
 			"SELECT COUNT(*) FROM entry_index").Scan(&entryIndexRows)
 
+		// shipDup = (shipped events) - (distinct seqs that completed).
+		// > 0 means concurrent scans + 16 workers raced the MarkShipped
+		// commit window, fanning the same seq to multiple workers
+		// (MarkShipped is idempotent on StateShipped → nil, so each
+		// fan-out increments shipped). Correctness unaffected; this
+		// is the validation surface for shipper.MetricsSnapshot
+		// double-counting.
+		shipDup := int64(shipMetrics.Shipped) - int64(shipMetrics.UniqueShipped)
 		t.Logf("drain[cycle=%d t=%s] expected=%d "+
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
-			"ship{shipped=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
+			"ship{shipped=%d unique=%d dup=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
 			"pg{entry_index=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
 			seqMetrics.Failures, seqMetrics.ManualCount, seqMetrics.CurrentLag,
-			shipMetrics.Shipped, shipMetrics.Retries, shipMetrics.Manual,
+			shipMetrics.Shipped, shipMetrics.UniqueShipped, shipDup,
+			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
 			entryIndexRows,
 		)

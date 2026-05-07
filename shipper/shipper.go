@@ -320,6 +320,19 @@ func (s *Shipper) shipOne(ctx context.Context, e wal.SequencedEntry) {
 	}
 
 	s.metrics.shipped.Add(1)
+	// Distinct-seq tally. Concurrent scans + 16 workers race the
+	// MarkShipped commit window, so the same seq can fan out to
+	// multiple workers and increment `shipped` more than once
+	// (MarkShipped is idempotent on StateShipped → nil). The
+	// LoadOrStore here gates the per-seq counter so the snapshot
+	// surfaces both metrics, exposing the amplification factor
+	// without affecting the no-error fast path.
+	if _, loaded := s.metrics.shippedSeen.LoadOrStore(e.Seq, struct{}{}); !loaded {
+		s.metrics.uniqueShipped.Add(1)
+	} else {
+		s.logger.Debug("shipper: ship-complete (duplicate)",
+			"seq", e.Seq, "hash", fmt.Sprintf("%x", e.Hash[:8]))
+	}
 	s.metrics.shipLatencyNanos.Add(time.Since(start).Nanoseconds())
 	s.metrics.shipLatencySamples.Add(1)
 
