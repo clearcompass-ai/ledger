@@ -34,261 +34,59 @@ package tests
 import (
 	"context"
 	"crypto/sha256"
-	"fmt"
-	"log/slog"
-	"net"
-	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
-	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/core/smt"
-	"github.com/clearcompass-ai/attesta/crypto/signatures"
 	"github.com/clearcompass-ai/attesta/types"
 
-	"github.com/clearcompass-ai/ledger/api"
-	"github.com/clearcompass-ai/ledger/api/middleware"
-	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
-	"github.com/clearcompass-ai/ledger/store/indexes"
-	"github.com/clearcompass-ai/ledger/wal"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 )
 
 // -------------------------------------------------------------------------------------------------
 // Test ledger instance
 // -------------------------------------------------------------------------------------------------
 
+// testLedger bundles every dependency a test might need to inspect.
+// Real-Tessera fields (RealTesseraDir / RealEmbedded / RealTileReader)
+// are nil under the legacy stub path; scenarios / persona tests
+// gate via HasRealTessera() before dereferencing them.
 type testLedger struct {
-	BaseURL string
-	Pool *pgxpool.Pool
-	Cursor *store.SequenceCursor
+	BaseURL     string
+	Pool        *pgxpool.Pool
+	Cursor      *store.SequenceCursor
 	CreditStore *store.CreditStore
-	EntryStore *store.EntryStore
-	EntryBytes *opbytestore.Memory
-	cancel context.CancelFunc
+	EntryStore  *store.EntryStore
+	EntryBytes  *opbytestore.Memory
+	cancel      context.CancelFunc
+
+	// Real-Tessera handles. Populated only when
+	// startTestLedgerWithOpts was called with UseRealTessera=true;
+	// nil otherwise.
+	RealTesseraDir string
+	RealEmbedded   *optessera.EmbeddedAppender
+	RealTileReader *optessera.TileReader
 }
 
+// HasRealTessera reports whether this ledger was constructed with
+// the real Tessera POSIX stack. Persona / scenarios tests use
+// this to gate proof-fetch assertions.
+func (op *testLedger) HasRealTessera() bool {
+	return op.RealEmbedded != nil
+}
+
+// startTestLedger is the legacy 600+-test entry point. Delegates
+// to startTestLedgerWithOpts with zero options — the stub default
+// every existing test depends on. New scenarios / persona tests
+// call startTestLedgerWithOpts directly so they can request
+// UseRealTessera.
 func startTestLedger(t *testing.T) *testLedger {
 	t.Helper()
-
-	dsn := os.Getenv("ATTESTA_TEST_DSN")
-	if dsn == "" {
-		t.Skip("ATTESTA_TEST_DSN not set — skipping HTTP integration test")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-	// ── Postgres ───────────────────────────────────────────────────────
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		cancel()
-		t.Fatalf("connect: %v", err)
-	}
-	if err := store.RunMigrations(ctx, pool); err != nil {
-		pool.Close()
-		cancel()
-		t.Fatalf("migrations: %v", err)
-	}
-	cleanTables(t, pool)
-
-	// ── Entry byte store ───────────────────────────────────────────────
-	entryBytes := opbytestore.NewMemory()
-
-	// ── Stores ─────────────────────────────────────────────────────────
-	entryStore := store.NewEntryStore(pool)
-	creditStore := store.NewCreditStore(pool)
-	sequenceCursor := store.NewSequenceCursor(pool)
-	reader := opbuilder.NewCursorReader(sequenceCursor)
-	treeHeadStore := store.NewTreeHeadStore(pool)
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(pool, 10000)
-	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
-	commitmentStore := store.NewCommitmentStore(pool)
-
-	// ── WAL ────────────────────────────────────────────────────────────
-	// In-memory Badger for tests. DisableSync mirrors the production
-	// "no WAL to fsync" flag; in-memory mode has no on-disk WAL.
-	walDB, err := wal.OpenInMemory(nil)
-	if err != nil {
-		pool.Close()
-		cancel()
-		t.Fatalf("wal open: %v", err)
-	}
-	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
-	t.Cleanup(func() {
-		_ = walc.Close()
-		_ = walDB.Close()
-	})
-
-	// ── Delta buffer ───────────────────────────────────────────────────
-	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
-	deltaBuffer, _ := bufferStore.Load(ctx)
-	if deltaBuffer == nil {
-		deltaBuffer = sdkbuilder.NewDeltaWindowBuffer(10)
-	}
-
-	// ── Stubs ──────────────────────────────────────────────────────────
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
-	witnessCosigner := &stubWitnessCosigner{}
-
-	// ── Commitment publisher ───────────────────────────────────────────
-	commitPub := opbuilder.NewCommitmentPublisher(
-		testLogDID,
-		testLogDID,
-		opbuilder.CommitmentPublisherConfig{IntervalEntries: 100000, IntervalTime: 24 * time.Hour},
-		func(e *envelope.Entry) error { return nil },
-		logger,
-	)
-
-	// ── Builder loop ───────────────────────────────────────────────────
-	loopCfg := opbuilder.DefaultLoopConfig(testLogDID)
-	loopCfg.PollInterval = 50 * time.Millisecond
-	loopCfg.BatchSize = 100
-
-	builderLoop := opbuilder.NewBuilderLoop(
-		loopCfg, pool, tree, leafStore, nodeCache,
-		reader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
-		merkle, witnessCosigner, logger,
-	)
-	go builderLoop.Run(ctx)
-
-	// ── Difficulty controller ──────────────────────────────────────────
-	diffController := middleware.NewDifficultyController(
-		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
-	)
-
-	// ── HTTP handlers ──────────────────────────────────────────────────
-	queryAPI := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
-
-	// SubmissionDeps using the cohesive sub-struct shape.
-	// stubMerkleAppender doubles as the api.TesseraAppender for
-	// tests — its AppendLeaf signature satisfies the interface
-	// even though its primary role is as the builder-side
-	// MerkleAppender. Production wires *tessera.EmbeddedAppender.
-	opSignerPriv, err := signatures.GenerateKey()
-	if err != nil {
-		t.Fatalf("ledger signer key: %v", err)
-	}
-	submissionDeps := &api.SubmissionDeps{
-		Storage: api.StorageDeps{
-			EntryStore: entryStore,
-			WAL:        walc,
-			Tessera:    merkle,
-		},
-		Admission: api.AdmissionConfig{
-			DiffController:        diffController,
-			EpochWindowSeconds:    3600, // 1 hour
-			EpochAcceptanceWindow: 1,    // accept current ± 1
-		},
-		Identity: api.IdentityDeps{
-			Credits:     creditStore,
-			DIDResolver: nil,
-		},
-		LogDID:           testLogDID,
-		LedgerDID:        testLedgerDID,
-		LedgerSignerPriv: opSignerPriv,
-		MaxEntrySize:     1 << 20,
-		Logger:           logger,
-	}
-
-	treeDeps := &api.TreeDeps{
-		TreeHeadStore: treeHeadStore, Inclusion: merkle,
-		Consistency: merkle, Logger: logger,
-	}
-	smtDeps := &api.SMTDeps{Tree: tree, LeafStore: leafStore, Logger: logger}
-	queryDeps := &api.QueryDeps{
-		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
-	}
-	entryReadDeps := &api.EntryReadDeps{
-		Fetcher: fetcher, QueryAPI: queryAPI,
-		EntryStore: entryStore,
-		WAL:        walc,
-		// Tests don't exercise the 302 redirect path; the in-memory
-		// bytestore is not a Backend (no PublicURLer). Setting
-		// PublicURLer to nil makes the handler return 500 if it
-		// hits the redirect branch — desirable for tests, since any
-		// redirect attempt indicates an unexpected state transition.
-		PublicURLer: nil,
-		LogDID:      testLogDID,
-		Logger:      logger,
-	}
-	commitDeps := &api.DerivationCommitmentDeps{
-		CommitmentStore: commitmentStore, Logger: logger,
-	}
-
-	handlers := api.Handlers{
-		Submission:      api.NewSubmissionHandler(submissionDeps),
-		BatchSubmission: api.NewBatchSubmissionHandler(submissionDeps),
-		TreeHead:        api.NewTreeHeadHandler(treeDeps),
-		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
-		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
-		SMTProof:        api.NewSMTProofHandler(smtDeps),
-		SMTBatchProof:   api.NewSMTBatchProofHandler(smtDeps),
-		SMTRoot:         api.NewSMTRootHandler(smtDeps),
-		CosignatureOf:   api.NewQueryCosignatureOfHandler(queryDeps),
-		TargetRoot:      api.NewQueryTargetRootHandler(queryDeps),
-		SignerDID:       api.NewQuerySignerDIDHandler(queryDeps),
-		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
-		Scan:            api.NewQueryScanHandler(queryDeps),
-		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		WitnessCosign:   nil,
-		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
-		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
-		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
-		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),
-		SMTLeafBatch:    api.NewSMTLeafBatchHandler(smtDeps),
-		CommitmentQuery: api.NewDerivationCommitmentQueryHandler(commitDeps),
-	}
-
-	serverCfg := api.DefaultServerConfig()
-	serverCfg.Addr = "127.0.0.1:0"
-	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
-
-	// ── Start on random port ───────────────────────────────────────────
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		cancel()
-		pool.Close()
-		t.Fatalf("listen: %v", err)
-	}
-	baseURL := fmt.Sprintf("http://%s", ln.Addr().String())
-
-	go server.Serve(ln)
-
-	op := &testLedger{
-		BaseURL: baseURL, Pool: pool, Cursor: sequenceCursor,
-		CreditStore: creditStore, EntryStore: entryStore,
-		EntryBytes: entryBytes, cancel: cancel,
-	}
-
-	t.Cleanup(func() {
-		cancel()
-		_ = server.Shutdown(context.Background())
-		cleanTables(t, pool)
-		pool.Close()
-	})
-
-	// Wait for readiness.
-	for i := 0; i < 50; i++ {
-		resp, err := http.Get(baseURL + "/healthz")
-		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
-			return op
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("test ledger did not become ready in 2.5s")
-	return nil
+	return startTestLedgerWithOpts(t, testLedgerOpts{})
 }
 
 // seedSession inserts a valid session token + credits.
