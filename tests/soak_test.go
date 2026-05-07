@@ -202,6 +202,19 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		cancel()
 		t.Fatalf("migrations: %v", err)
 	}
+
+	// Schema-drift defender. Ran once at boot, before cleanTables
+	// or any reads. If a future migration renames or drops any of
+	// the columns verifyEvidence queries, this fails LOUDLY at
+	// boot — long before the bulk submission burst — instead of
+	// 19 seconds in with a SQLSTATE 42703.
+	//
+	// The columns asserted here are exactly the ones the soak's
+	// query path references: SELECT, MIN/MAX, ORDER BY. Anything
+	// the soak doesn't read isn't asserted (those drift-defenders
+	// belong to whatever code does read them).
+	assertEntryIndexSchema(t, ctx, pool)
+
 	cleanTables(t, pool)
 
 	walDB, err := wal.OpenInMemory(nil)
@@ -957,6 +970,87 @@ func drainSubmissions(ch <-chan soakSubmission) []soakSubmission {
 		out = append(out, r)
 	}
 	return out
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Schema-drift defender — fails at boot if the test's SQL is stale
+// ─────────────────────────────────────────────────────────────────────
+
+// assertEntryIndexSchema introspects information_schema.columns and
+// asserts every column the soak's query path references actually
+// exists in entry_index. Run once at boot, before any reads.
+//
+// WHY:
+//
+//	A column rename in a future migration (e.g. sequence_number →
+//	leaf_index) would otherwise surface as a SQLSTATE 42703 nineteen
+//	seconds into a 100k+ run, after the entire submission + drain
+//	cycle has already completed. This check catches the drift in
+//	~5ms at boot.
+//
+// COLUMN SET:
+//
+//	The asserted columns mirror exactly what verifyEvidence and the
+//	drain-loop pg{} log line query: sequence_number (MIN/MAX/SELECT/
+//	ORDER BY) and canonical_hash (SELECT/scan). The soak does not
+//	read log_time / signer_did / target_root / cosignature_of /
+//	schema_ref, so they are not asserted here — their drift-defence
+//	belongs to whatever code does read them.
+//
+// PATTERN:
+//
+//	Mirrors tests/entry_storage_rule_test.go:TestRule_EntryIndex_
+//	HasNoByteColumns at line 38, which uses the same
+//	information_schema.columns query for the inverse property
+//	("no byte columns"). Same code shape; different assertion.
+func assertEntryIndexSchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+
+	expected := map[string]bool{
+		"sequence_number": false, // MIN/MAX/SELECT/ORDER BY in verifyEvidence
+		"canonical_hash":  false, // SELECT/scan in verifyEvidence
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_name = 'entry_index'
+		ORDER BY ordinal_position`)
+	if err != nil {
+		t.Fatalf("assertEntryIndexSchema: query information_schema: %v", err)
+	}
+	defer rows.Close()
+
+	var seen []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			t.Fatalf("assertEntryIndexSchema: scan: %v", err)
+		}
+		seen = append(seen, col)
+		if _, ok := expected[col]; ok {
+			expected[col] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("assertEntryIndexSchema: rows.Err: %v", err)
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("assertEntryIndexSchema: entry_index has zero columns " +
+			"(table missing or migrations did not run)")
+	}
+
+	missing := make([]string, 0, len(expected))
+	for col, found := range expected {
+		if !found {
+			missing = append(missing, col)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("schema drift: entry_index missing columns %v "+
+			"(actual columns present: %v)", missing, seen)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────
