@@ -340,6 +340,31 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 	var submitted atomic.Uint64
 	var failed atomic.Uint64
 
+	// First-N failure diagnostics. Captures HTTP status + body for the
+	// first MaxFailureSamples failures so a soak run that submits
+	// zero entries surfaces the rejection reason directly in test
+	// output instead of "10000 failed" with no shape.
+	const maxFailureSamples = 5
+	var (
+		failureMu      sync.Mutex
+		failureSamples int
+	)
+	logFailure := func(stage string, status int, body []byte, err error) {
+		failureMu.Lock()
+		defer failureMu.Unlock()
+		if failureSamples >= maxFailureSamples {
+			return
+		}
+		failureSamples++
+		const maxBodyBytes = 512
+		bodyTrim := body
+		if len(bodyTrim) > maxBodyBytes {
+			bodyTrim = bodyTrim[:maxBodyBytes]
+		}
+		t.Logf("FAILURE_SAMPLE[%d/%d] stage=%s status=%d err=%v body=%q",
+			failureSamples, maxFailureSamples, stage, status, err, bodyTrim)
+	}
+
 	per := total / concurrency
 	var wg sync.WaitGroup
 	start := time.Now()
@@ -360,12 +385,14 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 				req.Header.Set("Authorization", "Bearer tok-soak")
 				resp, err := client.Do(req)
 				if err != nil {
+					logFailure("client.Do", 0, nil, err)
 					failed.Add(1)
 					continue
 				}
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				if resp.StatusCode != http.StatusAccepted {
+					logFailure("non-202", resp.StatusCode, body, nil)
 					failed.Add(1)
 					continue
 				}
@@ -373,6 +400,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 
 				seq, hash, ok := parseAcceptedResponse(body)
 				if !ok {
+					logFailure("parse-202-body", resp.StatusCode, body, nil)
 					failed.Add(1)
 					continue
 				}
