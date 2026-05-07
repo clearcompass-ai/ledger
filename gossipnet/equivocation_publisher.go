@@ -92,6 +92,13 @@ type EquivocationPublisherConfig struct {
 // NewEquivocationPublisher constructs the publisher. Returns an
 // error when any required field is missing.
 func NewEquivocationPublisher(cfg EquivocationPublisherConfig) (*EquivocationPublisher, error) {
+	// NetworkID FIRST — see NewSTHPublisher for the same rationale
+	// (T-9 cryptographic domain separation is the security
+	// invariant; everything else is correctness).
+	var zero sdkcosign.NetworkID
+	if cfg.NetworkID == zero {
+		return nil, fmt.Errorf("gossipnet/equivocation: NetworkID required (non-zero)")
+	}
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("gossipnet/equivocation: Store required")
 	}
@@ -100,10 +107,6 @@ func NewEquivocationPublisher(cfg EquivocationPublisherConfig) (*EquivocationPub
 	}
 	if cfg.Signer == nil {
 		return nil, fmt.Errorf("gossipnet/equivocation: Signer required")
-	}
-	var zero sdkcosign.NetworkID
-	if cfg.NetworkID == zero {
-		return nil, fmt.Errorf("gossipnet/equivocation: NetworkID required (non-zero)")
 	}
 	if cfg.Originator == "" {
 		return nil, fmt.Errorf("gossipnet/equivocation: Originator required")

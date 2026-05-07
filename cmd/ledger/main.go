@@ -59,9 +59,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +72,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/sumdb/note"
+	"golang.org/x/net/netutil"
 
 	"github.com/transparency-dev/tessera/storage/posix"
 	posixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
@@ -87,6 +91,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/clearcompass-ai/ledger/admission"
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/anchor"
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -254,8 +259,74 @@ type Config struct {
 	ServerAddr string
 	DatabaseURL string
 	PgMaxConns int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
+
+	// PgStatementTimeout, when > 0, is applied via the AfterConnect
+	// hook on every pool connection so EVERY query gets a DB-side
+	// statement_timeout cap. Defense-in-depth on per-call-site
+	// context.WithTimeout discipline. Default 5 s; 0 disables (the
+	// application is then sole authority on per-query budgets).
+	// Set via LEDGER_PG_STATEMENT_TIMEOUT (Go duration syntax).
+	PgStatementTimeout time.Duration
+
 	LogDID string // Destination for self-published entries (anchors, commitments).
 	LedgerDID string // Signer DID for ledger-authored commentary.
+
+	// TLSCertFile / TLSKeyFile, when both non-empty, switch the
+	// HTTP listener to ListenAndServeTLS. Operator deployments
+	// fronted by a TLS-terminating proxy leave both empty (plain
+	// HTTP). Standalone (VM / bare-metal / sigsum-witness) operators
+	// populate both for in-binary TLS termination.
+	TLSCertFile string // LEDGER_TLS_CERT_FILE
+	TLSKeyFile  string // LEDGER_TLS_KEY_FILE
+
+	// MaxConcurrentConns caps the total simultaneous TCP sockets
+	// the public HTTP listener will accept. Defends host physics
+	// (sockets, ephemeral ports, file descriptors) independent of
+	// per-request body size. 0 disables the cap (NOT recommended
+	// in production); the default is computed from runtime.NumCPU
+	// at boot.
+	MaxConcurrentConns int // LEDGER_MAX_CONCURRENT_CONNS
+
+	// PprofAddr, when non-empty, mounts net/http/pprof on a
+	// SEPARATE listener bound to the supplied address (typically
+	// "127.0.0.1:6060"). pprof is NEVER mixed onto the public
+	// listener — it's diagnostic surface, not user surface. Empty
+	// disables pprof entirely.
+	PprofAddr string // LEDGER_PPROF_ADDR
+
+	// TileServeDisable, when true, suppresses the public Static-CT
+	// tile-serving routes (GET /checkpoint, GET /tile/{level}/...).
+	// Private deployments where auditors fetch via a designated
+	// witness — not directly from the ledger — set this to true.
+	// The default (false) serves tiles publicly so external
+	// auditors can use the SDK's log/tessera_fetcher primitive
+	// without bespoke ledger config.
+	TileServeDisable bool // LEDGER_TILE_SERVE_DISABLE
+
+	// TileBackend selects the tile-storage backend the /tile/ +
+	// /checkpoint HTTP routes read from. One of:
+	//
+	//   "posix" (default) — reads from <LEDGER_TESSERA_STORAGE_DIR>.
+	//                       Local POSIX I/O. Path Tessera writes
+	//                       to today.
+	//   "gcs"             — reads from gs://<LEDGER_BYTE_STORE_GCS_BUCKET>/
+	//                       <LEDGER_TILE_BUCKET_PREFIX>/. Reuses
+	//                       the entry-bytestore GCS client (one
+	//                       auth surface). Suitable when Tessera
+	//                       writes tiles directly to GCS or an
+	//                       external sync mirrors POSIX → GCS.
+	//
+	// Both share the bytestore.TileBackend interface; switching
+	// requires only this env var (no code change).
+	TileBackend string // LEDGER_TILE_BACKEND
+
+	// TileBucketPrefix scopes tile keys under the GCS bucket.
+	// Defaults to "tessera/" so entries (under "entries/") and
+	// tiles (under "tessera/") never collide in the same bucket.
+	// Empty prefix means tiles at bucket root. Only consulted
+	// when TileBackend=="gcs".
+	TileBucketPrefix string // LEDGER_TILE_BUCKET_PREFIX
+
 	MaxEntrySize int64
 	BatchSize int
 	PollInterval time.Duration
@@ -482,13 +553,23 @@ func loadConfig() (*Config, error) {
 		WALPath:              envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
 		TesseraAntispamPath:  envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
 
+		// HTTP-server hardening knobs.
+		TLSCertFile:        os.Getenv("LEDGER_TLS_CERT_FILE"),
+		TLSKeyFile:         os.Getenv("LEDGER_TLS_KEY_FILE"),
+		MaxConcurrentConns: envIntOr("LEDGER_MAX_CONCURRENT_CONNS", 0),
+		PprofAddr:          os.Getenv("LEDGER_PPROF_ADDR"),
+		TileServeDisable:   os.Getenv("LEDGER_TILE_SERVE_DISABLE") == "true",
+		TileBackend:        envOr("LEDGER_TILE_BACKEND", "posix"),
+		TileBucketPrefix:   envOr("LEDGER_TILE_BUCKET_PREFIX", "tessera/"),
+
 		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
 		MMD:                  envDurationOr("LEDGER_MMD", 24*time.Hour),
 
 		// Pool size: env override OR derived from MaxInFlight (set
 		// after we know the final MaxInFlight value below).
-		PgMaxConns: int32(envIntOr("LEDGER_PG_MAX_CONNS", 0)),
+		PgMaxConns:         int32(envIntOr("LEDGER_PG_MAX_CONNS", 0)),
+		PgStatementTimeout: envDurationOr("LEDGER_PG_STATEMENT_TIMEOUT", 5*time.Second),
 	}
 	if cfg.PgMaxConns == 0 {
 		cfg.PgMaxConns = defaultPgMaxConns(cfg.SequencerMaxInFlight)
@@ -551,7 +632,86 @@ func loadConfig() (*Config, error) {
 		cfg.GenesisWitnessSet = append([]string{}, doc.GenesisWitnessSet...)
 	}
 
+	// G1: cross-field validation. Anything that requires multiple
+	// fields to be set together (or NOT together) is checked here.
+	// Per-field "required" checks already happened above.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// Validate runs cross-field consistency checks on a fully-loaded
+// Config. Every check is fail-fast: a misconfigured deployment
+// surfaces a clear, single-line error at boot instead of a
+// runtime surprise.
+func (c *Config) Validate() error {
+	// TLS: cert + key must be both-set or both-unset. Half-
+	// configured TLS would silently fall back to plain HTTP and
+	// be an exposure surprise.
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("LEDGER_TLS_CERT_FILE and LEDGER_TLS_KEY_FILE must be both set or both unset (got cert=%q key=%q)",
+			c.TLSCertFile, c.TLSKeyFile)
+	}
+	if c.TLSCertFile != "" {
+		if _, err := os.Stat(c.TLSCertFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", c.TLSCertFile, err)
+		}
+		if _, err := os.Stat(c.TLSKeyFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", c.TLSKeyFile, err)
+		}
+	}
+
+	// Gossip peers: DID and endpoint slices MUST be the same
+	// length so each peer has both an identity and a base URL.
+	// Mismatched lengths point at a deployment misconfig where
+	// one env var was forgotten or has a stale value.
+	if len(c.GossipPeerDIDs) != len(c.GossipPeerEndpoints) {
+		return fmt.Errorf("LEDGER_GOSSIP_PEER_DIDS (%d) and LEDGER_GOSSIP_PEER_ENDPOINTS (%d) must have the same length",
+			len(c.GossipPeerDIDs), len(c.GossipPeerEndpoints))
+	}
+
+	// Tile backend: gcs requires the byte-store backend to also
+	// be gcs (the GCSTiles handle reuses the *GCS bucket handle).
+	if c.TileBackend == "gcs" && c.ByteStoreBackend != "gcs" {
+		return fmt.Errorf("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs (got %q)",
+			c.ByteStoreBackend)
+	}
+	switch c.TileBackend {
+	case "", "posix", "gcs":
+	default:
+		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", c.TileBackend)
+	}
+
+	// Durations: every exposed duration MUST be positive. Zero
+	// or negative values silently disable the relevant timer
+	// (e.g., zero PollInterval = busy loop), which is a footgun.
+	for _, d := range []struct {
+		name string
+		v    time.Duration
+	}{
+		{"LEDGER_SEQUENCER_INTERVAL", c.SequencerInterval},
+		{"LEDGER_MMD", c.MMD},
+		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", c.PgStatementTimeout},
+	} {
+		if d.v < 0 {
+			return fmt.Errorf("%s must be >= 0 (got %v)", d.name, d.v)
+		}
+	}
+
+	// Witness quorum K must be positive when witnesses are
+	// configured (a 0-of-N quorum would never finalize a head).
+	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK <= 0 {
+		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K must be > 0 when LEDGER_WITNESS_ENDPOINTS is set (got %d)",
+			c.WitnessQuorumK)
+	}
+	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK > len(c.WitnessEndpoints) {
+		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K (%d) cannot exceed LEDGER_WITNESS_ENDPOINTS count (%d)",
+			c.WitnessQuorumK, len(c.WitnessEndpoints))
+	}
+
+	return nil
 }
 
 // pgPoolHeadroom is the minimum extra connections the pool must
@@ -584,6 +744,103 @@ func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
 // error if the ledger was misconfigured — better to refuse to
 // start than to have HTTP admission hang on connection acquisition
 // under load.
+// buildLogInfo flattens the auditor-facing subset of Config into
+// the public deployment-posture payload served by GET /v1/log-info.
+// SCOPE: only fields an external auditor needs to verify the log's
+// trust posture. Operational tunables (PG pool sizes, statement
+// timeout, internal file paths, WAL path) are intentionally absent
+// — they're surfaced via the boot banner log (G7) for operators
+// to read from their log shipper.
+//
+// The ledger is zero-trust by design (L-1 dumb ledger, T-6
+// zero-trust dual verification): there is no privileged "admin"
+// surface. Anything below this filter is genuinely public —
+// never any secret content, never any internal-only telemetry.
+func buildLogInfo(cfg *Config) api.LogInfo {
+	return api.LogInfo{
+		// Identity + addressing — auditors must know which log
+		// they're verifying.
+		"log_did":     cfg.LogDID,
+		"ledger_did":  cfg.LedgerDID,
+		"network_id":  networkIDHex(cfg.NetworkID),
+		"server_addr": cfg.ServerAddr,
+
+		// Storage backend types — auditor needs to know whether
+		// to fetch tiles from POSIX origin or GCS bucket.
+		"byte_store_backend":  cfg.ByteStoreBackend,
+		"tile_backend":        cfg.TileBackend,
+		"tile_bucket_prefix":  cfg.TileBucketPrefix,
+		"tile_serve_disable":  cfg.TileServeDisable,
+
+		// Witness topology — drives K-of-N quorum verification.
+		"witness_endpoint_count": len(cfg.WitnessEndpoints),
+		"witness_quorum_k":       cfg.WitnessQuorumK,
+
+		// Gossip + transport posture.
+		"gossip_enabled":    !cfg.GossipDisable,
+		"gossip_peer_count": len(cfg.GossipPeerDIDs),
+		"tls_enabled":       cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
+
+		// Sequencer cadence — affects MMD compliance window an
+		// auditor evaluates.
+		"sequencer_interval": cfg.SequencerInterval.String(),
+		"mmd":                cfg.MMD.String(),
+	}
+}
+
+// networkIDHex returns the first-8-bytes hex prefix of the
+// NetworkID, suitable for log correlation. The full 32 bytes
+// are not interesting in the boot banner; the prefix is enough
+// to disambiguate networks at a glance and it matches the
+// convention used elsewhere in the codebase.
+func networkIDHex(id cosign.NetworkID) string {
+	var zero cosign.NetworkID
+	if id == zero {
+		return ""
+	}
+	return fmt.Sprintf("%x", id[:8])
+}
+
+// validateTesseraStorageDir confirms the Tessera POSIX directory
+// is in a consistent state: either empty (fresh init) OR contains
+// a `checkpoint` file (resuming an existing log). A dir with
+// tile artifacts but no checkpoint indicates a half-initialized
+// volume — partial restore, aborted migration, manual file
+// shuffling — and re-initializing on top of it would corrupt
+// the log silently. Boot fails fast instead.
+func validateTesseraStorageDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read dir: %w", err)
+	}
+	if len(entries) == 0 {
+		// Fresh init — Tessera will populate.
+		return nil
+	}
+	checkpoint := dir + string(os.PathSeparator) + "checkpoint"
+	if _, err := os.Stat(checkpoint); err == nil {
+		// Healthy: existing log with checkpoint. Tessera will
+		// resume from where it left off.
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat checkpoint: %w", err)
+	}
+	// Has files but no checkpoint — half-initialized.
+	names := make([]string, 0, len(entries))
+	for i, e := range entries {
+		if i >= 5 {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, e.Name())
+	}
+	return fmt.Errorf("dir non-empty (%v) but no checkpoint file — "+
+		"refusing to re-initialize on top of partial state. "+
+		"To start fresh, empty the directory; to resume an existing log, "+
+		"restore the checkpoint file alongside the tile artifacts",
+		names)
+}
+
 func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 	mif := sequencerMaxInFlight
 	if mif <= 0 {
@@ -685,9 +942,45 @@ func parseCSV(s string) []string {
 // Main
 // ─────────────────────────────────────────────────────────────────────
 
+// G6 — Version variables populated at build time via -ldflags.
+// Defaults are placeholder values for go-run / unit-test builds.
+//
+//   go build -ldflags="-X main.Version=$(git describe --tags --always) \
+//                      -X main.Commit=$(git rev-parse HEAD) \
+//                      -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+//          ./cmd/ledger
+//
+// SDKVersion is hard-coded at the import-pin level (the SDK
+// version is determined by go.mod, not by ldflags), so it is the
+// single source of truth for what the binary was built against.
+var (
+	Version    = "dev"
+	Commit     = ""
+	BuildTime  = ""
+	SDKVersion = "v0.1.2"
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// fatal is the supervisor's single-source-of-truth error channel.
+	// Declared early so any background goroutine wired during boot
+	// (gossip subsystem, HTTP server, pprof listener) can surface a
+	// recovered panic to the supervisor for clean process exit.
+	// The supervisor reads from this channel below; sends are
+	// non-blocking via lifecycle.SafeRun.
+	fatal := make(chan error, 8)
+
+	// shutdownChain enforces the I1 strict shutdown order. Each
+	// resource registers a Close step at the moment it's
+	// successfully constructed; the chain runs them in
+	// REGISTRATION ORDER (not LIFO like Go defers) with PER-
+	// COMPONENT timeouts (I2). The Add() return value is stashed
+	// in a defer at each call site so a boot-panic before Run
+	// still triggers the close (sync.Once inside the chain
+	// ensures Run + defer-fallback don't double-close).
+	shutdownChain := lifecycle.NewShutdownChain(logger)
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -701,11 +994,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("ledger starting",
+	// G7 — Boot banner. Single Info line at startup carrying the
+	// forensic identifiers an operator needs to correlate a pod
+	// with its source: build version, git commit, build time, SDK
+	// version pin, and the deployment-shaping config (NetworkID,
+	// LogDID, LedgerDID, gossip enable, witness count). Secrets
+	// are NEVER logged here; only public identifiers + booleans.
+	logger.Info("ledger starting (boot banner)",
+		"version", Version,
+		"commit", Commit,
+		"build_time", BuildTime,
+		"sdk_version", SDKVersion,
 		"log_did", cfg.LogDID,
 		"ledger_did", cfg.LedgerDID,
+		"network_id_hex", networkIDHex(cfg.NetworkID),
 		"addr", cfg.ServerAddr,
 		"tessera_storage_dir", cfg.TesseraStorageDir,
+		"byte_store_backend", cfg.ByteStoreBackend,
+		"tile_backend", cfg.TileBackend,
+		"gossip_enabled", !cfg.GossipDisable,
+		"gossip_peer_count", len(cfg.GossipPeerDIDs),
+		"witness_endpoint_count", len(cfg.WitnessEndpoints),
+		"witness_quorum_k", cfg.WitnessQuorumK,
+		"tls_enabled", cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
+		"metrics_enabled", cfg.MetricsEnable,
 	)
 
 	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
@@ -746,20 +1058,31 @@ func main() {
 	// LEDGER_PG_MAX_CONNS; validatePgPoolSizing rejects anything
 	// below SequencerMaxInFlight + pgPoolHeadroom at boot.
 	pgPool, err := store.InitPool(ctx, store.PoolConfig{
-		DSN:             cfg.DatabaseURL,
-		MaxConns:        cfg.PgMaxConns,
-		MinConns:        2,
-		MaxConnLifetime: 30 * time.Minute,
-		MaxConnIdleTime: 5 * time.Minute,
+		DSN:              cfg.DatabaseURL,
+		MaxConns:         cfg.PgMaxConns,
+		MinConns:         2,
+		MaxConnLifetime:  30 * time.Minute,
+		MaxConnIdleTime:  5 * time.Minute,
+		StatementTimeout: cfg.PgStatementTimeout,
 	})
 	if err != nil {
 		logger.Error("pgxpool", "error", err)
 		os.Exit(1)
 	}
-	defer pgPool.Close()
+	// Per-resource Once-protected close. The same OnceFunc is
+	// invoked from BOTH the boot-panic-safety defer AND the
+	// shutdownChain step at SIGTERM, so whichever fires first
+	// does the work, the other becomes a no-op.
+	closePgxpoolOnce := sync.OnceFunc(func() { pgPool.Close() })
+	closePgxpool := func(ctx context.Context) error {
+		closePgxpoolOnce()
+		return nil
+	}
+	defer closePgxpoolOnce()
 	pool := pgPool.DB
 	logger.Info("postgres pool ready",
 		"max_conns", cfg.PgMaxConns,
+		"statement_timeout", cfg.PgStatementTimeout,
 		"sequencer_max_inflight", cfg.SequencerMaxInFlight,
 	)
 
@@ -767,6 +1090,32 @@ func main() {
 		logger.Error("migrations", "error", err)
 		os.Exit(1)
 	}
+
+	// Builder advisory lock: at most one writer per database. The
+	// new pod fails fast within DefaultBuilderLockAcquireTimeout
+	// (30 s) if a previous pod still holds the lock — surfacing
+	// rolling-update misconfigurations immediately instead of
+	// hanging. Heartbeat goroutine surfaces ErrAdvisoryLockLost via
+	// fatal so the supervisor exits + orchestrator restarts on
+	// stale-connection lock loss.
+	builderLock, err := store.AcquireBuilderLock(ctx, pool, fatal, logger)
+	if err != nil {
+		logger.Error("builder advisory lock", "error", err)
+		os.Exit(1)
+	}
+	releaseBuilderLockOnce := sync.OnceFunc(func() { builderLock.Release() })
+	closeBuilderLock := func(ctx context.Context) error {
+		releaseBuilderLockOnce()
+		return nil
+	}
+	defer releaseBuilderLockOnce()
+	logger.Info("builder advisory lock acquired", "lock_id", store.BuilderLockID)
+
+	// Postgres circuit breaker: trips after consecutive pool-
+	// acquisition failures, fails fast for the cooldown window,
+	// then probes once. Wired into /readyz so a tripped breaker
+	// pulls the pod from the load balancer until the DB recovers.
+	dbBreaker := store.NewBreaker(pool, store.DefaultBreakerFailureThreshold, store.DefaultBreakerCooldown, logger)
 
 	// ── Stores ────────────────────────────────────────────────────────
 	entryStore := store.NewEntryStore(pool)
@@ -787,17 +1136,21 @@ func main() {
 		logger.Error("wal open", "error", err, "path", cfg.WALPath)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := walDB.Close(); err != nil {
-			logger.Warn("wal db close", "error", err)
-		}
-	}()
+	var walDBErr error
+	closeWALDBOnce := sync.OnceFunc(func() { walDBErr = walDB.Close() })
+	closeWALDB := func(ctx context.Context) error {
+		closeWALDBOnce()
+		return walDBErr
+	}
+	defer closeWALDBOnce()
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{Logger: logger})
-	defer func() {
-		if err := walc.Close(); err != nil {
-			logger.Warn("wal committer close", "error", err)
-		}
-	}()
+	var walcErr error
+	closeWALCommitterOnce := sync.OnceFunc(func() { walcErr = walc.Close() })
+	closeWALCommitter := func(ctx context.Context) error {
+		closeWALCommitterOnce()
+		return walcErr
+	}
+	defer closeWALCommitterOnce()
 	logger.Info("wal ready", "path", cfg.WALPath)
 
 	// ── Byte store ────────────────────────────────────────────────────
@@ -813,13 +1166,17 @@ func main() {
 		logger.Error("byte store init", "error", err, "backend", cfg.ByteStoreBackend)
 		os.Exit(1)
 	}
-	defer func() {
+	var byteStoreErr error
+	closeByteStoreOnce := sync.OnceFunc(func() {
 		if closer, ok := byteStore.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("byte store close", "error", err)
-			}
+			byteStoreErr = closer.Close()
 		}
-	}()
+	})
+	closeByteStore := func(ctx context.Context) error {
+		closeByteStoreOnce()
+		return byteStoreErr
+	}
+	defer closeByteStoreOnce()
 	logger.Info("byte store ready",
 		"backend", cfg.ByteStoreBackend,
 		"prefix", cfg.ByteStorePrefix,
@@ -835,6 +1192,17 @@ func main() {
 	// satisfies the MerkleAppender interface the builder loop holds.
 	if err := os.MkdirAll(cfg.TesseraStorageDir, 0o755); err != nil {
 		logger.Error("tessera storage dir", "error", err, "dir", cfg.TesseraStorageDir)
+		os.Exit(1)
+	}
+	// G3: Tessera POSIX dir sanity check. A fresh-init dir must
+	// be empty OR have a checkpoint file. A dir that contains
+	// other tile artifacts but NOT a checkpoint indicates a
+	// half-initialized volume (e.g., a partial restore, an
+	// aborted migration); refuse to boot rather than silently
+	// re-initializing on top of inconsistent state.
+	if err := validateTesseraStorageDir(cfg.TesseraStorageDir); err != nil {
+		logger.Error("tessera storage dir sanity check failed",
+			"error", err, "dir", cfg.TesseraStorageDir)
 		os.Exit(1)
 	}
 	tesseraDriver, err := posix.New(ctx, posix.Config{Path: cfg.TesseraStorageDir})
@@ -884,16 +1252,17 @@ func main() {
 		logger.Error("tessera antispam open", "error", err, "path", cfg.TesseraAntispamPath)
 		os.Exit(1)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = shutdownCtx
+	var antispamErr error
+	closeAntispamOnce := sync.OnceFunc(func() {
 		if closer, ok := any(antispamStorage).(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("antispam close", "error", err)
-			}
+			antispamErr = closer.Close()
 		}
-	}()
+	})
+	closeAntispam := func(ctx context.Context) error {
+		closeAntispamOnce()
+		return antispamErr
+	}
+	defer closeAntispamOnce()
 	logger.Info("tessera antispam ready", "path", cfg.TesseraAntispamPath)
 
 	embeddedAppender, err := tessera.NewEmbeddedAppender(ctx, tesseraDriver, tessera.AppenderOptions{
@@ -908,13 +1277,17 @@ func main() {
 		logger.Error("tessera embedded appender", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var tesseraErr error
+	closeTesseraOnce := sync.OnceFunc(func() {
+		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := embeddedAppender.Close(shutdownCtx); err != nil {
-			logger.Warn("tessera shutdown", "error", err)
-		}
-	}()
+		tesseraErr = embeddedAppender.Close(c)
+	})
+	closeTessera := func(ctx context.Context) error {
+		closeTesseraOnce()
+		return tesseraErr
+	}
+	defer closeTesseraOnce()
 	logger.Info("tessera embedded ready",
 		"storage_dir", cfg.TesseraStorageDir,
 		"origin", tesseraOrigin,
@@ -1020,6 +1393,9 @@ func main() {
 		meterShutdown func(ctx context.Context) error
 		gossipMeter metric.Meter
 		metricsHandler http.Handler
+		// closeOTelMeter is the spec-order shutdown step. nil
+		// when metrics are disabled (no-op step in the chain).
+		closeOTelMeter func(ctx context.Context) error
 	)
 	if cfg.MetricsEnable {
 		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
@@ -1049,13 +1425,20 @@ func main() {
 
 		metricsHandler = mpResult.PrometheusHandler
 		meterShutdown = mpResult.Shutdown
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// closeOTelMeter is registered in spec order at shutdown
+		// time. Boot-panic safety via this defer using a
+		// background ctx + 5s budget.
+		var otelErr error
+		closeOTelMeterOnce := sync.OnceFunc(func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := meterShutdown(ctx); err != nil {
-				logger.Warn("metrics: shutdown", "error", err)
-			}
-		}()
+			otelErr = meterShutdown(c)
+		})
+		closeOTelMeter = func(ctx context.Context) error {
+			closeOTelMeterOnce()
+			return otelErr
+		}
+		defer closeOTelMeterOnce()
 		logger.Info("metrics: enabled",
 			"endpoint", "/metrics",
 			"environment", cfg.MetricsEnvironment,
@@ -1083,6 +1466,9 @@ func main() {
 		gossipPostH http.Handler
 		gossipFeedH http.Handler
 		gossipPublisher *gossipnet.STHPublisher
+		// closeGossipStore is the spec-order shutdown step. nil
+		// when gossip is disabled (no-op step in the chain).
+		closeGossipStore func(ctx context.Context) error
 	)
 	var zeroNetID cosign.NetworkID
 	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
@@ -1125,15 +1511,21 @@ func main() {
 
 		// Shutdown ordering: drain sink → close handlers → close
 		// store. The underlying *badger.DB is owned by wal.Open
-		// (the existing defer above closes it last).
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// (its registered shutdown step closes it after this one).
+		var gossipStoreErr error
+		closeGossipStoreOnce := sync.OnceFunc(func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			for _, c := range gossipBundle.Closeables {
-				_ = c.Close(ctx)
+			for _, cl := range gossipBundle.Closeables {
+				_ = cl.Close(c)
 			}
-			_ = gossipBStore.Close(ctx)
-		}()
+			gossipStoreErr = gossipBStore.Close(c)
+		})
+		closeGossipStore = func(ctx context.Context) error {
+			closeGossipStoreOnce()
+			return gossipStoreErr
+		}
+		defer closeGossipStoreOnce()
 
 		// gossipWG drains the async goroutines (anti-entropy,
 		// equivocation monitor, equivocation scanner) BEFORE
@@ -1174,13 +1566,16 @@ func main() {
 				os.Exit(1)
 			}
 			aeCtx, aeCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			// Anti-entropy is best-effort: a non-canceled exit is
+			// logged but does NOT terminate the supervisor. A
+			// panic, however, is surfaced to fatal via SafeRunInWG's
+			// recover branch — bugs that panic deserve restart.
+			lifecycle.SafeRunInWG(aeCtx, &gossipWG, "anti-entropy", logger, fatal, func() error {
 				if rerr := ae.Run(aeCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("anti-entropy: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer aeCancel()
 			logger.Info("anti-entropy: enabled", "peers", len(peers))
 		} else if len(cfg.GossipPeerDIDs) > 0 {
@@ -1262,13 +1657,12 @@ func main() {
 				os.Exit(1)
 			}
 			eqCtx, eqCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			lifecycle.SafeRunInWG(eqCtx, &gossipWG, "equivocation-monitor", logger, fatal, func() error {
 				if rerr := eqMon.Run(eqCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation monitor: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer eqCancel()
 			logger.Info("equivocation monitor: enabled",
 				"peers", len(equivPeers),
@@ -1311,14 +1705,13 @@ func main() {
 				os.Exit(1)
 			}
 			scanCtx, scanCancel := context.WithCancel(ctx)
-			gossipWG.Add(1)
-			go func() {
-				defer gossipWG.Done()
+			lifecycle.SafeRunInWG(scanCtx, &gossipWG, "equivocation-scanner", logger, fatal, func() error {
 				if rerr := scanner.Run(scanCtx); rerr != nil &&
 					!errors.Is(rerr, context.Canceled) {
 					logger.Warn("equivocation scanner: exited with error", "error", rerr)
 				}
-			}()
+				return nil
+			})
 			defer scanCancel()
 			logger.Info("equivocation scanner: enabled (subscribed to splitid index 0x0A)")
 		}
@@ -1579,6 +1972,52 @@ func main() {
 		logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
 	}
 
+	// ── Static-CT tile serving (C1-C3, C6) ──────────────────────────
+	//
+	// Mount /checkpoint + /tile/{level}/{rest...} so external
+	// auditors can pull tiles directly with the SDK's
+	// log/tessera_fetcher primitive (which now applies the
+	// MaxTileBytes cap from attesta v0.1.2). Suppressed when
+	// LEDGER_TILE_SERVE_DISABLE=true — for private deployments
+	// where auditors go through a designated witness instead.
+	//
+	// Backend dispatch (LEDGER_TILE_BACKEND):
+	//
+	//   posix → reuses the existing *tessera.POSIXTileBackend.
+	//   gcs   → constructs a *bytestore.GCSTiles companion that
+	//           reuses the entry-bytestore's authenticated GCS
+	//           client. Requires LEDGER_BYTE_STORE_BACKEND=gcs.
+	var checkpointHandler http.HandlerFunc
+	var tileHandler http.HandlerFunc
+	if !cfg.TileServeDisable {
+		var serving bytestore.TileBackend
+		switch cfg.TileBackend {
+		case "", "posix":
+			serving = tileBackend
+		case "gcs":
+			gcsBackend, ok := byteStore.(*bytestore.GCS)
+			if !ok {
+				logger.Error("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs",
+					"byte_store_backend", cfg.ByteStoreBackend)
+				os.Exit(1)
+			}
+			serving = bytestore.NewGCSTiles(gcsBackend, cfg.TileBucketPrefix, 30*time.Second)
+		default:
+			logger.Error("LEDGER_TILE_BACKEND must be one of posix|gcs",
+				"got", cfg.TileBackend)
+			os.Exit(1)
+		}
+		checkpointHandler = api.NewCheckpointHandler(serving, logger)
+		tileHandler = api.NewTileHandler(serving, logger)
+		logger.Info("static-ct tile serving enabled",
+			"backend", cfg.TileBackend,
+			"prefix", cfg.TileBucketPrefix,
+			"routes", []string{"/checkpoint", "/tile/{level}/{rest...}"},
+		)
+	} else {
+		logger.Info("static-ct tile serving disabled (LEDGER_TILE_SERVE_DISABLE=true)")
+	}
+
 	handlers := api.Handlers{
 		Submission:       submitHandler,
 		BatchSubmission:  batchSubmitHandler,
@@ -1608,6 +2047,15 @@ func main() {
 		SMTLeafBatch:     api.NewSMTLeafBatchHandler(smtDeps),
 		CommitmentQuery:  api.NewDerivationCommitmentQueryHandler(commitDeps),
 		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
+		Checkpoint:       checkpointHandler,       // nil when LEDGER_TILE_SERVE_DISABLE=true
+		Tile:             tileHandler,             // nil when LEDGER_TILE_SERVE_DISABLE=true
+		LogInfo: api.NewLogInfoHandler(buildLogInfo(cfg)),
+		Version: api.NewVersionHandler(api.VersionInfo{
+			Version:    Version,
+			Commit:     Commit,
+			BuildTime:  BuildTime,
+			SDKVersion: SDKVersion,
+		}),
 	}
 
 	// ── Integrity Detector (periodic sample-verify) ──────────────────
@@ -1702,10 +2150,61 @@ func main() {
 	ship := shipper.NewShipper(walc, byteStore, shipper.Config{Logger: logger})
 
 	// ── HTTP server ───────────────────────────────────────────────────
+	//
+	// DoS-immune timeouts come from DefaultServerConfig (Slowloris
+	// cap via ReadHeaderTimeout, keep-alive zombie cap via
+	// IdleTimeout). TLS termination is in-binary when TLSCertFile +
+	// TLSKeyFile are both populated; otherwise the binary speaks
+	// plain HTTP and a TLS-terminating proxy (k8s ingress, sidecar)
+	// is the operator's responsibility.
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = cfg.ServerAddr
 	serverCfg.MaxEntrySize = cfg.MaxEntrySize
+	serverCfg.TLSCertFile = cfg.TLSCertFile
+	serverCfg.TLSKeyFile = cfg.TLSKeyFile
 	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
+
+	// Wire the DB circuit breaker into /readyz: a tripped breaker
+	// returns 503 from /readyz so the load balancer pulls the pod
+	// from rotation until the breaker half-open probe succeeds.
+	// The breaker is fed by store layer pool acquisitions; per-
+	// query failures (missing rows, syntax errors) DO NOT trip it.
+	server.SetReadinessProbe(func() error {
+		// Cheap check: try to acquire + immediately release.
+		// Failures pass through the breaker's state machine.
+		probeCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		conn, err := dbBreaker.Acquire(probeCtx)
+		if err != nil {
+			return fmt.Errorf("database unavailable: %w", err)
+		}
+		conn.Release()
+		return nil
+	})
+
+	// ── pprof on a private listener (optional) ───────────────────────
+	//
+	// Production-grade profiling: pprof MUST live on a separate
+	// listener bound to a non-public address so the public HTTP
+	// surface never exposes /debug/pprof. Empty PprofAddr disables.
+	var pprofServer *http.Server
+	if cfg.PprofAddr != "" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofServer = &http.Server{
+			Addr:              cfg.PprofAddr,
+			Handler:           pprofMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      120 * time.Second, // CPU profiles take time
+			IdleTimeout:       60 * time.Second,
+		}
+		logger.Info("pprof listener ready", "addr", cfg.PprofAddr)
+	}
 
 	// ── Goroutines + fatal supervisor ─────────────────────────────────
 	//
@@ -1720,68 +2219,179 @@ func main() {
 	// the supervisor closes ctx via the parent cancel before
 	// panicking, giving other goroutines a chance to flush, but
 	// the panic surfaces the originating error.
-	fatal := make(chan error, 8)
+	//
+	// fatal channel is declared at the top of main() — see the
+	// boot-phase comment there. Re-declaring would shadow it.
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := server.ListenAndServe(); err != nil {
+	// ── Public HTTP listener (TLS-aware + LimitListener-capped) ─────
+	//
+	// The connection cap defends host physics independent of
+	// per-request body size. A cap of 0 (LEDGER_MAX_CONCURRENT_CONNS
+	// unset) defaults to 8 × runtime.NumCPU; production deployments
+	// typically tune this to match their pod-side ulimits.
+	connCap := cfg.MaxConcurrentConns
+	if connCap <= 0 {
+		connCap = 8 * runtime.NumCPU()
+	}
+	listenAddr := serverCfg.Addr
+	rawListener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		logger.Error("http listen", "addr", listenAddr, "error", err)
+		os.Exit(1)
+	}
+	cappedListener := netutil.LimitListener(rawListener, connCap)
+	logger.Info("http listener ready",
+		"addr", listenAddr,
+		"max_concurrent_conns", connCap,
+		"tls", serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "",
+	)
+
+	// HTTP server: stdlib's per-handler recovery covers handler
+	// panics, but a panic in TLS-handshake / accept-loop / connection
+	// state machine still kills the goroutine. SafeRunInWG catches
+	// those and surfaces them via fatal so the supervisor restarts
+	// the process cleanly.
+	lifecycle.SafeRunInWG(ctx, &wg, "http-server", logger, fatal, func() error {
+		if serverCfg.TLSCertFile != "" && serverCfg.TLSKeyFile != "" {
+			// ServeTLS reuses the listener wrapped by
+			// netutil.LimitListener, so the connection cap applies
+			// to TLS-terminated traffic too. Manually call
+			// http.Server.ServeTLS via a tiny adapter that
+			// populates TLSConfig with explicit ALPN.
+			if err := server.ServeTLSWithListener(cappedListener); err != nil {
+				logger.Error("http server (tls)", "error", err)
+			}
+			return nil
+		}
+		if err := server.Serve(cappedListener); err != nil {
 			logger.Error("http server", "error", err)
 		}
-	}()
+		return nil
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	if pprofServer != nil {
+		// pprof is bound to a private address (typically
+		// 127.0.0.1:6060). Failure to bind is non-fatal — pprof is
+		// diagnostic, not load-bearing. Panic in pprof handlers
+		// does NOT terminate the supervisor (no fatal channel).
+		lifecycle.SafeRunInWG(ctx, &wg, "pprof-server", logger, nil, func() error {
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Warn("pprof server", "error", err)
+			}
+			return nil
+		})
+	}
+
+	// All long-running goroutines are wrapped in lifecycle.SafeRun
+	// for bounded panic recovery. A panic in any background loop
+	// must surface to the fatal channel so the supervisor can
+	// terminate the process cleanly — never crash the binary
+	// silently. Mirrors the SDK's HTTP-handler self-encapsulating
+	// recovery pattern.
+
+	lifecycle.SafeRunInWG(ctx, &wg, "builder-loop", logger, fatal, func() error {
 		if err := bl.Run(ctx); err != nil {
 			logger.Error("builder loop exited with error", "error", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "difficulty-controller", logger, fatal, func() error {
 		diffController.Run(ctx, 30*time.Second)
-	}()
+		return nil
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "anchor-publisher", logger, fatal, func() error {
 		anchorPub.Run(ctx)
-	}()
+		return nil
+	})
 
 	// Shipper: migrates WAL → bytestore. Returns ctx.Err() on shutdown
 	// (not fatal); other errors are fatal.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "shipper", logger, fatal, func() error {
 		if err := ship.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			fatal <- fmt.Errorf("shipper: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
 	// Sequencer: drains WAL StatePending → entry_index. Returns
 	// ctx.Err() on shutdown; any other return is fatal — without
 	// the Sequencer running, v2 SCTs become unredeemable promises.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "sequencer", logger, fatal, func() error {
 		if err := seq.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			fatal <- fmt.Errorf("sequencer: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
 
 	// Integrity Detector loop: returns ErrDiverged on disagreement,
 	// ctx.Err() on shutdown. Divergence is FATAL — must panic so
 	// consumers stop seeing corrupt proofs.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	lifecycle.SafeRunInWG(ctx, &wg, "integrity-detector", logger, fatal, func() error {
 		if err := detector.Loop(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			fatal <- fmt.Errorf("integrity detector: %w", err)
+			return err
 		}
-	}()
+		return nil
+	})
+
+	// H1/H2/H3 — Audit + freshness telemetry loop.
+	//
+	// One goroutine emits three observability lines every 5 minutes:
+	//   - integrity-detector invariant-failure / sample-verified counters
+	//   - cosignature freshness age (seconds since last successful publish)
+	//   - gossip-store growth (event count + originator count)
+	//
+	// All three are read-only observations. No fatal channel — a
+	// transient error (e.g., gossipstore Stats() temporarily failing
+	// due to a Badger compaction in-flight) logs and continues.
+	//
+	// Trim policy for gossip-store entries: NOT implemented in this
+	// commit. Trimming requires a consumer-cursor model (the oldest
+	// auditor cursor any peer might want to fetch from) which we
+	// don't track today. Disk pressure is currently bounded by
+	// Badger's value-log GC on the LSM side; application-level
+	// trim is parked behind a future LEDGER_GOSSIP_TRIM_AGE env
+	// once the consumer-cursor model lands.
+	lifecycle.SafeRunInWG(ctx, &wg, "audit-telemetry", logger, nil, func() error {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				logger.Info("integrity audit",
+					"invariant_failures_total", detector.InvariantFailures(),
+					"samples_verified_total", detector.SamplesVerified(),
+				)
+				if gossipPublisher != nil {
+					age := gossipPublisher.CosignAgeSeconds()
+					if age >= 0 {
+						logger.Info("checkpoint cosig age",
+							"age_seconds", age,
+						)
+					}
+				}
+				if gossipBStore != nil {
+					statsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					stats, err := gossipBStore.Stats(statsCtx)
+					cancel()
+					if err == nil {
+						logger.Info("gossip store growth",
+							"event_count", stats.EventCount,
+							"originator_count", stats.OriginatorCount,
+						)
+					}
+				}
+			}
+		}
+	})
 
 	// ── Supervisor: shutdown OR fatal ────────────────────────────────
 	//
@@ -1805,13 +2415,135 @@ func main() {
 		cancel()
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http shutdown", "error", err)
+	// ── Pre-drain handshake (B4) ──────────────────────────────────────
+	//
+	// Flip /readyz to 503 BEFORE httpServer.Shutdown so the load
+	// balancer / k8s readiness probe sees the pod as not-ready and
+	// removes it from rotation. Then sleep LEDGER_PREDRAIN_GRACE
+	// (default 5s) so any in-flight readiness-probe-cycle resolves
+	// against a 503 response. THEN call Shutdown which drains
+	// in-flight requests.
+	//
+	// Without this handshake, in-flight HTTP requests can be cut at
+	// SIGTERM if they arrive in the window between "process got
+	// SIGTERM" and "load balancer removed pod from rotation."
+	server.SetReady(false)
+	preDrainGrace := envDurationOr("LEDGER_PREDRAIN_GRACE", 5*time.Second)
+	if preDrainGrace > 0 {
+		logger.Info("pre-drain grace started",
+			"grace", preDrainGrace,
+			"reason", "load-balancer-rotation-removal",
+		)
+		select {
+		case <-time.After(preDrainGrace):
+		case <-time.After(60 * time.Second):
+			// Hard ceiling — never block shutdown indefinitely
+			// even if env-var is misconfigured to a huge value.
+		}
 	}
 
-	wg.Wait()
+	// I1+I2+I3 — Strict-order shutdown via ShutdownChain.
+	//
+	// Each resource was set up at boot with a sync.OnceFunc-
+	// protected close (deferred for boot-panic safety) plus a
+	// `func(ctx) error` shape suitable for chain registration.
+	// Here we register every step in SPEC ORDER and Run; the
+	// boot-time defers later fire LIFO at function exit but
+	// hit sync.Once "already done" and no-op cleanly.
+	//
+	// I1 spec order:
+	//   1. /readyz=503        (already done above)
+	//   2. predrain grace     (already done above)
+	//   3. http-server        (drain in-flight)
+	//   4. pprof-server       (close diagnostic listener)
+	//   5. background-goroutines (wg.Wait — sequencer/shipper drain)
+	//   6. bytestore          (flush in-flight uploads)
+	//   7. tessera            (flush tile writes)
+	//   8. wal-committer      (group-commit batch flush; depends on wal-db)
+	//   9. wal-db             (Badger close; depended on by gossipstore + walc)
+	//  10. tessera-antispam   (Badger close)
+	//  11. gossipstore        (gossip Badger surface)
+	//  12. builder-advisory-lock (release lock + drop heartbeat)
+	//  13. pgxpool            (Postgres pool close — last for in-flight queries)
+	//  14. otel-meter         (OTel last so the shutdown event itself is observable)
+	shutdownChain.Add("http-server", 30*time.Second, func(ctx context.Context) error {
+		return server.Shutdown(ctx)
+	})
+	if pprofServer != nil {
+		shutdownChain.Add("pprof-server", 5*time.Second, func(ctx context.Context) error {
+			return pprofServer.Shutdown(ctx)
+		})
+	}
+	shutdownChain.Add("background-goroutines", 30*time.Second, func(ctx context.Context) error {
+		// wg.Wait blocks until every SafeRunInWG goroutine
+		// exits. Per-component timeout caps the wait so a
+		// wedged goroutine can't block the resource closes
+		// downstream.
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	shutdownChain.Add("bytestore", 30*time.Second, closeByteStore)
+	shutdownChain.Add("tessera", 15*time.Second, closeTessera)
+	shutdownChain.Add("wal-committer", 5*time.Second, closeWALCommitter)
+	shutdownChain.Add("wal-db", 10*time.Second, closeWALDB)
+	shutdownChain.Add("tessera-antispam", 15*time.Second, closeAntispam)
+	if closeGossipStore != nil {
+		shutdownChain.Add("gossipstore", 5*time.Second, closeGossipStore)
+	}
+	shutdownChain.Add("builder-advisory-lock", 5*time.Second, closeBuilderLock)
+	shutdownChain.Add("pgxpool", 10*time.Second, closePgxpool)
+	// L2 — Defensive zero-out of in-memory key material on
+	// shutdown. Reduces memory-dump exposure on a subsequent
+	// crash + core dump, and makes the post-shutdown live
+	// process show the keys as zeroed if an attacker manages
+	// to read /proc/self/mem during the brief shutdown window.
+	//
+	// Runs AFTER background goroutines drain so no signing
+	// goroutine is in-flight, BEFORE OTel meter shutdown so the
+	// step's duration + outcome is observable.
+	//
+	// Caveat: Go's GC may retain key copies in scratch buffers
+	// from prior signing operations; we zero only the
+	// authoritative *ecdsa.PrivateKey.D field. Tessera's
+	// note.Signer doesn't expose its bytes (SDK ownership), so
+	// it's not zeroable from this layer.
+	shutdownChain.Add("zero-key-material", time.Second, func(ctx context.Context) error {
+		if ledgerSignerPriv != nil && ledgerSignerPriv.D != nil {
+			ledgerSignerPriv.D.SetInt64(0)
+		}
+		return nil
+	})
+
+	if closeOTelMeter != nil {
+		shutdownChain.Add("otel-meter", 5*time.Second, closeOTelMeter)
+	}
+
+	shutdownChain.Run()
+
+	// I3 — Final shutdown summary log. Per-component drain
+	// duration + error so an operator can identify which
+	// component stalled during a SIGTERM or pod-eviction.
+	for _, step := range shutdownChain.Summary() {
+		status := "ran"
+		if !step.Ran {
+			status = "skipped"
+		}
+		logger.Info("shutdown step summary",
+			"step", step.Name,
+			"status", status,
+			"duration", step.Duration,
+			"err", errString(step.Err),
+		)
+	}
 
 	b, e, errs := bl.Stats()
 	logger.Info("ledger stopped",
@@ -1825,4 +2557,14 @@ func main() {
 		// what's next.
 		panic(fmt.Errorf("ledger FATAL: %w", fatalErr))
 	}
+}
+
+// errString returns "" for nil err, err.Error() otherwise. Used
+// by the shutdown summary so the log field is empty rather than
+// "<nil>" on success.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

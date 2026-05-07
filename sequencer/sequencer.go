@@ -70,6 +70,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -87,8 +88,14 @@ type WAL interface {
 
 // Tessera is the append-side surface. The integration backend on
 // *tessera.EmbeddedAppender satisfies this; tests inject fakes.
+//
+// L4 — ctx propagation: AppendLeaf accepts the caller's context
+// so a sequencer drain that hits a SIGTERM mid-batch can cancel
+// the in-flight Tessera Add. Without this, Tessera's batcher
+// would continue trying to integrate after the rest of the
+// process has unwound.
 type Tessera interface {
-	AppendLeaf(data []byte) (uint64, error)
+	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 }
 
 // Config tunes Sequencer behaviour. Zero-valued fields fall back
@@ -340,19 +347,23 @@ func (s *Sequencer) Run(ctx context.Context) error {
 	// abrupt ctx cancellation. The deferred wg.Wait runs AFTER
 	// the for-select loop exits, so the replayer sees ctx.Done()
 	// at the same instant the loop does.
+	//
+	// Wrapped in lifecycle.SafeRun so a panic in Replay logs +
+	// exits the goroutine cleanly without crashing the supervisor.
+	// Replay is best-effort — boot replay failure is logged but
+	// not fatal; the steady-state drain loop catches up later.
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	if s.replayer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		lifecycle.SafeRunInWG(ctx, &wg, "sequencer-replay", s.logger, nil, func() error {
 			if err := s.replayer.Replay(ctx); err != nil &&
 				!errors.Is(err, context.Canceled) &&
 				!errors.Is(err, context.DeadlineExceeded) {
 				s.logger.Error("sequencer: boot replay failed",
 					"error", err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	// First drain immediately on Run start so a freshly-booted

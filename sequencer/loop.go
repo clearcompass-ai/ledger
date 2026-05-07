@@ -63,6 +63,7 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/escrow"
 	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -102,7 +103,15 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			s.processOne(ctx, hash)
+			// Per-entry panic recovery. A bug in processOne for
+			// one entry must not crash the binary; log + continue.
+			// processOne already handles per-entry errors internally
+			// (MarkRetry / MarkManual), so the SafeRun branch only
+			// fires on a panic, not on a normal error path.
+			_ = lifecycle.SafeRun(ctx, "sequencer-process-entry", s.logger, nil, func() error {
+				s.processOne(ctx, hash)
+				return nil
+			})
 		}()
 		return nil
 	})
@@ -168,7 +177,7 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 
 	// Step 4: Tessera AppendLeaf — antispam-idempotent under
 	// retries.
-	seq, err := s.tessera.AppendLeaf(hash[:])
+	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
 	if err != nil {
 		s.handleEntryError(ctx, hash, "tessera AppendLeaf", err)
 		return

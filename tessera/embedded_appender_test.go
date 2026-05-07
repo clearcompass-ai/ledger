@@ -142,15 +142,15 @@ func TestEmbeddedAppender_AppendLeaf_RejectsWrongSize(t *testing.T) {
 	app, _, _ := newTestEmbeddedAppender(t)
 
 	// 0 bytes
-	if _, err := app.AppendLeaf(nil); err == nil {
+	if _, err := app.AppendLeaf(context.Background(), nil); err == nil {
 		t.Error("expected error on nil input")
 	}
 	// 31 bytes (one short)
-	if _, err := app.AppendLeaf(make([]byte, 31)); err == nil {
+	if _, err := app.AppendLeaf(context.Background(), make([]byte, 31)); err == nil {
 		t.Error("expected error on 31-byte input")
 	}
 	// 33 bytes (one over)
-	if _, err := app.AppendLeaf(make([]byte, 33)); err == nil {
+	if _, err := app.AppendLeaf(context.Background(), make([]byte, 33)); err == nil {
 		t.Error("expected error on 33-byte input")
 	}
 }
@@ -198,7 +198,7 @@ func TestEmbeddedAppender_AppendLeaf_AssignsMonotonicIndices(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		var hash [32]byte
 		hash[0] = byte(i + 1) // distinct, non-zero
-		idx, err := app.AppendLeaf(hash[:])
+		idx, err := app.AppendLeaf(context.Background(), hash[:])
 		if err != nil {
 			t.Fatalf("AppendLeaf #%d: %v", i, err)
 		}
@@ -221,7 +221,7 @@ func TestEmbeddedAppender_AddThenHead_RoundTrip(t *testing.T) {
 	if _, err := rand.Read(entryHash[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	idx, err := app.AppendLeaf(entryHash[:])
+	idx, err := app.AppendLeaf(context.Background(), entryHash[:])
 	if err != nil {
 		t.Fatalf("AppendLeaf: %v", err)
 	}
@@ -280,11 +280,11 @@ func TestEmbeddedAppender_AppendLeaf_DuplicateHashGetsDistinctIndices(t *testing
 
 	hash := sha256.Sum256([]byte("identical input"))
 
-	idx1, err := app.AppendLeaf(hash[:])
+	idx1, err := app.AppendLeaf(context.Background(), hash[:])
 	if err != nil {
 		t.Fatalf("AppendLeaf #1: %v", err)
 	}
-	idx2, err := app.AppendLeaf(hash[:])
+	idx2, err := app.AppendLeaf(context.Background(), hash[:])
 	if err != nil {
 		t.Fatalf("AppendLeaf #2: %v", err)
 	}

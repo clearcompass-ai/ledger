@@ -119,7 +119,7 @@ func DefaultLoopConfig(logDID string) LoopConfig {
 // Full entry bytes (canonical + signature envelope) stay in the ledger's
 // own storage. Tessera never sees them.
 type MerkleAppender interface {
-	AppendLeaf(data []byte) (uint64, error)
+	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 	Head() (types.TreeHead, error)
 }
 
@@ -423,7 +423,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 					"seq", ewm.Position.Sequence, "error", idErr)
 				continue
 			}
-			if _, appendErr := bl.merkle.AppendLeaf(identity[:]); appendErr != nil {
+			if _, appendErr := bl.merkle.AppendLeaf(ctx, identity[:]); appendErr != nil {
 				bl.logger.Error("Tessera append failed",
 					"seq", ewm.Position.Sequence, "error", appendErr)
 			}

@@ -12,7 +12,8 @@ SDK_MODULE  := github.com/clearcompass-ai/attesta
 
 .PHONY: build test test-short audit-sdk vet tidy clean help \
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
-        integration-up integration-down integration-logs integration-status
+        integration-up integration-down integration-logs integration-status \
+        integration-gcs-tile
 
 DEV_COMPOSE := docker compose -f scripts/local/docker-compose.dev.yml
 INT_COMPOSE := docker compose -f scripts/local/docker-compose.integration.yml
@@ -167,3 +168,31 @@ integration-logs: ## Tail logs from both ledger nodes (integration topology)
 
 integration-status: ## Show service status (integration topology)
 	$(INT_COMPOSE) ps
+
+# ─── GCS tile-serving integration (REAL GCS only) ──────────────────────
+#
+# Real-GCS tests for bytestore.GCSTiles (the c2sp.org/tlog-tiles read
+# backend behind /checkpoint and /tile/...). Build-tag-isolated so a
+# default `go test ./...` never invokes them — these tests upload
+# 16-MiB+ payloads and exercise concurrent reads at 1000-way fan-out.
+#
+# Required env:
+#   ATTESTA_TEST_GCS_BUCKET=<your-test-bucket>
+#   GOOGLE_APPLICATION_CREDENTIALS=<path-to-sa-key.json>
+#
+# Costs: <$0.10 per run (mostly egress on the concurrent-read fan-out).
+# t.Cleanup deletes every object under each test's prefix at end.
+
+integration-gcs-tile: ## Run REAL-GCS tile-serving integration tests (requires bucket + ADC)
+	@if [ -z "$$ATTESTA_TEST_GCS_BUCKET" ]; then \
+	  echo "FAIL: ATTESTA_TEST_GCS_BUCKET unset — set to a real bucket your ADC can write"; \
+	  exit 1; \
+	fi
+	@if [ -z "$$GOOGLE_APPLICATION_CREDENTIALS" ] && \
+	    [ ! -f "$$HOME/.config/gcloud/application_default_credentials.json" ]; then \
+	  echo "FAIL: no ADC found — run 'gcloud auth application-default login'"; \
+	  echo "      or export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json"; \
+	  exit 1; \
+	fi
+	$(GO) test -tags=gcs_integration ./bytestore/ \
+	    -run TestGCSTilesIntegration -v -count=1 -timeout 10m

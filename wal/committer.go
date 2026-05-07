@@ -53,6 +53,8 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
+
+	"github.com/clearcompass-ai/ledger/lifecycle"
 )
 
 // CommitterConfig configures NewCommitter.
@@ -134,7 +136,17 @@ func NewCommitter(db *badger.DB, cfg CommitterConfig) *Committer {
 		closing: make(chan struct{}),
 		closed:  make(chan struct{}),
 	}
-	go c.commitLoop()
+	// commitLoop wrapped in SafeRun so a panic during group commit
+	// is logged + the goroutine exits cleanly. The deferred
+	// close(c.closed) inside commitLoop fires on panic-return so
+	// future Submit calls see "closed" and return errClosed; in-
+	// flight submitters waiting on s.done unblock via ctx.
+	go func() {
+		_ = lifecycle.SafeRun(context.Background(), "wal-committer", c.logger, nil, func() error {
+			c.commitLoop()
+			return nil
+		})
+	}()
 	return c
 }
 

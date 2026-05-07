@@ -91,6 +91,7 @@ import (
 
 	"github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/tessera"
 )
@@ -223,32 +224,37 @@ func main() {
 	)
 
 	// ── Idle watchdog: exit when entries counter stops advancing. ────
+	// SafeRun protects the watchdog from any panic in bl.Stats —
+	// rebuild-tiles is a one-shot tool, no fatal channel; a watchdog
+	// panic just stops the auto-shutdown path, the operator can SIGINT.
 	go func() {
-		lastSeenEntries := int64(-1)
-		lastAdvanced := time.Now()
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, entries, _ := bl.Stats()
-				if entries != lastSeenEntries {
-					lastSeenEntries = entries
-					lastAdvanced = time.Now()
-					continue
-				}
-				if time.Since(lastAdvanced) >= *idleShutdownAfter {
-					logger.Info("idle shutdown threshold reached",
-						"total_entries", entries,
-						"idle_for", time.Since(lastAdvanced),
-					)
-					cancel()
-					return
+		_ = lifecycle.SafeRun(ctx, "rebuild-watchdog", logger, nil, func() error {
+			lastSeenEntries := int64(-1)
+			lastAdvanced := time.Now()
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					_, entries, _ := bl.Stats()
+					if entries != lastSeenEntries {
+						lastSeenEntries = entries
+						lastAdvanced = time.Now()
+						continue
+					}
+					if time.Since(lastAdvanced) >= *idleShutdownAfter {
+						logger.Info("idle shutdown threshold reached",
+							"total_entries", entries,
+							"idle_for", time.Since(lastAdvanced),
+						)
+						cancel()
+						return nil
+					}
 				}
 			}
-		}
+		})
 	}()
 
 	if err := bl.Run(ctx); err != nil {

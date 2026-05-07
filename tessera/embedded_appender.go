@@ -240,16 +240,15 @@ func NewEmbeddedAppender(
 //
 // Returns the assigned sequence number on success. Errors
 // surface verbatim from upstream Tessera.
-func (e *EmbeddedAppender) AppendLeaf(data []byte) (uint64, error) {
+//
+// L4 — caller-supplied ctx threads through to Tessera's Add()
+// so a sequencer drain that hits SIGTERM mid-batch cancels the
+// in-flight integration future cleanly.
+func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64, error) {
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/embedded: AppendLeaf requires exactly 32 bytes, got %d", len(data))
 	}
-	// Background context: the upstream future will resolve when
-	// Tessera's batcher includes this entry in its next
-	// integration cycle. Caller-supplied ctx would be safe to
-	// thread here, but the ledger's call site (builder/loop.go)
-	// doesn't currently. Adding it later is a one-line change.
-	idx, err := e.appender.Add(context.Background(), uptessera.NewEntry(data))()
+	idx, err := e.appender.Add(ctx, uptessera.NewEntry(data))()
 	if err != nil {
 		return 0, fmt.Errorf("tessera/embedded: Add: %w", err)
 	}
@@ -368,7 +367,7 @@ func NewReadOnlyAppender(backend *POSIXTileBackend) *ReadOnlyAppender {
 }
 
 // AppendLeaf always returns ErrReadOnly. The reader never writes.
-func (r *ReadOnlyAppender) AppendLeaf(_ []byte) (uint64, error) {
+func (r *ReadOnlyAppender) AppendLeaf(_ context.Context, _ []byte) (uint64, error) {
 	return 0, ErrReadOnly
 }
 
