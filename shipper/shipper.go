@@ -117,6 +117,23 @@ type Shipper struct {
 
 	completion chan uint64 // worker → hwmAdvancer
 	metrics Metrics
+
+	// inflight tracks seqs currently between scan dispatch and
+	// shipOne return. Without this guard, scan ticks at PollInterval
+	// (default 1s) plus shipOne latency (hundreds of ms with real
+	// GCS) lets the same StateSequenced seq fan out to multiple
+	// workers. The state machine + bytestore are idempotent, so
+	// correctness survives, but the racing wastes GCS quota
+	// (per-object 429s when two workers WriteEntry the same key
+	// within 1s) and inflates SRE error counters (Badger MVCC
+	// conflicts on MarkShipped). Validation surface lives in
+	// metrics.skippedInflight.
+	//
+	// Process-local set is sufficient: the WAL builder advisory
+	// lock already enforces single-writer semantics on the WAL,
+	// so no other process can be running its own scanner against
+	// the same WAL.
+	inflight sync.Map // seq → struct{}{}
 }
 
 // NewShipper wires the pipeline. Both wal and bytestore are
@@ -248,14 +265,30 @@ func (s *Shipper) scanAndDispatch(ctx context.Context, workCh chan<- wal.Sequenc
 			}
 		}
 
+		// In-flight dedupe: skip seqs that are already enqueued
+		// to a worker but not yet completed. Prevents the racing-
+		// scan-window pathology — without this guard, the same
+		// StateSequenced seq would be dispatched to multiple
+		// workers when shipOne latency exceeds the scan interval,
+		// causing per-object GCS 429s and Badger MVCC conflicts
+		// on MarkShipped.
+		if _, loaded := s.inflight.LoadOrStore(e.Seq, struct{}{}); loaded {
+			s.metrics.skippedInflight.Add(1)
+			return nil
+		}
+
 		select {
 		case workCh <- e:
 			dispatched++
 		case <-ctx.Done():
+			s.inflight.Delete(e.Seq)
 			return ctx.Err()
 		default:
-			// Worker channel full; stop scanning, the next
-			// tick will resume from the same fromSeq.
+			// Worker channel full; release the in-flight slot so
+			// the next scan tick can re-dispatch (we never made
+			// it to a worker), then stop scanning. The next tick
+			// resumes from the same fromSeq.
+			s.inflight.Delete(e.Seq)
 			return iterStop
 		}
 		return nil
@@ -290,6 +323,15 @@ func (s *Shipper) worker(ctx context.Context, workCh <-chan wal.SequencedEntry, 
 // fans into MarkShipped + completion-channel signal for the HWM
 // advancer.
 func (s *Shipper) shipOne(ctx context.Context, e wal.SequencedEntry) {
+	// Always release the in-flight reservation, regardless of
+	// outcome. On success: the next IterateSequenced won't yield
+	// this seq (state is now StateShipped), so re-dispatch is
+	// impossible. On failure: scanAndDispatch's existing backoff
+	// filter (meta.LastErrTs + backoffFor(Attempts)) gates re-
+	// dispatch timing; the in-flight set's only job was to keep
+	// concurrent scan ticks from racing the same in-flight worker.
+	defer s.inflight.Delete(e.Seq)
+
 	if err := ctx.Err(); err != nil {
 		return
 	}
@@ -320,6 +362,19 @@ func (s *Shipper) shipOne(ctx context.Context, e wal.SequencedEntry) {
 	}
 
 	s.metrics.shipped.Add(1)
+	// Distinct-seq tally. Concurrent scans + 16 workers race the
+	// MarkShipped commit window, so the same seq can fan out to
+	// multiple workers and increment `shipped` more than once
+	// (MarkShipped is idempotent on StateShipped → nil). The
+	// LoadOrStore here gates the per-seq counter so the snapshot
+	// surfaces both metrics, exposing the amplification factor
+	// without affecting the no-error fast path.
+	if _, loaded := s.metrics.shippedSeen.LoadOrStore(e.Seq, struct{}{}); !loaded {
+		s.metrics.uniqueShipped.Add(1)
+	} else {
+		s.logger.Debug("shipper: ship-complete (duplicate)",
+			"seq", e.Seq, "hash", fmt.Sprintf("%x", e.Hash[:8]))
+	}
 	s.metrics.shipLatencyNanos.Add(time.Since(start).Nanoseconds())
 	s.metrics.shipLatencySamples.Add(1)
 

@@ -264,7 +264,7 @@ func (s *S3) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, 
 	})
 	if err != nil {
 		if isS3NotFound(err) {
-			return nil, fmt.Errorf("bytestore/s3: seq=%d hash=%x: %w (s3: %v)", seq, hash[:8], ErrNotFound, err)
+			return nil, fmt.Errorf("bytestore/s3: seq=%d hash=%x: %w (s3: %w)", seq, hash[:8], ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("bytestore/s3: GetObject seq=%d: %w", seq, err)
 	}

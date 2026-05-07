@@ -23,10 +23,17 @@
 #                                 auto-provisioned via Docker (see above).
 #
 # Optional knobs (env, with defaults):
-#   ATTESTA_SOAK_ENTRIES          1000000   total entries to submit
-#   ATTESTA_SOAK_CONCURRENCY      8         concurrent submitter goroutines
-#   ATTESTA_SOAK_VERIFY_SAMPLES   100       random subset to verify via /raw
-#   ATTESTA_SOAK_P99_BOUND_MS     100       admission p99 ceiling
+#   ATTESTA_SOAK_ENTRIES                1000000  total entries to submit
+#   ATTESTA_SOAK_CONCURRENCY            8        concurrent submitter goroutines
+#   ATTESTA_SOAK_VERIFY_SAMPLES         100      random subset to verify via /raw
+#   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
+#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel GCS uploads — bump for
+#                                                higher-volume soaks (drain rate
+#                                                ≈ MaxInFlight / per-upload-latency)
+#   ATTESTA_SOAK_DRAIN_TIMEOUT          10m      in-test wait for WAL HWM to
+#                                                catch up to submitted count
+#   ATTESTA_SOAK_TEST_TIMEOUT           30m      go test process ceiling
+#                                                (must be > submission + drain)
 #
 # Usage (auto-provisioned Postgres):
 #   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
@@ -127,6 +134,15 @@ ENTRIES="${ATTESTA_SOAK_ENTRIES:-1000000}"
 CONCURRENCY="${ATTESTA_SOAK_CONCURRENCY:-8}"
 SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
 P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
+SHIPPER_MAX_IN_FLIGHT="${ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT:-16}"
+DRAIN_TIMEOUT="${ATTESTA_SOAK_DRAIN_TIMEOUT:-10m}"
+TEST_TIMEOUT="${ATTESTA_SOAK_TEST_TIMEOUT:-30m}"
+
+# Both knobs are surfaced as env vars so the test process can pick
+# them up via os.Getenv. Re-export to be safe even if the caller
+# only set them in the script's local scope.
+export ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT="${SHIPPER_MAX_IN_FLIGHT}"
+export ATTESTA_SOAK_DRAIN_TIMEOUT="${DRAIN_TIMEOUT}"
 
 if [ "${PROVISIONED_PG}" -eq 1 ]; then
     DSN_SOURCE="docker (auto-provisioned)"
@@ -135,23 +151,26 @@ else
 fi
 
 echo "== attesta ledger soak =="
-echo "   dsn source:   ${DSN_SOURCE}"
-echo "   bucket:       ${ATTESTA_TEST_GCS_BUCKET}"
-echo "   creds:        ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
-echo "   entries:      ${ENTRIES}"
-echo "   concurrency:  ${CONCURRENCY}"
-echo "   verify:       ${SAMPLES}"
-echo "   p99 bound ms: ${P99_BOUND_MS}"
+echo "   dsn source:        ${DSN_SOURCE}"
+echo "   bucket:            ${ATTESTA_TEST_GCS_BUCKET}"
+echo "   creds:             ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
+echo "   entries:           ${ENTRIES}"
+echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
+echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel GCS uploads)"
+echo "   verify:            ${SAMPLES}"
+echo "   p99 bound ms:      ${P99_BOUND_MS}"
+echo "   drain timeout:     ${DRAIN_TIMEOUT}        (in-test wait for HWM)"
+echo "   test timeout:      ${TEST_TIMEOUT}        (go test process ceiling)"
 echo
 
 START_NS=$(date +%s%N)
 
-# 30m ceiling — at 1M entries × 8 workers we expect ~3 min, but a slow
-# bytestore drain at the end can extend the wall clock. The test's own
-# drainTimeout is 10m to bound the worst case.
+# Test process timeout. Should comfortably exceed expected
+# submission-time + drain-time. Defaults to 30m for the legacy 1M
+# soak; bump via ATTESTA_SOAK_TEST_TIMEOUT for higher-volume runs.
 go test -tags=soak \
     -count=1 \
-    -timeout 30m \
+    -timeout "${TEST_TIMEOUT}" \
     -v \
     -run 'TestSoak' \
     ./tests/
