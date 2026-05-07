@@ -6,10 +6,10 @@ DESCRIPTION:
     Public-URL composition for transparency-log-style deployments
     where the bytestore bucket is anonymous-read.
 
-    This is the credential-free alternative to bytestore.Presigner.
-    Where Presigner issues a time-bounded V4-signed URL (suitable
-    for private buckets), PublicURLer returns a deterministic URL
-    that any third party can GET without auth.
+    PublicURLer is the architecture's only read-side URL surface.
+    It returns a deterministic, credential-free URL that any third
+    party can GET without auth — the only model compatible with
+    public verifiability (RFC 9162, c2sp.org/tlog-tiles).
 
 ARCHITECTURE — TRANSPARENCY-LOG CONVENTION:
 
@@ -64,18 +64,10 @@ INVARIANTS (every implementation MUST satisfy):
 
 EXTENSIBILITY:
 
-    PublicURLer is a separate interface from Backend (Store +
-    Presigner). Backends without a public-URL convention (memory,
-    encryption-at-rest variants, future opaque blob stores) are
-    NOT forced to implement it. The 302 handler does a runtime
-    type assertion:
-
-      if pub, ok := backend.(PublicURLer); ok && bucketIsPublic {
-          ...
-      }
-
-    and falls back to Presigner. This is the standard Go
-    interface-extension idiom (cf. io.WriterTo, fs.ReadFileFS).
+    PublicURLer is part of Backend (Store + PublicURLer). Every
+    production backend implements it. Test/dev backends that don't
+    need URL emission (memory) satisfy only Store and are gated
+    out of production wiring by the factory.
 
     To add a new public-URL backend (Cloudflare R2 with a
     custom-domain CDN, IPFS gateway, etc.), implement PublicURL
@@ -101,10 +93,10 @@ import (
 	"strings"
 )
 
-// ErrPublicURLNotConfigured is returned by PublicURL when the
-// backend has no public-URL convention OR when no base URL was
-// configured. The 302 handler uses this as the signal to fall
-// back to Presigner.
+// ErrPublicURLNotConfigured is returned by PublicURL when no base
+// URL was configured for the backend. The 302 handler treats this
+// as a misconfiguration and returns 500 — the architecture has
+// no private-bucket fallback (see file header).
 var ErrPublicURLNotConfigured = errors.New(
 	"bytestore: public URL not configured (set Config.PublicBaseURL " +
 		"or use a backend with a default base URL)")
@@ -115,8 +107,8 @@ var ErrPublicURLNotConfigured = errors.New(
 // (see file header for full invariants).
 //
 // Returns ErrPublicURLNotConfigured when the backend has no
-// configured base URL — the caller (api 302 handler) falls back
-// to Presigner.
+// configured base URL — fail-closed; misconfiguration surfaces
+// loudly rather than silently degrading to credentialed URLs.
 type PublicURLer interface {
 	PublicURL(seq uint64, hash [32]byte) (string, error)
 }
@@ -161,7 +153,8 @@ func (m *publicURLMapper) PublicURL(seq uint64, hash [32]byte) (string, error) {
 // Pre-condition for use: the bucket must have IAM
 // `allUsers: roles/storage.objectViewer` granted (or equivalent
 // public-read configuration). If the bucket is private, this URL
-// will return 403 — fall back to PresignGet.
+// will return 403 — the operator MUST fix the bucket policy
+// (the architecture has no private-bucket read path).
 func DefaultGCSPublicBaseURL(bucket string) string {
 	return "https://storage.googleapis.com/" + bucket
 }

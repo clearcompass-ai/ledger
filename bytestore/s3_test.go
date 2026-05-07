@@ -18,7 +18,6 @@ Coverage mirrors gcs_test.go so the two adapters stay at parity:
   - Empty wire bytes rejected.
   - Concurrent writers (interface goroutine-safety pin).
   - Custom ObjectPrefix isolates two stores in the same bucket.
-  - PresignGet returns a URL whose HTTP GET fetches the bytes.
 
 Env vars:
 
@@ -44,8 +43,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"sync"
 	"testing"
@@ -424,48 +421,10 @@ func TestS3_ConcurrentWriters(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// PresignGet — SigV4 presigned URL fetches the bytes
+// PublicURL fetch coverage lives in conformance_test.go
+// (TestConformance_S3_Container, TestConformance_S3_Real). The
+// structural composition is pinned in bytestore/publicurl_test.go.
 // ─────────────────────────────────────────────────────────────────
-
-// TestS3_PresignGet_FetchesBytes proves the 302-redirect path: the
-// URL returned by PresignGet is fetchable via plain HTTP GET and
-// returns the same bytes WriteEntry stored. Works against RustFS
-// AND real AWS S3 — SigV4 is byte-identical across them.
-func TestS3_PresignGet_FetchesBytes(t *testing.T) {
-	ctx := context.Background()
-	store := requireS3(t)
-
-	wire := []byte("presign me — fetch by URL not by SDK")
-	hash := sha256.Sum256(wire)
-	if err := store.WriteEntry(ctx, 100, hash, wire); err != nil {
-		t.Fatalf("WriteEntry: %v", err)
-	}
-
-	url, err := store.PresignGet(ctx, 100, hash, 5*time.Minute)
-	if err != nil {
-		t.Fatalf("PresignGet: %v", err)
-	}
-	if url == "" {
-		t.Fatal("PresignGet returned empty URL")
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("HTTP GET %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("HTTP status: %d %s\nbody: %s", resp.StatusCode, resp.Status, body)
-	}
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if !bytes.Equal(got, wire) {
-		t.Fatalf("presigned GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────
 // Cross-adapter interop: GCS writes, S3 reads (and vice versa)

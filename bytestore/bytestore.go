@@ -45,13 +45,14 @@ OBJECT KEY SHAPE:
 INTERFACE SURFACE:
   - Reader: ReadEntry, ReadEntryBatch — opaque byte fetch
   - Writer: WriteEntry — opaque byte write
-  - Presigner: PresignGet — issue a time-bounded GET URL
+  - PublicURLer: PublicURL — credential-free monitor URL
+                 (transparency-log convention; see publicurl.go)
   - Store = Reader + Writer (test/dev impls satisfy this)
-  - Backend = Store + Presigner (production impls satisfy this)
+  - Backend = Store + PublicURLer (production impls satisfy this)
 
 DEPENDENCIES:
   - api/submission.go: writes via Writer.WriteEntry.
-  - api/entries.go: 302 redirect via Presigner.PresignGet for
+  - api/entries.go: 302 redirect to PublicURLer.PublicURL for
     shipped entries; inline serve via Reader for un-shipped.
   - store/entries.go + store/indexes/query_api.go: read via Reader.
   - shipper/: writes via Writer; reads via WAL (this package only
@@ -63,13 +64,13 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"time"
 )
 
 // EntryRef pairs a sequence number with the entry's identity hash
 // (envelope.EntryIdentity = SHA-256 of canonical bytes). Both are
-// required to construct the storage key and (for presigned URLs)
-// to let consumers verify the URL points at the promised bytes.
+// required to construct the storage key and to let consumers
+// statically verify the URL points at the promised bytes before
+// fetching.
 type EntryRef struct {
 	Seq uint64
 	Hash [32]byte
@@ -98,36 +99,29 @@ type Writer interface {
 	WriteEntry(ctx context.Context, seq uint64, hash [32]byte, wireBytes []byte) error
 }
 
-// Presigner issues a time-bounded URL that grants HTTP GET access
-// to a single entry's bytes. Used by api/entries.go for the 302
-// redirect path: the ledger avoids proxying 1MB payloads inline
-// for shipped entries.
-//
-// The returned URL embeds the bucket-side path, which contains the
-// hash — consumers MAY verify the URL shape matches the metadata
-// before fetching, and MUST verify the fetched bytes hash to the
-// promised value.
-//
-// ttl bounds the URL's validity window. Implementations clamp to
-// the underlying provider's max (GCS V4 caps at 7 days; AWS S3
-// SigV4 caps at 7 days).
-type Presigner interface {
-	PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error)
-}
-
 // Store is the union of Reader + Writer. Test/dev implementations
 // satisfy this (Memory). Production implementations also satisfy
-// Backend (Store + Presigner).
+// Backend (Store + PublicURLer).
 type Store interface {
 	Reader
 	Writer
 }
 
-// Backend is what production wiring depends on: full Store + URL
-// signing for the read path's 302 redirect.
+// Backend is what production wiring depends on: full Store + a
+// credential-free monitor URL composer for the read path's 302
+// redirect.
+//
+// The 302 path serves a transparency-log architecture: tile and
+// entry buckets are anonymous-read by design (RFC 9162,
+// c2sp.org/tlog-tiles). Anyone — witness, auditor, third-party
+// monitor — can fetch entries directly via the public URL.
+// Presigning would be over-credentialed for public buckets and
+// architecturally wrong for transparency mode.
+//
+// PublicURLer lives in publicurl.go.
 type Backend interface {
 	Store
-	Presigner
+	PublicURLer
 }
 
 // layoutKey returns the canonical object name for an entry. ALL

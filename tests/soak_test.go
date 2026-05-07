@@ -249,13 +249,13 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
-		WAL: walc, Presigner: backend, LogDID: testLogDID, Logger: logger,
-		// Transparency-log convention: bucket is anonymous-read,
-		// 302 handler returns credential-free URLs. The soak's
-		// verify pass HARD-ASSERTS no signature query params,
-		// catching any silent fallback to presigned URLs.
-		PublicURLer:  backend.(api.PublicURLer),
-		BucketPublic: true,
+		WAL: walc, LogDID: testLogDID, Logger: logger,
+		// Transparency-log convention (RFC 9162, c2sp.org/tlog-tiles):
+		// the architecture has only one read path — bucket is
+		// anonymous-read, 302 handler returns credential-free URLs.
+		// The soak's verify pass HARD-ASSERTS no signature query
+		// params, catching any regression that injects credentials.
+		PublicURLer: backend.(api.PublicURLer),
 	}
 
 	handlers := api.Handlers{
@@ -693,27 +693,17 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 
 		// Transparency-log invariant: Location MUST be a credential-
 		// free URL — no V4-signature query params, no presign tokens.
-		// Catches a silent regression where the operator falls back
-		// from PublicURLer to Presigner. See bytestore/publicurl.go
-		// for the architectural rationale (CT-log convention,
-		// RFC 9162, c2sp.org/tlog-tiles).
+		// The architecture has only one read path (RFC 9162,
+		// c2sp.org/tlog-tiles); this assertion catches any regression
+		// that re-introduces credentialed URLs (presign, SigV4, etc.).
 		switch {
 		case strings.Contains(loc, "X-Goog-Signature="):
-			t.Errorf("verify[%d/%d] seq=%d: Location is GCS-presigned (BucketPublic=true should issue public URL): %s",
+			t.Errorf("verify[%d/%d] seq=%d: Location carries GCS V4-signature (transparency-log architecture forbids credentialed URLs): %s",
 				i, len(results), seq, loc)
 			continue
 		case strings.Contains(loc, "X-Amz-Signature="):
-			t.Errorf("verify[%d/%d] seq=%d: Location is S3-presigned (BucketPublic=true should issue public URL): %s",
+			t.Errorf("verify[%d/%d] seq=%d: Location carries S3 V4-signature (transparency-log architecture forbids credentialed URLs): %s",
 				i, len(results), seq, loc)
-			continue
-		}
-		// Confirm the operator took the public-URL path (not the
-		// presigned fallback). X-Bytestore-URL is the new
-		// SRE-facing signal added alongside the existing X-Source
-		// (which stays "bytestore" for backward-compat).
-		if got := resp.Header.Get("X-Bytestore-URL"); got != "public" {
-			t.Errorf("verify[%d/%d] seq=%d: X-Bytestore-URL=%q; want public",
-				i, len(results), seq, got)
 			continue
 		}
 

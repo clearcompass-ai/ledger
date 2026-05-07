@@ -8,8 +8,8 @@ DESCRIPTION:
       1. URL composition matches the canonical CT-log shape
          (baseURL + "/" + layoutKey).
       2. Empty baseURL returns ErrPublicURLNotConfigured (the
-         api 302 handler relies on this signal to fall back to
-         Presigner).
+         api 302 handler treats this as a misconfiguration and
+         returns 500 — there is no private-bucket fallback).
       3. Default-URL helpers produce the documented prefixes for
          GCS, S3 path-style, and S3 virtual-host modes.
       4. Trailing slashes on the configured baseURL are
@@ -85,7 +85,7 @@ func TestPublicURLMapper_AlignsWithLayoutKey(t *testing.T) {
 // -------------------------------------------------------------------
 
 // TestPublicURLMapper_EmptyBaseURLSignalsNotConfigured pins the
-// fallback signal the api 302 handler uses to switch to Presigner.
+// not-configured signal the api 302 handler treats as a 500.
 func TestPublicURLMapper_EmptyBaseURLSignalsNotConfigured(t *testing.T) {
 	m := newPublicURLMapper("", "entries")
 	hash := sha256.Sum256([]byte("x"))

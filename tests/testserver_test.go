@@ -211,13 +211,13 @@ func startTestOperator(t *testing.T) *testOperator {
 		EntryStore: entryStore,
 		WAL:        walc,
 		// Tests don't exercise the 302 redirect path; the in-memory
-		// bytestore is reachable but doesn't presign. Setting
-		// Presigner to nil makes the handler return 500 if it hits
-		// the redirect branch — desirable for tests, since any
+		// bytestore is not a Backend (no PublicURLer). Setting
+		// PublicURLer to nil makes the handler return 500 if it
+		// hits the redirect branch — desirable for tests, since any
 		// redirect attempt indicates an unexpected state transition.
-		Presigner: nil,
-		LogDID:    testLogDID,
-		Logger:    logger,
+		PublicURLer: nil,
+		LogDID:      testLogDID,
+		Logger:      logger,
 	}
 	commitDeps := &api.DerivationCommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,

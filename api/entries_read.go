@@ -23,9 +23,11 @@ THE 302 ROUTE — design summary:
 	re-streams to the consumer. At 10B+ entries × ~1 MB each, this is
 	petabytes of pointless re-transfer. The 302 redirect cuts the
 	ledger out of the byte path entirely: the consumer's HTTP client
-	follows Location: <presigned URL> and fetches directly from the
-	byte store, validated by SigV4 / V4 signatures bound to the
-	hash-suffixed key.
+	follows Location: <public URL> and fetches directly from the
+	byte store. The transparency-log convention (RFC 9162,
+	c2sp.org/tlog-tiles) makes the bucket anonymous-read by design;
+	the hash-suffixed key shape lets consumers statically verify the
+	URL points at the promised bytes before fetching.
 
 	Routing decision matrix (computed inside the handler):
 
@@ -35,10 +37,10 @@ THE 302 ROUTE — design summary:
 	  row at seq StateSequenced 200 + wal.Read
 	  row at seq StateManual 200 + wal.Read
 	  row at seq StatePending 200 + wal.Read *defensive*
-	  row at seq StateShipped 302 + presigned
-	  row at seq wal.ErrNotFound 302 + presigned *post-GC*
+	  row at seq StateShipped 302 + public URL
+	  row at seq wal.ErrNotFound 302 + public URL *post-GC*
 	  row at seq transport error 500
-	  no Presigner configured + StateShipped/post-GC 500 *misconfig*
+	  no PublicURLer configured + StateShipped/post-GC 500 *misconfig*
 
 	The handler is opaque to envelope structure — wire bytes go out
 	raw. Consumers feed the response body to envelope.Deserialize and
@@ -49,7 +51,7 @@ KEY ARCHITECTURAL DECISIONS:
     existing shape — backward-compatible for clients that only want
     the canonical_hash + log_time + signer_did.
   - Raw-bytes endpoint (NewRawEntryHandler) is the WAL-aware route.
-  - Decoupled WAL surface: EntryWALReader and Presigner are
+  - Decoupled WAL surface: EntryWALReader and PublicURLer are
     interfaces; *wal.Committer satisfies the former, *bytestore.GCS
     or *bytestore.S3 satisfy the latter.
 */
@@ -95,26 +97,16 @@ type SeqHashLookup interface {
 	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error)
 }
 
-// Presigner issues a time-bounded GET URL for a (seq, hash) tuple.
-// bytestore.GCS and bytestore.S3 both satisfy this. nil = no
-// redirect mode (the handler returns 500 when it would otherwise
-// have redirected, so misconfiguration surfaces loudly rather than
-// silently proxying through the WAL composite).
-type Presigner interface {
-	PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error)
-}
-
-// PublicURLer issues credential-free URLs for (seq, hash) tuples
-// when the bytestore bucket is anonymous-read (transparency-log
-// convention; see bytestore/publicurl.go).
+// PublicURLer issues credential-free URLs for (seq, hash) tuples.
+// The transparency-log architecture has only one read path: every
+// bucket is anonymous-read, every 302 returns a public URL, no
+// presigning, no expiry, no auth. See bytestore/publicurl.go for
+// the rationale (RFC 9162, c2sp.org/tlog-tiles).
 //
-// When EntryReadDeps.BucketPublic is true AND PublicURLer returns
-// a URL successfully, the handler 302s to that URL. When
-// PublicURLer returns ErrPublicURLNotConfigured (or BucketPublic
-// is false), the handler falls back to Presigner.
-//
-// bytestore.GCS and bytestore.S3 satisfy this when configured
-// with PublicBaseURL (or the default for that backend).
+// bytestore.GCS and bytestore.S3 both satisfy this; nil disables
+// the redirect path and the handler returns 500 on shipped
+// entries (fail-closed — misconfiguration surfaces loudly rather
+// than silently proxying through the WAL composite).
 type PublicURLer interface {
 	PublicURL(seq uint64, hash [32]byte) (string, error)
 }
@@ -125,24 +117,11 @@ type EntryReadDeps struct {
 	QueryAPI QueryAPI
 	EntryStore SeqHashLookup
 	WAL EntryWALReader
-	Presigner Presigner
-	// PublicURLer is the credential-free URL surface used when
-	// BucketPublic is true. nil disables the public path; the
-	// handler falls back to Presigner.
+	// PublicURLer composes the credential-free 302 target. Required
+	// for the redirect path; nil → 500 on shipped entries.
 	PublicURLer PublicURLer
-	// BucketPublic enables 302 redirects to credential-free URLs
-	// (transparency-log convention). When true, the handler tries
-	// PublicURLer first and falls back to Presigner only if
-	// PublicURLer returns ErrPublicURLNotConfigured.
-	BucketPublic bool
 	LogDID string
 	Logger *slog.Logger
-
-	// PresignTTL caps the lifetime of redirect URLs the handler
-	// issues via Presigner. Defaults to 1 hour. Capped at 7 days
-	// by the underlying adapter (V4 / SigV4 ceiling). Only used
-	// on the Presigner fallback path.
-	PresignTTL time.Duration
 }
 
 const maxBatchSize = 1000
@@ -236,11 +215,6 @@ func NewEntryBatchHandler(deps *EntryReadDeps) http.HandlerFunc {
 // NewRawEntryHandler creates GET /v1/entries/{sequence}/raw.
 // See file docblock for the routing decision matrix.
 func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
-	ttl := deps.PresignTTL
-	if ttl <= 0 {
-		ttl = 1 * time.Hour
-	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -283,7 +257,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		// retry against the writer or wait for the Shipper to
 		// migrate them.
 		if deps.WAL == nil {
-			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime)
 			return
 		}
 
@@ -292,7 +266,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			if errors.Is(metaErr, wal.ErrNotFound) {
 				// Post-GC: WAL has dropped the entry. The byte store
 				// is the only source of truth.
-				deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
+				deps.serveBytestoreRedirect(w, r, seq, hash, logTime)
 				return
 			}
 			deps.Logger.Error("raw entry: WAL meta probe",
@@ -308,7 +282,7 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			deps.serveWALInline(w, r, seq, hash, logTime)
 		case wal.StateShipped:
 			// Bytes have migrated to the byte store. Redirect.
-			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, ttl)
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime)
 		default:
 			deps.Logger.Error("raw entry: unknown WAL state",
 				"seq", seq, "state", meta.State)
@@ -343,8 +317,8 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 		// WAL had meta but lost the entry between probe and read —
 		// concurrent GC, in principle. Fall through to bytestore
 		// redirect if available; otherwise 500.
-		if errors.Is(err, wal.ErrNotFound) && deps.Presigner != nil {
-			deps.serveBytestoreRedirect(w, r, seq, hash, logTime, deps.PresignTTL)
+		if errors.Is(err, wal.ErrNotFound) && deps.PublicURLer != nil {
+			deps.serveBytestoreRedirect(w, r, seq, hash, logTime)
 			return
 		}
 		deps.Logger.Error("raw entry: WAL read", "seq", seq, "error", err)
@@ -359,72 +333,37 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 	_, _ = w.Write(wire)
 }
 
-// serveBytestoreRedirect issues a 302 to the byte store object.
+// serveBytestoreRedirect issues a 302 to the credential-free
+// public URL composed by PublicURLer (transparency-log
+// convention; see bytestore/publicurl.go).
 //
-// Routing (transparency-log architecture, see bytestore/publicurl.go):
-//
-//   1. If BucketPublic is true AND PublicURLer is configured, issue
-//      a credential-free public URL. CDN-cacheable, witness-fetchable,
-//      no expiry. This is the canonical CT-log behavior.
-//
-//   2. Otherwise, fall back to Presigner — V4-signed URL for private
-//      buckets. Time-bounded; not CDN-cacheable.
-//
-//   3. If neither path is configured, return 500 — silent fallback
-//      to inline streaming would defeat the egress-reduction purpose
-//      of the redirect.
+// There is exactly one read path. PublicURLer is required;
+// nil → 500. PublicURL returning an error → 500. The architecture
+// has no private-bucket fallback — buckets are anonymous-read by
+// design (RFC 9162, c2sp.org/tlog-tiles).
 func (deps *EntryReadDeps) serveBytestoreRedirect(
 	w http.ResponseWriter, r *http.Request,
-	seq uint64, hash [32]byte, logTime time.Time, ttl time.Duration,
+	seq uint64, hash [32]byte, logTime time.Time,
 ) {
-	// Public-URL path (transparency-log default).
-	if deps.BucketPublic && deps.PublicURLer != nil {
-		url, err := deps.PublicURLer.PublicURL(seq, hash)
-		if err == nil && url != "" {
-			w.Header().Set("Location", url)
-			setRawHeaders(w, seq, logTime)
-			w.Header().Set("X-Source", "bytestore")
-			// Distinguishes the public-URL path from the
-			// Presigner fallback for SRE diagnostics + soak
-			// regression assertions. Stable contract: existing
-			// X-Source: bytestore is unchanged for both paths.
-			w.Header().Set("X-Bytestore-URL", "public")
-			w.WriteHeader(http.StatusFound)
-			return
-		}
-		// PublicURL didn't resolve (ErrPublicURLNotConfigured or
-		// implementation defect). Fall through to Presigner —
-		// belt-and-suspenders so a config slip doesn't break the
-		// read path entirely.
-		deps.Logger.Warn("raw entry: public URL not available, falling back to presigner",
-			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]), "error", err)
-	}
-
-	// Presigner fallback (private-bucket path).
-	if deps.Presigner == nil {
-		deps.Logger.Error("raw entry: shipped entry but no Presigner configured",
+	if deps.PublicURLer == nil {
+		deps.Logger.Error("raw entry: shipped entry but no PublicURLer configured",
 			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]))
 		writeTypedError(r.Context(), w, apitypes.ErrorClassFetcherFailed,
 			http.StatusInternalServerError,
 			"byte store redirect not configured")
 		return
 	}
-	url, err := deps.Presigner.PresignGet(r.Context(), seq, hash, ttl)
-	if err != nil {
-		deps.Logger.Error("raw entry: PresignGet",
+	url, err := deps.PublicURLer.PublicURL(seq, hash)
+	if err != nil || url == "" {
+		deps.Logger.Error("raw entry: PublicURL",
 			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]), "error", err)
 		writeTypedError(r.Context(), w, apitypes.ErrorClassFetcherFailed,
-			http.StatusInternalServerError, "presign failed")
+			http.StatusInternalServerError, "public URL composition failed")
 		return
 	}
 	w.Header().Set("Location", url)
 	setRawHeaders(w, seq, logTime)
 	w.Header().Set("X-Source", "bytestore")
-	w.Header().Set("X-Bytestore-URL", "presigned")
-	// Cache-Control: private,max-age=<ttl-30s> would let the
-	// consumer's HTTP cache hold the URL for almost its lifetime
-	// without re-asking us. Skipped for now; commit 13 adds it
-	// alongside operational telemetry.
 	w.WriteHeader(http.StatusFound)
 }
 

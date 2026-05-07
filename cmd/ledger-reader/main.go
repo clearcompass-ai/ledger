@@ -186,10 +186,13 @@ func run(logger *slog.Logger) error {
 		// Read-only ledger has no WAL — the /raw handler degrades
 		// to "always 302 to byte store". Un-shipped entries surface
 		// as bytestore 404; consumers retry against the writer.
-		WAL:       nil,
-		Presigner: entryBytes,
-		LogDID:    cfg.LogDID,
-		Logger:    logger,
+		WAL: nil,
+		// PublicURLer is satisfied by bytestore.GCS/S3 (Backend
+		// embeds PublicURLer); type-assert here so this package
+		// doesn't depend on bytestore types directly.
+		PublicURLer: entryBytes.(api.PublicURLer),
+		LogDID:      cfg.LogDID,
+		Logger:      logger,
 	}
 	commitDeps := &api.DerivationCommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
