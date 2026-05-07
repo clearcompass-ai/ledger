@@ -1,29 +1,42 @@
 #!/bin/bash
 # scripts/run-local.sh
 #
-# Local-dev orchestrator. Brings up Postgres + fake-gcs, sets every
-# env var the ledger needs, and runs the ledger binary against
-# them. Designed to make the full local-dev loop a single command:
+# Local-dev orchestrator. Brings up Postgres (Docker), wires
+# REAL Google Cloud Storage (developer-owned bucket via ADC),
+# sets every env var the ledger needs, and runs the ledger
+# binary against them.
 #
-#   ./scripts/run-local.sh
+# REAL GCS is REQUIRED — not fake-gcs-server. Local dev must
+# exercise the same ADC + auth + retry + GCS-quirks code path
+# that production uses. "Works on fake-gcs but breaks on GCS"
+# is precisely the surprise we eliminate by always using the
+# real backend.
 #
-# In another terminal:
+# Prerequisites (one-time setup):
 #
-#   # Mode A
-#   go run ./cmd/seed-session -dsn "$LEDGER_DATABASE_URL" \
-#       -token tok-dev -credits 100
-#   go run ./cmd/submit-stamp -token tok-dev \
-#       -log-did "$LEDGER_LOG_DID"
+#   1. gcloud auth application-default login
+#   2. Create a bucket:  gcloud storage buckets create gs://<your-bucket>
+#   3. Export it before invoking this script:
+#        export LEDGER_BYTE_STORE_GCS_BUCKET=<your-bucket>
 #
-#   # Mode B (no setup)
+# Usage:
+#
+#   ./scripts/run-local.sh                # bring up + run
+#   ./scripts/run-local.sh clean          # wipe .run/ then run
+#   ./scripts/run-local.sh down           # tear down Docker infra
+#
+# Submit an entry from a second terminal:
+#
 #   go run ./cmd/submit-stamp -log-did "$LEDGER_LOG_DID"
 #
 # What this script wires:
 #
-#   * Postgres + fake-gcs via scripts/local/docker-compose.testharness.yml.
+#   * Postgres via scripts/local/docker-compose.testharness.yml
+#     (only the postgres service — fake-gcs is NOT used).
+#   * REAL GCS via the developer's bucket + ADC credentials.
 #   * .run/{wal,tessera,antispam} as ephemeral on-disk volumes
-#     (gitignored). Re-running keeps state across restarts; pass
-#     `clean` as the first arg to wipe them.
+#     (gitignored). `clean` wipes them; default re-runs preserve
+#     state.
 #   * Self-witness K=1 loopback: LEDGER_WITNESS_ENDPOINTS points
 #     at the ledger itself with QUORUM_K=1. The cosign endpoint
 #     is mounted (ephemeral witness key generated on boot) so the
@@ -32,12 +45,6 @@
 #   * Ephemeral signing keys (ledger entry signer, witness
 #     signer, Tessera checkpoint signer) — local-dev only; every
 #     restart produces fresh DIDs.
-#
-# Override anything via env before invoking. Defaults match the
-# integration docker-compose ports (Postgres on 5544, fake-gcs on
-# 4443) and the ledger's default :8080.
-#
-# Tear down infra:  ./scripts/run-local.sh down
 
 set -euo pipefail
 
@@ -58,37 +65,64 @@ esac
 
 cd "${REPO_ROOT}"
 
-# ── Infra ─────────────────────────────────────────────────────────
-echo "== bringing up postgres + fake-gcs + bucket-init =="
-docker compose -f "${COMPOSE_FILE}" up -d postgres fake-gcs bucket-init
+# ── Real-GCS preflight ────────────────────────────────────────────
+# Fail fast if the developer hasn't done the one-time GCS setup.
+# These checks mirror `make dev-preflight` (the production-shaped
+# multi-node compose) so single-node + multi-node bring-up share
+# the same surprise-free contract.
+if [ -z "${LEDGER_BYTE_STORE_GCS_BUCKET:-}" ]; then
+    cat <<'ERR' >&2
+
+== run-local.sh: missing LEDGER_BYTE_STORE_GCS_BUCKET ==
+
+Local dev requires REAL GCS — fake-gcs-server is no longer
+supported here because production uses real GCS auth + retry
+behavior, and local dev must exercise the same code paths.
+
+One-time setup:
+
+  1. gcloud auth application-default login
+  2. gcloud storage buckets create gs://<your-bucket>
+  3. export LEDGER_BYTE_STORE_GCS_BUCKET=<your-bucket>
+
+Then re-run ./scripts/run-local.sh.
+
+For the offline / air-gapped fake-gcs harness used by integration
+tests, see `make integration-up`.
+
+ERR
+    exit 1
+fi
+
+ADC_JSON="${HOME}/.config/gcloud/application_default_credentials.json"
+if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -f "${ADC_JSON}" ]; then
+    cat <<'ERR' >&2
+
+== run-local.sh: no Google Cloud ADC found ==
+
+Run one of:
+
+  gcloud auth application-default login
+    (writes ~/.config/gcloud/application_default_credentials.json)
+
+  export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+    (service-account key file path)
+
+Then re-run ./scripts/run-local.sh.
+
+ERR
+    exit 1
+fi
+
+# ── Infra (Postgres only) ─────────────────────────────────────────
+echo "== bringing up postgres =="
+docker compose -f "${COMPOSE_FILE}" up -d postgres
 
 # Wait for Postgres readiness via psql connection probe.
 echo "== waiting for postgres =="
 for i in $(seq 1 30); do
     if docker exec attesta_test_postgres pg_isready -U attesta -d attesta_test >/dev/null 2>&1; then
         echo "postgres ready (attempt ${i})"
-        break
-    fi
-    sleep 1
-done
-
-# Wait for fake-gcs healthcheck to flip green.
-echo "== waiting for fake-gcs =="
-for i in $(seq 1 30); do
-    health="$(docker inspect --format='{{.State.Health.Status}}' attesta_test_gcs 2>/dev/null || true)"
-    if [ "${health}" = "healthy" ]; then
-        echo "fake-gcs ready (attempt ${i})"
-        break
-    fi
-    sleep 1
-done
-
-# Wait for bucket-init to finish (it exits 0 on bucket creation).
-for i in $(seq 1 30); do
-    status="$(docker inspect --format='{{.State.Status}}' attesta_test_bucket_init 2>/dev/null || true)"
-    exitcode="$(docker inspect --format='{{.State.ExitCode}}' attesta_test_bucket_init 2>/dev/null || echo -1)"
-    if [ "${status}" = "exited" ] && [ "${exitcode}" = "0" ]; then
-        echo "bucket ready (attempt ${i})"
         break
     fi
     sleep 1
@@ -109,11 +143,16 @@ export LEDGER_WAL_PATH="${LEDGER_WAL_PATH:-${RUN_DIR}/wal}"
 export LEDGER_TESSERA_STORAGE_DIR="${LEDGER_TESSERA_STORAGE_DIR:-${RUN_DIR}/tessera}"
 export LEDGER_TESSERA_ANTISPAM_PATH="${LEDGER_TESSERA_ANTISPAM_PATH:-${RUN_DIR}/antispam}"
 
-# Bytestore — fake-gcs locally; the bucket bucket-init created.
-export LEDGER_BYTE_STORE_BACKEND="${LEDGER_BYTE_STORE_BACKEND:-gcs}"
-export LEDGER_BYTE_STORE_GCS_BUCKET="${LEDGER_BYTE_STORE_GCS_BUCKET:-attesta-tiles}"
-export LEDGER_BYTE_STORE_GCS_ENDPOINT="${LEDGER_BYTE_STORE_GCS_ENDPOINT:-http://localhost:4443/storage/v1/}"
-export LEDGER_BYTE_STORE_GCS_ANONYMOUS="${LEDGER_BYTE_STORE_GCS_ANONYMOUS:-true}"
+# Bytestore — REAL GCS. ADC handles auth; the bucket must already
+# exist and the ADC principal must have storage.objects.{create,
+# get, list, delete} on it.
+export LEDGER_BYTE_STORE_BACKEND="gcs"
+# LEDGER_BYTE_STORE_GCS_BUCKET — required, exported by caller.
+export LEDGER_BYTE_STORE_GCS_BUCKET
+# Endpoint + Anonymous explicitly UNSET so cloud.google.com/go/storage
+# falls through to ADC against storage.googleapis.com.
+unset LEDGER_BYTE_STORE_GCS_ENDPOINT
+unset LEDGER_BYTE_STORE_GCS_ANONYMOUS
 
 # HTTP listen — the witness self-loop below assumes this matches
 # LEDGER_WITNESS_ENDPOINTS.

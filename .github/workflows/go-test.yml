@@ -1,0 +1,62 @@
+# =============================================================================
+# FILE PATH:
+#     .github/workflows/go-test.yml
+#
+# DESCRIPTION:
+#     Build + unit tests + race detector + SDK mutation-gate audit.
+#     Merge gate. Mirrors transparency-dev/tessera + Boulder
+#     conventions.
+# =============================================================================
+name: go-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + vet + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7  # v5.0.1
+        with:
+          go-version-file: go.mod
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (-short, all packages)
+        run: go test -short -count=1 ./...
+
+      - name: SDK mutation-gate audit (audit-sdk)
+        run: make audit-sdk
+
+  race:
+    name: race detector (critical packages)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7  # v5.0.1
+        with:
+          go-version-file: go.mod
+
+      - name: race detector
+        run: make test-race
