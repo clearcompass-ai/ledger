@@ -43,6 +43,36 @@
 #                                                higher-volume soaks
 #   ATTESTA_SOAK_DRAIN_TIMEOUT          10m      in-test wait for WAL HWM
 #   ATTESTA_SOAK_TEST_TIMEOUT           30m      go test process ceiling
+#   ATTESTA_SOAK_KEEP_DATA              0/1      when set, the test does NOT
+#                                                cleanTables on teardown.
+#                                                The Postgres entry_index +
+#                                                bytestore objects survive
+#                                                the test exit so the operator
+#                                                can run their own SQL / S3
+#                                                queries afterwards. Default
+#                                                preserves prior behaviour
+#                                                (clean teardown).
+#
+# ── Post-test verification (now automated) ───────────────────────────
+# The soak test now runs three end-to-end evidence assertions before
+# returning, replacing the manual psql / aws-cli commands operators
+# used to run after every successful soak:
+#
+#   1. SELECT COUNT(*) FROM entry_index == submitted
+#   2. SELECT MIN(sequence), MAX(sequence) FROM entry_index spans
+#      [0, submitted-1] contiguously
+#   3. Every (seq, canonical_hash) tuple from PG is fetchable from
+#      the bytestore via Backend.ReadEntry — non-zero bytes for all
+#      N entries, parallelised across 64 workers.
+#
+# Failure on any of the three is a hard t.Fatalf — no quiet "PASS"
+# with hidden divergence between PG, bytestore, and submitted count.
+#
+# ── No auto-teardown ─────────────────────────────────────────────────
+# This script does NOT tear containers down on exit. The
+# operator's manual `docker exec` / `aws s3 ls` / `curl` commands
+# continue to work post-run. Tear down explicitly when done:
+#   ./scripts/run-soak.sh down
 #
 # ── Usage examples ───────────────────────────────────────────────────
 #
@@ -295,6 +325,14 @@ case "${BACKEND}" in
         ;;
 esac
 
+KEEP_DATA="${ATTESTA_SOAK_KEEP_DATA:-}"
+if [ -n "${KEEP_DATA}" ]; then
+    KEEP_DATA_DISPLAY="yes — entry_index + bytestore objects preserved post-test"
+    export ATTESTA_SOAK_KEEP_DATA
+else
+    KEEP_DATA_DISPLAY="no  — cleanTables runs on teardown (set ATTESTA_SOAK_KEEP_DATA=1 to keep)"
+fi
+
 echo "== attesta ledger soak =="
 echo "   dsn source:        ${DSN_SOURCE}"
 echo "   bytestore source:  ${BS_KIND}"
@@ -303,10 +341,12 @@ echo "   auth mode:         ${BS_AUTH_MODE}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
 echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
-echo "   verify:            ${SAMPLES}"
+echo "   verify:            ${SAMPLES}        (sampled HTTP /raw → 302 follow)"
 echo "   p99 bound ms:      ${P99_BOUND_MS}"
 echo "   drain timeout:     ${DRAIN_TIMEOUT}        (in-test wait for HWM)"
 echo "   test timeout:      ${TEST_TIMEOUT}        (go test process ceiling)"
+echo "   keep data:         ${KEEP_DATA_DISPLAY}"
+echo "   evidence checks:   automated — PG count, contiguity, full bytestore fetch"
 echo
 
 START_NS=$(date +%s%N)
@@ -328,17 +368,27 @@ echo
 echo "== summary =="
 cat <<EOF
 {
-  "entries":            ${ENTRIES},
-  "concurrency":        ${CONCURRENCY},
-  "verify_samples":     ${SAMPLES},
-  "p99_bound_ms":       ${P99_BOUND_MS},
-  "wall_clock_seconds": ${ELAPSED_S},
-  "backend":            "${BS_KIND}",
-  "bucket":             "${BS_BUCKET}",
-  "test_status":        "ok"
+  "entries":             ${ENTRIES},
+  "concurrency":         ${CONCURRENCY},
+  "verify_samples":      ${SAMPLES},
+  "p99_bound_ms":        ${P99_BOUND_MS},
+  "wall_clock_seconds":  ${ELAPSED_S},
+  "backend":             "${BS_KIND}",
+  "bucket":              "${BS_BUCKET}",
+  "evidence_verified":   "PG count + contiguity + full bytestore fetch (in-test)",
+  "test_status":         "ok"
 }
 EOF
 
 echo
-echo "Cleanup verification: leftover soak objects under your bucket?"
+echo "Containers are still running. Inspect post-test state with:"
+echo "  docker exec attesta_test_postgres psql -U attesta -d attesta_test \\"
+echo "    -c 'SELECT COUNT(*), MIN(sequence), MAX(sequence) FROM entry_index;'"
+if [ "${BACKEND}" = "seaweedfs" ] || [ "${BACKEND}" = "s3" ]; then
+    echo "  curl -sI '${BS_TARGET}/<seq:016x>/<hash_hex>'"
+fi
+echo
+echo "Tear down when finished:"
+echo "  ./scripts/run-soak.sh down"
+echo "Bucket / data overview:"
 echo "  ${BS_CLEANUP_HINT}"
