@@ -1,0 +1,36 @@
+# =============================================================================
+# FILE PATH:
+#     .github/workflows/govulncheck.yml
+#
+# DESCRIPTION:
+#     K4 — govulncheck CI gate. Scans the binary's reachable
+#     symbol set for known CVEs in transitive dependencies.
+#     Reachability-aware (low false-positive vs. mere SCA tools).
+#
+#     Mirrors transparency-dev/tessera and golang.org/x/vuln
+#     reference shape.
+# =============================================================================
+name: govulncheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily scan on main so a newly-published CVE in a transitive
+    # dep is flagged within 24h even when no PR activity.
+    - cron: "23 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - id: govulncheck
+        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee  # v1.0.4
+        with:
+          go-version-file: go.mod
+          go-package: ./...

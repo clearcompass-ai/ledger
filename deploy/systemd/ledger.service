@@ -1,0 +1,87 @@
+# =============================================================================
+# FILE PATH:
+#     deploy/systemd/ledger.service
+#
+# DESCRIPTION:
+#     systemd unit for the ledger on bare-metal / VM / EC2 / GCE.
+#     Designed to mirror the Kubernetes Deployment in
+#     deploy/k8s/ledger.yaml: same env contract, same graceful-
+#     shutdown order, same resource layout. The orchestrator
+#     (systemd here, k8s there) is the only thing that changes.
+#
+# OPERATOR CHECKLIST:
+#     1. Place the binary at /usr/local/bin/ledger.
+#     2. Create the ledger user + data dir:
+#          sudo useradd --system --no-create-home --shell /usr/sbin/nologin ledger
+#          sudo mkdir -p /var/lib/attesta/{wal,tessera,antispam}
+#          sudo chown -R ledger:ledger /var/lib/attesta
+#     3. Create /etc/ledger/env with the LEDGER_* env vars (mode 0600,
+#        owned by ledger:ledger). Mirror the K8s ConfigMap + Secret.
+#     4. Place the signer keys at /etc/ledger/keys/ (mode 0400,
+#        owned by ledger).
+#     5. Run `psql ... -f /etc/ledger/grants.sql` after first boot
+#        (deploy/sql/grants.sql) for F2 append-only enforcement.
+#     6. sudo cp deploy/systemd/ledger.service /etc/systemd/system/
+#     7. sudo systemctl daemon-reload && sudo systemctl enable --now ledger
+#
+# DESIGN NOTES:
+#     - Type=notify with WatchdogSec=30s would require sd_notify
+#       wiring in the binary (not currently implemented). Type=simple
+#       gives us systemd-managed restart-on-failure without that.
+#     - TimeoutStopSec=60s mirrors k8s terminationGracePeriodSeconds.
+#       systemd sends SIGTERM, waits 60s for graceful shutdown, then
+#       SIGKILL.
+#     - Restart=on-failure (NOT always) so a panic-on-fatal exits
+#       and systemd restarts; clean exit (e.g., admin manually
+#       stopped) does NOT respawn.
+#     - Hardening flags: NoNewPrivileges, PrivateTmp, ProtectSystem,
+#       etc. — defense-in-depth at the process-supervisor level.
+# =============================================================================
+
+[Unit]
+Description=Attesta Ledger
+Documentation=https://github.com/clearcompass-ai/ortholog-operator
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ledger
+Group=ledger
+ExecStart=/usr/local/bin/ledger
+EnvironmentFile=/etc/ledger/env
+
+# Graceful shutdown: SIGTERM → ledger flips /readyz=503, predrain
+# grace, http.Shutdown, sequencer/shipper drain, resource closes.
+# Then systemd sends SIGKILL after TimeoutStopSec.
+KillSignal=SIGTERM
+TimeoutStopSec=60s
+
+Restart=on-failure
+RestartSec=5s
+
+# Resource limits — tune for your TPS target.
+LimitNOFILE=65536
+TasksMax=4096
+
+# ── Hardening ────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Read-write paths — only data dirs.
+ReadWritePaths=/var/lib/attesta
+
+[Install]
+WantedBy=multi-user.target

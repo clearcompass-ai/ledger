@@ -13,7 +13,9 @@ SDK_MODULE  := github.com/clearcompass-ai/attesta
 .PHONY: build test test-short audit-sdk vet tidy clean help \
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
         integration-up integration-down integration-logs integration-status \
-        integration-gcs-tile
+        integration-gcs-tile \
+        release-build verify-deps lint sbom test-race test-race-all \
+        test-differential test-chaos
 
 DEV_COMPOSE := docker compose -f scripts/local/docker-compose.dev.yml
 INT_COMPOSE := docker compose -f scripts/local/docker-compose.integration.yml
@@ -196,3 +198,153 @@ integration-gcs-tile: ## Run REAL-GCS tile-serving integration tests (requires b
 	fi
 	$(GO) test -tags=gcs_integration ./bytestore/ \
 	    -run TestGCSTilesIntegration -v -count=1 -timeout 10m
+
+# ─────────────────────────────────────────────────────────────────────
+# K — Build / version / supply-chain
+#
+# Pragmatic, transparency-log-shaped supply-chain story. Mirrors the
+# practices used by Tessera (transparency-dev), Sigstore, and Let's
+# Encrypt Boulder:
+#
+#   K1 — version embedding via -ldflags ($BUILD_VERSION/COMMIT/TIME)
+#   K2 — reproducible builds via -trimpath + -ldflags="-s -w -buildid="
+#   K3 — `make verify-deps`: go mod verify (CI-gated)
+#   K4 — `make lint`: golangci-lint + govulncheck + staticcheck
+#   K5 — `make sbom`: cyclonedx-gomod CycloneDX 1.5 JSON
+#   K6 — container image cosign signing — DEFERRED until a release
+#        pipeline + image registry exist; documented in operations.md
+# ─────────────────────────────────────────────────────────────────────
+
+# Version + commit + build-time variables. Computed once per make
+# invocation. Override by setting BUILD_VERSION / BUILD_COMMIT /
+# BUILD_TIME from the calling shell (e.g., a release CI job).
+BUILD_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BUILD_COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_TIME    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+LDFLAGS_VERSION := \
+  -X main.Version=$(BUILD_VERSION) \
+  -X main.Commit=$(BUILD_COMMIT) \
+  -X main.BuildTime=$(BUILD_TIME)
+
+# K2 — reproducible-build flags. -s strips symbol table; -w strips
+# DWARF; -buildid="" zeroes the build-id. Combined with -trimpath
+# and a fixed BUILD_TIME, two builds from the same commit + same
+# Go toolchain produce byte-identical binaries.
+LDFLAGS_REPRODUCIBLE := -s -w -buildid=
+
+# K1 — release-build target. Produces ./bin/ledger with version
+# strings injected. Use BUILD_VERSION=v1.2.3 for tagged releases:
+#
+#   BUILD_VERSION=v1.2.3 make release-build
+#
+# For byte-reproducible builds, also pass a fixed BUILD_TIME (e.g.,
+# the commit's author date):
+#
+#   BUILD_VERSION=v1.2.3 \
+#     BUILD_TIME=$$(git show -s --format=%cI HEAD) \
+#     make release-build
+release-build: ## Build ./bin/ledger with version + reproducible flags
+	@mkdir -p ./bin
+	$(GO) build \
+	    -trimpath \
+	    -buildvcs=true \
+	    -ldflags="$(LDFLAGS_VERSION) $(LDFLAGS_REPRODUCIBLE)" \
+	    -o ./bin/ledger \
+	    ./cmd/ledger
+	@echo "release-build: ./bin/ledger"
+	@echo "  version=$(BUILD_VERSION)"
+	@echo "  commit=$(BUILD_COMMIT)"
+	@echo "  build_time=$(BUILD_TIME)"
+
+# K3 — verify checked-in module sums against the upstream registry.
+# Trivial; this is the supply-chain integrity floor every Go project
+# inherits free with go.sum in source control.
+#
+# `go mod download` (no args) downloads every module required by
+# the main module — that's the supply-chain check. It does NOT
+# accept `./...` (which is for go-build/go-test path patterns,
+# not module patterns).
+verify-deps: ## go mod verify + go mod download check
+	$(GO) mod verify
+	$(GO) mod download -x
+
+# K4 — `make lint`. Three orthogonal checks:
+#
+#   - golangci-lint: meta-linter (govet, staticcheck, ineffassign,
+#     errcheck, etc. — see .golangci.yml for the enabled set).
+#   - govulncheck: scans for known CVEs in transitive deps.
+#   - go vet: stdlib's own vet pass (also runs as part of golangci-
+#     lint but `go vet` directly catches build-tag-gated files).
+#
+# Run locally before pushing; CI runs the same suite via
+# .github/workflows/lint.yml. Fails with a non-zero exit on any hit.
+lint: ## golangci-lint + govulncheck + go vet
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+	  echo "FAIL: golangci-lint not on PATH"; \
+	  echo "      install: https://golangci-lint.run/welcome/install/#local-installation"; \
+	  exit 1; \
+	}
+	golangci-lint run ./...
+	@command -v govulncheck >/dev/null 2>&1 || { \
+	  echo "FAIL: govulncheck not on PATH"; \
+	  echo "      install: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+	  exit 1; \
+	}
+	govulncheck ./...
+	$(GO) vet ./...
+
+# K5 — `make sbom` produces a CycloneDX 1.5 JSON SBOM at
+# ./bin/sbom.cdx.json. Uses cyclonedx-gomod (pure Go, no Docker
+# dep — laptop-runnable). Operators publish this alongside the
+# binary at release tags so consumers can audit transitive deps.
+#
+# Install: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+sbom: ## Generate CycloneDX SBOM at ./bin/sbom.cdx.json
+	@command -v cyclonedx-gomod >/dev/null 2>&1 || { \
+	  echo "FAIL: cyclonedx-gomod not on PATH"; \
+	  echo "      install: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest"; \
+	  exit 1; \
+	}
+	@mkdir -p ./bin
+	cyclonedx-gomod app -json -licenses -output ./bin/sbom.cdx.json -main ./cmd/ledger .
+	@echo "sbom: ./bin/sbom.cdx.json"
+
+# Race detector across the merge-gate-critical packages. Mirrors
+# what CI runs in .github/workflows/go-test.yml. Faster than
+# `go test -race ./...` while still covering the hot path.
+test-race: ## Race detector on critical packages (merge gate)
+	$(GO) test -race -count=1 -short \
+	    ./api/ ./api/middleware/ ./apitypes/ \
+	    ./gossipnet/ ./gossipstore/ \
+	    ./sequencer/ ./shipper/ ./store/ \
+	    ./tessera/ ./bytestore/ ./wal/ ./lifecycle/ \
+	    ./cmd/ledger/
+
+# J5 — Whole-module race detector. Slower (~3 min on a free-tier
+# runner); not a per-PR gate but useful for pre-release sweeps.
+# Use this when you've changed something that touches multiple
+# packages and want belt-and-suspenders confirmation.
+test-race-all: ## Race detector on EVERY package (pre-release sweep)
+	$(GO) test -race -count=1 -short ./...
+
+# J3 — Differential test: writer vs reader byte-identical
+# responses. Build-tag-isolated because it requires a real
+# Postgres (ATTESTA_TEST_DSN). Confirms Pure CQRS read-path
+# correctness — read endpoints depend only on the underlying
+# Postgres + Tessera + bytestore, never on which process serves.
+test-differential: ## Differential writer-vs-reader test (requires ATTESTA_TEST_DSN)
+	@if [ -z "$$ATTESTA_TEST_DSN" ]; then \
+	  echo "FAIL: ATTESTA_TEST_DSN unset"; \
+	  echo "      export ATTESTA_TEST_DSN=postgres://..."; \
+	  exit 1; \
+	fi
+	$(GO) test -tags=differential -count=1 -timeout 5m ./tests/ \
+	    -run TestDifferential
+
+# J4 — Chaos test suite. Build-tag-isolated; runs in CI weekly
+# + on PRs that touch lifecycle/wal/store/tests/chaos. Slower
+# than unit tests (Badger fsync, repeated panic-recover cycles,
+# inject latency injection); not a per-PR merge gate by default.
+test-chaos: ## Chaos suite (lifecycle, WAL durability, shutdown ordering, inject)
+	$(GO) test -tags=chaos -count=1 -timeout=10m ./tests/chaos/...

@@ -143,6 +143,48 @@ services:
         echo "bucket attesta-test-bytes ready";
       '
 
-# Networks are auto-created. Service names (postgres, fake-gcs, rustfs)
-# resolve via Docker's embedded DNS for inter-container access;
-# host-side access is via the published 127.0.0.1 ports above.
+  # ─────────────────────────────────────────────────────────────────
+  # Observability profile — Prometheus + Jaeger for laptop dev
+  # Activate via: docker compose --profile observability up -d
+  # ─────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: attesta_test_prometheus
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  jaeger:
+    # All-in-one Jaeger image: collector + query UI + memory backend.
+    # Receives OTLP HTTP on :4318 (the default LEDGER_OTLP_TRACES_ENDPOINT
+    # for laptop dev). UI on :16686.
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: attesta_test_jaeger
+    profiles: [observability]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"   # UI
+      - "127.0.0.1:4318:4318"     # OTLP HTTP receiver
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:14269/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+# Networks are auto-created. Service names (postgres, fake-gcs, rustfs,
+# prometheus, jaeger) resolve via Docker's embedded DNS for inter-container
+# access; host-side access is via the published 127.0.0.1 ports above.

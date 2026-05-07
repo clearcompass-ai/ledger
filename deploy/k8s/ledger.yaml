@@ -1,0 +1,292 @@
+# =============================================================================
+# FILE PATH:
+#     deploy/k8s/ledger.yaml
+#
+# DESCRIPTION:
+#     Single-file Kubernetes manifest for the ledger. Includes:
+#       - Namespace
+#       - ConfigMap (operator-supplied env)
+#       - Secret stub (DB DSN + signer key — operator fills via SOPS / Vault)
+#       - PVC × 3 (WAL, Tessera storage, antispam)
+#       - Deployment (replicas: 1 — advisory lock enforces singleton writer)
+#       - Service (LB target)
+#       - PodDisruptionBudget (graceful eviction)
+#       - ServiceMonitor (Prometheus Operator scrape config — optional)
+#
+# OPERATOR CHECKLIST:
+#     1. Replace `<SET-AT-DEPLOY>` placeholders below.
+#     2. kubectl apply -f deploy/k8s/ledger.yaml
+#     3. After RunMigrations populates the schema (auto, on first boot):
+#        kubectl exec -n ledger deploy/ledger -- \
+#          psql "$LEDGER_DATABASE_URL_ADMIN" -f /etc/ledger/grants.sql
+#     4. Confirm /version + /v1/log-info return as expected.
+#
+# DESIGN NOTES:
+#     - Replicas: exactly 1. The Postgres advisory lock
+#       (BuilderLockID = 0x4F5254484F4C4F47) enforces singleton-
+#       writer at the DB level; running >1 replicas results in
+#       the second pod failing fast with the rolling-update
+#       conflict message. A read-only sibling (cmd/ledger-reader)
+#       can run any replica count for read scaling.
+#     - Liveness/Readiness: /healthz + /readyz. Readiness flips
+#       to 503 during shutdown so LB removes pod from rotation
+#       BEFORE Server.Shutdown drains in-flight requests.
+#     - Pre-drain grace: terminationGracePeriodSeconds = 60s
+#       accommodates LEDGER_PREDRAIN_GRACE (5s) + Server.Shutdown
+#       (30s) + per-component close (15-30s tessera, etc.).
+#     - PVC × 3: WAL, Tessera storage, antispam. Distinct PVCs
+#       so corruption in one doesn't force discarding the others.
+#     - Resources: 500m CPU / 512Mi minimum is the floor; tune
+#       up based on TPS target. Sequencer is CPU-bound during
+#       batch processing.
+#     - Metrics: Prometheus scrape annotation on the pod;
+#       ServiceMonitor mirrors for Prometheus Operator setups.
+#     - Tracing: LEDGER_OTLP_TRACES_ENDPOINT set to a sidecar
+#       OTel collector; defaults to "" (NoOp tracer) if you
+#       haven't deployed a collector.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ledger
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger-config
+  namespace: ledger
+data:
+  LEDGER_ADDR: ":8080"
+  LEDGER_PPROF_ADDR: "127.0.0.1:6060"
+  LEDGER_LOG_DID: "<SET-AT-DEPLOY>"
+  LEDGER_TESSERA_STORAGE_DIR: "/var/lib/attesta/tessera"
+  LEDGER_TESSERA_ANTISPAM_PATH: "/var/lib/attesta/antispam"
+  LEDGER_WAL_PATH: "/var/lib/attesta/wal"
+  LEDGER_BYTE_STORE_BACKEND: "gcs"
+  LEDGER_BYTE_STORE_GCS_BUCKET: "<SET-AT-DEPLOY>"
+  LEDGER_TILE_BACKEND: "gcs"
+  LEDGER_TILE_BUCKET_PREFIX: "tessera/"
+  LEDGER_METRICS_ENABLE: "true"
+  LEDGER_METRICS_ENVIRONMENT: "production"
+  LEDGER_PREDRAIN_GRACE: "5s"
+  LEDGER_PG_STATEMENT_TIMEOUT: "5s"
+  LEDGER_MAX_CONCURRENT_CONNS: "0"  # 0 = 8 × NumCPU default
+  LEDGER_OTLP_TRACES_ENDPOINT: ""    # set to "otel-collector.observability.svc:4318" or similar
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ledger-secrets
+  namespace: ledger
+type: Opaque
+stringData:
+  # Operator fills these via SOPS / Vault / external-secrets-operator.
+  # Plain-text placeholders here are illustrative ONLY.
+  LEDGER_DATABASE_URL: "postgres://ledger_app:<SET-AT-DEPLOY>@postgres.ledger:5432/ledger?sslmode=require"
+  # Signer key paths intentionally OMITTED here — see the
+  # "Production-keys overlay" section at the bottom of this
+  # file for the production-stable-identity wiring. With these
+  # env vars unset, the ledger generates ephemeral signing keys
+  # at boot (logs a clear warning) and runs cleanly. Suitable
+  # for laptop-K8s, smoke deploys, and CI integration tests;
+  # NOT suitable for production (witnesses + auditors will see
+  # a fresh DID on every restart).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ledger-wal
+  namespace: ledger
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: <SET-AT-DEPLOY>  # e.g., premium-rwo, gp3
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ledger-tessera
+  namespace: ledger
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 200Gi
+  storageClassName: <SET-AT-DEPLOY>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ledger-antispam
+  namespace: ledger
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: <SET-AT-DEPLOY>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  namespace: ledger
+  labels:
+    app.kubernetes.io/name: ledger
+spec:
+  replicas: 1  # advisory lock enforces singleton writer
+  strategy:
+    type: Recreate  # rolling would race the advisory lock
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ledger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: ledger  # bind to a workload-identity GSA for GCS access
+      containers:
+        - name: ledger
+          image: <SET-AT-DEPLOY>:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http,  containerPort: 8080 }
+            - { name: pprof, containerPort: 6060 }
+          envFrom:
+            - configMapRef: { name: ledger-config }
+            - secretRef:    { name: ledger-secrets }
+          volumeMounts:
+            - { name: wal,      mountPath: /var/lib/attesta/wal }
+            - { name: tessera,  mountPath: /var/lib/attesta/tessera }
+            - { name: antispam, mountPath: /var/lib/attesta/antispam }
+            # keys volumeMount intentionally OMITTED — see the
+            # production-keys overlay section at the bottom of
+            # this file for the stable-identity deployment.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits:   { cpu: 2,    memory: 2Gi }
+      volumes:
+        - { name: wal,      persistentVolumeClaim: { claimName: ledger-wal } }
+        - { name: tessera,  persistentVolumeClaim: { claimName: ledger-tessera } }
+        - { name: antispam, persistentVolumeClaim: { claimName: ledger-antispam } }
+        # keys volume intentionally OMITTED — see the production-
+        # keys overlay section at the bottom of this file.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger
+  namespace: ledger
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ledger
+  ports:
+    - { name: http,    port: 80,   targetPort: http }
+    - { name: metrics, port: 8080, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ledger
+  namespace: ledger
+spec:
+  minAvailable: 0   # singleton writer; eviction is fine if no replacement is running
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger
+---
+# Optional — only apply if you run Prometheus Operator.
+# Comment out otherwise.
+# apiVersion: monitoring.coreos.com/v1
+# kind: ServiceMonitor
+# metadata:
+#   name: ledger
+#   namespace: ledger
+#   labels:
+#     prometheus: kube-prometheus
+# spec:
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: ledger
+#   endpoints:
+#     - port: metrics
+#       path: /metrics
+#       interval: 15s
+
+# =============================================================================
+# Production-keys overlay (apply to STABLE-IDENTITY deployments only)
+# =============================================================================
+#
+# By default this manifest runs the ledger with EPHEMERAL signing
+# keys (cmd/ledger logs a "NOT for production" warning at boot).
+# Witnesses and auditors will see a fresh DID on every restart;
+# fine for laptop-K8s, smoke deploys, and CI integration tests.
+#
+# For PRODUCTION (stable identity across pod restarts) you MUST:
+#
+#   1. Generate the keys (off-cluster):
+#        openssl ecparam -genkey -name prime256v1 -noout -out signer.pem
+#        openssl ecparam -genkey -name prime256v1 -noout -out tessera-signer.pem
+#
+#   2. Create the Secret in the ledger namespace:
+#        kubectl -n ledger create secret generic ledger-signer-keys \
+#            --from-file=signer.pem=signer.pem \
+#            --from-file=tessera-signer.pem=tessera-signer.pem
+#
+#   3. Apply the overlay below (kubectl apply -f - <<EOF ... EOF, or via
+#      Kustomize / Helm). Each block is a `kubectl patch`-shaped fragment
+#      that augments the resources defined above.
+#
+# Two key-file env vars are added to the Secret (NOT the ConfigMap, so
+# overlays can rotate the file paths without rewriting non-secret config):
+#
+#   apiVersion: v1
+#   kind: Secret
+#   metadata:
+#     name: ledger-secrets
+#     namespace: ledger
+#   type: Opaque
+#   stringData:
+#     LEDGER_SIGNER_KEY_FILE: /etc/ledger/keys/signer.pem
+#     LEDGER_TESSERA_SIGNER_KEY_FILE: /etc/ledger/keys/tessera-signer.pem
+#
+# A volume + mount are added to the Deployment. NOTE: optional: false
+# (the default) so the pod fails at admission control if the Secret
+# doesn't exist — clean error at apply-time, NOT a CrashLoopBackOff
+# at runtime.
+#
+#   spec:
+#     template:
+#       spec:
+#         containers:
+#           - name: ledger
+#             volumeMounts:
+#               - name: keys
+#                 mountPath: /etc/ledger/keys
+#                 readOnly: true
+#         volumes:
+#           - name: keys
+#             secret:
+#               secretName: ledger-signer-keys
+#               # optional NOT set → defaults to false → pod refuses
+#               # to start if the Secret is missing.

@@ -1,0 +1,62 @@
+# =============================================================================
+# FILE PATH:
+#     .github/workflows/fuzz.yml
+#
+# DESCRIPTION:
+#     J1 — Nightly fuzz runs across every wire-format parser.
+#     Fuzz time is 15 minutes per fuzzer per workflow invocation.
+#     Crash artifacts (testdata/fuzz/<FuzzName>/<crash-hash>) are
+#     uploaded as workflow artifacts for triage.
+#
+#     Mirrors transparency-dev/tessera shape: matrix per fuzzer,
+#     pinned action SHAs, go-version-file: go.mod.
+# =============================================================================
+name: fuzz
+
+on:
+  schedule:
+    - cron: "13 4 * * *"   # daily at 04:13 UTC
+  workflow_dispatch:        # manual trigger
+  pull_request:
+    paths:
+      - "**/fuzz_test.go"   # also run on PRs that touch fuzz tests
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzzer:
+          - { pkg: ./api,         name: FuzzTileHandlerPath }
+          - { pkg: ./bytestore,   name: FuzzGCSTilesObjectKey }
+          - { pkg: ./wal,         name: FuzzWALSubmitRead }
+          - { pkg: ./cmd/ledger,  name: FuzzNetworkBootstrapJSON }
+          - { pkg: ./gossipstore, name: FuzzGossipStoreAppend }
+    name: ${{ matrix.fuzzer.name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7  # v5.0.1
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz ${{ matrix.fuzzer.name }}
+        run: |
+          go test -run=^$ -fuzz=^${{ matrix.fuzzer.name }}$ \
+              -fuzztime=15m -timeout=20m ${{ matrix.fuzzer.pkg }}
+
+      - name: Upload crash artifacts (if any)
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: fuzz-crash-${{ matrix.fuzzer.name }}
+          path: ${{ matrix.fuzzer.pkg }}/testdata/fuzz/

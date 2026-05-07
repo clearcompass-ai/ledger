@@ -175,6 +175,9 @@ func (s *GCS) WriteEntry(ctx context.Context, seq uint64, hash [32]byte, wireByt
 		return fmt.Errorf("bytestore/gcs: WriteEntry seq=%d: empty wire bytes", seq)
 	}
 
+	t0 := time.Now() // D3
+	defer func() { recordPutDuration(ctx, "put", time.Since(t0)) }()
+
 	wctx, cancel := context.WithTimeout(ctx, s.writeTimeout)
 	defer cancel()
 
@@ -206,6 +209,9 @@ func (s *GCS) WriteEntry(ctx context.Context, seq uint64, hash [32]byte, wireByt
 
 // ReadEntry fetches the wire bytes for (seq, hash).
 func (s *GCS) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, error) {
+	t0 := time.Now() // D3
+	defer func() { recordPutDuration(ctx, "get", time.Since(t0)) }()
+
 	key := s.keyOf(seq, hash)
 
 	s.mu.Lock()

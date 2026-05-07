@@ -144,12 +144,18 @@ func NewBreaker(pool *pgxpool.Pool, failureThreshold int, cooldown time.Duration
 // ErrDBUnavailable immediately. When closed, attempts the
 // acquisition and updates state on result. Half-open allows one
 // probe; success closes the breaker, failure re-opens it.
+//
+// D3 — emits attesta_postgres_pool_acquire_seconds for every
+// acquisition (success or failure paths both observed; failure
+// timings show pool-saturation back-pressure).
 func (b *Breaker) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	state, allowProbe := b.gate()
 	if state == breakerOpen && !allowProbe {
 		return nil, ErrDBUnavailable
 	}
+	t0 := time.Now()
 	conn, err := b.pool.Acquire(ctx)
+	recordPoolAcquireDuration(ctx, time.Since(t0))
 	b.recordResult(err == nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: acquire: %w", err)

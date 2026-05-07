@@ -1,0 +1,77 @@
+# =============================================================================
+# FILE PATH:
+#     .golangci.yml
+#
+# DESCRIPTION:
+#     golangci-lint config. Mirrors Tessera + Boulder + Sigstore
+#     conventions: a tight, opinionated set that catches real bugs
+#     without flooding noise.
+#
+# RUN LOCALLY:
+#     make lint
+#
+# RUN CI:
+#     .github/workflows/lint.yml
+#
+# VERSION POLICY:
+#     `version: "2"` — golangci-lint v2 syntax. v1 is EOL.
+# =============================================================================
+
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    # Bug-finders (default Go vet pass + community classics).
+    - errcheck       # unchecked errors
+    - govet          # stdlib's vet pass
+    - ineffassign    # ineffectual assignments
+    - staticcheck    # the comprehensive static analyzer
+    - unused         # unused vars, funcs, types
+    - gosimple       # simplification suggestions
+
+    # Style (low-noise; bail out early in this list if developers complain).
+    - gofmt
+    - goimports
+
+    # Security-shaped (zero-tolerance bugs in transparency-log code).
+    - bodyclose      # unclosed http.Body
+    - rowserrcheck   # unchecked sql.Rows.Err()
+    - sqlclosecheck  # unclosed sql.Stmt / Rows
+
+  settings:
+    govet:
+      enable:
+        - shadow
+
+    errcheck:
+      # Permit `_ =` on intentional-discard assignments (logger sites
+      # already wrapped by lifecycle.SafeRun, etc.).
+      check-type-assertions: false
+      check-blank: false
+
+    staticcheck:
+      checks: ["all"]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Tests can use over-allocations + shadowed err vars freely.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - govet
+    # Generated code (none today, but reserve the exclusion).
+    - path: \.gen\.go
+      linters:
+        - all
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

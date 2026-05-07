@@ -505,6 +505,13 @@ type Config struct {
 	// surfaced as the OTel resource service.version attribute.
 	// Defaults to "dev" when unset.
 	ServiceVersion string
+
+	// OTLPTracesEndpoint controls D2 tracing:
+	//   "" / unset      → NoOp tracer (zero overhead, default)
+	//   "stdout"        → stdouttrace (laptop dev — spans to stderr)
+	//   "host:port"     → OTLP HTTP exporter (Jaeger / Tempo / collector)
+	//   "https://..."   → OTLP HTTP over TLS
+	OTLPTracesEndpoint string
 }
 
 func loadConfig() (*Config, error) {
@@ -547,9 +554,13 @@ func loadConfig() (*Config, error) {
 		GossipPeerEndpoints:  parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_ENDPOINTS")),
 		GossipPeerDIDs:       parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_DIDS")),
 		GossipDisable:        os.Getenv("LEDGER_GOSSIP_DISABLE") == "true",
-		MetricsEnable:        os.Getenv("LEDGER_METRICS_ENABLE") == "true",
+		// D1 — Metrics default ON. Disabled-by-default observability
+		// is a footgun. Set LEDGER_METRICS_ENABLE=false to opt out
+		// (e.g., for resource-constrained edge deployments).
+		MetricsEnable: os.Getenv("LEDGER_METRICS_ENABLE") != "false",
 		MetricsEnvironment:   envOr("LEDGER_METRICS_ENVIRONMENT", "dev"),
 		ServiceVersion:       envOr("LEDGER_SERVICE_VERSION", "dev"),
+		OTLPTracesEndpoint:   os.Getenv("LEDGER_OTLP_TRACES_ENDPOINT"),
 		WALPath:              envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
 		TesseraAntispamPath:  envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
 
@@ -1018,6 +1029,7 @@ func main() {
 		"witness_quorum_k", cfg.WitnessQuorumK,
 		"tls_enabled", cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
 		"metrics_enabled", cfg.MetricsEnable,
+		"otlp_traces_endpoint", lifecycle.PresenceFlag(cfg.OTLPTracesEndpoint),
 	)
 
 	// ── Ethereum RPC for EIP-1271 (smart-contract-wallet sigs) ────────
@@ -1396,7 +1408,33 @@ func main() {
 		// closeOTelMeter is the spec-order shutdown step. nil
 		// when metrics are disabled (no-op step in the chain).
 		closeOTelMeter func(ctx context.Context) error
+		// closeTracerProvider runs at the end of shutdown to
+		// flush in-flight spans. Always non-nil — NoOp when
+		// LEDGER_OTLP_TRACES_ENDPOINT is unset.
+		closeTracerProvider func(ctx context.Context) error
 	)
+
+	// D2 — TracerProvider. NoOp by default (zero overhead);
+	// "stdout" for laptop dev (spans to stderr); "host:port" or
+	// URL for production OTLP HTTP. Always set the global
+	// provider so any package can call otel.Tracer(name).
+	tp, traceShutdown, terr := lifecycle.NewTracerProvider(lifecycle.TracerProviderConfig{
+		ServiceName:    "ledger",
+		ServiceVersion: cfg.ServiceVersion,
+		Environment:    cfg.MetricsEnvironment,
+		OTLPEndpoint:   cfg.OTLPTracesEndpoint,
+	})
+	if terr != nil {
+		logger.Error("tracing: NewTracerProvider failed", "error", terr)
+		os.Exit(1)
+	}
+	otel.SetTracerProvider(tp)
+	closeTracerProvider = traceShutdown
+	if cfg.OTLPTracesEndpoint != "" {
+		logger.Info("tracing: enabled",
+			"endpoint", cfg.OTLPTracesEndpoint,
+		)
+	}
 	if cfg.MetricsEnable {
 		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
 			ServiceName:    "ledger",
@@ -1422,6 +1460,57 @@ func main() {
 			logger.Info("metrics: api error counter installed",
 				"metric", "attesta_api_errors_total")
 		}
+
+		// D3 — Request duration histogram. The middleware wires
+		// itself when present; cmd/ledger mounts it at the http
+		// chain edge below.
+		if installed := api.InstallRequestDurationHistogram(apiMeter); installed {
+			logger.Info("metrics: api request duration installed",
+				"metric", "attesta_api_request_duration_seconds")
+		}
+
+		// D3 — wal submit duration histogram.
+		walMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/wal")
+		if installed := wal.InstallSubmitDurationHistogram(walMeter); installed {
+			logger.Info("metrics: wal submit duration installed",
+				"metric", "attesta_wal_submit_duration_seconds")
+		}
+
+		// D3 — tessera append duration histogram.
+		tesseraMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/tessera")
+		if installed := tessera.InstallAppendDurationHistogram(tesseraMeter); installed {
+			logger.Info("metrics: tessera append duration installed",
+				"metric", "attesta_tessera_append_duration_seconds")
+		}
+
+		// D3 — postgres pool acquire histogram.
+		storeMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/store")
+		if installed := store.InstallPoolAcquireDurationHistogram(storeMeter); installed {
+			logger.Info("metrics: postgres pool acquire installed",
+				"metric", "attesta_postgres_pool_acquire_seconds")
+		}
+
+		// D3 — bytestore PUT/GET duration histogram.
+		bsMeter := mpResult.Provider.Meter("github.com/clearcompass-ai/ledger/bytestore")
+		if installed := bytestore.InstallPutDurationHistogram(bsMeter); installed {
+			logger.Info("metrics: bytestore put duration installed",
+				"metric", "attesta_bytestore_put_duration_seconds")
+		}
+
+		// D4 — gossipnet counters (witness quorum failures + equivocation detected).
+		if installed := gossipnet.InstallWitnessQuorumFailureCounter(gossipMeter); installed {
+			logger.Info("metrics: witness quorum failures installed",
+				"metric", "attesta_witness_quorum_failures_total")
+		}
+		if installed := gossipnet.InstallEquivocationDetectedCounter(gossipMeter); installed {
+			logger.Info("metrics: equivocation detected installed",
+				"metric", "attesta_equivocation_detected_total")
+		}
+
+		// D5 — gauges. Wired after sequencer/shipper construction
+		// below via late-bound providers (closures referencing
+		// the Run-loop subjects).
+		_ = gossipMeter // also used downstream by gossipnet.Build
 
 		metricsHandler = mpResult.PrometheusHandler
 		meterShutdown = mpResult.Shutdown
@@ -2149,6 +2238,22 @@ func main() {
 	// completes BEFORE wal.MarkShipped runs, BEFORE HWM advances.
 	ship := shipper.NewShipper(walc, byteStore, shipper.Config{Logger: logger})
 
+	// D5 — Late-bound observable gauges. Wired here because the
+	// Sequencer + Shipper instances are now in scope. Nil meter
+	// is no-op; cmd/ledger may construct without metrics enabled.
+	if cfg.MetricsEnable {
+		seqMeter := otel.GetMeterProvider().Meter("github.com/clearcompass-ai/ledger/sequencer")
+		if installed := sequencer.InstallDrainLagGauge(seqMeter, seq.CurrentLag); installed {
+			logger.Info("metrics: sequencer drain lag gauge installed",
+				"metric", "attesta_sequencer_drain_lag_seconds")
+		}
+		shipMeter := otel.GetMeterProvider().Meter("github.com/clearcompass-ai/ledger/shipper")
+		if installed := shipper.InstallPendingGauge(shipMeter, ship.PendingCount); installed {
+			logger.Info("metrics: shipper pending gauge installed",
+				"metric", "attesta_shipper_pending_total")
+		}
+	}
+
 	// ── HTTP server ───────────────────────────────────────────────────
 	//
 	// DoS-immune timeouts come from DefaultServerConfig (Slowloris
@@ -2526,6 +2631,9 @@ func main() {
 	if closeOTelMeter != nil {
 		shutdownChain.Add("otel-meter", 5*time.Second, closeOTelMeter)
 	}
+	// D2 — Tracer last so any shutdown spans the meter or
+	// other steps emit are flushed.
+	shutdownChain.Add("otel-tracer", 5*time.Second, closeTracerProvider)
 
 	shutdownChain.Run()
 

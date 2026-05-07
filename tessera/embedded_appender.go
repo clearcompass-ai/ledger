@@ -80,6 +80,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"golang.org/x/mod/sumdb/note"
 
 	uptessera "github.com/transparency-dev/tessera"
@@ -248,10 +250,17 @@ func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64,
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/embedded: AppendLeaf requires exactly 32 bytes, got %d", len(data))
 	}
+	// D2 — span. NoOp tracer makes this nearly free; OTLP
+	// captures the integration-future wait.
+	ctx, span := otel.Tracer("github.com/clearcompass-ai/ledger/tessera").Start(ctx, "tessera.AppendLeaf")
+	defer span.End()
+	t0 := time.Now() // D3
 	idx, err := e.appender.Add(ctx, uptessera.NewEntry(data))()
 	if err != nil {
+		span.RecordError(err)
 		return 0, fmt.Errorf("tessera/embedded: Add: %w", err)
 	}
+	recordAppendDuration(ctx, time.Since(t0))
 	return idx.Index, nil
 }
 
