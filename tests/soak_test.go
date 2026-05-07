@@ -1117,4 +1117,17 @@ func verifyEvidenceFetchAll(t *testing.T, ctx context.Context, op *soakLedger, s
 	t.Logf("verifyEvidence: ✓ %d/%d entries fetchable from bytestore in %s "+
 		"(every committed entry physically present)",
 		fetchOK.Load(), len(refs), elapsed)
+
+	// Log a copy-pasteable sample PublicURL so an operator running
+	// with ATTESTA_SOAK_KEEP_DATA=1 has an exact URL to curl post-
+	// test (the key carries the per-run prefix soak/<unix-nano>
+	// which is otherwise invisible from the shell). Sampling the
+	// first ref keeps output bounded; the verifyEvidence loop
+	// already proved every entry is fetchable.
+	if len(refs) > 0 {
+		if pu, err := op.Backend.PublicURL(refs[0].seq, refs[0].hash); err == nil {
+			t.Logf("verifyEvidence: sample PublicURL for seq=%d: %s",
+				refs[0].seq, pu)
+		}
+	}
 }

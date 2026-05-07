@@ -307,21 +307,21 @@ case "${BACKEND}" in
         BS_BUCKET="${ATTESTA_TEST_GCS_BUCKET}"
         BS_TARGET="gs://${BS_BUCKET}"
         BS_AUTH_MODE="${GOOGLE_APPLICATION_CREDENTIALS:-workload identity / gcloud ADC}"
-        BS_CLEANUP_HINT="gsutil ls 'gs://${BS_BUCKET}/soak/**' || echo '(none)'"
+        BS_LIST_HINT="gsutil ls 'gs://${BS_BUCKET}/soak/**' || echo '(none)'"
         ;;
     seaweedfs)
         BS_KIND="seaweedfs (docker, Allow-All Mode)"
         BS_BUCKET="${ATTESTA_TEST_S3_BUCKET}"
         BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT}/${BS_BUCKET}"
         BS_AUTH_MODE="Allow-All — gateway accepts SigV4 unverified"
-        BS_CLEANUP_HINT="./scripts/run-soak.sh down  # tears down container + ephemeral data"
+        BS_LIST_HINT="docker run --rm --network local_default -e AWS_ACCESS_KEY_ID=anything -e AWS_SECRET_ACCESS_KEY=anything -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:latest --endpoint-url http://attesta_test_seaweedfs:8333 s3 ls 's3://${BS_BUCKET}/' --recursive --summarize | tail -5"
         ;;
     s3)
         BS_KIND="s3 (BYO endpoint)"
         BS_BUCKET="${ATTESTA_TEST_S3_BUCKET}"
         BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT:-aws}/${BS_BUCKET}"
         BS_AUTH_MODE="SigV4 via ATTESTA_TEST_S3_ACCESS_KEY/SECRET_KEY"
-        BS_CLEANUP_HINT="aws --endpoint-url '${ATTESTA_TEST_S3_ENDPOINT:-https://s3.amazonaws.com}' s3 ls 's3://${BS_BUCKET}/soak/' || echo '(none)'"
+        BS_LIST_HINT="aws --endpoint-url '${ATTESTA_TEST_S3_ENDPOINT:-https://s3.amazonaws.com}' s3 ls 's3://${BS_BUCKET}/' --recursive --summarize | tail -5"
         ;;
 esac
 
@@ -382,13 +382,16 @@ EOF
 
 echo
 echo "Containers are still running. Inspect post-test state with:"
+echo "  # Postgres row count + sequence-space contiguity:"
 echo "  docker exec attesta_test_postgres psql -U attesta -d attesta_test \\"
-echo "    -c 'SELECT COUNT(*), MIN(sequence), MAX(sequence) FROM entry_index;'"
-if [ "${BACKEND}" = "seaweedfs" ] || [ "${BACKEND}" = "s3" ]; then
-    echo "  curl -sI '${BS_TARGET}/<seq:016x>/<hash_hex>'"
-fi
+echo "    -c 'SELECT COUNT(*), MIN(sequence_number), MAX(sequence_number) FROM entry_index;'"
+echo
+echo "  # Bytestore object count (per-run prefix is logged in the test output as soak/<unix-nano>):"
+echo "  ${BS_LIST_HINT}"
+echo
+echo "  # Sample anonymous fetch — copy a real PublicURL from the test log"
+echo "  # ('verifyEvidence: ✓ … sample URL …' line; only present when keep-data is set):"
+echo "  curl -sI '<paste-PublicURL-from-test-log>'"
 echo
 echo "Tear down when finished:"
 echo "  ./scripts/run-soak.sh down"
-echo "Bucket / data overview:"
-echo "  ${BS_CLEANUP_HINT}"
