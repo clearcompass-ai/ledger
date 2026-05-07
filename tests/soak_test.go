@@ -80,9 +80,13 @@ import (
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
-// soakSubmission records one accepted entry for the post-soak verify pass.
+// soakSubmission records one accepted entry for the post-soak verify
+// pass. We hold ONLY the canonical hash because POST /v1/entries
+// returns an SCT (Signed Certificate Timestamp), NOT a sequence
+// number — sequencing is asynchronous in this transparency-log
+// design. The verify pass resolves hash→seq via
+// GET /v1/entries-hash/{hash} before fetching the raw bytes.
 type soakSubmission struct {
-	seq uint64
 	hash [32]byte
 }
 
@@ -398,7 +402,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 				}
 				sampler.add(time.Since(reqStart))
 
-				seq, hash, ok := parseAcceptedResponse(body)
+				hash, ok := parseSCTCanonicalHash(body)
 				if !ok {
 					logFailure("parse-202-body", resp.StatusCode, body, nil)
 					failed.Add(1)
@@ -406,7 +410,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 				}
 				submitted.Add(1)
 				select {
-				case resultCh <- soakSubmission{seq: seq, hash: hash}:
+				case resultCh <- soakSubmission{hash: hash}:
 				default:
 				}
 			}
@@ -481,44 +485,62 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		Timeout:       30 * time.Second,
 	}
 	follow := &http.Client{Timeout: 30 * time.Second}
+	lookupClient := &http.Client{Timeout: 30 * time.Second}
 	verified := 0
 	for i, r := range results {
-		url := fmt.Sprintf("%s/v1/entries/%d/raw", op.BaseURL, r.seq)
+		hashHex := hex.EncodeToString(r.hash[:])
+
+		// Step 1: hash → seq. Required because POST /v1/entries
+		// returns an SCT (no sequence_number); we need seq to
+		// build the /raw URL. resolveSeqByHash polls until the
+		// sequencer commits the entry_index row, bounded at 5s.
+		seq, ok := resolveSeqByHash(context.Background(), lookupClient, op.BaseURL, r.hash)
+		if !ok {
+			t.Errorf("verify[%d/%d] hash=%s: resolveSeqByHash timed out (sequencer commit lag > 5s)",
+				i, len(results), hashHex)
+			continue
+		}
+
+		// Step 2: GET /v1/entries/{seq}/raw — expect 302 to bytestore.
+		url := fmt.Sprintf("%s/v1/entries/%d/raw", op.BaseURL, seq)
 		resp, err := verifyClient.Get(url)
 		if err != nil {
-			t.Errorf("verify[%d/%d] seq=%d: GET raw: %v", i, len(results), r.seq, err)
+			t.Errorf("verify[%d/%d] seq=%d: GET raw: %v", i, len(results), seq, err)
 			continue
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusFound {
 			t.Errorf("verify[%d/%d] seq=%d: expected 302, got %d",
-				i, len(results), r.seq, resp.StatusCode)
+				i, len(results), seq, resp.StatusCode)
 			continue
 		}
 		loc := resp.Header.Get("Location")
 		if loc == "" {
-			t.Errorf("verify[%d/%d] seq=%d: empty Location", i, len(results), r.seq)
+			t.Errorf("verify[%d/%d] seq=%d: empty Location", i, len(results), seq)
 			continue
 		}
-		if !strings.Contains(loc, hex.EncodeToString(r.hash[:])) {
-			t.Errorf("verify[%d/%d] seq=%d: Location missing hash hex", i, len(results), r.seq)
+		if !strings.Contains(loc, hashHex) {
+			t.Errorf("verify[%d/%d] seq=%d: Location missing hash hex", i, len(results), seq)
 			continue
 		}
+
+		// Step 3: follow the 302 to the presigned bytestore URL,
+		// confirm the bytes are actually retrievable.
 		r2, err := follow.Get(loc)
 		if err != nil {
-			t.Errorf("verify[%d/%d] seq=%d: follow: %v", i, len(results), r.seq, err)
+			t.Errorf("verify[%d/%d] seq=%d: follow: %v", i, len(results), seq, err)
 			continue
 		}
 		_, _ = io.Copy(io.Discard, r2.Body)
 		r2.Body.Close()
 		if r2.StatusCode != http.StatusOK {
 			t.Errorf("verify[%d/%d] seq=%d: follow status=%d",
-				i, len(results), r.seq, r2.StatusCode)
+				i, len(results), seq, r2.StatusCode)
 			continue
 		}
 		verified++
 	}
-	t.Logf("soak passed: %d/%d sampled entries verified via 302 path (total submitted=%d)",
+	t.Logf("soak passed: %d/%d sampled entries verified via hash→seq→302 path (total submitted=%d)",
 		verified, len(results), submitted.Load())
 }
 
@@ -538,15 +560,59 @@ func envInt(name string, def int) int {
 	return n
 }
 
-// parseAcceptedResponse extracts (seq, hash) from a 202 JSON body without
-// constructing a map[string]any per call. At 1M entries this matters.
-func parseAcceptedResponse(body []byte) (seq uint64, hash [32]byte, ok bool) {
-	const seqTag = `"sequence_number":`
+// parseSCTCanonicalHash extracts the canonical_hash from a 202
+// Accepted SCT JSON body without constructing a map[string]any per
+// call. At 1M entries this matters.
+//
+// Body shape (api/submission.go writes encoding/json over an
+// sdksct.SignedCertificateTimestamp value — see e2e_v1_sct_test.go
+// for the canonical decode path):
+//
+//	{
+//	  "version": 1,
+//	  "signer_did":      "did:...",
+//	  "sig_algo_id":     "ecdsa-secp256k1-sha256",
+//	  "log_did":         "did:...",
+//	  "canonical_hash":  "<64 hex chars>",
+//	  "log_time_micros": <int>,
+//	  "log_time":        "<rfc3339>",
+//	  "signature":       "<hex>"
+//	}
+//
+// NO sequence_number — sequencing is asynchronous; the soak verify
+// pass resolves hash→seq via GET /v1/entries-hash/{hash}.
+func parseSCTCanonicalHash(body []byte) (hash [32]byte, ok bool) {
 	const hashTag = `"canonical_hash":"`
-	si := bytes.Index(body, []byte(seqTag))
 	hi := bytes.Index(body, []byte(hashTag))
-	if si < 0 || hi < 0 {
-		return 0, [32]byte{}, false
+	if hi < 0 {
+		return [32]byte{}, false
+	}
+	hi += len(hashTag)
+	if hi+64 > len(body) {
+		return [32]byte{}, false
+	}
+	hashBytes, err := hex.DecodeString(string(body[hi : hi+64]))
+	if err != nil {
+		return [32]byte{}, false
+	}
+	copy(hash[:], hashBytes)
+	return hash, true
+}
+
+// parseHashLookupSeq extracts the sequence_number from a
+// /v1/entries-hash/{hash} JSON response. Returns ok=false when the
+// response is in the {"state":"pending"} shape (sequencer hasn't
+// committed the entry_index row yet).
+func parseHashLookupSeq(body []byte) (seq uint64, ok bool) {
+	// Pending response carries "state":"pending" and no
+	// sequence_number; short-circuit so the caller can retry.
+	if bytes.Contains(body, []byte(`"state":"pending"`)) {
+		return 0, false
+	}
+	const seqTag = `"sequence_number":`
+	si := bytes.Index(body, []byte(seqTag))
+	if si < 0 {
+		return 0, false
 	}
 	si += len(seqTag)
 	end := si
@@ -555,18 +621,41 @@ func parseAcceptedResponse(body []byte) (seq uint64, hash [32]byte, ok bool) {
 	}
 	n, err := strconv.ParseUint(string(body[si:end]), 10, 64)
 	if err != nil {
-		return 0, [32]byte{}, false
+		return 0, false
 	}
-	hi += len(hashTag)
-	if hi+64 > len(body) {
-		return 0, [32]byte{}, false
+	return n, true
+}
+
+// resolveSeqByHash polls GET /v1/entries-hash/{hash} until the
+// sequencer has committed the entry_index row (state != pending)
+// and returns its sequence number. Bounded retry handles the small
+// gap between WAL HWM advancing and the sequencer's INSERT
+// landing in entry_index — even after WAL drain the soak observed,
+// the sequencer's commit lags by milliseconds.
+//
+// Returns ok=false when the deadline expires; the verify caller
+// records the failure.
+func resolveSeqByHash(ctx context.Context, client *http.Client, baseURL string, hash [32]byte) (uint64, bool) {
+	hashHex := hex.EncodeToString(hash[:])
+	url := baseURL + "/v1/entries-hash/" + hashHex
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				if seq, ok := parseHashLookupSeq(body); ok {
+					return seq, true
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return 0, false
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	hashBytes, err := hex.DecodeString(string(body[hi : hi+64]))
-	if err != nil {
-		return 0, [32]byte{}, false
-	}
-	copy(hash[:], hashBytes)
-	return n, hash, true
 }
 
 func drainSubmissions(ch <-chan soakSubmission) []soakSubmission {
