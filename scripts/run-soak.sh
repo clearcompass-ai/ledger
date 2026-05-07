@@ -5,12 +5,22 @@
 # Default: 1M entries against real GCS, ~3 min sustained throughput.
 # Lower the count via ATTESTA_SOAK_ENTRIES for quick iteration.
 #
-# Required env:
-#   ATTESTA_TEST_DSN              postgres connection string (REQUIRED)
+# Postgres:
+#   If ATTESTA_TEST_DSN is set, that DSN is used as-is (no docker).
+#   If unset, this script auto-provisions Postgres in Docker using the
+#   same compose file as scripts/run-local.sh and exports the canonical
+#   testharness DSN. The container persists between runs; tear it down
+#   with `./scripts/run-soak.sh down`.
+#
+# Required env (GCS — no auto-provision; soak is real-cloud by design):
 #   ATTESTA_TEST_GCS_BUCKET       real GCS bucket name (REQUIRED)
 #   GOOGLE_APPLICATION_CREDENTIALS path to a service-account key with
 #                                  storage.objects.{create,get,list,delete}
 #                                  on the bucket (or workload identity)
+#
+# Optional env:
+#   ATTESTA_TEST_DSN              postgres connection string. If unset,
+#                                 auto-provisioned via Docker (see above).
 #
 # Optional knobs (env, with defaults):
 #   ATTESTA_SOAK_ENTRIES          1000000   total entries to submit
@@ -18,29 +28,43 @@
 #   ATTESTA_SOAK_VERIFY_SAMPLES   100       random subset to verify via /raw
 #   ATTESTA_SOAK_P99_BOUND_MS     100       admission p99 ceiling
 #
-# Usage:
-#   export ATTESTA_TEST_DSN=postgres://...
+# Usage (auto-provisioned Postgres):
 #   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
 #   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 #   ./scripts/run-soak.sh
 #
-# Or scale down for a quick run:
+# Usage (bring-your-own Postgres):
+#   export ATTESTA_TEST_DSN=postgres://user:pw@host/db
+#   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
+#   ./scripts/run-soak.sh
+#
+# Scale down for a quick run:
 #   ATTESTA_SOAK_ENTRIES=10000 ATTESTA_SOAK_VERIFY_SAMPLES=20 \
 #     ./scripts/run-soak.sh
+#
+# Tear down the auto-provisioned Postgres container:
+#   ./scripts/run-soak.sh down
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.testharness.yml"
+# Canonical testharness DSN — same as scripts/run-local.sh, so soak and
+# laptop dev share one Postgres instance when they're not running
+# concurrently.
+DOCKER_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable"
+
+case "${1:-}" in
+    down)
+        echo "== tearing down testharness postgres =="
+        docker compose -f "${COMPOSE_FILE}" down -v
+        exit 0
+        ;;
+esac
+
 cd "${REPO_ROOT}"
 
-# ── Validate inputs ───────────────────────────────────────────────
-if [ -z "${ATTESTA_TEST_DSN:-}" ]; then
-    echo "FATAL: ATTESTA_TEST_DSN not set"
-    echo
-    echo "  export ATTESTA_TEST_DSN=postgres://user:pw@host/db"
-    exit 1
-fi
-
+# ── GCS preflight (no auto-provision; soak is real-cloud) ─────────
 if [ -z "${ATTESTA_TEST_GCS_BUCKET:-}" ]; then
     echo "FATAL: ATTESTA_TEST_GCS_BUCKET not set"
     echo
@@ -54,6 +78,47 @@ if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -r "${GOOGLE_APPLICATION_
     exit 1
 fi
 
+# ── Postgres: auto-provision via Docker if no DSN was supplied ────
+PROVISIONED_PG=0
+if [ -z "${ATTESTA_TEST_DSN:-}" ]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        cat <<'ERR' >&2
+FATAL: ATTESTA_TEST_DSN not set and `docker` CLI not found on PATH.
+
+Either install Docker so this script can auto-provision Postgres, or
+supply a DSN to an existing Postgres instance:
+
+  export ATTESTA_TEST_DSN=postgres://user:pw@host/db
+ERR
+        exit 1
+    fi
+
+    echo "== ATTESTA_TEST_DSN unset — provisioning Postgres in Docker =="
+    docker compose -f "${COMPOSE_FILE}" up -d postgres
+
+    echo "== waiting for postgres =="
+    READY=0
+    for i in $(seq 1 30); do
+        if docker exec attesta_test_postgres \
+                pg_isready -U attesta -d attesta_test >/dev/null 2>&1; then
+            echo "postgres ready (attempt ${i})"
+            READY=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${READY}" -ne 1 ]; then
+        echo "FATAL: postgres did not become ready within 30s"
+        echo "       check: docker logs attesta_test_postgres"
+        exit 1
+    fi
+
+    export ATTESTA_TEST_DSN="${DOCKER_DSN}"
+    PROVISIONED_PG=1
+    echo "   ATTESTA_TEST_DSN=${ATTESTA_TEST_DSN}"
+    echo "   (tear down with: ./scripts/run-soak.sh down)"
+fi
+
 # Soak runs against REAL GCS — explicitly clear any container-mode signal
 # the test harness might pick up.
 unset ATTESTA_TEST_GCS_ENDPOINT
@@ -63,8 +128,14 @@ CONCURRENCY="${ATTESTA_SOAK_CONCURRENCY:-8}"
 SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
 P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
 
+if [ "${PROVISIONED_PG}" -eq 1 ]; then
+    DSN_SOURCE="docker (auto-provisioned)"
+else
+    DSN_SOURCE="env ATTESTA_TEST_DSN"
+fi
+
 echo "== attesta ledger soak =="
-echo "   dsn:          (set, omitted)"
+echo "   dsn source:   ${DSN_SOURCE}"
 echo "   bucket:       ${ATTESTA_TEST_GCS_BUCKET}"
 echo "   creds:        ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
 echo "   entries:      ${ENTRIES}"
