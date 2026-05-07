@@ -191,7 +191,11 @@ func startSoakOperator(t *testing.T) *soakOperator {
 		Logger:           logger,
 	}
 	queryDeps := &api.QueryDeps{
-		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
+		EntryStore:     entryStore, // hash → seq lookup (FetchByHash)
+		QueryAPI:       queryAPI,
+		DiffController: diffController,
+		WAL:            walc, // WAL probe (Pending/Manual short-circuit)
+		Logger:         logger,
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
@@ -203,6 +207,11 @@ func startSoakOperator(t *testing.T) *soakOperator {
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
+		// EntryByHash wires GET /v1/entries-hash/{hashHex}, which the
+		// soak verify pass needs to resolve hash→seq before fetching
+		// /v1/entries/{seq}/raw. Without this handler, the route 404s
+		// and resolveSeqByHash times out.
+		EntryByHash: api.NewHashLookupHandler(queryDeps),
 	}
 
 	serverCfg := api.DefaultServerConfig()
@@ -515,16 +524,25 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		_ = op.Pool.QueryRow(context.Background(),
 			"SELECT COUNT(*) FROM entry_index").Scan(&entryIndexRows)
 
+		// shipDup = (shipped events) - (distinct seqs that completed).
+		// > 0 means concurrent scans + 16 workers raced the MarkShipped
+		// commit window, fanning the same seq to multiple workers
+		// (MarkShipped is idempotent on StateShipped → nil, so each
+		// fan-out increments shipped). Correctness unaffected; this
+		// is the validation surface for shipper.MetricsSnapshot
+		// double-counting.
+		shipDup := int64(shipMetrics.Shipped) - int64(shipMetrics.UniqueShipped)
 		t.Logf("drain[cycle=%d t=%s] expected=%d "+
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
-			"ship{shipped=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
+			"ship{shipped=%d unique=%d dup=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
 			"pg{entry_index=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
 			seqMetrics.Failures, seqMetrics.ManualCount, seqMetrics.CurrentLag,
-			shipMetrics.Shipped, shipMetrics.Retries, shipMetrics.Manual,
+			shipMetrics.Shipped, shipMetrics.UniqueShipped, shipDup,
+			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
 			entryIndexRows,
 		)
@@ -569,7 +587,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		// returns an SCT (no sequence_number); we need seq to
 		// build the /raw URL. resolveSeqByHash polls until the
 		// sequencer commits the entry_index row, bounded at 5s.
-		seq, ok := resolveSeqByHash(context.Background(), lookupClient, op.BaseURL, r.hash)
+		seq, ok := resolveSeqByHash(t, context.Background(), lookupClient, op.BaseURL, r.hash)
 		if !ok {
 			t.Errorf("verify[%d/%d] hash=%s: resolveSeqByHash timed out (sequencer commit lag > 5s)",
 				i, len(results), hashHex)
@@ -708,25 +726,51 @@ func parseHashLookupSeq(body []byte) (seq uint64, ok bool) {
 // landing in entry_index — even after WAL drain the soak observed,
 // the sequencer's commit lags by milliseconds.
 //
+// On timeout: emits a diagnostic line summarizing the LAST attempt's
+// status/body and the total number of attempts so the verify-stage
+// failure mode is visible without re-running with extra logging.
+//
 // Returns ok=false when the deadline expires; the verify caller
 // records the failure.
-func resolveSeqByHash(ctx context.Context, client *http.Client, baseURL string, hash [32]byte) (uint64, bool) {
+func resolveSeqByHash(t *testing.T, ctx context.Context, client *http.Client, baseURL string, hash [32]byte) (uint64, bool) {
 	hashHex := hex.EncodeToString(hash[:])
 	url := baseURL + "/v1/entries-hash/" + hashHex
 	deadline := time.Now().Add(5 * time.Second)
+	attempts := 0
+	var (
+		lastStatus int
+		lastBody   []byte
+		lastErr    error
+	)
 	for {
+		attempts++
 		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 		resp, err := client.Do(req)
 		if err == nil {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			lastStatus = resp.StatusCode
+			lastBody = body
+			lastErr = nil
 			if resp.StatusCode == http.StatusOK {
 				if seq, ok := parseHashLookupSeq(body); ok {
 					return seq, true
 				}
 			}
+		} else {
+			lastStatus = 0
+			lastBody = nil
+			lastErr = err
 		}
 		if time.Now().After(deadline) {
+			const maxBodyBytes = 512
+			bodyTrim := lastBody
+			if len(bodyTrim) > maxBodyBytes {
+				bodyTrim = bodyTrim[:maxBodyBytes]
+			}
+			t.Logf("resolveSeqByHash TIMEOUT hash=%s url=%s attempts=%d "+
+				"lastStatus=%d lastErr=%v lastBody=%q",
+				hashHex, url, attempts, lastStatus, lastErr, bodyTrim)
 			return 0, false
 		}
 		time.Sleep(100 * time.Millisecond)
