@@ -14,7 +14,8 @@ SDK_MODULE  := github.com/clearcompass-ai/attesta
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
         integration-up integration-down integration-logs integration-status \
         integration-gcs-tile \
-        release-build verify-deps lint sbom test-race test-race-all
+        release-build verify-deps lint sbom test-race test-race-all \
+        test-differential test-chaos
 
 DEV_COMPOSE := docker compose -f scripts/local/docker-compose.dev.yml
 INT_COMPOSE := docker compose -f scripts/local/docker-compose.integration.yml
@@ -321,3 +322,24 @@ test-race: ## Race detector on critical packages (merge gate)
 # packages and want belt-and-suspenders confirmation.
 test-race-all: ## Race detector on EVERY package (pre-release sweep)
 	$(GO) test -race -count=1 -short ./...
+
+# J3 — Differential test: writer vs reader byte-identical
+# responses. Build-tag-isolated because it requires a real
+# Postgres (ATTESTA_TEST_DSN). Confirms Pure CQRS read-path
+# correctness — read endpoints depend only on the underlying
+# Postgres + Tessera + bytestore, never on which process serves.
+test-differential: ## Differential writer-vs-reader test (requires ATTESTA_TEST_DSN)
+	@if [ -z "$$ATTESTA_TEST_DSN" ]; then \
+	  echo "FAIL: ATTESTA_TEST_DSN unset"; \
+	  echo "      export ATTESTA_TEST_DSN=postgres://..."; \
+	  exit 1; \
+	fi
+	$(GO) test -tags=differential -count=1 -timeout 5m ./tests/ \
+	    -run TestDifferential
+
+# J4 — Chaos test suite. Build-tag-isolated; runs in CI weekly
+# + on PRs that touch lifecycle/wal/store/tests/chaos. Slower
+# than unit tests (Badger fsync, repeated panic-recover cycles,
+# inject latency injection); not a per-PR merge gate by default.
+test-chaos: ## Chaos suite (lifecycle, WAL durability, shutdown ordering, inject)
+	$(GO) test -tags=chaos -count=1 -timeout=10m ./tests/chaos/...

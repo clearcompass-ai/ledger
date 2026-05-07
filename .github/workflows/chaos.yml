@@ -1,0 +1,47 @@
+# =============================================================================
+# FILE PATH:
+#     .github/workflows/chaos.yml
+#
+# DESCRIPTION:
+#     J4 — Chaos test suite. Build-tag-isolated; weekly + manual
+#     trigger because chaos tests are slower than unit tests
+#     (real Badger fsync, repeated panic-recover cycles,
+#     fault-injection waiting periods).
+#
+#     NOT a per-PR merge gate; chaos protects against bugs that
+#     surface only under sustained adversarial conditions.
+# =============================================================================
+name: chaos
+
+on:
+  schedule:
+    - cron: "37 5 * * 0"   # Sunday 05:37 UTC
+  workflow_dispatch:        # manual trigger
+  pull_request:
+    paths:
+      - "tests/chaos/**"
+      - "lifecycle/safe_run.go"
+      - "lifecycle/shutdown.go"
+      - "store/breaker.go"
+      - "wal/**"
+      - ".github/workflows/chaos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7  # v5.0.1
+        with:
+          go-version-file: go.mod
+
+      - name: chaos suite
+        run: make test-chaos
