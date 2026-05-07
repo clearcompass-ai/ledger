@@ -529,8 +529,17 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 			entryIndexRows,
 		)
 
-		if hwm >= expectedHWM {
-			t.Logf("drained: HWM=%d in %s", hwm, time.Since(drainStart).Round(time.Second))
+		// HWM is the LAST contiguous shipped sequence number,
+		// zero-indexed. Tessera/sequencer assigns 0-indexed leaf
+		// sequences (see tests/e2e_v1_sct_test.go:118-121: "the
+		// first admitted entry in a fresh test DB lands at seq 0").
+		// So N submitted entries occupy seqs 0..N-1; full drain is
+		// hwm == N-1, NOT hwm == N. Comparing hwm+1 >= expectedHWM
+		// makes this explicit and avoids the off-by-one that caused
+		// the drain to hang at expected=48 / hwm=47 indefinitely.
+		if expectedHWM > 0 && hwm+1 >= expectedHWM {
+			t.Logf("drained: HWM=%d (=> %d entries shipped) in %s",
+				hwm, hwm+1, time.Since(drainStart).Round(time.Second))
 			break
 		}
 		if time.Since(drainStart) > drainTimeout {
