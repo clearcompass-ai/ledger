@@ -74,6 +74,7 @@ import (
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/sequencer"
 	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
@@ -216,6 +217,17 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	}
 	baseURL := fmt.Sprintf("http://%s", ln.Addr().String())
 
+	// Sequencer: WAL StatePending → entry_index INSERT + Tessera append
+	// → WAL StateSequenced. Without this goroutine the WAL stays
+	// at StatePending indefinitely; the shipper's HWM never advances
+	// past 0; the drain wait below times out at 10 minutes.
+	// Mirrors startE2EOperator in e2e_shipper_redirect_test.go.
+	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
+		PollInterval: 10 * time.Millisecond,
+		Logger:       logger,
+	})
+
+	// Shipper: WAL StateSequenced → bytestore upload → WAL StateShipped.
 	ship := shipper.NewShipper(walc, backend, shipper.Config{
 		PollInterval: 100 * time.Millisecond,
 		MaxInFlight:  16,
@@ -223,6 +235,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	})
 
 	go func() { _ = server.Serve(ln) }()
+	go func() { _ = seq.Run(ctx) }()
 	go func() { _ = ship.Run(ctx) }()
 
 	op := &soakOperator{
