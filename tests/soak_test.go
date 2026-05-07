@@ -250,6 +250,12 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
 		WAL: walc, Presigner: backend, LogDID: testLogDID, Logger: logger,
+		// Transparency-log convention: bucket is anonymous-read,
+		// 302 handler returns credential-free URLs. The soak's
+		// verify pass HARD-ASSERTS no signature query params,
+		// catching any silent fallback to presigned URLs.
+		PublicURLer:  backend.(api.PublicURLer),
+		BucketPublic: true,
 	}
 
 	handlers := api.Handlers{
@@ -685,8 +691,34 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 			continue
 		}
 
-		// Step 3: follow the 302 to the presigned bytestore URL,
-		// confirm the bytes are actually retrievable.
+		// Transparency-log invariant: Location MUST be a credential-
+		// free URL — no V4-signature query params, no presign tokens.
+		// Catches a silent regression where the operator falls back
+		// from PublicURLer to Presigner. See bytestore/publicurl.go
+		// for the architectural rationale (CT-log convention,
+		// RFC 9162, c2sp.org/tlog-tiles).
+		switch {
+		case strings.Contains(loc, "X-Goog-Signature="):
+			t.Errorf("verify[%d/%d] seq=%d: Location is GCS-presigned (BucketPublic=true should issue public URL): %s",
+				i, len(results), seq, loc)
+			continue
+		case strings.Contains(loc, "X-Amz-Signature="):
+			t.Errorf("verify[%d/%d] seq=%d: Location is S3-presigned (BucketPublic=true should issue public URL): %s",
+				i, len(results), seq, loc)
+			continue
+		}
+		// Confirm the operator took the public-URL path (not the
+		// presigned fallback). X-Bytestore-URL is the new
+		// SRE-facing signal added alongside the existing X-Source
+		// (which stays "bytestore" for backward-compat).
+		if got := resp.Header.Get("X-Bytestore-URL"); got != "public" {
+			t.Errorf("verify[%d/%d] seq=%d: X-Bytestore-URL=%q; want public",
+				i, len(results), seq, got)
+			continue
+		}
+
+		// Step 3: follow the 302 with NO Authorization header, NO
+		// credentials. The bucket must serve the bytes anonymously.
 		r2, err := follow.Get(loc)
 		if err != nil {
 			t.Errorf("verify[%d/%d] seq=%d: follow: %v", i, len(results), seq, err)

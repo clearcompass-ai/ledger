@@ -104,6 +104,21 @@ type Presigner interface {
 	PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error)
 }
 
+// PublicURLer issues credential-free URLs for (seq, hash) tuples
+// when the bytestore bucket is anonymous-read (transparency-log
+// convention; see bytestore/publicurl.go).
+//
+// When EntryReadDeps.BucketPublic is true AND PublicURLer returns
+// a URL successfully, the handler 302s to that URL. When
+// PublicURLer returns ErrPublicURLNotConfigured (or BucketPublic
+// is false), the handler falls back to Presigner.
+//
+// bytestore.GCS and bytestore.S3 satisfy this when configured
+// with PublicBaseURL (or the default for that backend).
+type PublicURLer interface {
+	PublicURL(seq uint64, hash [32]byte) (string, error)
+}
+
 // EntryReadDeps holds dependencies for entry read handlers.
 type EntryReadDeps struct {
 	Fetcher EntryFetcher
@@ -111,12 +126,22 @@ type EntryReadDeps struct {
 	EntryStore SeqHashLookup
 	WAL EntryWALReader
 	Presigner Presigner
+	// PublicURLer is the credential-free URL surface used when
+	// BucketPublic is true. nil disables the public path; the
+	// handler falls back to Presigner.
+	PublicURLer PublicURLer
+	// BucketPublic enables 302 redirects to credential-free URLs
+	// (transparency-log convention). When true, the handler tries
+	// PublicURLer first and falls back to Presigner only if
+	// PublicURLer returns ErrPublicURLNotConfigured.
+	BucketPublic bool
 	LogDID string
 	Logger *slog.Logger
 
 	// PresignTTL caps the lifetime of redirect URLs the handler
-	// issues. Defaults to 1 hour. Capped at 7 days by the underlying
-	// adapter (V4 / SigV4 ceiling).
+	// issues via Presigner. Defaults to 1 hour. Capped at 7 days
+	// by the underlying adapter (V4 / SigV4 ceiling). Only used
+	// on the Presigner fallback path.
 	PresignTTL time.Duration
 }
 
@@ -334,14 +359,48 @@ func (deps *EntryReadDeps) serveWALInline(w http.ResponseWriter, r *http.Request
 	_, _ = w.Write(wire)
 }
 
-// serveBytestoreRedirect issues a 302 with a presigned URL pointing
-// at the byte store object. If no Presigner is configured, returns
-// 500 — silent fallback to inline streaming would defeat the egress-
-// reduction purpose of the redirect.
+// serveBytestoreRedirect issues a 302 to the byte store object.
+//
+// Routing (transparency-log architecture, see bytestore/publicurl.go):
+//
+//   1. If BucketPublic is true AND PublicURLer is configured, issue
+//      a credential-free public URL. CDN-cacheable, witness-fetchable,
+//      no expiry. This is the canonical CT-log behavior.
+//
+//   2. Otherwise, fall back to Presigner — V4-signed URL for private
+//      buckets. Time-bounded; not CDN-cacheable.
+//
+//   3. If neither path is configured, return 500 — silent fallback
+//      to inline streaming would defeat the egress-reduction purpose
+//      of the redirect.
 func (deps *EntryReadDeps) serveBytestoreRedirect(
 	w http.ResponseWriter, r *http.Request,
 	seq uint64, hash [32]byte, logTime time.Time, ttl time.Duration,
 ) {
+	// Public-URL path (transparency-log default).
+	if deps.BucketPublic && deps.PublicURLer != nil {
+		url, err := deps.PublicURLer.PublicURL(seq, hash)
+		if err == nil && url != "" {
+			w.Header().Set("Location", url)
+			setRawHeaders(w, seq, logTime)
+			w.Header().Set("X-Source", "bytestore")
+			// Distinguishes the public-URL path from the
+			// Presigner fallback for SRE diagnostics + soak
+			// regression assertions. Stable contract: existing
+			// X-Source: bytestore is unchanged for both paths.
+			w.Header().Set("X-Bytestore-URL", "public")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		// PublicURL didn't resolve (ErrPublicURLNotConfigured or
+		// implementation defect). Fall through to Presigner —
+		// belt-and-suspenders so a config slip doesn't break the
+		// read path entirely.
+		deps.Logger.Warn("raw entry: public URL not available, falling back to presigner",
+			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]), "error", err)
+	}
+
+	// Presigner fallback (private-bucket path).
 	if deps.Presigner == nil {
 		deps.Logger.Error("raw entry: shipped entry but no Presigner configured",
 			"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]))
@@ -361,6 +420,7 @@ func (deps *EntryReadDeps) serveBytestoreRedirect(
 	w.Header().Set("Location", url)
 	setRawHeaders(w, seq, logTime)
 	w.Header().Set("X-Source", "bytestore")
+	w.Header().Set("X-Bytestore-URL", "presigned")
 	// Cache-Control: private,max-age=<ttl-30s> would let the
 	// consumer's HTTP cache hold the URL for almost its lifetime
 	// without re-asking us. Skipped for now; commit 13 adds it

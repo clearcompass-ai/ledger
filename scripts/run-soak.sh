@@ -133,12 +133,17 @@ case "${BACKEND}" in
         SW_READY=0
         for i in $(seq 1 60); do
             # weed mini exposes the S3 listener once the master + volume
-            # come up. A 2xx-ish response means we can talk to it; AccessDenied
-            # without auth is fine — that means the listener is alive.
-            if curl -fsS -o /dev/null -w "%{http_code}" \
-                    "http://localhost:8333/" 2>/dev/null \
-                    | grep -qE "^(200|403)$"; then
-                echo "SeaweedFS ready (attempt ${i})"
+            # come up. Anonymous root request returns 403 (AccessDenied);
+            # any HTTP response code from the server proves the listener
+            # is alive. NOTE: do NOT use `curl -f` here — it makes curl
+            # exit non-zero on HTTP 4xx, which breaks the format-string
+            # capture below (a 403 listener-up state would be
+            # mis-classified as "not ready").
+            HTTP_CODE=$(curl -sS --max-time 2 -o /dev/null \
+                -w "%{http_code}" "http://localhost:8333/" 2>/dev/null \
+                || echo "000")
+            if echo "${HTTP_CODE}" | grep -qE "^[234][0-9]{2}$"; then
+                echo "SeaweedFS ready (attempt ${i}, http=${HTTP_CODE})"
                 SW_READY=1
                 break
             fi

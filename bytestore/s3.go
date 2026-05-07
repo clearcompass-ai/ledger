@@ -99,10 +99,27 @@ type S3Config struct {
 	// ReadTimeout caps a single ReadEntry / ReadEntryBatch call.
 	// Defaults to 30s.
 	ReadTimeout time.Duration
+
+	// PublicBaseURL is the credential-free monitor URL prefix used
+	// by PublicURL. Empty means "use the appropriate default":
+	//
+	//   PathStyle  → DefaultS3PathStylePublicBaseURL(Endpoint, Bucket)
+	//                (SeaweedFS, MinIO, RustFS, R2 path-style)
+	//   non-PathStyle → DefaultS3VirtualHostPublicBaseURL(Bucket, Region)
+	//                   (AWS S3 with public-read bucket policy)
+	//
+	// Set explicitly to point at a CDN / custom DNS in front of
+	// the bucket.
+	//
+	// Pre-condition: bucket must allow anonymous GET. SeaweedFS in
+	// `weed mini` mode does this by default; MinIO requires
+	// `mc anonymous set download`; AWS S3 requires a bucket policy
+	// + Block-Public-Access opt-out.
+	PublicBaseURL string
 }
 
-// S3 satisfies Backend (Store + Presigner) against any S3-compatible
-// object store.
+// S3 satisfies Backend (Store + Presigner + PublicURLer) against
+// any S3-compatible object store.
 type S3 struct {
 	client *s3.Client
 	presigner *s3.PresignClient
@@ -110,6 +127,11 @@ type S3 struct {
 	objectPrefix string
 	writeTimeout time.Duration
 	readTimeout time.Duration
+
+	// publicURL is the deterministic public-URL composer. May be
+	// nil-safe (returns ErrPublicURLNotConfigured) when no base
+	// URL was supplied AND no default could be derived.
+	publicURL *publicURLMapper
 
 	mu sync.Mutex
 	cache map[string][]byte
@@ -170,6 +192,22 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	client := s3.NewFromConfig(awsCfg, clientOpts...)
 	presigner := s3.NewPresignClient(client)
 
+	// Resolve public URL base. Empty cfg.PublicBaseURL falls back
+	// to the appropriate default for the addressing mode:
+	//   - PathStyle (SeaweedFS/MinIO/RustFS/R2): {Endpoint}/{Bucket}
+	//   - virtual-host (AWS S3 anonymous-read):  https://{Bucket}.s3.{Region}.amazonaws.com
+	publicBase := cfg.PublicBaseURL
+	if publicBase == "" {
+		if cfg.PathStyle && cfg.Endpoint != "" {
+			publicBase = DefaultS3PathStylePublicBaseURL(cfg.Endpoint, cfg.Bucket)
+		} else if cfg.Region != "" {
+			publicBase = DefaultS3VirtualHostPublicBaseURL(cfg.Bucket, cfg.Region)
+		}
+		// Else: leave empty; PublicURL will return
+		// ErrPublicURLNotConfigured. The 302 handler falls back
+		// to Presigner.
+	}
+
 	return &S3{
 		client:       client,
 		presigner:    presigner,
@@ -180,11 +218,24 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		cache:        make(map[string][]byte, cfg.CacheSize),
 		access:       make(map[string]int64, cfg.CacheSize),
 		maxSize:      cfg.CacheSize,
+		publicURL:    newPublicURLMapper(publicBase, cfg.ObjectPrefix),
 	}, nil
 }
 
 func (s *S3) keyOf(seq uint64, hash [32]byte) string {
 	return layoutKey(s.objectPrefix, seq, hash)
+}
+
+// PublicURL returns the credential-free URL for (seq, hash). Used
+// by the api 302 handler when the operator is configured for a
+// public bucket (LEDGER_BYTE_STORE_BUCKET_PUBLIC=true). See
+// publicurl.go for the architectural rationale.
+//
+// Pre-condition for working URLs: the bucket must allow anonymous
+// GET. SeaweedFS, MinIO, and similar S3-compatibles support this
+// trivially; AWS S3 requires explicit public-read bucket policy.
+func (s *S3) PublicURL(seq uint64, hash [32]byte) (string, error) {
+	return s.publicURL.PublicURL(seq, hash)
 }
 
 // WriteEntry uploads wire bytes via PutObject and populates the cache.

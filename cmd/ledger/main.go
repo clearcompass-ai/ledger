@@ -422,6 +422,28 @@ type Config struct {
 	ByteStoreS3AccessKey string // empty = default credential chain
 	ByteStoreS3SecretKey string // empty = default credential chain
 	ByteStoreS3PathStyle bool // true for RustFS; false for AWS S3
+
+	// Public-URL routing (transparency-log convention; see
+	// bytestore/publicurl.go).
+	//
+	// ByteStoreBucketPublic — when true, the entry-raw 302 handler
+	// issues a credential-free public URL (no expiry, no auth, CDN-
+	// cacheable) instead of a V4-signed URL. Defaults to true: every
+	// transparency log on the wire (CT, Sigsum, Rekor, sumdb)
+	// follows this convention. Operators with private buckets
+	// explicitly opt out.
+	// Env: LEDGER_BYTE_STORE_BUCKET_PUBLIC
+	ByteStoreBucketPublic bool
+
+	// ByteStorePublicBaseURL — explicit public-URL prefix override.
+	// Empty means "use the appropriate default for the backend":
+	//   gcs:               https://storage.googleapis.com/{bucket}
+	//   s3 (path-style):   {endpoint}/{bucket}
+	//   s3 (virtual-host): https://{bucket}.s3.{region}.amazonaws.com
+	// Set explicitly to point at a CDN / custom DNS in front of the
+	// bucket.
+	// Env: LEDGER_BYTE_STORE_PUBLIC_BASE_URL
+	ByteStorePublicBaseURL string
 	TileCacheSize int
 	SMTNodeCacheSize int
 	DeltaWindow int
@@ -558,6 +580,11 @@ func loadConfig() (*Config, error) {
 		ByteStoreS3AccessKey: os.Getenv("LEDGER_BYTE_STORE_S3_ACCESS_KEY"),
 		ByteStoreS3SecretKey: os.Getenv("LEDGER_BYTE_STORE_S3_SECRET_KEY"),
 		ByteStoreS3PathStyle: os.Getenv("LEDGER_BYTE_STORE_S3_PATH_STYLE") == "true",
+		// Public-URL routing — default TRUE to align with the
+		// transparency-log convention. Operators with private
+		// buckets opt out via LEDGER_BYTE_STORE_BUCKET_PUBLIC=false.
+		ByteStoreBucketPublic:  os.Getenv("LEDGER_BYTE_STORE_BUCKET_PUBLIC") != "false",
+		ByteStorePublicBaseURL: os.Getenv("LEDGER_BYTE_STORE_PUBLIC_BASE_URL"),
 		TileCacheSize:        10_000,
 		SMTNodeCacheSize:     100_000,
 		DeltaWindow:          10,
@@ -902,9 +929,10 @@ func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 // applies the remaining defaults (prefix=entries, cache_size, region).
 func (cfg *Config) toBytestoreConfig() bytestore.Config {
 	bc := bytestore.Config{
-		Backend:   cfg.ByteStoreBackend,
-		Prefix:    cfg.ByteStorePrefix,
-		CacheSize: cfg.ByteStoreCacheSize,
+		Backend:       cfg.ByteStoreBackend,
+		Prefix:        cfg.ByteStorePrefix,
+		CacheSize:     cfg.ByteStoreCacheSize,
+		PublicBaseURL: cfg.ByteStorePublicBaseURL,
 	}
 	switch cfg.ByteStoreBackend {
 	case "gcs":
@@ -2023,9 +2051,20 @@ func main() {
 		EntryStore: entryStore,
 		WAL:        walc,
 		Presigner:  byteStore, // bytestore.Backend satisfies api.Presigner
-		LogDID:     cfg.LogDID,
-		Logger:     logger,
+		// PublicURLer is satisfied by bytestore.GCS and bytestore.S3
+		// when configured with a public-base URL (default for both).
+		// Type-assert here so the api package doesn't depend on
+		// bytestore types directly.
+		PublicURLer:  byteStore.(api.PublicURLer),
+		BucketPublic: cfg.ByteStoreBucketPublic,
+		LogDID:       cfg.LogDID,
+		Logger:       logger,
 	}
+	logger.Info("bytestore: routing configured",
+		"backend", cfg.ByteStoreBackend,
+		"bucket_public", cfg.ByteStoreBucketPublic,
+		"public_base_url", cfg.ByteStorePublicBaseURL,
+	)
 	commitDeps := &api.DerivationCommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
 	// ── Cryptographic commitment lookup (Pure CQRS — Badger 0x0C) ─────

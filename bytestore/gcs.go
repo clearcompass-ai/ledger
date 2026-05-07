@@ -97,10 +97,22 @@ type GCSConfig struct {
 	// ReadTimeout caps a single ReadEntry / ReadEntryBatch call.
 	// Defaults to 30s.
 	ReadTimeout time.Duration
+
+	// PublicBaseURL is the credential-free monitor URL prefix used
+	// by PublicURL. Empty means "use the default for an anonymous-
+	// read GCS bucket": https://storage.googleapis.com/{Bucket}.
+	// Set explicitly to point at a CDN / custom DNS in front of
+	// the bucket.
+	//
+	// Pre-condition: the bucket must be configured for anonymous
+	// read (IAM `allUsers: roles/storage.objectViewer` or
+	// equivalent). When the bucket is private, leave this empty
+	// and use Presigner.
+	PublicBaseURL string
 }
 
-// GCS satisfies Backend (Store + Presigner) against a GCS bucket
-// with an LRU cache layer.
+// GCS satisfies Backend (Store + Presigner + PublicURLer) against
+// a GCS bucket with an LRU cache layer.
 type GCS struct {
 	client *storage.Client
 	bucket *storage.BucketHandle
@@ -108,6 +120,11 @@ type GCS struct {
 	objectPrefix string
 	writeTimeout time.Duration
 	readTimeout time.Duration
+
+	// publicURL is the deterministic public-URL composer. May be
+	// nil-safe (returns ErrPublicURLNotConfigured) when no base
+	// URL was supplied.
+	publicURL *publicURLMapper
 
 	mu sync.Mutex
 	cache map[string][]byte
@@ -152,6 +169,14 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 		return nil, fmt.Errorf("bytestore/gcs: storage.NewClient: %w", err)
 	}
 
+	// Resolve public URL base. Empty cfg.PublicBaseURL falls back
+	// to the canonical anonymous-read GCS URL prefix; CDN-fronted
+	// deployments override via cfg.PublicBaseURL.
+	publicBase := cfg.PublicBaseURL
+	if publicBase == "" {
+		publicBase = DefaultGCSPublicBaseURL(cfg.Bucket)
+	}
+
 	return &GCS{
 		client:       client,
 		bucket:       client.Bucket(cfg.Bucket),
@@ -162,11 +187,26 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 		cache:        make(map[string][]byte, cfg.CacheSize),
 		access:       make(map[string]int64, cfg.CacheSize),
 		maxSize:      cfg.CacheSize,
+		publicURL:    newPublicURLMapper(publicBase, cfg.ObjectPrefix),
 	}, nil
 }
 
 func (s *GCS) keyOf(seq uint64, hash [32]byte) string {
 	return layoutKey(s.objectPrefix, seq, hash)
+}
+
+// PublicURL returns the credential-free URL for (seq, hash). Used
+// by the api 302 handler when the operator is configured for a
+// public bucket (LEDGER_BYTE_STORE_BUCKET_PUBLIC=true). See
+// publicurl.go for the architectural rationale (CT-log
+// convention, RFC 9162, c2sp.org/tlog-tiles).
+//
+// Pre-condition for working URLs: the bucket must have IAM
+// `allUsers: roles/storage.objectViewer` granted. When the bucket
+// is private, the URL technically resolves but returns 403 — the
+// operator should set BucketPublic=false to stay on Presigner.
+func (s *GCS) PublicURL(seq uint64, hash [32]byte) (string, error) {
+	return s.publicURL.PublicURL(seq, hash)
 }
 
 // WriteEntry uploads wire bytes and populates the cache.
