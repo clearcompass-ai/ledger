@@ -232,7 +232,7 @@ func (s *GCS) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte,
 	r, err := obj.NewReader(rctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrObjectNotExist) {
-			return nil, fmt.Errorf("bytestore/gcs: seq=%d hash=%x: %w (gcs: %v)", seq, hash[:8], ErrNotFound, err)
+			return nil, fmt.Errorf("bytestore/gcs: seq=%d hash=%x: %w (gcs: %w)", seq, hash[:8], ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("bytestore/gcs: read seq=%d: %w", seq, err)
 	}
