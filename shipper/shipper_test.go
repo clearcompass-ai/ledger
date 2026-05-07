@@ -180,6 +180,7 @@ type fakeBytestore struct {
 	failTimes int // remaining forced failures for failSeq
 	stallSeq uint64 // 0 = no stall
 	stall time.Duration
+	stallEvery time.Duration // > 0 → every WriteEntry sleeps this long
 	calls atomic.Int64
 }
 
@@ -192,6 +193,12 @@ func (f *fakeBytestore) WriteEntry(_ context.Context, seq uint64, _ [32]byte, wi
 	f.mu.Lock()
 	if f.stallSeq != 0 && f.stallSeq == seq && f.stall > 0 {
 		stall := f.stall
+		f.mu.Unlock()
+		time.Sleep(stall)
+		f.mu.Lock()
+	}
+	if f.stallEvery > 0 {
+		stall := f.stallEvery
 		f.mu.Unlock()
 		time.Sleep(stall)
 		f.mu.Lock()
@@ -598,6 +605,78 @@ func TestShipper_Concurrent_ManyEntries(t *testing.T) {
 	snap := s.Metrics()
 	if snap.Shipped != N {
 		t.Errorf("metrics.Shipped: got %d, want %d", snap.Shipped, N)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// In-flight dedupe — pins the racing-scan-window guard
+// ─────────────────────────────────────────────────────────────────────
+
+// TestShipper_InflightDedupe_PreventsConcurrentDispatch pins the
+// invariant that scanAndDispatch must NOT enqueue the same seq to a
+// second worker while the first is still in flight.
+//
+// Configuration: bytestore stalls every WriteEntry by 100ms; scanner
+// PollInterval is 10ms (fastConfig). With MaxInFlight=2 and N=10
+// entries, ~9 of the 10 in-flight ships overlap with multiple scan
+// ticks — without the dedupe guard, the same StateSequenced seq
+// would be re-yielded by IterateSequenced (its state hasn't flipped
+// to StateShipped yet) and dispatched again. Each redundant dispatch
+// triggers another bytestore.WriteEntry → fakeBytestore.calls would
+// exceed N. The guard pins calls == N exactly and surfaces the
+// avoided dispatches via SkippedInflight.
+//
+// Pre-fix (no inflight set):
+//   bytestore.calls > N (often 1.5×-2× N)
+//   metrics.Shipped > N
+// Post-fix:
+//   bytestore.calls == N
+//   metrics.Shipped == N
+//   metrics.SkippedInflight > 0  (proves the guard activated)
+func TestShipper_InflightDedupe_PreventsConcurrentDispatch(t *testing.T) {
+	w := newFakeWAL()
+	bs := newFakeBytestore()
+	bs.stallEvery = 100 * time.Millisecond
+
+	const N = 10
+	for seq := uint64(1); seq <= N; seq++ {
+		w.seed(seq, hashFor(seq), wireFor(seq))
+	}
+
+	cfg := fastConfig() // PollInterval 10ms
+	cfg.MaxInFlight = 2 // few workers + many ticks ⇒ many overlap windows
+	s := NewShipper(w, bs, cfg)
+
+	runUntilCondition(t, s, 5*time.Second, func() bool {
+		hwm, _ := w.HWM(context.Background())
+		return hwm == N
+	})
+
+	// All N entries shipped, exactly once on the bytestore.
+	stored := bs.Stored()
+	if len(stored) != N {
+		t.Errorf("bytestore stored = %d distinct seqs; want %d", len(stored), N)
+	}
+	if got := bs.calls.Load(); got != int64(N) {
+		t.Errorf("bytestore.WriteEntry calls = %d; want %d "+
+			"(>%d means dedupe guard failed; same seq dispatched twice)",
+			got, N, N)
+	}
+
+	snap := s.Metrics()
+	if snap.Shipped != N {
+		t.Errorf("metrics.Shipped = %d; want %d", snap.Shipped, N)
+	}
+	if snap.UniqueShipped != N {
+		t.Errorf("metrics.UniqueShipped = %d; want %d", snap.UniqueShipped, N)
+	}
+	// The guard MUST activate at least once given the timing setup.
+	// 100ms stall + 10ms scan tick + N=10 entries means many scans
+	// observe StateSequenced seqs already in-flight.
+	if snap.SkippedInflight == 0 {
+		t.Errorf("metrics.SkippedInflight = 0; want > 0 " +
+			"(guard never fired — test setup is wrong, OR the guard is " +
+			"missing from scanAndDispatch)")
 	}
 }
 

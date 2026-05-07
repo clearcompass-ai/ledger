@@ -20,6 +20,7 @@ type Metrics struct {
 	shipped atomic.Uint64 // ship-complete events (includes idempotent re-ships)
 	uniqueShipped atomic.Uint64 // distinct seqs that completed (1-per-seq)
 	shippedSeen sync.Map // seq → struct{}{} ; powers uniqueShipped dedupe
+	skippedInflight atomic.Uint64 // scan-yield events filtered by inflight dedupe
 	retries atomic.Uint64 // failed-and-MarkRetry events
 	manual atomic.Uint64 // entries that hit MaxAttempts and were marked manual
 	markShippedFailures atomic.Uint64 // bytestore succeeded but MarkShipped failed
@@ -48,6 +49,17 @@ type MetricsSnapshot struct {
 	// crashing the test (correctness is unaffected; bytestore is
 	// content-addressed and MarkShipped is idempotent).
 	UniqueShipped uint64
+
+	// SkippedInflight is the count of scan-yield events that were
+	// filtered by the in-flight dedupe guard (Shipper.inflight).
+	// > 0 indicates the racing-scan-window pathology was averted:
+	// scanAndDispatch saw a StateSequenced seq that was already
+	// dispatched to a worker but not yet completed. Each
+	// SkippedInflight increment represents one avoided redundant
+	// dispatch — and therefore one avoided potential GCS 429 or
+	// Badger MVCC conflict. Zero on idle systems and on systems
+	// where shipOne completes faster than PollInterval.
+	SkippedInflight uint64
 
 	// Retries is the count of retried-after-failure events.
 	// Increments once per failed bytestore upload (or WAL read
@@ -85,6 +97,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	out := MetricsSnapshot{
 		Shipped:             m.shipped.Load(),
 		UniqueShipped:       m.uniqueShipped.Load(),
+		SkippedInflight:     m.skippedInflight.Load(),
 		Retries:             m.retries.Load(),
 		Manual:              m.manual.Load(),
 		MarkShippedFailures: m.markShippedFailures.Load(),

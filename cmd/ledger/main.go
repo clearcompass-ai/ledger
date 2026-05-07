@@ -342,6 +342,20 @@ type Config struct {
 	SequencerInterval time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
 	SequencerMaxInFlight int // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
 	MMD time.Duration // default 24h; LEDGER_MMD
+
+	// ShipperMaxInFlight is the worker-pool size for parallel
+	// bytestore uploads. Drain rate ceiling ≈ MaxInFlight ÷
+	// per-upload-latency. Default 64 (10M/day capacity with
+	// ~100ms GCS latency).
+	// Env: LEDGER_SHIPPER_MAX_IN_FLIGHT
+	ShipperMaxInFlight int
+
+	// ShipperPollInterval is how often the scanner re-iterates
+	// StateSequenced WAL entries. Should track per-upload latency
+	// so the in-flight dedupe guard works efficiently. Default
+	// 100ms.
+	// Env: LEDGER_SHIPPER_POLL_INTERVAL
+	ShipperPollInterval time.Duration
 	// Tessera embedding — in-process upstream Tessera.
 	// TesseraStorageDir is the POSIX directory the embedded
 	// Tessera POSIX driver writes tiles, entry bundles, and the
@@ -576,6 +590,18 @@ func loadConfig() (*Config, error) {
 		SequencerInterval:    envDurationOr("LEDGER_SEQUENCER_INTERVAL", 1*time.Second),
 		SequencerMaxInFlight: envIntOr("LEDGER_SEQUENCER_MAX_INFLIGHT", 4),
 		MMD:                  envDurationOr("LEDGER_MMD", 24*time.Hour),
+
+		// Shipper drain throughput. Drain rate ceiling is approximately
+		// MaxInFlight ÷ per-upload-latency (real GCS ≈ 100ms in observed
+		// soak). Default 64 sustains ~640 entries/sec — comfortably above
+		// the 116/sec required for 10M/day uniformly-distributed traffic
+		// and the ~580/sec sustained admission rate observed under burst.
+		// PollInterval=100ms aligns with per-upload latency so the in-
+		// flight dedupe guard (shipper.Shipper.inflight) operates
+		// efficiently — see soak telemetry: skipInflight ≈ 2× unique.
+		ShipperMaxInFlight: envIntOr("LEDGER_SHIPPER_MAX_IN_FLIGHT", 64),
+		ShipperPollInterval: envDurationOr("LEDGER_SHIPPER_POLL_INTERVAL",
+			100*time.Millisecond),
 
 		// Pool size: env override OR derived from MaxInFlight (set
 		// after we know the final MaxInFlight value below).
@@ -2236,7 +2262,14 @@ func main() {
 	// marks them StateShipped, advances HWM through contiguous runs.
 	// Bytes durability is the load-bearing property: bytestore upload
 	// completes BEFORE wal.MarkShipped runs, BEFORE HWM advances.
-	ship := shipper.NewShipper(walc, byteStore, shipper.Config{Logger: logger})
+	ship := shipper.NewShipper(walc, byteStore, shipper.Config{
+		PollInterval: cfg.ShipperPollInterval,
+		MaxInFlight:  cfg.ShipperMaxInFlight,
+		Logger:       logger,
+	})
+	logger.Info("shipper: configured",
+		"max_in_flight", cfg.ShipperMaxInFlight,
+		"poll_interval", cfg.ShipperPollInterval)
 
 	// D5 — Late-bound observable gauges. Wired here because the
 	// Sequencer + Shipper instances are now in scope. Nil meter
@@ -2251,6 +2284,18 @@ func main() {
 		if installed := shipper.InstallPendingGauge(shipMeter, ship.PendingCount); installed {
 			logger.Info("metrics: shipper pending gauge installed",
 				"metric", "attesta_shipper_pending_total")
+		}
+		// 5 cumulative counters that drive the canonical shipper alerts.
+		// See shipper/instruments_counters.go for thresholds + meaning.
+		if installed := shipper.InstallCounters(shipMeter, ship); installed {
+			logger.Info("metrics: shipper counters installed",
+				"metrics", []string{
+					"attesta_shipper_shipped_total",
+					"attesta_shipper_shipped_unique_total",
+					"attesta_shipper_skipped_inflight_total",
+					"attesta_shipper_retries_total",
+					"attesta_shipper_mark_failures_total",
+				})
 		}
 	}
 

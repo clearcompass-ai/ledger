@@ -36,13 +36,23 @@ WHAT IT MEASURES:
 
 CONFIG VIA ENV (with defaults):
 
-	ATTESTA_SOAK_ENTRIES total entries to submit (default 1_000_000)
-	ATTESTA_SOAK_CONCURRENCY concurrent submitters (default 8)
-	ATTESTA_SOAK_VERIFY_SAMPLES random sample of entries to /raw-check at the end (default 100)
-	ATTESTA_SOAK_P99_BOUND_MS HTTP admission p99 ceiling, ms (default 100)
+	ATTESTA_SOAK_ENTRIES               total entries to submit (default 1_000_000)
+	ATTESTA_SOAK_CONCURRENCY           concurrent submitters (default 8)
+	ATTESTA_SOAK_VERIFY_SAMPLES        random sample of entries to /raw-check at the end (default 100)
+	ATTESTA_SOAK_P99_BOUND_MS          HTTP admission p99 ceiling, ms (default 100)
+	ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT shipper worker pool size (default 16)
+	                                   Drain rate ≈ MaxInFlight / per-upload-latency.
+	                                   Bump for higher-volume soaks where the
+	                                   default 16 × ~113ms per ship = ~141/sec
+	                                   ceiling can't drain the backlog within
+	                                   the budget.
+	ATTESTA_SOAK_DRAIN_TIMEOUT         in-test wait for WAL HWM to reach
+	                                   submitted count (default 10m).
+	                                   Accepts time.ParseDuration values
+	                                   ("30s", "10m", "1h", "1h30m").
 
-The defaults model a 1M-entry soak. Smaller numbers are useful for
-quick iteration; the same tests are valid at any size.
+The defaults model a 100k-entry soak. The 1M run benefits from
+ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT=64 + ATTESTA_SOAK_DRAIN_TIMEOUT=30m.
 */
 package tests
 
@@ -238,9 +248,14 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	})
 
 	// Shipper: WAL StateSequenced → bytestore upload → WAL StateShipped.
+	// MaxInFlight is the worker-pool size for parallel GCS uploads.
+	// Default 16 matches production cmd/ledger; bump via
+	// ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT for high-volume soaks where
+	// real-GCS upload latency × workers is the drain bottleneck.
+	maxInFlight := envInt("ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT", 16)
 	ship := shipper.NewShipper(walc, backend, shipper.Config{
 		PollInterval: 100 * time.Millisecond,
-		MaxInFlight:  16,
+		MaxInFlight:  maxInFlight,
 		Logger:       logger,
 	})
 
@@ -357,9 +372,16 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 	concurrency := envInt("ATTESTA_SOAK_CONCURRENCY", 8)
 	verifySamples := envInt("ATTESTA_SOAK_VERIFY_SAMPLES", 100)
 	p99BoundMs := envInt("ATTESTA_SOAK_P99_BOUND_MS", 100)
+	// Re-read here for the unified config log line; the actual values
+	// are also read where they're used (startSoakOperator for
+	// MaxInFlight, drain loop for drainTimeout).
+	maxInFlightLog := envInt("ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT", 16)
+	drainTimeoutLog := envDuration("ATTESTA_SOAK_DRAIN_TIMEOUT", 10*time.Minute)
 
-	t.Logf("soak config: entries=%d concurrency=%d verify_samples=%d p99_bound_ms=%d",
-		total, concurrency, verifySamples, p99BoundMs)
+	t.Logf("soak config: entries=%d concurrency=%d verify_samples=%d p99_bound_ms=%d "+
+		"shipper_max_in_flight=%d drain_timeout=%s",
+		total, concurrency, verifySamples, p99BoundMs,
+		maxInFlightLog, drainTimeoutLog)
 
 	resultCh := make(chan soakSubmission, 4096)
 	sampler := newLatencySampler(50_000)
@@ -478,7 +500,12 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 	}
 
 	expectedHWM := submitted.Load()
-	const drainTimeout = 10 * time.Minute
+	// Drain budget. Default 10m fits a 50k-100k-entry soak with the
+	// in-flight-dedupe fix. Higher-volume soaks (1M+) need a larger
+	// budget — at MaxInFlight=16 and ~113ms per ship, drain ceiling
+	// is ~141 entries/sec, so 1M backlog needs ~2h. Override via
+	// ATTESTA_SOAK_DRAIN_TIMEOUT (any time.ParseDuration value).
+	drainTimeout := envDuration("ATTESTA_SOAK_DRAIN_TIMEOUT", 10*time.Minute)
 	drainStart := time.Now()
 	cycle := 0
 	for {
@@ -525,23 +552,24 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 			"SELECT COUNT(*) FROM entry_index").Scan(&entryIndexRows)
 
 		// shipDup = (shipped events) - (distinct seqs that completed).
-		// > 0 means concurrent scans + 16 workers raced the MarkShipped
-		// commit window, fanning the same seq to multiple workers
-		// (MarkShipped is idempotent on StateShipped → nil, so each
-		// fan-out increments shipped). Correctness unaffected; this
-		// is the validation surface for shipper.MetricsSnapshot
-		// double-counting.
+		// Pre-dedupe baseline; with the inflight guard now in place
+		// (shipper.Shipper.inflight) this should converge on 0.
+		// skipInflight = number of redundant scan→worker dispatches
+		// the guard averted. Each one is an avoided GCS WriteEntry
+		// (and avoided potential per-object 429) AND an avoided
+		// Badger MarkShipped MVCC conflict.
 		shipDup := int64(shipMetrics.Shipped) - int64(shipMetrics.UniqueShipped)
 		t.Logf("drain[cycle=%d t=%s] expected=%d "+
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
-			"ship{shipped=%d unique=%d dup=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
+			"ship{shipped=%d unique=%d dup=%d skipInflight=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
 			"pg{entry_index=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
 			seqMetrics.Failures, seqMetrics.ManualCount, seqMetrics.CurrentLag,
 			shipMetrics.Shipped, shipMetrics.UniqueShipped, shipDup,
+			shipMetrics.SkippedInflight,
 			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
 			entryIndexRows,
@@ -651,6 +679,21 @@ func envInt(name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envDuration returns a duration parsed from the named env var, or
+// def when the var is unset or unparseable. Accepts any value
+// time.ParseDuration accepts ("30s", "10m", "1h", "1h30m", ...).
+func envDuration(name string, def time.Duration) time.Duration {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // parseSCTCanonicalHash extracts the canonical_hash from a 202
