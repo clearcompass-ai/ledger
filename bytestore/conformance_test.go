@@ -21,11 +21,11 @@ WHAT WE ASSERT (Store):
     (consumers expect aligned slices).
   - Concurrent writers are safe (interface is goroutine-safe).
 
-WHAT WE ASSERT (Backend, adds Presigner):
-  - PresignGet returns a URL whose HTTP GET fetches the same bytes
-    the producer wrote (real-cloud path: validates SigV4 / V4 signing
-    end-to-end including the network round-trip).
-  - The presigned URL contains the entry's hash hex in its path —
+WHAT WE ASSERT (Backend, adds PublicURLer):
+  - PublicURL returns a URL whose HTTP GET fetches the same bytes the
+    producer wrote (real-cloud path: validates the bucket is
+    anonymous-read end-to-end including the network round-trip).
+  - The public URL contains the entry's hash hex in its path —
     this is the static-verifiability invariant the 302 redirect
     relies on. Without this, a consumer can't tell whether a
     redirect points at the bytes the ledger promised.
@@ -38,13 +38,13 @@ skips):
 	TestConformance_GCS_Real (ATTESTA_TEST_GCS_BUCKET, no
 	                                 endpoint) Backend
 	TestConformance_S3_Container (ATTESTA_TEST_S3_ENDPOINT)   Backend
-	                                (RustFS issues valid SigV4 URLs
-	                                that local SigV4 verifies)
+	                                (SeaweedFS / RustFS / MinIO with
+	                                anonymous-read bucket policy)
 	TestConformance_S3_Real (ATTESTA_TEST_S3_REAL=1 +
 	                                 ATTESTA_TEST_S3_BUCKET)     Backend
 
-	GCS container (fake-gcs-server) does NOT validate V4 signatures,
-	so it can only run the Store half of the suite.
+	GCS container (fake-gcs-server) is gated to Store-only because
+	per-bucket public-read policy is not exposed by the fake.
 */
 package bytestore
 
@@ -61,7 +61,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // runStoreConformance exercises the Store contract: WriteEntry/
@@ -210,29 +209,30 @@ func runStoreConformance(ctx context.Context, t *testing.T, store Store) {
 	})
 }
 
-// runBackendConformance adds the Presigner contract: the produced URL
-// must (1) fetch the same bytes via plain HTTP GET, and (2) embed the
-// hash hex in its path so consumers can statically verify that a 302
-// destination matches the promised bytes before fetching.
+// runBackendConformance adds the PublicURLer contract: the produced
+// URL must (1) fetch the same bytes via plain HTTP GET against an
+// anonymous-read bucket, and (2) embed the hash hex in its path so
+// consumers can statically verify that a 302 destination matches the
+// promised bytes before fetching.
 func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 	t.Helper()
 
 	runStoreConformance(ctx, t, backend)
 
-	t.Run("Presign_URLFetchesBytes", func(t *testing.T) {
-		wire := []byte("presign conformance: fetch via 302 path with no SDK on the consumer side")
+	t.Run("PublicURL_FetchesBytes", func(t *testing.T) {
+		wire := []byte("public-URL conformance: fetch via 302 path with no SDK on the consumer side")
 		hash := sha256.Sum256(wire)
 		const seq uint64 = 3_000_001
 
 		if err := backend.WriteEntry(ctx, seq, hash, wire); err != nil {
 			t.Fatalf("WriteEntry: %v", err)
 		}
-		url, err := backend.PresignGet(ctx, seq, hash, 5*time.Minute)
+		url, err := backend.PublicURL(seq, hash)
 		if err != nil {
-			t.Fatalf("PresignGet: %v", err)
+			t.Fatalf("PublicURL: %v", err)
 		}
 		if url == "" {
-			t.Fatal("PresignGet returned empty URL")
+			t.Fatal("PublicURL returned empty URL")
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -246,18 +246,18 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("HTTP status %d: %s\nbody: %s", resp.StatusCode, resp.Status, body)
+			t.Fatalf("HTTP status %d: %s\nbody: %s\nNOTE: bucket must be anonymous-read for the public-URL path", resp.StatusCode, resp.Status, body)
 		}
 		got, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
 		if !bytes.Equal(got, wire) {
-			t.Fatalf("presigned GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
+			t.Fatalf("public GET returned wrong bytes:\n got=%x\n want=%x", got, wire)
 		}
 	})
 
-	t.Run("Presign_URLContainsHashHex", func(t *testing.T) {
+	t.Run("PublicURL_ContainsHashHex", func(t *testing.T) {
 		// Static-verifiability invariant: a consumer following a 302
 		// redirect MUST be able to verify (without fetching) that the
 		// URL points at the bytes the ledger promised. We achieve
@@ -272,9 +272,9 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 		if err := backend.WriteEntry(ctx, seq, hash, wire); err != nil {
 			t.Fatalf("WriteEntry: %v", err)
 		}
-		url, err := backend.PresignGet(ctx, seq, hash, 5*time.Minute)
+		url, err := backend.PublicURL(seq, hash)
 		if err != nil {
-			t.Fatalf("PresignGet: %v", err)
+			t.Fatalf("PublicURL: %v", err)
 		}
 		if !strings.Contains(url, hashHex) {
 			t.Fatalf("URL missing hash hex (static verifiability lost):\n url=%s\n hash=%s", url, hashHex)
@@ -287,15 +287,15 @@ func runBackendConformance(ctx context.Context, t *testing.T, backend Backend) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestConformance_Memory(t *testing.T) {
-	// Memory satisfies Store but not Backend (no Presigner). This
+	// Memory satisfies Store but not Backend (no PublicURLer). This
 	// matches its role: tests/dev only, never production.
 	runStoreConformance(context.Background(), t, NewMemory())
 }
 
 func TestConformance_GCS_Container(t *testing.T) {
-	// fake-gcs-server: we get full Store coverage but PresignGet
-	// V4 signing isn't validated by the fake. Skip the Backend
-	// suite — it lives in TestConformance_GCS_Real.
+	// fake-gcs-server: we get full Store coverage. The Backend
+	// suite (PublicURL fetch) requires a public-read bucket policy
+	// the fake doesn't expose, so we limit to Store here.
 	if os.Getenv("ATTESTA_TEST_GCS_ENDPOINT") == "" {
 		t.Skip("ATTESTA_TEST_GCS_ENDPOINT unset; skipping fake-gcs conformance")
 	}

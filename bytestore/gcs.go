@@ -21,11 +21,12 @@ CREDENTIALS:
 	cloud.google.com/go/storage's NewClient honors ADC by default.
 	fake-gcs-server requires Endpoint + Anonymous=true.
 
-PRESIGNED URLS:
+PUBLIC URLS:
 
-	V4 signed URLs via storage.SignedURL. Service-account-key sites
-	sign locally; workload-identity sites use the IAM signBlob API.
-	TTL is clamped to 7 days (the GCS V4 ceiling).
+	Buckets are anonymous-read by design (transparency-log
+	convention; see publicurl.go). PublicURL composes a
+	deterministic credential-free URL that any third party can
+	GET without auth. No signing, no expiry, CDN-cacheable.
 
 CONCURRENCY:
 
@@ -48,8 +49,6 @@ import (
 	"google.golang.org/api/option"
 )
 
-// Maximum TTL allowed by GCS V4 signed URLs.
-const gcsMaxPresignTTL = 7 * 24 * time.Hour
 
 // MaxTileBytes is the largest c2sp.org/tlog-tiles tile body the
 // GCSTiles backend will read into memory. Mirrors the SDK's
@@ -97,10 +96,23 @@ type GCSConfig struct {
 	// ReadTimeout caps a single ReadEntry / ReadEntryBatch call.
 	// Defaults to 30s.
 	ReadTimeout time.Duration
+
+	// PublicBaseURL is the credential-free monitor URL prefix used
+	// by PublicURL. Empty means "use the default for an anonymous-
+	// read GCS bucket": https://storage.googleapis.com/{Bucket}.
+	// Set explicitly to point at a CDN / custom DNS in front of
+	// the bucket.
+	//
+	// Pre-condition: the bucket MUST be configured for anonymous
+	// read (IAM `allUsers: roles/storage.objectViewer` or
+	// equivalent). The transparency-log architecture has no
+	// private-bucket fallback; deployments with private buckets
+	// are out of scope.
+	PublicBaseURL string
 }
 
-// GCS satisfies Backend (Store + Presigner) against a GCS bucket
-// with an LRU cache layer.
+// GCS satisfies Backend (Store + PublicURLer) against a GCS
+// bucket with an LRU cache layer.
 type GCS struct {
 	client *storage.Client
 	bucket *storage.BucketHandle
@@ -108,6 +120,11 @@ type GCS struct {
 	objectPrefix string
 	writeTimeout time.Duration
 	readTimeout time.Duration
+
+	// publicURL is the deterministic public-URL composer. May be
+	// nil-safe (returns ErrPublicURLNotConfigured) when no base
+	// URL was supplied.
+	publicURL *publicURLMapper
 
 	mu sync.Mutex
 	cache map[string][]byte
@@ -152,6 +169,14 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 		return nil, fmt.Errorf("bytestore/gcs: storage.NewClient: %w", err)
 	}
 
+	// Resolve public URL base. Empty cfg.PublicBaseURL falls back
+	// to the canonical anonymous-read GCS URL prefix; CDN-fronted
+	// deployments override via cfg.PublicBaseURL.
+	publicBase := cfg.PublicBaseURL
+	if publicBase == "" {
+		publicBase = DefaultGCSPublicBaseURL(cfg.Bucket)
+	}
+
 	return &GCS{
 		client:       client,
 		bucket:       client.Bucket(cfg.Bucket),
@@ -162,11 +187,24 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 		cache:        make(map[string][]byte, cfg.CacheSize),
 		access:       make(map[string]int64, cfg.CacheSize),
 		maxSize:      cfg.CacheSize,
+		publicURL:    newPublicURLMapper(publicBase, cfg.ObjectPrefix),
 	}, nil
 }
 
 func (s *GCS) keyOf(seq uint64, hash [32]byte) string {
 	return layoutKey(s.objectPrefix, seq, hash)
+}
+
+// PublicURL returns the credential-free URL for (seq, hash). The
+// api 302 handler always issues this URL (transparency-log
+// architecture; see publicurl.go for the rationale — RFC 9162,
+// c2sp.org/tlog-tiles).
+//
+// Pre-condition: the bucket MUST have IAM `allUsers:
+// roles/storage.objectViewer` granted. Private buckets are out of
+// scope for this architecture.
+func (s *GCS) PublicURL(seq uint64, hash [32]byte) (string, error) {
+	return s.publicURL.PublicURL(seq, hash)
 }
 
 // WriteEntry uploads wire bytes and populates the cache.
@@ -271,37 +309,6 @@ func (s *GCS) ReadEntryBatch(ctx context.Context, refs []EntryRef) ([][]byte, er
 	return out, nil
 }
 
-// PresignGet returns a V4 signed URL granting time-bounded GET
-// access to the entry's bytes. ttl is clamped to 7 days
-// (the GCS V4 ceiling).
-//
-// Two credential paths:
-//   - Service-account JSON key: NewClient picked it up from
-//     GOOGLE_APPLICATION_CREDENTIALS, signing happens locally
-//     with no extra round-trip.
-//   - Workload identity (GCE/GKE): SignedURL falls through to the
-//     IAM signBlob API; one extra HTTP call per Presign. Tolerable
-//     for the redirect path because the cost is amortized across
-//     consumers fetching the URL.
-func (s *GCS) PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error) {
-	if ttl <= 0 {
-		ttl = 1 * time.Hour
-	}
-	if ttl > gcsMaxPresignTTL {
-		ttl = gcsMaxPresignTTL
-	}
-	key := s.keyOf(seq, hash)
-	opts := &storage.SignedURLOptions{
-		Scheme:  storage.SigningSchemeV4,
-		Method:  "GET",
-		Expires: time.Now().Add(ttl),
-	}
-	url, err := s.bucket.SignedURL(key, opts)
-	if err != nil {
-		return "", fmt.Errorf("bytestore/gcs: SignedURL seq=%d: %w", seq, err)
-	}
-	return url, nil
-}
 
 func (s *GCS) evictLRULocked() {
 	var oldestKey string

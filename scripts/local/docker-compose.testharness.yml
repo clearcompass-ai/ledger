@@ -27,8 +27,10 @@
 # for Postgres, 4443 for fake-gcs-server) to avoid clashing with
 # whatever the developer might have running locally. Inside the
 # Docker network the containers reach each other by service name.
-
-version: "3.9"
+#
+# Note: no `version:` key. Compose v2 (the only supported one) ignores
+# it and prints an "obsolete" warning per run. Spec versioning is
+# handled implicitly now.
 
 services:
   # ─────────────────────────────────────────────────────────────────
@@ -171,10 +173,22 @@ services:
     # expose S3 (8333) to the host; the rest is internal.
     command: ["mini", "-dir=/data"]
     environment:
-      # S3 credentials. The bytestore.S3 adapter sends SigV4 with
-      # these. Tests pass them in via ATTESTA_TEST_S3_ACCESS_KEY/SECRET_KEY.
-      AWS_ACCESS_KEY_ID: seaweedadmin
-      AWS_SECRET_ACCESS_KEY: seaweedsecret
+      # NO AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY here.
+      #
+      # Per https://github.com/seaweedfs/seaweedfs/wiki/S3-Credentials,
+      # any identity config (env vars, config file, filer entry) flips
+      # the gateway into "Authentication Required" mode, which 403s
+      # every anonymous GET. The transparency-log read path (RFC 9162,
+      # c2sp.org/tlog-tiles) demands anonymous reads, so we leave the
+      # gateway in its default "Allow-All Mode": no creds configured
+      # → every S3 op succeeds without auth.
+      #
+      # The shipper's bytestore.S3 adapter still sends SigV4-signed
+      # PUTs (the AWS SDK requires creds to construct a request), but
+      # SeaweedFS in Allow-All mode accepts them regardless. This
+      # mirrors production: real AWS S3 with a public-read bucket
+      # policy allows anonymous GETs while accepting signed PUTs.
+      #
       # Auto-creates the bucket on startup. Soak hits it directly.
       S3_BUCKET: attesta-test-seaweed
     ports:

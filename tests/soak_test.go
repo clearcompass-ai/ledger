@@ -91,6 +91,44 @@ import (
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
+// newTunedHTTPClient returns an *http.Client whose Transport is
+// keep-alive-friendly under the soak's connection density.
+//
+// EVIDENCE-BASED RATIONALE:
+//
+//	Default http.Transport caps MaxIdleConnsPerHost at 2. Under 8
+//	admission workers × ~590 req/sec to a single host, the pool
+//	churns: every request opens, returns, and the 3rd+ idle conn
+//	closes — the kernel parks the closed socket in TIME_WAIT
+//	(~15-30s on macOS/Linux) and burns one ephemeral port.
+//
+//	macOS ephemeral range is 49152-65535 (~16,384 ports). At
+//	~5,360 closing conns/sec the pool drains in ~3s and the soak
+//	starts failing with "dial tcp: bind: address already in use"
+//	or "connect: cannot assign requested address".
+//
+//	MaxIdleConnsPerHost=256 lets the worker pool fully reuse
+//	connections; MaxIdleConns=512 caps the global idle set;
+//	IdleConnTimeout stays at the default 90s so idle conns are
+//	eventually reaped without thrashing.
+func newTunedHTTPClient(timeout time.Duration) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 512
+	t.MaxIdleConnsPerHost = 256
+	return &http.Client{Transport: t, Timeout: timeout}
+}
+
+// newTunedNoRedirectClient mirrors newTunedHTTPClient but disables
+// auto-follow on redirects, so the verify pass can inspect Location
+// headers directly without burning the redirect target connection.
+func newTunedNoRedirectClient(timeout time.Duration) *http.Client {
+	c := newTunedHTTPClient(timeout)
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return c
+}
+
 // soakSubmission records one accepted entry for the post-soak verify
 // pass. We hold ONLY the canonical hash because POST /v1/entries
 // returns an SCT (Signed Certificate Timestamp), NOT a sequence
@@ -249,7 +287,13 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
-		WAL: walc, Presigner: backend, LogDID: testLogDID, Logger: logger,
+		WAL: walc, LogDID: testLogDID, Logger: logger,
+		// Transparency-log convention (RFC 9162, c2sp.org/tlog-tiles):
+		// the architecture has only one read path — bucket is
+		// anonymous-read, 302 handler returns credential-free URLs.
+		// The soak's verify pass HARD-ASSERTS no signature query
+		// params, catching any regression that injects credentials.
+		PublicURLer: backend.(api.PublicURLer),
 	}
 
 	handlers := api.Handlers{
@@ -401,10 +445,15 @@ func (s *latencySampler) quantiles() (p50, p99 time.Duration) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TestSoak_OneMillionEntries_RealGCS — primary soak test.
+// TestSoak_LedgerBytestore — primary soak test.
+//
+// Backend-agnostic: routes to gcs / seaweedfs / s3 based on the env
+// vars that scripts/run-soak.sh exports. Scale-agnostic: defaults to
+// 1M entries but ATTESTA_SOAK_ENTRIES tunes it down to a smoke run
+// (1k) or up to a multi-million stress run.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
+func TestSoak_LedgerBytestore(t *testing.T) {
 	op := startSoakOperator(t)
 	op.seedSoakSession(t, "tok-soak", "did:example:soak-exchange", 100_000_000)
 
@@ -462,7 +511,7 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			client := &http.Client{Timeout: 30 * time.Second}
+			client := newTunedHTTPClient(30 * time.Second)
 			for i := 0; i < per; i++ {
 				idx := workerID*per + i
 				wire := buildWireEntry(t, envelope.ControlHeader{
@@ -641,12 +690,9 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		rng.Shuffle(len(results), func(i, j int) { results[i], results[j] = results[j], results[i] })
 		results = results[:verifySamples]
 	}
-	verifyClient := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Timeout:       30 * time.Second,
-	}
-	follow := &http.Client{Timeout: 30 * time.Second}
-	lookupClient := &http.Client{Timeout: 30 * time.Second}
+	verifyClient := newTunedNoRedirectClient(30 * time.Second)
+	follow := newTunedHTTPClient(30 * time.Second)
+	lookupClient := newTunedHTTPClient(30 * time.Second)
 	verified := 0
 	for i, r := range results {
 		hashHex := hex.EncodeToString(r.hash[:])
@@ -685,8 +731,24 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 			continue
 		}
 
-		// Step 3: follow the 302 to the presigned bytestore URL,
-		// confirm the bytes are actually retrievable.
+		// Transparency-log invariant: Location MUST be a credential-
+		// free URL — no V4-signature query params, no presign tokens.
+		// The architecture has only one read path (RFC 9162,
+		// c2sp.org/tlog-tiles); this assertion catches any regression
+		// that re-introduces credentialed URLs (presign, SigV4, etc.).
+		switch {
+		case strings.Contains(loc, "X-Goog-Signature="):
+			t.Errorf("verify[%d/%d] seq=%d: Location carries GCS V4-signature (transparency-log architecture forbids credentialed URLs): %s",
+				i, len(results), seq, loc)
+			continue
+		case strings.Contains(loc, "X-Amz-Signature="):
+			t.Errorf("verify[%d/%d] seq=%d: Location carries S3 V4-signature (transparency-log architecture forbids credentialed URLs): %s",
+				i, len(results), seq, loc)
+			continue
+		}
+
+		// Step 3: follow the 302 with NO Authorization header, NO
+		// credentials. The bucket must serve the bytes anonymously.
 		r2, err := follow.Get(loc)
 		if err != nil {
 			t.Errorf("verify[%d/%d] seq=%d: follow: %v", i, len(results), seq, err)
@@ -701,8 +763,13 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		}
 		verified++
 	}
-	t.Logf("soak passed: %d/%d sampled entries verified via hash→seq→302 path (total submitted=%d)",
-		verified, len(results), submitted.Load())
+	if verified == len(results) {
+		t.Logf("soak verify: %d/%d sampled entries verified via hash→seq→302 path (total submitted=%d)",
+			verified, len(results), submitted.Load())
+	} else {
+		t.Logf("soak verify: %d/%d sampled entries verified — see verify[*] errors above (total submitted=%d)",
+			verified, len(results), submitted.Load())
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────

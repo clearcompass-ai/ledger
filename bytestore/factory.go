@@ -9,7 +9,7 @@ swapping providers is a config change, not a code change.
 PRODUCTION VS TEST:
 
 	Backend="memory" returns a wrapper that satisfies Store but NOT
-	Backend (no Presigner). NewFromConfig refuses to return a
+	Backend (no PublicURLer). NewFromConfig refuses to return a
 	memory-only Store via the Backend type. Tests that need just a
 	Store call NewMemory directly.
 
@@ -71,13 +71,25 @@ type Config struct {
 	S3SecretKey string
 	// PathStyle: true for RustFS; false for AWS S3.
 	S3PathStyle bool
+
+	// ── Public-URL (credential-free) ──────────────────────────────
+	// PublicBaseURL is the credential-free monitor URL prefix the
+	// PublicURLer adapter uses when the bucket is anonymous-read.
+	// Optional — when empty, each adapter computes a sensible
+	// default from its own config (bucket name, endpoint, region).
+	// Set explicitly to point at a CDN / custom DNS.
+	//
+	// See bytestore/publicurl.go for the CT-log architectural
+	// rationale (RFC 9162, c2sp.org/tlog-tiles).
+	PublicBaseURL string
 }
 
 // NewFromConfig constructs a Backend per cfg.Backend. Returns a
 // fail-closed error on missing required fields or unsupported backend.
 //
-// The returned Backend is the union of Store + Presigner — the
-// 302-redirect path in api/entries.go requires both.
+// The returned Backend is the union of Store + PublicURLer — the
+// 302-redirect path in api/entries_read.go requires the credential-
+// free public URL surface (transparency-log convention).
 func NewFromConfig(ctx context.Context, cfg Config) (Backend, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("bytestore/factory: Bucket required")
@@ -86,29 +98,31 @@ func NewFromConfig(ctx context.Context, cfg Config) (Backend, error) {
 	switch cfg.Backend {
 	case "gcs":
 		return NewGCS(ctx, GCSConfig{
-			Bucket:       cfg.Bucket,
-			Endpoint:     cfg.GCSEndpoint,
-			Anonymous:    cfg.GCSAnonymous,
-			CacheSize:    cfg.CacheSize,
-			ObjectPrefix: cfg.Prefix,
-			WriteTimeout: cfg.WriteTimeout,
-			ReadTimeout:  cfg.ReadTimeout,
+			Bucket:        cfg.Bucket,
+			Endpoint:      cfg.GCSEndpoint,
+			Anonymous:     cfg.GCSAnonymous,
+			CacheSize:     cfg.CacheSize,
+			ObjectPrefix:  cfg.Prefix,
+			WriteTimeout:  cfg.WriteTimeout,
+			ReadTimeout:   cfg.ReadTimeout,
+			PublicBaseURL: cfg.PublicBaseURL,
 		})
 	case "s3":
 		return NewS3(ctx, S3Config{
-			Bucket:       cfg.Bucket,
-			Endpoint:     cfg.S3Endpoint,
-			Region:       cfg.S3Region,
-			AccessKey:    cfg.S3AccessKey,
-			SecretKey:    cfg.S3SecretKey,
-			PathStyle:    cfg.S3PathStyle,
-			CacheSize:    cfg.CacheSize,
-			ObjectPrefix: cfg.Prefix,
-			WriteTimeout: cfg.WriteTimeout,
-			ReadTimeout:  cfg.ReadTimeout,
+			Bucket:        cfg.Bucket,
+			Endpoint:      cfg.S3Endpoint,
+			Region:        cfg.S3Region,
+			AccessKey:     cfg.S3AccessKey,
+			SecretKey:     cfg.S3SecretKey,
+			PathStyle:     cfg.S3PathStyle,
+			CacheSize:     cfg.CacheSize,
+			ObjectPrefix:  cfg.Prefix,
+			WriteTimeout:  cfg.WriteTimeout,
+			ReadTimeout:   cfg.ReadTimeout,
+			PublicBaseURL: cfg.PublicBaseURL,
 		})
 	case "memory":
-		return nil, fmt.Errorf("bytestore/factory: Backend=memory has no Presigner; use bytestore.NewMemory directly in test code")
+		return nil, fmt.Errorf("bytestore/factory: Backend=memory has no PublicURLer; use bytestore.NewMemory directly in test code")
 	case "":
 		return nil, fmt.Errorf("bytestore/factory: Backend required (gcs|s3)")
 	default:

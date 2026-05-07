@@ -8,8 +8,8 @@ WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 
 	unit tests (wal/, shipper/, integrity/, store/) prove each box
 	in isolation. http_integration_test.go exercises submission +
-	query against the testserver harness but uses Presigner=nil
-	(testserver_test.go:212 says any redirect attempt indicates an
+	query against the testserver harness but uses PublicURLer=nil
+	(testserver_test.go says any redirect attempt indicates an
 	unexpected state transition). Neither suite exercises the
 	cross-component sequence:
 
@@ -22,7 +22,7 @@ WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 	     submitted.
 
 	This file builds a parallel harness (startE2EOperator) — separate
-	from startTestOperator — that wires a Presigner-aware bytestore
+	from startTestOperator — that wires a PublicURLer-capable bytestore
 	and runs the Shipper. The harness omits builder/anchor/witness
 	pieces because those are exercised elsewhere and would only add
 	flake surface.
@@ -30,9 +30,9 @@ WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 TEST GATES:
 
 	All tests Skip when ATTESTA_TEST_DSN is unset. No GCS/S3 needed —
-	the local presign backend is an httptest.Server backed by an
-	in-memory bytestore.Memory, so the redirect path is fully exercised
-	without cloud dependencies.
+	the local public-URL backend is an httptest.Server backed by an
+	in-memory bytestore.Memory, so the 302-redirect path is fully
+	exercised without cloud dependencies.
 */
 package tests
 
@@ -68,26 +68,26 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────
-// localPresignBackend — Memory bytestore + httptest server that returns
-// the stored bytes when its presigned URLs are GET'd.
+// localPublicURLBackend — Memory bytestore + httptest server that
+// returns the stored bytes when its public URLs are GET'd.
 //
-// Implements bytestore.Backend (Reader + Writer + Presigner). Tests
-// don't need real V4/SigV4 — the URL embeds (seq, hash) as path
-// components, the server reads from the wrapped Memory store, and
-// the caller verifies bytes match. The hash hex appears in the path
-// so the static-verifiability invariant the 302 path relies on is
-// observable.
+// Implements bytestore.Backend (Reader + Writer + PublicURLer). Tests
+// model the transparency-log convention: the URL is credential-free,
+// embeds (seq, hash) as path components, and the httptest server reads
+// from the wrapped Memory store. The hash hex in the path is what
+// gives consumers the static-verifiability invariant the 302 path
+// relies on (RFC 9162, c2sp.org/tlog-tiles).
 // ─────────────────────────────────────────────────────────────────────
 
-type localPresignBackend struct {
+type localPublicURLBackend struct {
 	*opbytestore.Memory
 	server *httptest.Server
 }
 
-func newLocalPresignBackend(t *testing.T) *localPresignBackend {
+func newLocalPublicURLBackend(t *testing.T) *localPublicURLBackend {
 	t.Helper()
 	mem := opbytestore.NewMemory()
-	b := &localPresignBackend{Memory: mem}
+	b := &localPublicURLBackend{Memory: mem}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Path: /<seq:016x>/<hash_hex>
@@ -123,26 +123,26 @@ func newLocalPresignBackend(t *testing.T) *localPresignBackend {
 	return b
 }
 
-// PresignGet returns a URL pointing at this backend's httptest server.
-// The path embeds the hash hex — the same shape bytestore.layoutKey
-// produces — so the redirect target satisfies the static-verifiability
-// invariant the 302 read path advertises.
-func (b *localPresignBackend) PresignGet(_ context.Context, seq uint64, hash [32]byte, _ time.Duration) (string, error) {
+// PublicURL returns a credential-free URL pointing at this backend's
+// httptest server. The path embeds the hash hex — the same shape
+// bytestore.layoutKey produces — so the redirect target satisfies the
+// static-verifiability invariant the 302 read path advertises.
+func (b *localPublicURLBackend) PublicURL(seq uint64, hash [32]byte) (string, error) {
 	return fmt.Sprintf("%s/%016x/%s", b.server.URL, seq, hex.EncodeToString(hash[:])), nil
 }
 
-// Compile-time pin: localPresignBackend satisfies bytestore.Backend.
-var _ opbytestore.Backend = (*localPresignBackend)(nil)
+// Compile-time pin: localPublicURLBackend satisfies bytestore.Backend.
+var _ opbytestore.Backend = (*localPublicURLBackend)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
-// e2eOperator — minimal harness with WAL + Shipper + Presigner
+// e2eOperator — minimal harness with WAL + Shipper + PublicURLer
 // ─────────────────────────────────────────────────────────────────────
 
 type e2eOperator struct {
 	BaseURL string
 	Pool *pgxpool.Pool
 	WAL *wal.Committer
-	Backend *localPresignBackend
+	Backend *localPublicURLBackend
 	Shipper *shipper.Shipper
 
 	// SCT/MMD additions
@@ -206,8 +206,8 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	}
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
 
-	// ── Local presigning byte backend ───────────────────────────────
-	backend := newLocalPresignBackend(t)
+	// ── Local public-URL byte backend ───────────────────────────────
+	backend := newLocalPublicURLBackend(t)
 
 	// ── Composite reader (WAL → bytestore fallback) ─────────────────
 	composite := store.NewCompositeByteReader(walc, backend, logger)
@@ -268,13 +268,13 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 		WAL:            walc,
 	}
 	entryReadDeps := &api.EntryReadDeps{
-		Fetcher:    fetcher,
-		QueryAPI:   queryAPI,
-		EntryStore: entryStore,
-		WAL:        walc,
-		Presigner:  backend,
-		LogDID:     testLogDID,
-		Logger:     logger,
+		Fetcher:     fetcher,
+		QueryAPI:    queryAPI,
+		EntryStore:  entryStore,
+		WAL:         walc,
+		PublicURLer: backend,
+		LogDID:      testLogDID,
+		Logger:      logger,
 	}
 
 	const testMMD = 24 * time.Hour

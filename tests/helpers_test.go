@@ -727,7 +727,6 @@ var _ = fmt.Sprintf
 //   - storage.objects.get
 //   - storage.objects.list
 //   - storage.objects.delete
-//   - iam.serviceAccounts.signBlob (for V4 PresignGet)
 //
 // On any wiring failure, the test fails (NOT skips) so a broken
 // CI configuration doesn't silently turn into a green build.

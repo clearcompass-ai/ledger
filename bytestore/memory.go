@@ -8,9 +8,10 @@ this type**: cmd/ledger/main.go fails closed when no production-
 grade backend (gcs/s3) is configured. The factory rejects
 Backend="memory" outside of test contexts.
 
-Memory does NOT satisfy Presigner — there's nothing to sign URLs
-against. Tests that need to exercise the presign path use the GCS
-or S3 adapter against fake-gcs-server / RustFS.
+Memory does NOT satisfy PublicURLer — there's no anonymous-read
+URL to compose for an in-process map. Tests that need to exercise
+the 302-redirect path use the GCS or S3 adapter against
+fake-gcs-server / SeaweedFS / RustFS.
 
 Storage layout:
 
@@ -32,7 +33,7 @@ import (
 )
 
 // Memory stores wire bytes in memory. Thread-safe. Implements Store
-// (NOT Backend — no Presigner support).
+// (NOT Backend — no PublicURLer support).
 type Memory struct {
 	mu sync.RWMutex
 	entries map[string][]byte // key = layoutKey("memory", seq, hash)
@@ -106,5 +107,5 @@ func (s *Memory) Len() int {
 }
 
 // Compile-time pin: Memory satisfies Store but NOT Backend
-// (Memory has no Presigner — see file docblock).
+// (Memory has no PublicURLer — see file docblock).
 var _ Store = (*Memory)(nil)

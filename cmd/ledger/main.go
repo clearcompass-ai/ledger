@@ -422,6 +422,22 @@ type Config struct {
 	ByteStoreS3AccessKey string // empty = default credential chain
 	ByteStoreS3SecretKey string // empty = default credential chain
 	ByteStoreS3PathStyle bool // true for RustFS; false for AWS S3
+
+	// Public-URL routing (transparency-log convention; see
+	// bytestore/publicurl.go). The architecture has only one read
+	// path: every bucket is anonymous-read by design (RFC 9162,
+	// c2sp.org/tlog-tiles), every 302 returns a credential-free
+	// public URL. There is no private-bucket / presigned fallback.
+	//
+	// ByteStorePublicBaseURL — explicit public-URL prefix override.
+	// Empty means "use the appropriate default for the backend":
+	//   gcs:               https://storage.googleapis.com/{bucket}
+	//   s3 (path-style):   {endpoint}/{bucket}
+	//   s3 (virtual-host): https://{bucket}.s3.{region}.amazonaws.com
+	// Set explicitly to point at a CDN / custom DNS in front of the
+	// bucket.
+	// Env: LEDGER_BYTE_STORE_PUBLIC_BASE_URL
+	ByteStorePublicBaseURL string
 	TileCacheSize int
 	SMTNodeCacheSize int
 	DeltaWindow int
@@ -558,6 +574,9 @@ func loadConfig() (*Config, error) {
 		ByteStoreS3AccessKey: os.Getenv("LEDGER_BYTE_STORE_S3_ACCESS_KEY"),
 		ByteStoreS3SecretKey: os.Getenv("LEDGER_BYTE_STORE_S3_SECRET_KEY"),
 		ByteStoreS3PathStyle: os.Getenv("LEDGER_BYTE_STORE_S3_PATH_STYLE") == "true",
+		// Public-URL routing — transparency-log convention is the
+		// only read path. Optional CDN / custom-DNS override.
+		ByteStorePublicBaseURL: os.Getenv("LEDGER_BYTE_STORE_PUBLIC_BASE_URL"),
 		TileCacheSize:        10_000,
 		SMTNodeCacheSize:     100_000,
 		DeltaWindow:          10,
@@ -902,9 +921,10 @@ func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 // applies the remaining defaults (prefix=entries, cache_size, region).
 func (cfg *Config) toBytestoreConfig() bytestore.Config {
 	bc := bytestore.Config{
-		Backend:   cfg.ByteStoreBackend,
-		Prefix:    cfg.ByteStorePrefix,
-		CacheSize: cfg.ByteStoreCacheSize,
+		Backend:       cfg.ByteStoreBackend,
+		Prefix:        cfg.ByteStorePrefix,
+		CacheSize:     cfg.ByteStoreCacheSize,
+		PublicBaseURL: cfg.ByteStorePublicBaseURL,
 	}
 	switch cfg.ByteStoreBackend {
 	case "gcs":
@@ -1196,7 +1216,7 @@ func main() {
 	// Construct the production bytestore via the hexagonal factory.
 	// LEDGER_BYTE_STORE_BACKEND selects between "gcs" and "s3";
 	// loadConfig has already enforced the per-backend required fields.
-	// The returned bytestore.Backend is the union of Store + Presigner —
+	// The returned bytestore.Backend is the union of Store + PublicURLer —
 	// composite reader, shipper, and the 302 redirect path all use it
 	// without naming the concrete adapter.
 	byteStore, err := bytestore.NewFromConfig(ctx, cfg.toBytestoreConfig())
@@ -2022,10 +2042,18 @@ func main() {
 		QueryAPI:   queryAPI,
 		EntryStore: entryStore,
 		WAL:        walc,
-		Presigner:  byteStore, // bytestore.Backend satisfies api.Presigner
-		LogDID:     cfg.LogDID,
-		Logger:     logger,
+		// PublicURLer is satisfied by bytestore.GCS and bytestore.S3.
+		// bytestore.Backend embeds PublicURLer, so the type assertion
+		// is total. Type-assert here so the api package doesn't
+		// depend on bytestore types directly.
+		PublicURLer: byteStore.(api.PublicURLer),
+		LogDID:      cfg.LogDID,
+		Logger:      logger,
 	}
+	logger.Info("bytestore: routing configured",
+		"backend", cfg.ByteStoreBackend,
+		"public_base_url", cfg.ByteStorePublicBaseURL,
+	)
 	commitDeps := &api.DerivationCommitmentDeps{CommitmentStore: commitStore, Logger: logger}
 
 	// ── Cryptographic commitment lookup (Pure CQRS — Badger 0x0C) ─────

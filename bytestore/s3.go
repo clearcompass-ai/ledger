@@ -31,10 +31,12 @@ OBJECT LAYOUT:
 	Same layoutKey as GCS: <prefix>/<seq:016x>/<hash_hex>. A bucket
 	written by GCS can be read by S3 and vice versa.
 
-PRESIGNED URLS:
+PUBLIC URLS:
 
-	SigV4 via s3.PresignClient.PresignGetObject. TTL clamped to 7 days
-	(the AWS SigV4 ceiling). Local SigV4 — no remote round-trip.
+	Buckets are anonymous-read by design (transparency-log
+	convention; see publicurl.go). PublicURL composes a
+	deterministic credential-free URL. No signing, no expiry,
+	CDN-cacheable.
 
 CACHING:
 
@@ -48,6 +50,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -57,10 +60,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
-)
 
-// Maximum TTL allowed by SigV4 presigned URLs.
-const s3MaxPresignTTL = 7 * 24 * time.Hour
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+)
 
 // S3Config configures NewS3.
 type S3Config struct {
@@ -99,17 +101,39 @@ type S3Config struct {
 	// ReadTimeout caps a single ReadEntry / ReadEntryBatch call.
 	// Defaults to 30s.
 	ReadTimeout time.Duration
+
+	// PublicBaseURL is the credential-free monitor URL prefix used
+	// by PublicURL. Empty means "use the appropriate default":
+	//
+	//   PathStyle  → DefaultS3PathStylePublicBaseURL(Endpoint, Bucket)
+	//                (SeaweedFS, MinIO, RustFS, R2 path-style)
+	//   non-PathStyle → DefaultS3VirtualHostPublicBaseURL(Bucket, Region)
+	//                   (AWS S3 with public-read bucket policy)
+	//
+	// Set explicitly to point at a CDN / custom DNS in front of
+	// the bucket.
+	//
+	// Pre-condition: bucket must allow anonymous GET. SeaweedFS in
+	// `weed mini` mode does this by default; MinIO requires
+	// `mc anonymous set download`; AWS S3 requires a bucket policy
+	// + Block-Public-Access opt-out.
+	PublicBaseURL string
 }
 
-// S3 satisfies Backend (Store + Presigner) against any S3-compatible
-// object store.
+// S3 satisfies Backend (Store + PublicURLer) against any
+// S3-compatible object store. Buckets are anonymous-read by
+// design; PublicURL composes deterministic credential-free URLs.
 type S3 struct {
 	client *s3.Client
-	presigner *s3.PresignClient
 	bucket string
 	objectPrefix string
 	writeTimeout time.Duration
 	readTimeout time.Duration
+
+	// publicURL is the deterministic public-URL composer. May be
+	// nil-safe (returns ErrPublicURLNotConfigured) when no base
+	// URL was supplied AND no default could be derived.
+	publicURL *publicURLMapper
 
 	mu sync.Mutex
 	cache map[string][]byte
@@ -140,8 +164,24 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		cfg.Region = "us-east-1"
 	}
 
+	// HTTP transport tuned for high-concurrency workloads. The SDK's
+	// default BuildableClient uses Go's stdlib defaults
+	// (MaxIdleConnsPerHost=2), which exhausts the loopback ephemeral
+	// port range under sustained shipper concurrency (10s of req/sec
+	// with TIME_WAIT pinning ports for 15-30s on most kernels).
+	//
+	// 256 idle conns per host matches the upper bound of the shipper's
+	// MaxInFlight × ledger replica fan-out without wasting kernel
+	// memory on idle sockets the soak doesn't keep warm.
+	httpClient := awshttp.NewBuildableClient().
+		WithTransportOptions(func(t *http.Transport) {
+			t.MaxIdleConns = 512
+			t.MaxIdleConnsPerHost = 256
+		})
+
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithHTTPClient(httpClient),
 	}
 	if cfg.AccessKey != "" && cfg.SecretKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
@@ -168,11 +208,26 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	}
 
 	client := s3.NewFromConfig(awsCfg, clientOpts...)
-	presigner := s3.NewPresignClient(client)
+
+	// Resolve public URL base. Empty cfg.PublicBaseURL falls back
+	// to the appropriate default for the addressing mode:
+	//   - PathStyle (SeaweedFS/MinIO/RustFS/R2): {Endpoint}/{Bucket}
+	//   - virtual-host (AWS S3 anonymous-read):  https://{Bucket}.s3.{Region}.amazonaws.com
+	publicBase := cfg.PublicBaseURL
+	if publicBase == "" {
+		if cfg.PathStyle && cfg.Endpoint != "" {
+			publicBase = DefaultS3PathStylePublicBaseURL(cfg.Endpoint, cfg.Bucket)
+		} else if cfg.Region != "" {
+			publicBase = DefaultS3VirtualHostPublicBaseURL(cfg.Bucket, cfg.Region)
+		}
+		// Else: leave empty; PublicURL will return
+		// ErrPublicURLNotConfigured — fail-closed: the api 302
+		// handler will return 500 to the caller, surfacing the
+		// misconfiguration loudly.
+	}
 
 	return &S3{
 		client:       client,
-		presigner:    presigner,
 		bucket:       cfg.Bucket,
 		objectPrefix: cfg.ObjectPrefix,
 		writeTimeout: cfg.WriteTimeout,
@@ -180,11 +235,24 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		cache:        make(map[string][]byte, cfg.CacheSize),
 		access:       make(map[string]int64, cfg.CacheSize),
 		maxSize:      cfg.CacheSize,
+		publicURL:    newPublicURLMapper(publicBase, cfg.ObjectPrefix),
 	}, nil
 }
 
 func (s *S3) keyOf(seq uint64, hash [32]byte) string {
 	return layoutKey(s.objectPrefix, seq, hash)
+}
+
+// PublicURL returns the credential-free URL for (seq, hash). The
+// api 302 handler always issues this URL (transparency-log
+// architecture; see publicurl.go for the rationale — RFC 9162,
+// c2sp.org/tlog-tiles).
+//
+// Pre-condition: the bucket MUST allow anonymous GET. SeaweedFS
+// and MinIO support this trivially. AWS S3 requires an explicit
+// public-read bucket policy. Private buckets are out of scope.
+func (s *S3) PublicURL(seq uint64, hash [32]byte) (string, error) {
+	return s.publicURL.PublicURL(seq, hash)
 }
 
 // WriteEntry uploads wire bytes via PutObject and populates the cache.
@@ -300,27 +368,6 @@ func (s *S3) ReadEntryBatch(ctx context.Context, refs []EntryRef) ([][]byte, err
 		out[i] = entry
 	}
 	return out, nil
-}
-
-// PresignGet returns a SigV4 presigned URL granting time-bounded
-// GET access to the entry's bytes. ttl is clamped to 7 days
-// (the SigV4 ceiling). Signing is local — no extra round-trip.
-func (s *S3) PresignGet(ctx context.Context, seq uint64, hash [32]byte, ttl time.Duration) (string, error) {
-	if ttl <= 0 {
-		ttl = 1 * time.Hour
-	}
-	if ttl > s3MaxPresignTTL {
-		ttl = s3MaxPresignTTL
-	}
-	key := s.keyOf(seq, hash)
-	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
-	if err != nil {
-		return "", fmt.Errorf("bytestore/s3: PresignGetObject seq=%d: %w", seq, err)
-	}
-	return req.URL, nil
 }
 
 func (s *S3) evictLRULocked() {

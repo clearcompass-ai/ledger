@@ -59,7 +59,7 @@ import (
 //   - walPath: tempdir path to a Badger DB. Reusing the same path
 //     across two startShutdownOperator calls models the
 //     restart-after-shutdown path.
-//   - backend: shared *localPresignBackend so the second harness
+//   - backend: shared *localPublicURLBackend so the second harness
 //     sees objects the first one wrote. If nil, a fresh one is built.
 //   - merkle: shared *stubMerkleAppender so the Tessera state (next
 //     seq counter) survives the restart, mirroring the production
@@ -71,7 +71,7 @@ import (
 
 type shutdownHarnessOpts struct {
 	walPath string
-	backend *localPresignBackend
+	backend *localPublicURLBackend
 	merkle *stubMerkleAppender
 	cleanFirst bool
 }
@@ -81,7 +81,7 @@ type shutdownHarness struct {
 	Pool *pgxpool.Pool
 	WAL *wal.Committer
 	walDB walDBCloser
-	Backend *localPresignBackend
+	Backend *localPublicURLBackend
 	Merkle *stubMerkleAppender
 	Server *api.Server
 	Shipper *shipper.Shipper
@@ -130,7 +130,7 @@ func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarn
 
 	backend := opts.backend
 	if backend == nil {
-		backend = newLocalPresignBackend(t)
+		backend = newLocalPublicURLBackend(t)
 	}
 	merkle := opts.merkle
 	if merkle == nil {
@@ -167,7 +167,7 @@ func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarn
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
-		WAL: walc, Presigner: backend, LogDID: testLogDID, Logger: logger,
+		WAL: walc, PublicURLer: backend, LogDID: testLogDID, Logger: logger,
 	}
 
 	handlers := api.Handlers{
@@ -290,7 +290,7 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 	const n = 50
 
 	walDir := filepath.Join(t.TempDir(), "wal")
-	backend := newLocalPresignBackend(t)
+	backend := newLocalPublicURLBackend(t)
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
 	// ── Step 1: submit n entries, let some ship, cancel ────────────
@@ -413,7 +413,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	const n = 30
 
 	walDir := filepath.Join(t.TempDir(), "wal")
-	backend := newLocalPresignBackend(t)
+	backend := newLocalPublicURLBackend(t)
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
 	// ── Step 1: submit n, cancel mid-flight ─────────────────────────

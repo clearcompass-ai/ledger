@@ -5,21 +5,21 @@ Evidence-based tests for the /v1/entries/{seq}/raw routing decision
 matrix. The handler's correctness is encoded entirely in the
 "which source serves the bytes?" decision, so tests focus on that:
 
-	WAL state Presigner Outcome
+	WAL state PublicURLer Outcome
 	────────────────────────  ──────────────  ─────────────────────────
 	StateSequenced (any)           200 OK + WAL bytes inline
 	StateManual (any)           200 OK + WAL bytes inline
 	StatePending (any)           200 OK + WAL bytes inline (defensive)
-	StateShipped configured 302 + presigned URL
+	StateShipped configured 302 + public URL
 	StateShipped nil 500 (loud misconfig)
-	wal.ErrNotFound configured 302 + presigned URL (post-GC path)
+	wal.ErrNotFound configured 302 + public URL (post-GC path)
 	wal.ErrNotFound nil 500
 	Postgres "no row at seq"  —               404
 	Invalid seq in path —               400
 
 Tests bypass HTTP middleware by constructing http.Request directly
 against the handler closure. Postgres is faked; WAL is faked; the
-presigner is faked.
+public-URL composer is faked.
 */
 package api
 
@@ -108,19 +108,19 @@ func (f *fakeWAL) MetaState(_ context.Context, hash [32]byte) (wal.Meta, error) 
 	return m, nil
 }
 
-type fakePresigner struct {
+type fakePublicURLer struct {
 	urlByPair map[uint64]string
 	err error
 }
 
-func (f *fakePresigner) PresignGet(_ context.Context, seq uint64, _ [32]byte, _ time.Duration) (string, error) {
+func (f *fakePublicURLer) PublicURL(seq uint64, _ [32]byte) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
 	if u, ok := f.urlByPair[seq]; ok {
 		return u, nil
 	}
-	return fmt.Sprintf("https://test.example/entries/%d/data?signed=true", seq), nil
+	return fmt.Sprintf("https://test.example/entries/%d/data", seq), nil
 }
 
 // discardLogger silences the handler's slog noise during tests.
@@ -141,20 +141,19 @@ func makeRequest(seq uint64) *http.Request {
 	return httptest.NewRequest(http.MethodGet, url, nil)
 }
 
-func newDeps(t *testing.T) (*EntryReadDeps, *fakeSeqHashLookup, *fakeWAL, *fakePresigner) {
+func newDeps(t *testing.T) (*EntryReadDeps, *fakeSeqHashLookup, *fakeWAL, *fakePublicURLer) {
 	t.Helper()
 	store := &fakeSeqHashLookup{
 		hashesBySeq:  map[uint64][32]byte{},
 		logTimeBySeq: map[uint64]time.Time{},
 	}
 	w := newFakeWAL()
-	p := &fakePresigner{urlByPair: map[uint64]string{}}
+	p := &fakePublicURLer{urlByPair: map[uint64]string{}}
 	deps := &EntryReadDeps{
-		EntryStore: store,
-		WAL:        w,
-		Presigner:  p,
-		Logger:     discardLogger(),
-		PresignTTL: 1 * time.Hour,
+		EntryStore:  store,
+		WAL:         w,
+		PublicURLer: p,
+		Logger:      discardLogger(),
 	}
 	return deps, store, w, p
 }
@@ -207,7 +206,7 @@ func TestRawEntry_Manual_InlineFromWAL(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 2) StateShipped + Presigner → 302 redirect
+// 2) StateShipped + PublicURLer → 302 redirect
 // ─────────────────────────────────────────────────────────────────────
 
 func TestRawEntry_Shipped_RedirectVia302(t *testing.T) {
@@ -216,7 +215,7 @@ func TestRawEntry_Shipped_RedirectVia302(t *testing.T) {
 	hash := hashFor("entry-shipped")
 	store.hashesBySeq[100] = hash
 	w.metas[hash] = wal.Meta{State: wal.StateShipped, Sequence: 100}
-	p.urlByPair[100] = "https://gcs.example/entries/100/abcd?Signature=..."
+	p.urlByPair[100] = "https://gcs.example/entries/0000000000000064/abcd"
 
 	rec := httptest.NewRecorder()
 	NewRawEntryHandler(deps)(rec, makeRequest(100))
@@ -224,7 +223,7 @@ func TestRawEntry_Shipped_RedirectVia302(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status: got %d, want 302", rec.Code)
 	}
-	if got := rec.Header().Get("Location"); got != "https://gcs.example/entries/100/abcd?Signature=..." {
+	if got := rec.Header().Get("Location"); got != "https://gcs.example/entries/0000000000000064/abcd" {
 		t.Fatalf("Location: got %q", got)
 	}
 	if rec.Header().Get("X-Source") != "bytestore" {
@@ -233,14 +232,14 @@ func TestRawEntry_Shipped_RedirectVia302(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 3) StateShipped + nil Presigner → 500 (loud misconfig)
+// 3) StateShipped + nil PublicURLer → 500 (loud misconfig)
 // ─────────────────────────────────────────────────────────────────────
 
-func TestRawEntry_Shipped_NoPresigner_Returns500(t *testing.T) {
+func TestRawEntry_Shipped_NoPublicURLer_Returns500(t *testing.T) {
 	deps, store, w, _ := newDeps(t)
-	deps.Presigner = nil
+	deps.PublicURLer = nil
 
-	hash := hashFor("entry-shipped-no-presign")
+	hash := hashFor("entry-shipped-no-public")
 	store.hashesBySeq[1] = hash
 	w.metas[hash] = wal.Meta{State: wal.StateShipped, Sequence: 1}
 
@@ -256,7 +255,7 @@ func TestRawEntry_Shipped_NoPresigner_Returns500(t *testing.T) {
 // 4) wal.ErrNotFound → fall through to bytestore (post-GC path)
 // ─────────────────────────────────────────────────────────────────────
 
-func TestRawEntry_PostGC_RedirectViaPresigner(t *testing.T) {
+func TestRawEntry_PostGC_RedirectViaPublicURLer(t *testing.T) {
 	deps, store, w, _ := newDeps(t)
 
 	hash := hashFor("entry-post-gc")
@@ -368,9 +367,9 @@ func TestRawEntry_WALMetaTransportError_500(t *testing.T) {
 
 // MetaState returns StateSequenced (so we go down the inline path),
 // but Read returns wal.ErrNotFound (the entry was GC'd between
-// probe and read). Handler must fall through to Presigner instead
+// probe and read). Handler must fall through to PublicURLer instead
 // of 500ing.
-func TestRawEntry_ConcurrentGC_FallsThroughToPresigner(t *testing.T) {
+func TestRawEntry_ConcurrentGC_FallsThroughToPublicURLer(t *testing.T) {
 	deps, store, w, _ := newDeps(t)
 
 	hash := hashFor("concurrent-gc")
@@ -386,12 +385,12 @@ func TestRawEntry_ConcurrentGC_FallsThroughToPresigner(t *testing.T) {
 	}
 }
 
-// Same scenario but no presigner configured → 500 (no fallback path).
-func TestRawEntry_ConcurrentGC_NoPresigner_Returns500(t *testing.T) {
+// Same scenario but no PublicURLer configured → 500 (no fallback path).
+func TestRawEntry_ConcurrentGC_NoPublicURLer_Returns500(t *testing.T) {
 	deps, store, w, _ := newDeps(t)
-	deps.Presigner = nil
+	deps.PublicURLer = nil
 
-	hash := hashFor("concurrent-gc-no-presign")
+	hash := hashFor("concurrent-gc-no-public")
 	store.hashesBySeq[42] = hash
 	w.metas[hash] = wal.Meta{State: wal.StateSequenced, Sequence: 42}
 
