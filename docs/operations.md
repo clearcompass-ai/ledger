@@ -578,56 +578,74 @@ Surfaces the otherwise-silent "partial restore / aborted migration"
 class of failure where re-initializing on top of stale tile artifacts
 would corrupt the log.
 
-### G5 — `GET /v1/admin/config`
+### G5 — `GET /v1/log-info` (public)
 
-Returns the EFFECTIVE runtime config as JSON with secrets redacted.
-Lets operators confirm what env the running pod actually loaded vs.
-what the deployment manifest said it should load.
+The ledger is zero-trust by design (L-1 dumb ledger, T-6
+zero-trust dual verification): there is no privileged "admin"
+surface. `/v1/log-info` is a PUBLIC, cacheable, auditor-facing
+endpoint that pairs with `/checkpoint` and the witness bootstrap
+document as the public-truth artifacts of this log.
 
 ```sh
-curl -s http://ledger:8080/v1/admin/config | jq .
+curl -s http://ledger:8080/v1/log-info | jq .
 ```
 
 ```json
 {
   "byte_store_backend": "gcs",
-  "byte_store_gcs_bucket": "ledger-prod-bytes",
-  "database_url": "<set>",
-  "ledger_signer_key_file": "<set>",
+  "gossip_enabled": true,
+  "gossip_peer_count": 3,
+  "ledger_did": "did:web:ledger.example",
   "log_did": "did:web:ledger.example",
-  "max_entry_size": 1048576,
-  "metrics_enable": true,
+  "mmd": "24h0m0s",
   "network_id": "0a1b2c3d4e5f6071",
-  "pg_max_conns": 24,
-  "pg_statement_timeout": "5s",
   "sequencer_interval": "1s",
-  "sequencer_max_inflight": 4,
+  "server_addr": ":8080",
   "tile_backend": "gcs",
+  "tile_bucket_prefix": "tessera/",
+  "tile_serve_disable": false,
   "tls_enabled": true,
-  ...
+  "witness_endpoint_count": 7,
+  "witness_quorum_k": 4
 }
 ```
 
-Secret-shaped fields (DSN, key files, signer paths, access keys)
-return `"<set>"` or `"<unset>"` so presence is confirmable without
-content exposure. Public identifiers (LogDID, NetworkID, addrs,
-intervals) are surfaced verbatim.
+`Cache-Control: public, max-age=60`. Witness rotation can change
+`witness_quorum_k` and witness set membership; one minute is the
+staleness floor an auditor accepts on the public surface.
 
-UNAUTHENTICATED in this commit. Recommended deployment: mount on the
-pprof private listener (`LEDGER_PPROF_ADDR`) only, OR put a
-reverse-proxy auth filter in front. Future work: token-gated
-middleware via `LEDGER_ADMIN_AUTH_TOKEN`.
+**Scope discipline:** only fields an external auditor needs to
+verify the log's trust posture. Operational tunables (`pg_max_conns`,
+`pg_statement_timeout`, internal file paths, WAL path,
+`max_concurrent_conns`) are NOT exposed here — they live in the
+boot banner log (G7) for operators reading from their log shipper,
+and pprof's private listener (`LEDGER_PPROF_ADDR`) gives operators
+deeper introspection. If a piece of information was sensitive
+enough to require auth, it doesn't belong on a runtime endpoint
+at all.
 
-### G6 — `GET /v1/admin/version`
+### G6 — `GET /version` (public)
+
+Build provenance — which binary served you this proof. Every CT
+log monitor expects this surface; auditors verify pod-to-build
+correlation.
+
+```sh
+curl -s http://ledger:8080/version | jq .
+```
 
 ```json
 {
   "version": "v0.42.1",
   "commit": "abc123def456...",
-  "build_time": "2026-05-06T12:34:56Z",
+  "build_time": "2026-05-07T12:34:56Z",
   "sdk_version": "v0.1.2"
 }
 ```
+
+`Cache-Control: public, max-age=3600`. Build is immutable per
+pod; the only way the response can change is via a rolling
+redeploy.
 
 Populated at build time via `-ldflags`:
 
@@ -639,7 +657,10 @@ go build \
   ./cmd/ledger
 ```
 
-Same auth caveat as G5.
+PUBLIC, no auth. Build provenance is fundamentally public
+information (this is the same posture every CT log takes —
+Sectigo Sabre, Google Argon, Cloudflare Nimbus all expose
+unauthenticated version probes).
 
 ### G7 — Boot banner
 
@@ -670,6 +691,83 @@ plus booleans for capability flags.
   "metrics_enabled":true
 }
 ```
+
+## Shutdown ordering (I category)
+
+I1+I2+I3 — Strict-order shutdown via `lifecycle.ShutdownChain`.
+Each resource registered at boot has a sync.OnceFunc-protected
+close fn that's invoked from BOTH the boot-panic-safety defer
+AND the explicit shutdown chain at SIGTERM. Whichever fires
+first does the work, the other becomes a no-op.
+
+### I1 — 14-step spec order
+
+```
+SIGTERM (or SIGINT)
+   │
+   ▼
+   1. /readyz=503                 (atomic flip; LB removes pod from rotation)
+   2. predrain grace              (LEDGER_PREDRAIN_GRACE, default 5s)
+   3. http-server                 (Server.Shutdown drains in-flight)
+   4. pprof-server                (diagnostic listener close)
+   5. background-goroutines       (wg.Wait — sequencer/shipper/builder/etc. drain)
+   6. bytestore                   (flush in-flight uploads)
+   7. tessera                     (flush tile writes)
+   8. wal-committer               (group-commit batch flush; depends on wal-db)
+   9. wal-db                      (Badger close)
+  10. tessera-antispam            (Badger close)
+  11. gossipstore                 (gossip Badger surface close)
+  12. builder-advisory-lock       (release lock + drop heartbeat)
+  13. pgxpool                     (Postgres pool close — last for in-flight queries)
+  14. otel-meter                  (very last so the shutdown event is observable)
+   │
+   ▼
+   process exits 0  (or panic on fatal)
+```
+
+### I2 — Per-component timeouts
+
+Each step has its OWN bounded ctx:
+
+| Step | Timeout | Rationale |
+|---|---|---|
+| http-server | 30 s | matches HTTP request budgets |
+| pprof-server | 5 s | no in-flight admission |
+| background-goroutines | 30 s | sequencer + shipper drain budget |
+| bytestore | 30 s | GCS PUT can be slow |
+| tessera | 15 s | tile flush |
+| wal-committer | 5 s | group-commit batch finalize |
+| wal-db | 10 s | Badger close |
+| tessera-antispam | 15 s | antispam Badger close |
+| gossipstore | 5 s | Badger close (shared handle, mostly fast) |
+| builder-advisory-lock | 5 s | server-side unlock |
+| pgxpool | 10 s | drain in-flight queries |
+| otel-meter | 5 s | flush metric exports |
+
+Total worst-case shutdown: ~3 minutes if every step times out.
+In practice the typical wall time is under 5 s — the budgets are
+defense-in-depth, not normal operation.
+
+### I3 — Final summary log
+
+After the chain runs, every step emits a summary line at Info:
+
+```json
+{"msg":"shutdown step summary","step":"http-server","status":"ran","duration":"143.2ms","err":""}
+{"msg":"shutdown step summary","step":"pprof-server","status":"ran","duration":"1.1ms","err":""}
+{"msg":"shutdown step summary","step":"background-goroutines","status":"ran","duration":"812.5ms","err":""}
+{"msg":"shutdown step summary","step":"bytestore","status":"ran","duration":"23.4ms","err":""}
+... (one line per registered step)
+{"msg":"shutdown step summary","step":"otel-meter","status":"ran","duration":"4.2ms","err":""}
+{"msg":"ledger stopped","batches":42,"entries":10742,"errors":0}
+```
+
+`status` is `ran` (executed) or `skipped` (chain Run never
+reached this step — e.g., supervisor exited via panic before
+this point). `duration` is per-step wall time. `err` is the
+step's error string (empty on success). An SRE post-mortem on
+a slow pod-eviction reads these lines to identify which
+component stalled.
 
 ## In-process audit + integrity jobs (H category)
 

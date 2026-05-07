@@ -744,81 +744,47 @@ func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
 // error if the ledger was misconfigured — better to refuse to
 // start than to have HTTP admission hang on connection acquisition
 // under load.
-// buildConfigSnapshot flattens the loaded Config into the
-// redacted-effective-config map served by GET /v1/admin/config.
-// Secret-shaped values (DSN, key files, signer paths, access
-// keys, secret keys) are surfaced as "<set>" or "<unset>" so the
-// operator can confirm presence without exposing content. Public
-// identifiers (LogDID, NetworkID, addrs, intervals) are surfaced
-// verbatim. The map is sorted by the handler before encoding.
-func buildConfigSnapshot(cfg *Config) api.ConfigSnapshot {
-	presence := func(s string) string {
-		if s == "" {
-			return "<unset>"
-		}
-		return "<set>"
-	}
-	return api.ConfigSnapshot{
-		// Identity + addressing.
+// buildLogInfo flattens the auditor-facing subset of Config into
+// the public deployment-posture payload served by GET /v1/log-info.
+// SCOPE: only fields an external auditor needs to verify the log's
+// trust posture. Operational tunables (PG pool sizes, statement
+// timeout, internal file paths, WAL path) are intentionally absent
+// — they're surfaced via the boot banner log (G7) for operators
+// to read from their log shipper.
+//
+// The ledger is zero-trust by design (L-1 dumb ledger, T-6
+// zero-trust dual verification): there is no privileged "admin"
+// surface. Anything below this filter is genuinely public —
+// never any secret content, never any internal-only telemetry.
+func buildLogInfo(cfg *Config) api.LogInfo {
+	return api.LogInfo{
+		// Identity + addressing — auditors must know which log
+		// they're verifying.
 		"log_did":     cfg.LogDID,
 		"ledger_did":  cfg.LedgerDID,
 		"network_id":  networkIDHex(cfg.NetworkID),
 		"server_addr": cfg.ServerAddr,
-		"pprof_addr":  cfg.PprofAddr,
 
-		// TLS.
-		"tls_enabled":   cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
-		"tls_cert_file": presence(cfg.TLSCertFile),
-		"tls_key_file":  presence(cfg.TLSKeyFile),
-
-		// Postgres.
-		"database_url":         presence(cfg.DatabaseURL),
-		"pg_max_conns":         cfg.PgMaxConns,
-		"pg_statement_timeout": cfg.PgStatementTimeout.String(),
-
-		// Tessera + WAL + bytestore.
-		"tessera_storage_dir":      cfg.TesseraStorageDir,
-		"tessera_signer_key_file":  presence(cfg.TesseraSignerKeyFile),
-		"ledger_signer_key_file":   presence(cfg.LedgerSignerKeyFile),
-		"wal_path":                 cfg.WALPath,
-		"tessera_antispam_path":    cfg.TesseraAntispamPath,
-		"byte_store_backend":       cfg.ByteStoreBackend,
-		"byte_store_prefix":        cfg.ByteStorePrefix,
-		"byte_store_gcs_bucket":    cfg.ByteStoreGCSBucket,
-		"byte_store_gcs_endpoint":  cfg.ByteStoreGCSEndpoint,
-		"byte_store_gcs_anon":      cfg.ByteStoreGCSAnon,
-		"byte_store_s3_bucket":     cfg.ByteStoreS3Bucket,
-		"byte_store_s3_endpoint":   cfg.ByteStoreS3Endpoint,
-		"byte_store_s3_region":     cfg.ByteStoreS3Region,
-		"byte_store_s3_access_key": presence(cfg.ByteStoreS3AccessKey),
-		"byte_store_s3_secret_key": presence(cfg.ByteStoreS3SecretKey),
-
-		// Tile serving.
-		"tile_serve_disable":  cfg.TileServeDisable,
+		// Storage backend types — auditor needs to know whether
+		// to fetch tiles from POSIX origin or GCS bucket.
+		"byte_store_backend":  cfg.ByteStoreBackend,
 		"tile_backend":        cfg.TileBackend,
 		"tile_bucket_prefix":  cfg.TileBucketPrefix,
+		"tile_serve_disable":  cfg.TileServeDisable,
 
-		// Sequencer + builder pacing.
-		"sequencer_interval":      cfg.SequencerInterval.String(),
-		"sequencer_max_inflight":  cfg.SequencerMaxInFlight,
-		"mmd":                     cfg.MMD.String(),
-
-		// Witness + gossip.
+		// Witness topology — drives K-of-N quorum verification.
 		"witness_endpoint_count": len(cfg.WitnessEndpoints),
 		"witness_quorum_k":       cfg.WitnessQuorumK,
-		"witness_key_file":       presence(cfg.WitnessKeyFile),
-		"network_bootstrap_file": presence(cfg.NetworkBootstrapFile),
-		"gossip_disable":         cfg.GossipDisable,
-		"gossip_peer_count":      len(cfg.GossipPeerDIDs),
 
-		// Observability.
-		"metrics_enable":      cfg.MetricsEnable,
-		"metrics_environment": cfg.MetricsEnvironment,
-		"service_version":     cfg.ServiceVersion,
+		// Gossip + transport posture.
+		"gossip_enabled":    !cfg.GossipDisable,
+		"gossip_peer_count": len(cfg.GossipPeerDIDs),
+		"tls_enabled":       cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
 
-		// HTTP shaping.
-		"max_concurrent_conns": cfg.MaxConcurrentConns,
-		"max_entry_size":       cfg.MaxEntrySize,
+		// Sequencer cadence — affects MMD compliance window an
+		// auditor evaluates.
+		"sequencer_interval": cfg.SequencerInterval.String(),
+		"mmd":                cfg.MMD.String(),
 	}
 }
 
@@ -1006,6 +972,16 @@ func main() {
 	// non-blocking via lifecycle.SafeRun.
 	fatal := make(chan error, 8)
 
+	// shutdownChain enforces the I1 strict shutdown order. Each
+	// resource registers a Close step at the moment it's
+	// successfully constructed; the chain runs them in
+	// REGISTRATION ORDER (not LIFO like Go defers) with PER-
+	// COMPONENT timeouts (I2). The Add() return value is stashed
+	// in a defer at each call site so a boot-panic before Run
+	// still triggers the close (sync.Once inside the chain
+	// ensures Run + defer-fallback don't double-close).
+	shutdownChain := lifecycle.NewShutdownChain(logger)
+
 	cfg, err := loadConfig()
 	if err != nil {
 		logger.Error("config", "error", err)
@@ -1093,7 +1069,16 @@ func main() {
 		logger.Error("pgxpool", "error", err)
 		os.Exit(1)
 	}
-	defer pgPool.Close()
+	// Per-resource Once-protected close. The same OnceFunc is
+	// invoked from BOTH the boot-panic-safety defer AND the
+	// shutdownChain step at SIGTERM, so whichever fires first
+	// does the work, the other becomes a no-op.
+	closePgxpoolOnce := sync.OnceFunc(func() { pgPool.Close() })
+	closePgxpool := func(ctx context.Context) error {
+		closePgxpoolOnce()
+		return nil
+	}
+	defer closePgxpoolOnce()
 	pool := pgPool.DB
 	logger.Info("postgres pool ready",
 		"max_conns", cfg.PgMaxConns,
@@ -1118,7 +1103,12 @@ func main() {
 		logger.Error("builder advisory lock", "error", err)
 		os.Exit(1)
 	}
-	defer builderLock.Release()
+	releaseBuilderLockOnce := sync.OnceFunc(func() { builderLock.Release() })
+	closeBuilderLock := func(ctx context.Context) error {
+		releaseBuilderLockOnce()
+		return nil
+	}
+	defer releaseBuilderLockOnce()
 	logger.Info("builder advisory lock acquired", "lock_id", store.BuilderLockID)
 
 	// Postgres circuit breaker: trips after consecutive pool-
@@ -1146,17 +1136,21 @@ func main() {
 		logger.Error("wal open", "error", err, "path", cfg.WALPath)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := walDB.Close(); err != nil {
-			logger.Warn("wal db close", "error", err)
-		}
-	}()
+	var walDBErr error
+	closeWALDBOnce := sync.OnceFunc(func() { walDBErr = walDB.Close() })
+	closeWALDB := func(ctx context.Context) error {
+		closeWALDBOnce()
+		return walDBErr
+	}
+	defer closeWALDBOnce()
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{Logger: logger})
-	defer func() {
-		if err := walc.Close(); err != nil {
-			logger.Warn("wal committer close", "error", err)
-		}
-	}()
+	var walcErr error
+	closeWALCommitterOnce := sync.OnceFunc(func() { walcErr = walc.Close() })
+	closeWALCommitter := func(ctx context.Context) error {
+		closeWALCommitterOnce()
+		return walcErr
+	}
+	defer closeWALCommitterOnce()
 	logger.Info("wal ready", "path", cfg.WALPath)
 
 	// ── Byte store ────────────────────────────────────────────────────
@@ -1172,13 +1166,17 @@ func main() {
 		logger.Error("byte store init", "error", err, "backend", cfg.ByteStoreBackend)
 		os.Exit(1)
 	}
-	defer func() {
+	var byteStoreErr error
+	closeByteStoreOnce := sync.OnceFunc(func() {
 		if closer, ok := byteStore.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("byte store close", "error", err)
-			}
+			byteStoreErr = closer.Close()
 		}
-	}()
+	})
+	closeByteStore := func(ctx context.Context) error {
+		closeByteStoreOnce()
+		return byteStoreErr
+	}
+	defer closeByteStoreOnce()
 	logger.Info("byte store ready",
 		"backend", cfg.ByteStoreBackend,
 		"prefix", cfg.ByteStorePrefix,
@@ -1254,16 +1252,17 @@ func main() {
 		logger.Error("tessera antispam open", "error", err, "path", cfg.TesseraAntispamPath)
 		os.Exit(1)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = shutdownCtx
+	var antispamErr error
+	closeAntispamOnce := sync.OnceFunc(func() {
 		if closer, ok := any(antispamStorage).(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("antispam close", "error", err)
-			}
+			antispamErr = closer.Close()
 		}
-	}()
+	})
+	closeAntispam := func(ctx context.Context) error {
+		closeAntispamOnce()
+		return antispamErr
+	}
+	defer closeAntispamOnce()
 	logger.Info("tessera antispam ready", "path", cfg.TesseraAntispamPath)
 
 	embeddedAppender, err := tessera.NewEmbeddedAppender(ctx, tesseraDriver, tessera.AppenderOptions{
@@ -1278,13 +1277,17 @@ func main() {
 		logger.Error("tessera embedded appender", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var tesseraErr error
+	closeTesseraOnce := sync.OnceFunc(func() {
+		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := embeddedAppender.Close(shutdownCtx); err != nil {
-			logger.Warn("tessera shutdown", "error", err)
-		}
-	}()
+		tesseraErr = embeddedAppender.Close(c)
+	})
+	closeTessera := func(ctx context.Context) error {
+		closeTesseraOnce()
+		return tesseraErr
+	}
+	defer closeTesseraOnce()
 	logger.Info("tessera embedded ready",
 		"storage_dir", cfg.TesseraStorageDir,
 		"origin", tesseraOrigin,
@@ -1390,6 +1393,9 @@ func main() {
 		meterShutdown func(ctx context.Context) error
 		gossipMeter metric.Meter
 		metricsHandler http.Handler
+		// closeOTelMeter is the spec-order shutdown step. nil
+		// when metrics are disabled (no-op step in the chain).
+		closeOTelMeter func(ctx context.Context) error
 	)
 	if cfg.MetricsEnable {
 		mpResult, mErr := sdklog.NewMeterProvider(sdklog.MeterProviderConfig{
@@ -1419,13 +1425,20 @@ func main() {
 
 		metricsHandler = mpResult.PrometheusHandler
 		meterShutdown = mpResult.Shutdown
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// closeOTelMeter is registered in spec order at shutdown
+		// time. Boot-panic safety via this defer using a
+		// background ctx + 5s budget.
+		var otelErr error
+		closeOTelMeterOnce := sync.OnceFunc(func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := meterShutdown(ctx); err != nil {
-				logger.Warn("metrics: shutdown", "error", err)
-			}
-		}()
+			otelErr = meterShutdown(c)
+		})
+		closeOTelMeter = func(ctx context.Context) error {
+			closeOTelMeterOnce()
+			return otelErr
+		}
+		defer closeOTelMeterOnce()
 		logger.Info("metrics: enabled",
 			"endpoint", "/metrics",
 			"environment", cfg.MetricsEnvironment,
@@ -1453,6 +1466,9 @@ func main() {
 		gossipPostH http.Handler
 		gossipFeedH http.Handler
 		gossipPublisher *gossipnet.STHPublisher
+		// closeGossipStore is the spec-order shutdown step. nil
+		// when gossip is disabled (no-op step in the chain).
+		closeGossipStore func(ctx context.Context) error
 	)
 	var zeroNetID cosign.NetworkID
 	if !cfg.GossipDisable && cfg.NetworkID != zeroNetID {
@@ -1495,15 +1511,21 @@ func main() {
 
 		// Shutdown ordering: drain sink → close handlers → close
 		// store. The underlying *badger.DB is owned by wal.Open
-		// (the existing defer above closes it last).
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// (its registered shutdown step closes it after this one).
+		var gossipStoreErr error
+		closeGossipStoreOnce := sync.OnceFunc(func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			for _, c := range gossipBundle.Closeables {
-				_ = c.Close(ctx)
+			for _, cl := range gossipBundle.Closeables {
+				_ = cl.Close(c)
 			}
-			_ = gossipBStore.Close(ctx)
-		}()
+			gossipStoreErr = gossipBStore.Close(c)
+		})
+		closeGossipStore = func(ctx context.Context) error {
+			closeGossipStoreOnce()
+			return gossipStoreErr
+		}
+		defer closeGossipStoreOnce()
 
 		// gossipWG drains the async goroutines (anti-entropy,
 		// equivocation monitor, equivocation scanner) BEFORE
@@ -2027,8 +2049,8 @@ func main() {
 		CommitmentLookup: commitmentLookupHandler, // nil unless gossipBStore is wired
 		Checkpoint:       checkpointHandler,       // nil when LEDGER_TILE_SERVE_DISABLE=true
 		Tile:             tileHandler,             // nil when LEDGER_TILE_SERVE_DISABLE=true
-		AdminConfig:      api.NewAdminConfigHandler(buildConfigSnapshot(cfg)),
-		AdminVersion: api.NewAdminVersionHandler(api.VersionInfo{
+		LogInfo: api.NewLogInfoHandler(buildLogInfo(cfg)),
+		Version: api.NewVersionHandler(api.VersionInfo{
 			Version:    Version,
 			Commit:     Commit,
 			BuildTime:  BuildTime,
@@ -2420,19 +2442,86 @@ func main() {
 		}
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http shutdown", "error", err)
-	}
+	// I1+I2+I3 — Strict-order shutdown via ShutdownChain.
+	//
+	// Each resource was set up at boot with a sync.OnceFunc-
+	// protected close (deferred for boot-panic safety) plus a
+	// `func(ctx) error` shape suitable for chain registration.
+	// Here we register every step in SPEC ORDER and Run; the
+	// boot-time defers later fire LIFO at function exit but
+	// hit sync.Once "already done" and no-op cleanly.
+	//
+	// I1 spec order:
+	//   1. /readyz=503        (already done above)
+	//   2. predrain grace     (already done above)
+	//   3. http-server        (drain in-flight)
+	//   4. pprof-server       (close diagnostic listener)
+	//   5. background-goroutines (wg.Wait — sequencer/shipper drain)
+	//   6. bytestore          (flush in-flight uploads)
+	//   7. tessera            (flush tile writes)
+	//   8. wal-committer      (group-commit batch flush; depends on wal-db)
+	//   9. wal-db             (Badger close; depended on by gossipstore + walc)
+	//  10. tessera-antispam   (Badger close)
+	//  11. gossipstore        (gossip Badger surface)
+	//  12. builder-advisory-lock (release lock + drop heartbeat)
+	//  13. pgxpool            (Postgres pool close — last for in-flight queries)
+	//  14. otel-meter         (OTel last so the shutdown event itself is observable)
+	shutdownChain.Add("http-server", 30*time.Second, func(ctx context.Context) error {
+		return server.Shutdown(ctx)
+	})
 	if pprofServer != nil {
-		// pprof has no in-flight admission requests; quick close.
-		pprofShutdownCtx, pprofShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = pprofServer.Shutdown(pprofShutdownCtx)
-		pprofShutdownCancel()
+		shutdownChain.Add("pprof-server", 5*time.Second, func(ctx context.Context) error {
+			return pprofServer.Shutdown(ctx)
+		})
+	}
+	shutdownChain.Add("background-goroutines", 30*time.Second, func(ctx context.Context) error {
+		// wg.Wait blocks until every SafeRunInWG goroutine
+		// exits. Per-component timeout caps the wait so a
+		// wedged goroutine can't block the resource closes
+		// downstream.
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	shutdownChain.Add("bytestore", 30*time.Second, closeByteStore)
+	shutdownChain.Add("tessera", 15*time.Second, closeTessera)
+	shutdownChain.Add("wal-committer", 5*time.Second, closeWALCommitter)
+	shutdownChain.Add("wal-db", 10*time.Second, closeWALDB)
+	shutdownChain.Add("tessera-antispam", 15*time.Second, closeAntispam)
+	if closeGossipStore != nil {
+		shutdownChain.Add("gossipstore", 5*time.Second, closeGossipStore)
+	}
+	shutdownChain.Add("builder-advisory-lock", 5*time.Second, closeBuilderLock)
+	shutdownChain.Add("pgxpool", 10*time.Second, closePgxpool)
+	if closeOTelMeter != nil {
+		shutdownChain.Add("otel-meter", 5*time.Second, closeOTelMeter)
 	}
 
-	wg.Wait()
+	shutdownChain.Run()
+
+	// I3 — Final shutdown summary log. Per-component drain
+	// duration + error so an operator can identify which
+	// component stalled during a SIGTERM or pod-eviction.
+	for _, step := range shutdownChain.Summary() {
+		status := "ran"
+		if !step.Ran {
+			status = "skipped"
+		}
+		logger.Info("shutdown step summary",
+			"step", step.Name,
+			"status", status,
+			"duration", step.Duration,
+			"err", errString(step.Err),
+		)
+	}
 
 	b, e, errs := bl.Stats()
 	logger.Info("ledger stopped",
@@ -2446,4 +2535,14 @@ func main() {
 		// what's next.
 		panic(fmt.Errorf("ledger FATAL: %w", fatalErr))
 	}
+}
+
+// errString returns "" for nil err, err.Error() otherwise. Used
+// by the shutdown summary so the log field is empty rather than
+// "<nil>" on success.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

@@ -220,16 +220,19 @@ type Handlers struct {
 	// stdlib mux's pattern coverage stays unambiguous.
 	Tile http.HandlerFunc
 
-	// ── Admin endpoints (G5/G6) ─────────────────────────────────────
-	// AdminConfig serves GET /v1/admin/config — the EFFECTIVE
-	// runtime config with secrets redacted. Lets operators
-	// confirm what env the running pod actually loaded.
-	AdminConfig http.HandlerFunc
+	// ── Public introspection endpoints (G5/G6 zero-trust shape) ─────
+	// LogInfo serves GET /v1/log-info — public deployment posture
+	// (LogDID, NetworkID, witness set, byte-store + tile backend,
+	// gossip enabled, TLS enabled). Auditor-facing surface; pairs
+	// with /checkpoint as the public-truth artifacts of this log.
+	// Cache-Control: public, max-age=60.
+	LogInfo http.HandlerFunc
 
-	// AdminVersion serves GET /v1/admin/version — version, git
-	// commit, build time, SDK version. Required for op-stack
-	// debugging + audit; populated via -ldflags at build time.
-	AdminVersion http.HandlerFunc
+	// Version serves GET /version — build provenance (version,
+	// git commit, build time, SDK version pin). Public + cacheable.
+	// Auditors verify "which binary served me this proof".
+	// Cache-Control: public, max-age=3600.
+	Version http.HandlerFunc
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -417,19 +420,19 @@ func NewServer(
 		mux.HandleFunc("GET /tile/{level}/{rest...}", handlers.Tile)
 	}
 
-	// ── Admin endpoints (G5/G6) ──────────────────────────────────────
-	// /v1/admin/config + /v1/admin/version. Mounted nil-guarded;
-	// cmd/ledger wires them at boot. Currently UNAUTHENTICATED —
-	// recommended deployment pattern is to expose these on the
-	// pprof private listener (LEDGER_PPROF_ADDR) only, OR put a
-	// reverse-proxy auth filter in front. Future work: add a
-	// LEDGER_ADMIN_AUTH_TOKEN env (separate from session auth)
-	// that gates the routes when set.
-	if handlers.AdminConfig != nil {
-		mux.HandleFunc("GET /v1/admin/config", handlers.AdminConfig)
+	// ── Public introspection (G5/G6 zero-trust shape) ────────────────
+	// /version + /v1/log-info. Mounted nil-guarded; cmd/ledger
+	// wires them at boot. Both PUBLIC + cacheable — the ledger is
+	// zero-trust by design (L-1 dumb ledger, T-6 zero-trust dual
+	// verification): anything an SRE needs to debug is also
+	// something an auditor needs to verify. Operational-only
+	// tunables (pool sizes, internal paths) are NOT exposed here;
+	// they live in the boot banner log + pprof private listener.
+	if handlers.Version != nil {
+		mux.HandleFunc("GET /version", handlers.Version)
 	}
-	if handlers.AdminVersion != nil {
-		mux.HandleFunc("GET /v1/admin/version", handlers.AdminVersion)
+	if handlers.LogInfo != nil {
+		mux.HandleFunc("GET /v1/log-info", handlers.LogInfo)
 	}
 
 	// -------------------------------------------------------------------------------------------------
