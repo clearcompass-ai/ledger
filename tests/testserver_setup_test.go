@@ -94,6 +94,19 @@ type testLedgerOpts struct {
 	// signed checkpoint. Defaults to testLogDID. Ignored when
 	// UseRealTessera is false.
 	Origin string
+
+	// LowDifficulty caps admission PoW at 4-bit min / 8-bit
+	// initial / 12-bit max. Default config is 16/8/24 — too
+	// expensive when a single test submits 256+ entries.
+	// Crypto / tile / byte tests opt in; persona tests keep
+	// the production-shape default.
+	LowDifficulty bool
+
+	// PublicURLer wires the /v1/entries/{seq}/raw 302 redirect
+	// path. Default nil → handler returns 500 on shipped
+	// entries (fail-closed). BYTE-VER-02 supplies a static
+	// fixture that maps (seq, hash) → an http test fixture URL.
+	PublicURLer api.PublicURLer
 }
 
 // tesseraSlots and buildTesseraForTests live in testserver_tessera_test.go
@@ -186,8 +199,14 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		close(loopDone)
 	}()
 
+	diffCfg := middleware.DefaultDifficultyConfig()
+	if opts.LowDifficulty {
+		diffCfg.InitialDifficulty = 8
+		diffCfg.MinDifficulty = 4
+		diffCfg.MaxDifficulty = 12
+	}
 	diffController := middleware.NewDifficultyController(
-		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
+		sequenceCursor, diffCfg, logger,
 	)
 	queryAPI := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
 
@@ -224,16 +243,22 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
 		EntryStore: entryStore, WAL: walc,
-		// PublicURLer nil makes the 302 redirect branch return 500;
-		// scenarios tests don't exercise the redirect, so any hit
-		// is an unexpected state transition.
-		PublicURLer: nil, LogDID: testLogDID, Logger: logger,
+		// PublicURLer is opt-driven: scenarios tests that exercise
+		// the 302 redirect (BYTE-VER-02) supply a static fixture;
+		// everything else leaves it nil and the handler fails 500
+		// on shipped-entry hits (fail-closed).
+		PublicURLer: opts.PublicURLer, LogDID: testLogDID, Logger: logger,
 	}
 	commitDeps := &api.DerivationCommitmentDeps{
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
+	cryptoCommitDeps := &api.CryptographicCommitmentDeps{
+		Fetcher: store.NewPostgresCommitmentFetcher(pool, entryBytes, testLogDID),
+		Logger:  logger,
+	}
 
 	handlers := buildTestHandlers(submissionDeps, treeDeps, smtDeps, queryDeps, entryReadDeps, commitDeps)
+	handlers.CommitmentLookup = api.NewCommitmentLookupHandler(cryptoCommitDeps)
 
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = "127.0.0.1:0"

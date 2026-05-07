@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/clearcompass-ai/attesta/types"
+	"github.com/clearcompass-ai/ledger/api"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
 )
 
@@ -72,6 +73,25 @@ type scenariosStackOpts struct {
 	// tunables for fast tests.
 	CheckpointInterval time.Duration
 	BatchSize          int
+
+	// TileRoot pins the on-disk Tessera POSIX directory. Empty
+	// → harness mints a fresh tmp dir. Tests that need
+	// across-restart persistence (CRYPTO-EXT-03) supply an
+	// explicit path so two stacks share the same tile state.
+	TileRoot string
+
+	// LowDifficulty drops admission PoW to 4/8/12 bits
+	// (default 8/16/24). Required for tests that submit
+	// hundreds of entries (TILE-INT-01, BYTE-VER-01,
+	// CRYPTO-INT-01). Persona tests keep the production-shape
+	// default.
+	LowDifficulty bool
+
+	// PublicURLer composes /v1/entries/{seq}/raw 302 targets.
+	// Tests that exercise the redirect path (BYTE-VER-02)
+	// supply a static-mapping fixture; everything else leaves
+	// it nil (fail-closed).
+	PublicURLer api.PublicURLer
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -108,6 +128,9 @@ func NewScenariosStack(t *testing.T, opts scenariosStackOpts) *scenariosStack {
 		CheckpointInterval: opts.CheckpointInterval,
 		BatchSize:          opts.BatchSize,
 		Origin:             logDID,
+		TileRoot:           opts.TileRoot,
+		LowDifficulty:      opts.LowDifficulty,
+		PublicURLer:        opts.PublicURLer,
 	})
 
 	if !op.HasRealTessera() {
