@@ -239,8 +239,9 @@ ERR
     echo "   (tear down with: ./scripts/run-soak.sh down)"
 fi
 
-# Soak runs against REAL GCS — explicitly clear any container-mode signal
-# the test harness might pick up.
+# Defensive: when BACKEND=gcs, the soak goes to REAL GCS — explicitly
+# clear any container-mode signal a fake-gcs test harness might have
+# left in the environment. No-op for the seaweedfs / s3 paths.
 unset ATTESTA_TEST_GCS_ENDPOINT
 
 ENTRIES="${ATTESTA_SOAK_ENTRIES:-1000000}"
@@ -263,28 +264,42 @@ else
     DSN_SOURCE="env ATTESTA_TEST_DSN"
 fi
 
-# Bytestore banner. After the case-block above, the env vars the soak
-# reads are already routed to the right backend. We display the
-# user-facing source so it's obvious what's about to be exercised.
-if [ "${PROVISIONED_SEAWEEDFS}" -eq 1 ]; then
-    BS_SOURCE="seaweedfs (auto-provisioned in docker)"
-    BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT}/${ATTESTA_TEST_S3_BUCKET}"
-    BS_CREDS="${ATTESTA_TEST_S3_ACCESS_KEY}/...  (static, from compose)"
-elif [ "${BACKEND}" = "s3" ]; then
-    BS_SOURCE="s3 (env ATTESTA_TEST_S3_*)"
-    BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT:-aws}/${ATTESTA_TEST_S3_BUCKET}"
-    BS_CREDS="${ATTESTA_TEST_S3_ACCESS_KEY:-(default credential chain)}"
-else
-    BS_SOURCE="gcs"
-    BS_TARGET="${ATTESTA_TEST_GCS_BUCKET}"
-    BS_CREDS="${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
-fi
+# ── Bytestore display state ──────────────────────────────────────────
+#
+# Single source of truth for per-backend display. Every banner / summary
+# / cleanup line below reads these variables, so adding a backend means
+# adding one branch here — not editing three downstream blocks. Also
+# guarantees no `set -u` failures from per-backend env vars that aren't
+# set in other branches.
+case "${BACKEND}" in
+    gcs)
+        BS_KIND="gcs (real cloud)"
+        BS_BUCKET="${ATTESTA_TEST_GCS_BUCKET}"
+        BS_TARGET="gs://${BS_BUCKET}"
+        BS_AUTH_MODE="${GOOGLE_APPLICATION_CREDENTIALS:-workload identity / gcloud ADC}"
+        BS_CLEANUP_HINT="gsutil ls 'gs://${BS_BUCKET}/soak/**' || echo '(none)'"
+        ;;
+    seaweedfs)
+        BS_KIND="seaweedfs (docker, Allow-All Mode)"
+        BS_BUCKET="${ATTESTA_TEST_S3_BUCKET}"
+        BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT}/${BS_BUCKET}"
+        BS_AUTH_MODE="Allow-All — gateway accepts SigV4 unverified"
+        BS_CLEANUP_HINT="./scripts/run-soak.sh down  # tears down container + ephemeral data"
+        ;;
+    s3)
+        BS_KIND="s3 (BYO endpoint)"
+        BS_BUCKET="${ATTESTA_TEST_S3_BUCKET}"
+        BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT:-aws}/${BS_BUCKET}"
+        BS_AUTH_MODE="SigV4 via ATTESTA_TEST_S3_ACCESS_KEY/SECRET_KEY"
+        BS_CLEANUP_HINT="aws --endpoint-url '${ATTESTA_TEST_S3_ENDPOINT:-https://s3.amazonaws.com}' s3 ls 's3://${BS_BUCKET}/soak/' || echo '(none)'"
+        ;;
+esac
 
 echo "== attesta ledger soak =="
 echo "   dsn source:        ${DSN_SOURCE}"
-echo "   bytestore source:  ${BS_SOURCE}"
+echo "   bytestore source:  ${BS_KIND}"
 echo "   bytestore target:  ${BS_TARGET}"
-echo "   bytestore creds:   ${BS_CREDS}"
+echo "   auth mode:         ${BS_AUTH_MODE}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
 echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
@@ -318,11 +333,12 @@ cat <<EOF
   "verify_samples":     ${SAMPLES},
   "p99_bound_ms":       ${P99_BOUND_MS},
   "wall_clock_seconds": ${ELAPSED_S},
-  "bucket":             "${ATTESTA_TEST_GCS_BUCKET}",
+  "backend":            "${BS_KIND}",
+  "bucket":             "${BS_BUCKET}",
   "test_status":        "ok"
 }
 EOF
 
 echo
 echo "Cleanup verification: leftover soak objects under your bucket?"
-echo "  gsutil ls 'gs://${ATTESTA_TEST_GCS_BUCKET}/soak/**' || echo '(none)'"
+echo "  ${BS_CLEANUP_HINT}"

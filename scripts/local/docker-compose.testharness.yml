@@ -27,8 +27,10 @@
 # for Postgres, 4443 for fake-gcs-server) to avoid clashing with
 # whatever the developer might have running locally. Inside the
 # Docker network the containers reach each other by service name.
-
-version: "3.9"
+#
+# Note: no `version:` key. Compose v2 (the only supported one) ignores
+# it and prints an "obsolete" warning per run. Spec versioning is
+# handled implicitly now.
 
 services:
   # ─────────────────────────────────────────────────────────────────

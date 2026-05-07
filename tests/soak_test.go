@@ -445,10 +445,15 @@ func (s *latencySampler) quantiles() (p50, p99 time.Duration) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TestSoak_OneMillionEntries_RealGCS — primary soak test.
+// TestSoak_LedgerBytestore — primary soak test.
+//
+// Backend-agnostic: routes to gcs / seaweedfs / s3 based on the env
+// vars that scripts/run-soak.sh exports. Scale-agnostic: defaults to
+// 1M entries but ATTESTA_SOAK_ENTRIES tunes it down to a smoke run
+// (1k) or up to a multi-million stress run.
 // ─────────────────────────────────────────────────────────────────────
 
-func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
+func TestSoak_LedgerBytestore(t *testing.T) {
 	op := startSoakOperator(t)
 	op.seedSoakSession(t, "tok-soak", "did:example:soak-exchange", 100_000_000)
 
