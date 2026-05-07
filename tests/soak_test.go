@@ -758,8 +758,13 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 		}
 		verified++
 	}
-	t.Logf("soak passed: %d/%d sampled entries verified via hash→seq→302 path (total submitted=%d)",
-		verified, len(results), submitted.Load())
+	if verified == len(results) {
+		t.Logf("soak verify: %d/%d sampled entries verified via hash→seq→302 path (total submitted=%d)",
+			verified, len(results), submitted.Load())
+	} else {
+		t.Logf("soak verify: %d/%d sampled entries verified — see verify[*] errors above (total submitted=%d)",
+			verified, len(results), submitted.Load())
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────

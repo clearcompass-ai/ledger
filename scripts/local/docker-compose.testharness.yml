@@ -188,6 +188,37 @@ services:
       retries: 30
 
   # ─────────────────────────────────────────────────────────────────
+  # seaweedfs-init — sets the bucket's S3 policy to anonymous-read.
+  #
+  # Transparency-log architecture demands public buckets (RFC 9162,
+  # c2sp.org/tlog-tiles). The 302 read path returns credential-free
+  # public URLs; without this policy, every GET to the bucket returns
+  # 403 and the soak's verify pass fails.
+  #
+  # Idempotent: PutBucketPolicy is upsert-style; re-running the init
+  # container has no effect on subsequent runs.
+  # ─────────────────────────────────────────────────────────────────
+  seaweedfs-init:
+    image: amazon/aws-cli:latest
+    container_name: attesta_test_seaweedfs_init
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: seaweedadmin
+      AWS_SECRET_ACCESS_KEY: seaweedsecret
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      sh -c '
+        set -e;
+        POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::attesta-test-seaweed/*\"]}]}";
+        aws --endpoint-url http://seaweedfs:8333 s3api put-bucket-policy
+          --bucket attesta-test-seaweed
+          --policy "$$POLICY";
+        echo "seaweedfs bucket attesta-test-seaweed: anonymous-read policy applied";
+      '
+
+  # ─────────────────────────────────────────────────────────────────
   # Observability profile — Prometheus + Jaeger for laptop dev
   # Activate via: docker compose --profile observability up -d
   # ─────────────────────────────────────────────────────────────────
