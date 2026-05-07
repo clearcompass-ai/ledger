@@ -96,12 +96,13 @@ type soakSubmission struct {
 // ─────────────────────────────────────────────────────────────────────
 
 type soakOperator struct {
-	BaseURL string
-	Pool *pgxpool.Pool
-	WAL *wal.Committer
-	Backend opbytestore.Backend
-	Shipper *shipper.Shipper
-	cancel context.CancelFunc
+	BaseURL   string
+	Pool      *pgxpool.Pool
+	WAL       *wal.Committer
+	Backend   opbytestore.Backend
+	Sequencer *sequencer.Sequencer
+	Shipper   *shipper.Shipper
+	cancel    context.CancelFunc
 }
 
 func startSoakOperator(t *testing.T) *soakOperator {
@@ -240,7 +241,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 
 	op := &soakOperator{
 		BaseURL: baseURL, Pool: pool, WAL: walc,
-		Backend: backend, Shipper: ship, cancel: cancel,
+		Backend: backend, Sequencer: seq, Shipper: ship, cancel: cancel,
 	}
 
 	t.Cleanup(func() {
@@ -470,19 +471,71 @@ func TestSoak_OneMillionEntries_RealGCS(t *testing.T) {
 	expectedHWM := submitted.Load()
 	const drainTimeout = 10 * time.Minute
 	drainStart := time.Now()
+	cycle := 0
 	for {
-		hwm, err := op.WAL.HWM(context.Background())
-		if err != nil {
-			t.Fatalf("HWM: %v", err)
+		cycle++
+		hwm, hwmErr := op.WAL.HWM(context.Background())
+		if hwmErr != nil {
+			t.Fatalf("HWM: %v", hwmErr)
 		}
+
+		// Methodical evidence dump every cycle. Every observable
+		// surface verified via `go doc` so the log columns map
+		// 1:1 to the canonical Metrics structs:
+		//   - wal.Committer.HWM:                contiguous shipped seq
+		//   - wal.Committer.IterateInflight:    pending entries
+		//   - wal.Committer.IterateSequenced:   sequenced-not-shipped
+		//   - sequencer.MetricsSnapshot:        DrainCycles, Processed,
+		//                                       Failures, ManualCount,
+		//                                       CurrentLag
+		//   - shipper.MetricsSnapshot:          Shipped, Retries, Manual,
+		//                                       MarkShippedFailures, HWM,
+		//                                       ShipLatencyMeanMillis
+		//   - Postgres entry_index COUNT(*):    sequencer commit progress
+		//
+		// A stuck pipeline narrows in one cycle:
+		//   pending>0, seq.Processed=0:    sequencer not running
+		//   pending=0, seq.Processed=N,
+		//     ship.Shipped=0:              shipper stuck (bytestore?)
+		//   ship.Retries growing:          bytestore failing
+		//   ship.Shipped=N, wal.HWM<N:     hwmAdvancer stuck
+		pendingCount := 0
+		_ = op.WAL.IterateInflight(context.Background(), func(wal.PendingHash) error {
+			pendingCount++
+			return nil
+		})
+		sequencedCount := 0
+		_ = op.WAL.IterateSequenced(context.Background(), 0, func(wal.SequencedEntry) error {
+			sequencedCount++
+			return nil
+		})
+		seqMetrics := op.Sequencer.Metrics()
+		shipMetrics := op.Shipper.Metrics()
+		var entryIndexRows int64
+		_ = op.Pool.QueryRow(context.Background(),
+			"SELECT COUNT(*) FROM entry_index").Scan(&entryIndexRows)
+
+		t.Logf("drain[cycle=%d t=%s] expected=%d "+
+			"wal{hwm=%d pending=%d sequenced=%d} "+
+			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
+			"ship{shipped=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
+			"pg{entry_index=%d}",
+			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
+			hwm, pendingCount, sequencedCount,
+			seqMetrics.DrainCycles, seqMetrics.Processed,
+			seqMetrics.Failures, seqMetrics.ManualCount, seqMetrics.CurrentLag,
+			shipMetrics.Shipped, shipMetrics.Retries, shipMetrics.Manual,
+			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
+			entryIndexRows,
+		)
+
 		if hwm >= expectedHWM {
 			t.Logf("drained: HWM=%d in %s", hwm, time.Since(drainStart).Round(time.Second))
 			break
 		}
 		if time.Since(drainStart) > drainTimeout {
-			snap := op.Shipper.Metrics()
-			t.Fatalf("drain timeout after %s: HWM=%d expected>=%d shipper=%+v",
-				drainTimeout, hwm, expectedHWM, snap)
+			t.Fatalf("drain timeout after %s — see drain[cycle=N] log lines above for stuck-stage isolation",
+				drainTimeout)
 		}
 		time.Sleep(2 * time.Second)
 	}
