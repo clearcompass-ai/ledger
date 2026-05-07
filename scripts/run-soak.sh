@@ -2,54 +2,71 @@
 # scripts/run-soak.sh
 #
 # Runs the build-tag-isolated ledger soak test (tests/soak_test.go).
-# Default: 1M entries against real GCS, ~3 min sustained throughput.
-# Lower the count via ATTESTA_SOAK_ENTRIES for quick iteration.
+# Default: 1M entries, ~3 min sustained throughput.
 #
-# Postgres:
+# ── Bytestore selection ──────────────────────────────────────────────
+#   ATTESTA_SOAK_BYTESTORE_BACKEND
+#     gcs        Real GCS (default; preserves prior behavior).
+#                Requires ATTESTA_TEST_GCS_BUCKET + Google ADC.
+#     seaweedfs  Local SeaweedFS in Docker — fully self-contained.
+#                Auto-provisions the container, pre-creates bucket,
+#                exports S3 endpoint/creds. ZERO cloud dependencies.
+#     s3         Bring-your-own S3-compatible (real AWS, MinIO, R2).
+#                Requires ATTESTA_TEST_S3_* env vars.
+#
+# ── Postgres ─────────────────────────────────────────────────────────
 #   If ATTESTA_TEST_DSN is set, that DSN is used as-is (no docker).
 #   If unset, this script auto-provisions Postgres in Docker using the
 #   same compose file as scripts/run-local.sh and exports the canonical
-#   testharness DSN. The container persists between runs; tear it down
-#   with `./scripts/run-soak.sh down`.
+#   testharness DSN. Tear down with `./scripts/run-soak.sh down`.
 #
-# Required env (GCS — no auto-provision; soak is real-cloud by design):
-#   ATTESTA_TEST_GCS_BUCKET       real GCS bucket name (REQUIRED)
-#   GOOGLE_APPLICATION_CREDENTIALS path to a service-account key with
-#                                  storage.objects.{create,get,list,delete}
-#                                  on the bucket (or workload identity)
+# ── Required env (per backend) ───────────────────────────────────────
+#   GCS:
+#     ATTESTA_TEST_GCS_BUCKET       real GCS bucket name (REQUIRED)
+#     GOOGLE_APPLICATION_CREDENTIALS path to a service-account key
+#                                    (or workload identity / gcloud ADC)
+#   SeaweedFS:
+#     (nothing — fully self-contained)
+#   BYO S3:
+#     ATTESTA_TEST_S3_BUCKET, ATTESTA_TEST_S3_ENDPOINT,
+#     ATTESTA_TEST_S3_ACCESS_KEY, ATTESTA_TEST_S3_SECRET_KEY
 #
-# Optional env:
-#   ATTESTA_TEST_DSN              postgres connection string. If unset,
-#                                 auto-provisioned via Docker (see above).
+# ── Optional env ─────────────────────────────────────────────────────
+#   ATTESTA_TEST_DSN              postgres connection string (or auto-docker)
 #
-# Optional knobs (env, with defaults):
+# ── Optional knobs (env, with defaults) ──────────────────────────────
 #   ATTESTA_SOAK_ENTRIES                1000000  total entries to submit
-#   ATTESTA_SOAK_CONCURRENCY            8        concurrent submitter goroutines
+#   ATTESTA_SOAK_CONCURRENCY            8        submitter goroutines
 #   ATTESTA_SOAK_VERIFY_SAMPLES         100      random subset to verify via /raw
 #   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
-#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel GCS uploads — bump for
-#                                                higher-volume soaks (drain rate
-#                                                ≈ MaxInFlight / per-upload-latency)
-#   ATTESTA_SOAK_DRAIN_TIMEOUT          10m      in-test wait for WAL HWM to
-#                                                catch up to submitted count
+#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel uploads — bump for
+#                                                higher-volume soaks
+#   ATTESTA_SOAK_DRAIN_TIMEOUT          10m      in-test wait for WAL HWM
 #   ATTESTA_SOAK_TEST_TIMEOUT           30m      go test process ceiling
-#                                                (must be > submission + drain)
 #
-# Usage (auto-provisioned Postgres):
-#   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
+# ── Usage examples ───────────────────────────────────────────────────
+#
+# Cloud-free, fully local 100k smoke (RECOMMENDED for quick iteration):
+#   ATTESTA_SOAK_BYTESTORE_BACKEND=seaweedfs \
+#   ATTESTA_SOAK_ENTRIES=100000 \
+#   ./scripts/run-soak.sh
+#
+# Cloud-free 1M production-tuned validation:
+#   ATTESTA_SOAK_BYTESTORE_BACKEND=seaweedfs \
+#   ATTESTA_SOAK_ENTRIES=1000000 \
+#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT=64 \
+#   ATTESTA_SOAK_DRAIN_TIMEOUT=10m \
+#   ATTESTA_SOAK_TEST_TIMEOUT=45m \
+#   ./scripts/run-soak.sh
+#
+# Real-GCS 1M validation:
+#   export ATTESTA_TEST_GCS_BUCKET=my-bucket
 #   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+#   ATTESTA_SOAK_ENTRIES=1000000 \
+#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT=64 \
 #   ./scripts/run-soak.sh
 #
-# Usage (bring-your-own Postgres):
-#   export ATTESTA_TEST_DSN=postgres://user:pw@host/db
-#   export ATTESTA_TEST_GCS_BUCKET=attesta-soak
-#   ./scripts/run-soak.sh
-#
-# Scale down for a quick run:
-#   ATTESTA_SOAK_ENTRIES=10000 ATTESTA_SOAK_VERIFY_SAMPLES=20 \
-#     ./scripts/run-soak.sh
-#
-# Tear down the auto-provisioned Postgres container:
+# Tear down all auto-provisioned containers (postgres + seaweedfs):
 #   ./scripts/run-soak.sh down
 
 set -euo pipefail
@@ -63,7 +80,7 @@ DOCKER_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disab
 
 case "${1:-}" in
     down)
-        echo "== tearing down testharness postgres =="
+        echo "== tearing down testharness (postgres, seaweedfs, etc.) =="
         docker compose -f "${COMPOSE_FILE}" down -v
         exit 0
         ;;
@@ -71,19 +88,102 @@ esac
 
 cd "${REPO_ROOT}"
 
-# ── GCS preflight (no auto-provision; soak is real-cloud) ─────────
-if [ -z "${ATTESTA_TEST_GCS_BUCKET:-}" ]; then
-    echo "FATAL: ATTESTA_TEST_GCS_BUCKET not set"
-    echo
-    echo "  export ATTESTA_TEST_GCS_BUCKET=<your-bucket>"
-    exit 1
-fi
+# ── Bytestore backend selection ───────────────────────────────────
+#
+# Default "gcs" preserves prior behavior. "seaweedfs" auto-provisions
+# a SeaweedFS instance via Docker (mirrors the run-local.sh Postgres
+# pattern) and re-exports the env vars the soak harness needs to
+# route through the bytestore.S3 adapter.
+#
+# Supported values:
+#   gcs        — real GCS (or fake-gcs per LEDGER_BYTE_STORE_GCS_ENDPOINT)
+#   seaweedfs  — local SeaweedFS in Docker (S3-compatible)
+BACKEND="${ATTESTA_SOAK_BYTESTORE_BACKEND:-gcs}"
+PROVISIONED_SEAWEEDFS=0
 
-if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -r "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
-    echo "FATAL: GOOGLE_APPLICATION_CREDENTIALS points at unreadable file:"
-    echo "       ${GOOGLE_APPLICATION_CREDENTIALS}"
-    exit 1
-fi
+case "${BACKEND}" in
+    gcs)
+        # GCS preflight (no auto-provision; soak is real-cloud).
+        if [ -z "${ATTESTA_TEST_GCS_BUCKET:-}" ]; then
+            echo "FATAL: ATTESTA_TEST_GCS_BUCKET not set (backend=gcs)"
+            echo
+            echo "  export ATTESTA_TEST_GCS_BUCKET=<your-bucket>"
+            echo "  OR  export ATTESTA_SOAK_BYTESTORE_BACKEND=seaweedfs"
+            exit 1
+        fi
+        if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ ! -r "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
+            echo "FATAL: GOOGLE_APPLICATION_CREDENTIALS points at unreadable file:"
+            echo "       ${GOOGLE_APPLICATION_CREDENTIALS}"
+            exit 1
+        fi
+        ;;
+
+    seaweedfs)
+        # Auto-provision SeaweedFS via Docker, then route the soak's
+        # bytestore through the bytestore.S3 adapter at the local
+        # SeaweedFS endpoint.
+        if ! command -v docker >/dev/null 2>&1; then
+            echo "FATAL: backend=seaweedfs requires Docker (not on PATH)"
+            exit 1
+        fi
+        echo "== ATTESTA_SOAK_BYTESTORE_BACKEND=seaweedfs — provisioning SeaweedFS in Docker =="
+        docker compose -f "${COMPOSE_FILE}" up -d seaweedfs
+
+        echo "== waiting for SeaweedFS S3 endpoint =="
+        SW_READY=0
+        for i in $(seq 1 60); do
+            # weed mini exposes the S3 listener once the master + volume
+            # come up. A 2xx-ish response means we can talk to it; AccessDenied
+            # without auth is fine — that means the listener is alive.
+            if curl -fsS -o /dev/null -w "%{http_code}" \
+                    "http://localhost:8333/" 2>/dev/null \
+                    | grep -qE "^(200|403)$"; then
+                echo "SeaweedFS ready (attempt ${i})"
+                SW_READY=1
+                break
+            fi
+            sleep 1
+        done
+        if [ "${SW_READY}" -ne 1 ]; then
+            echo "FATAL: SeaweedFS did not become ready within 60s"
+            echo "       check: docker logs attesta_test_seaweedfs"
+            exit 1
+        fi
+
+        # Bucket is auto-created by the seaweedfs container's S3_BUCKET
+        # env var (see compose file). The credentials match.
+        export ATTESTA_SOAK_BYTESTORE_BACKEND=s3
+        export ATTESTA_TEST_S3_BUCKET="attesta-test-seaweed"
+        export ATTESTA_TEST_S3_ENDPOINT="http://localhost:8333"
+        export ATTESTA_TEST_S3_ACCESS_KEY="seaweedadmin"
+        export ATTESTA_TEST_S3_SECRET_KEY="seaweedsecret"
+        # SeaweedFS uses path-style addressing; explicit so a future
+        # ATTESTA_TEST_S3_PATH_STYLE=false override doesn't surprise.
+        unset ATTESTA_TEST_S3_PATH_STYLE
+        PROVISIONED_SEAWEEDFS=1
+        echo "   ATTESTA_TEST_S3_ENDPOINT=${ATTESTA_TEST_S3_ENDPOINT}"
+        echo "   ATTESTA_TEST_S3_BUCKET=${ATTESTA_TEST_S3_BUCKET}"
+        echo "   (tear down with: ./scripts/run-soak.sh down)"
+        ;;
+
+    s3)
+        # User-supplied S3 (e.g. real AWS, R2, MinIO they manage).
+        # We don't auto-provision; we just validate the env vars.
+        if [ -z "${ATTESTA_TEST_S3_BUCKET:-}" ]; then
+            echo "FATAL: ATTESTA_TEST_S3_BUCKET not set (backend=s3)"
+            exit 1
+        fi
+        if [ -z "${ATTESTA_TEST_S3_ENDPOINT:-}" ]; then
+            echo "WARN: ATTESTA_TEST_S3_ENDPOINT not set; defaulting to AWS S3 region endpoint"
+        fi
+        ;;
+
+    *)
+        echo "FATAL: ATTESTA_SOAK_BYTESTORE_BACKEND=${BACKEND} unsupported"
+        echo "       Supported: gcs (default) | seaweedfs (local docker) | s3 (BYO)"
+        exit 1
+        ;;
+esac
 
 # ── Postgres: auto-provision via Docker if no DSN was supplied ────
 PROVISIONED_PG=0
@@ -150,13 +250,31 @@ else
     DSN_SOURCE="env ATTESTA_TEST_DSN"
 fi
 
+# Bytestore banner. After the case-block above, the env vars the soak
+# reads are already routed to the right backend. We display the
+# user-facing source so it's obvious what's about to be exercised.
+if [ "${PROVISIONED_SEAWEEDFS}" -eq 1 ]; then
+    BS_SOURCE="seaweedfs (auto-provisioned in docker)"
+    BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT}/${ATTESTA_TEST_S3_BUCKET}"
+    BS_CREDS="${ATTESTA_TEST_S3_ACCESS_KEY}/...  (static, from compose)"
+elif [ "${BACKEND}" = "s3" ]; then
+    BS_SOURCE="s3 (env ATTESTA_TEST_S3_*)"
+    BS_TARGET="${ATTESTA_TEST_S3_ENDPOINT:-aws}/${ATTESTA_TEST_S3_BUCKET}"
+    BS_CREDS="${ATTESTA_TEST_S3_ACCESS_KEY:-(default credential chain)}"
+else
+    BS_SOURCE="gcs"
+    BS_TARGET="${ATTESTA_TEST_GCS_BUCKET}"
+    BS_CREDS="${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
+fi
+
 echo "== attesta ledger soak =="
 echo "   dsn source:        ${DSN_SOURCE}"
-echo "   bucket:            ${ATTESTA_TEST_GCS_BUCKET}"
-echo "   creds:             ${GOOGLE_APPLICATION_CREDENTIALS:-(workload identity / gcloud ADC)}"
+echo "   bytestore source:  ${BS_SOURCE}"
+echo "   bytestore target:  ${BS_TARGET}"
+echo "   bytestore creds:   ${BS_CREDS}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
-echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel GCS uploads)"
+echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
 echo "   verify:            ${SAMPLES}"
 echo "   p99 bound ms:      ${P99_BOUND_MS}"
 echo "   drain timeout:     ${DRAIN_TIMEOUT}        (in-test wait for HWM)"

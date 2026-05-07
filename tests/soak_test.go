@@ -122,9 +122,32 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	if dsn == "" {
 		t.Skip("ATTESTA_TEST_DSN not set — skipping soak test")
 	}
-	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
-	if bucket == "" {
-		t.Skip("ATTESTA_TEST_GCS_BUCKET not set — skipping soak test")
+
+	// Backend selection — default "gcs" preserves existing soak behavior.
+	// "s3" routes to the bytestore.S3 adapter (works for SeaweedFS,
+	// RustFS, MinIO, AWS S3 — anything that speaks SigV4). When the
+	// backend is s3, the soak reads endpoint + creds from
+	// ATTESTA_TEST_S3_* env vars and the bucket from
+	// ATTESTA_TEST_S3_BUCKET (instead of ATTESTA_TEST_GCS_BUCKET).
+	backendType := os.Getenv("ATTESTA_SOAK_BYTESTORE_BACKEND")
+	if backendType == "" {
+		backendType = "gcs"
+	}
+
+	var bucket string
+	switch backendType {
+	case "gcs":
+		bucket = os.Getenv("ATTESTA_TEST_GCS_BUCKET")
+		if bucket == "" {
+			t.Skip("ATTESTA_TEST_GCS_BUCKET not set — skipping soak test")
+		}
+	case "s3":
+		bucket = os.Getenv("ATTESTA_TEST_S3_BUCKET")
+		if bucket == "" {
+			t.Skip("ATTESTA_TEST_S3_BUCKET not set — skipping soak test")
+		}
+	default:
+		t.Fatalf("ATTESTA_SOAK_BYTESTORE_BACKEND=%q unsupported (gcs|s3)", backendType)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -151,11 +174,28 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
 
 	prefix := fmt.Sprintf("soak/%d", time.Now().UnixNano())
-	backend, err := opbytestore.NewFromConfig(ctx, opbytestore.Config{
-		Backend: "gcs",
+	bsConfig := opbytestore.Config{
+		Backend: backendType,
 		Bucket:  bucket,
 		Prefix:  prefix,
-	})
+	}
+	if backendType == "s3" {
+		bsConfig.S3Endpoint = os.Getenv("ATTESTA_TEST_S3_ENDPOINT")
+		bsConfig.S3AccessKey = os.Getenv("ATTESTA_TEST_S3_ACCESS_KEY")
+		bsConfig.S3SecretKey = os.Getenv("ATTESTA_TEST_S3_SECRET_KEY")
+		bsConfig.S3Region = os.Getenv("ATTESTA_TEST_S3_REGION")
+		if bsConfig.S3Region == "" {
+			bsConfig.S3Region = "us-east-1"
+		}
+		// SeaweedFS, RustFS, MinIO all use path-style addressing
+		// (https://endpoint/bucket/key vs https://bucket.endpoint/key).
+		// AWS S3 is virtual-host-style; if you ever point soak at
+		// real AWS, set ATTESTA_TEST_S3_PATH_STYLE=false.
+		if os.Getenv("ATTESTA_TEST_S3_PATH_STYLE") != "false" {
+			bsConfig.S3PathStyle = true
+		}
+	}
+	backend, err := opbytestore.NewFromConfig(ctx, bsConfig)
 	if err != nil {
 		_ = walc.Close()
 		_ = walDB.Close()
