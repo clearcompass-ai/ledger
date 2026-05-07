@@ -155,19 +155,16 @@ case "${BACKEND}" in
             exit 1
         fi
 
-        # Apply anonymous-read bucket policy. The transparency-log
-        # architecture (RFC 9162, c2sp.org/tlog-tiles) requires public
-        # buckets — without this step the soak's verify pass returns
-        # 403 on every sample.
-        echo "== applying anonymous-read bucket policy to SeaweedFS =="
-        if ! docker compose -f "${COMPOSE_FILE}" run --rm seaweedfs-init; then
-            echo "FATAL: failed to apply SeaweedFS bucket policy"
-            echo "       check: docker compose -f ${COMPOSE_FILE} run --rm seaweedfs-init"
-            exit 1
-        fi
+        # No bucket-policy bootstrap needed: the SeaweedFS container is
+        # configured WITHOUT identity env vars, so the gateway runs in
+        # "Allow-All Mode" — every S3 op (anonymous GET, signed PUT)
+        # succeeds without auth. See compose file's seaweedfs.environment
+        # block for the architectural rationale.
 
         # Bucket is auto-created by the seaweedfs container's S3_BUCKET
-        # env var (see compose file). The credentials match.
+        # env var (see compose file). The credentials we export below
+        # are SDK-side (the AWS SDK requires creds to sign requests);
+        # SeaweedFS accepts them regardless because it's Allow-All.
         export ATTESTA_SOAK_BYTESTORE_BACKEND=s3
         export ATTESTA_TEST_S3_BUCKET="attesta-test-seaweed"
         export ATTESTA_TEST_S3_ENDPOINT="http://localhost:8333"

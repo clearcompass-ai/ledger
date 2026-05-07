@@ -171,10 +171,22 @@ services:
     # expose S3 (8333) to the host; the rest is internal.
     command: ["mini", "-dir=/data"]
     environment:
-      # S3 credentials. The bytestore.S3 adapter sends SigV4 with
-      # these. Tests pass them in via ATTESTA_TEST_S3_ACCESS_KEY/SECRET_KEY.
-      AWS_ACCESS_KEY_ID: seaweedadmin
-      AWS_SECRET_ACCESS_KEY: seaweedsecret
+      # NO AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY here.
+      #
+      # Per https://github.com/seaweedfs/seaweedfs/wiki/S3-Credentials,
+      # any identity config (env vars, config file, filer entry) flips
+      # the gateway into "Authentication Required" mode, which 403s
+      # every anonymous GET. The transparency-log read path (RFC 9162,
+      # c2sp.org/tlog-tiles) demands anonymous reads, so we leave the
+      # gateway in its default "Allow-All Mode": no creds configured
+      # → every S3 op succeeds without auth.
+      #
+      # The shipper's bytestore.S3 adapter still sends SigV4-signed
+      # PUTs (the AWS SDK requires creds to construct a request), but
+      # SeaweedFS in Allow-All mode accepts them regardless. This
+      # mirrors production: real AWS S3 with a public-read bucket
+      # policy allows anonymous GETs while accepting signed PUTs.
+      #
       # Auto-creates the bucket on startup. Soak hits it directly.
       S3_BUCKET: attesta-test-seaweed
     ports:
@@ -186,37 +198,6 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
-
-  # ─────────────────────────────────────────────────────────────────
-  # seaweedfs-init — sets the bucket's S3 policy to anonymous-read.
-  #
-  # Transparency-log architecture demands public buckets (RFC 9162,
-  # c2sp.org/tlog-tiles). The 302 read path returns credential-free
-  # public URLs; without this policy, every GET to the bucket returns
-  # 403 and the soak's verify pass fails.
-  #
-  # Idempotent: PutBucketPolicy is upsert-style; re-running the init
-  # container has no effect on subsequent runs.
-  # ─────────────────────────────────────────────────────────────────
-  seaweedfs-init:
-    image: amazon/aws-cli:latest
-    container_name: attesta_test_seaweedfs_init
-    depends_on:
-      seaweedfs:
-        condition: service_healthy
-    environment:
-      AWS_ACCESS_KEY_ID: seaweedadmin
-      AWS_SECRET_ACCESS_KEY: seaweedsecret
-      AWS_DEFAULT_REGION: us-east-1
-    entrypoint: >
-      sh -c '
-        set -e;
-        POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::attesta-test-seaweed/*\"]}]}";
-        aws --endpoint-url http://seaweedfs:8333 s3api put-bucket-policy
-          --bucket attesta-test-seaweed
-          --policy "$$POLICY";
-        echo "seaweedfs bucket attesta-test-seaweed: anonymous-read policy applied";
-      '
 
   # ─────────────────────────────────────────────────────────────────
   # Observability profile — Prometheus + Jaeger for laptop dev
