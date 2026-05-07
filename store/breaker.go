@@ -29,7 +29,7 @@ KEY ARCHITECTURAL DECISIONS:
     - No metrics emitted from inside the breaker — the api/
       writeError site classifies ErrDBUnavailable into the
       ErrorCounter (D-shape), keeping the breaker free of OTel
-      coupling. Operators see the breaker state via two log
+      coupling. Administrators see the breaker state via two log
       lines: "circuit breaker opened" and "circuit breaker
       closed", grep-able from the supervisor's slog stream.
 

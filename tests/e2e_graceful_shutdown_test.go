@@ -55,9 +55,9 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 // Disk-backed harness
 //
-// Mirrors startE2EOperator's wiring but parameterized on:
+// Mirrors startE2ELedger's wiring but parameterized on:
 //   - walPath: tempdir path to a Badger DB. Reusing the same path
-//     across two startShutdownOperator calls models the
+//     across two startShutdownLedger calls models the
 //     restart-after-shutdown path.
 //   - backend: shared *localPublicURLBackend so the second harness
 //     sees objects the first one wrote. If nil, a fresh one is built.
@@ -94,7 +94,7 @@ type shutdownHarness struct {
 // on it, so we narrow the surface.
 type walDBCloser interface{ Close() error }
 
-func startShutdownOperator(t *testing.T, opts shutdownHarnessOpts) *shutdownHarness {
+func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarness {
 	t.Helper()
 
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
@@ -294,7 +294,7 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
 	// ── Step 1: submit n entries, let some ship, cancel ────────────
-	h1 := startShutdownOperator(t, shutdownHarnessOpts{
+	h1 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
 		merkle:     merkle,
@@ -417,7 +417,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
 	// ── Step 1: submit n, cancel mid-flight ─────────────────────────
-	h1 := startShutdownOperator(t, shutdownHarnessOpts{
+	h1 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
 		merkle:     merkle,
@@ -452,7 +452,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	h1.stop(t)
 
 	// ── Step 2: fresh harness with the same WAL + backend + merkle ─
-	h2 := startShutdownOperator(t, shutdownHarnessOpts{
+	h2 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
 		merkle:     merkle,

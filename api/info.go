@@ -65,7 +65,7 @@ import (
 // SCOPE: only fields an external auditor needs to verify the
 // log's trust posture. Operational tunables (pool sizes,
 // statement timeout, internal file paths) are NOT included here
-// — they live in the boot banner log (G7) for operators to read
+// — they live in the boot banner log (G7) for administrators to read
 // from their log shipper.
 type LogInfo map[string]any
 

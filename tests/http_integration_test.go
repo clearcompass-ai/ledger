@@ -295,7 +295,7 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_Submission_ModeA_HappyPath(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-a", "did:example:exchange-a", 100)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{
@@ -320,7 +320,7 @@ func TestHTTP_Submission_ModeA_HappyPath(t *testing.T) {
 }
 
 func TestHTTP_Submission_ModeA_MultipleEntries(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-multi", "did:example:exchange-multi", 100)
 
 	var seqs []float64
@@ -345,7 +345,7 @@ func TestHTTP_Submission_ModeA_MultipleEntries(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_Submission_ModeB_ValidStamp(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// Build entry with valid compute stamp (no auth token).
 	wire := buildModeBWireEntry(t, envelope.ControlHeader{
@@ -368,7 +368,7 @@ func TestHTTP_Submission_ModeB_ValidStamp(t *testing.T) {
 }
 
 func TestHTTP_Submission_ModeB_NoStamp_403(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// Entry without AdmissionProof, no auth token → 403.
 	wire := buildWireEntry(t, envelope.ControlHeader{
@@ -387,7 +387,7 @@ func TestHTTP_Submission_ModeB_NoStamp_403(t *testing.T) {
 }
 
 func TestHTTP_Submission_ModeB_WrongLogDID_403(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// Stamp bound to a different log DID.
 	wire := buildModeBWireEntry(t, envelope.ControlHeader{
@@ -409,7 +409,7 @@ func TestHTTP_Submission_ModeB_WrongLogDID_403(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_Middleware_InvalidToken_401(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:auth-test"}, []byte("auth"))
 	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader(wire))
 	req.Header.Set("Authorization", "Bearer invalid-nonexistent-token")
@@ -422,7 +422,7 @@ func TestHTTP_Middleware_InvalidToken_401(t *testing.T) {
 }
 
 func TestHTTP_Middleware_ExpiredToken_401(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	_, _ = op.Pool.Exec(context.Background(),
 		`INSERT INTO sessions (token, exchange_did, expires_at) VALUES ($1, $2, $3)`,
 		"tok-expired", "did:example:expired-exchange", time.Now().UTC().Add(-1*time.Hour),
@@ -439,7 +439,7 @@ func TestHTTP_Middleware_ExpiredToken_401(t *testing.T) {
 }
 
 func TestHTTP_Middleware_OversizeBody_413(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-big", "did:example:exchange-big", 100)
 
 	// Build a body that exceeds MaxEntrySize. Tier-2 BUG #3 alignment:
@@ -465,7 +465,7 @@ func TestHTTP_Middleware_OversizeBody_413(t *testing.T) {
 }
 
 func TestHTTP_Middleware_NoCredits_402(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-broke", "did:example:exchange-broke", 0)
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:broke"}, []byte("need-credits"))
 	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader(wire))
@@ -479,7 +479,7 @@ func TestHTTP_Middleware_NoCredits_402(t *testing.T) {
 }
 
 func TestHTTP_Middleware_MalformedBody_422(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader([]byte("garbage")))
 	resp := doRequest(t, req)
 	defer resp.Body.Close()
@@ -496,7 +496,7 @@ func TestHTTP_Middleware_MalformedBody_422(t *testing.T) {
 // big-endian uint16. The ledger's submission handler reads this in Step 1
 // and rejects with 422 if it does not equal 5.
 func TestHTTP_Middleware_WrongProtocolVersion_422(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// Build a valid v5 wire entry then overwrite protocol version to v2
 	// (a value the ledger will refuse).
@@ -519,7 +519,7 @@ func TestHTTP_Middleware_WrongProtocolVersion_422(t *testing.T) {
 // Catches the failure mode where the ledger might silently accept anything
 // "5 or higher" instead of strict equality.
 func TestHTTP_Middleware_FutureProtocolVersion_422(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{SignerDID: "did:example:v6"}, []byte("v6"))
 	wire[0] = 0x00
@@ -540,7 +540,7 @@ func TestHTTP_Middleware_FutureProtocolVersion_422(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_CreditDeduction(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-credit", "did:example:exchange-credit", 10)
 
 	// Check initial balance.
@@ -597,7 +597,7 @@ func TestHTTP_CreditDeduction(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_EndToEnd_SubmitAndQueryBack(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-e2e", "did:example:exchange-e2e", 100)
 
 	signerDID := "did:example:e2e-roundtrip-alice"
@@ -647,7 +647,7 @@ func TestHTTP_EndToEnd_SubmitAndQueryBack(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_Duplicate_409(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-dup", "did:example:exchange-dup", 100)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{
@@ -684,7 +684,7 @@ func TestHTTP_Duplicate_409(t *testing.T) {
 // 409 BEFORE either is admitted — atomic batch semantics, no
 // partial credit deduction.
 func TestHTTP_BatchSubmission_IntraBatchDuplicate_409(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-batch-dup", "did:example:batch-dup", 100)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{
@@ -716,7 +716,7 @@ func TestHTTP_BatchSubmission_IntraBatchDuplicate_409(t *testing.T) {
 // with 409 when re-submitted via the batch endpoint. Mirrors
 // TestHTTP_Duplicate_409 (single-entry path) but for batch.
 func TestHTTP_BatchSubmission_HistoricalDuplicate_409(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-batch-hist-dup", "did:example:batch-hist-dup", 100)
 
 	wire := buildWireEntry(t, envelope.ControlHeader{
@@ -752,7 +752,7 @@ func TestHTTP_BatchSubmission_HistoricalDuplicate_409(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_EntryResponseShape(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-shape", "did:example:exchange-shape", 100)
 
 	signerDID := "did:example:shape-test-signer"
@@ -797,7 +797,7 @@ func TestHTTP_EntryResponseShape(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestHTTP_DifficultyEndpoint(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	resp := httpGet(t, op.BaseURL+"/v1/admission/difficulty")
 	defer resp.Body.Close()
 
@@ -825,7 +825,7 @@ func TestHTTP_DifficultyEndpoint(t *testing.T) {
 }
 
 func TestHTTP_HealthCheck(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	resp := httpGet(t, op.BaseURL+"/healthz")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -849,7 +849,7 @@ func TestHTTP_HealthCheck(t *testing.T) {
 // This is the regression test for the SDK-2 epoch acceptance window contract.
 // Without enforcement, a stamp could be reused indefinitely.
 func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// Build a stamp manually with a stale epoch (100 hours in the past).
 	staleEpoch := currentTestEpoch() - 100

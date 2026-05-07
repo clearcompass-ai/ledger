@@ -140,10 +140,10 @@ type soakSubmission struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// soakOperator — real-GCS variant of e2eOperator
+// soakLedger — real-GCS variant of e2eLedger
 // ─────────────────────────────────────────────────────────────────────
 
-type soakOperator struct {
+type soakLedger struct {
 	BaseURL   string
 	Pool      *pgxpool.Pool
 	WAL       *wal.Committer
@@ -153,7 +153,7 @@ type soakOperator struct {
 	cancel    context.CancelFunc
 }
 
-func startSoakOperator(t *testing.T) *soakOperator {
+func startSoakLedger(t *testing.T) *soakLedger {
 	t.Helper()
 
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
@@ -325,7 +325,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	// → WAL StateSequenced. Without this goroutine the WAL stays
 	// at StatePending indefinitely; the shipper's HWM never advances
 	// past 0; the drain wait below times out at 10 minutes.
-	// Mirrors startE2EOperator in e2e_shipper_redirect_test.go.
+	// Mirrors startE2ELedger in e2e_shipper_redirect_test.go.
 	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
 		PollInterval: 10 * time.Millisecond,
 		Logger:       logger,
@@ -347,7 +347,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	go func() { _ = seq.Run(ctx) }()
 	go func() { _ = ship.Run(ctx) }()
 
-	op := &soakOperator{
+	op := &soakLedger{
 		BaseURL: baseURL, Pool: pool, WAL: walc,
 		Backend: backend, Sequencer: seq, Shipper: ship, cancel: cancel,
 	}
@@ -376,7 +376,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 	return nil
 }
 
-func (op *soakOperator) seedSoakSession(t *testing.T, token, exchangeDID string, credits int64) {
+func (op *soakLedger) seedSoakSession(t *testing.T, token, exchangeDID string, credits int64) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := op.Pool.Exec(ctx,
@@ -454,7 +454,7 @@ func (s *latencySampler) quantiles() (p50, p99 time.Duration) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestSoak_LedgerBytestore(t *testing.T) {
-	op := startSoakOperator(t)
+	op := startSoakLedger(t)
 	op.seedSoakSession(t, "tok-soak", "did:example:soak-exchange", 100_000_000)
 
 	total := envInt("ATTESTA_SOAK_ENTRIES", 1_000_000)
@@ -462,7 +462,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	verifySamples := envInt("ATTESTA_SOAK_VERIFY_SAMPLES", 100)
 	p99BoundMs := envInt("ATTESTA_SOAK_P99_BOUND_MS", 100)
 	// Re-read here for the unified config log line; the actual values
-	// are also read where they're used (startSoakOperator for
+	// are also read where they're used (startSoakLedger for
 	// MaxInFlight, drain loop for drainTimeout).
 	maxInFlightLog := envInt("ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT", 16)
 	drainTimeoutLog := envDuration("ATTESTA_SOAK_DRAIN_TIMEOUT", 10*time.Minute)

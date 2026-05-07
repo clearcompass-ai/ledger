@@ -272,9 +272,9 @@ type Config struct {
 	LedgerDID string // Signer DID for ledger-authored commentary.
 
 	// TLSCertFile / TLSKeyFile, when both non-empty, switch the
-	// HTTP listener to ListenAndServeTLS. Operator deployments
+	// HTTP listener to ListenAndServeTLS. Administrator deployments
 	// fronted by a TLS-terminating proxy leave both empty (plain
-	// HTTP). Standalone (VM / bare-metal / sigsum-witness) operators
+	// HTTP). Standalone (VM / bare-metal / sigsum-witness) administrators
 	// populate both for in-binary TLS termination.
 	TLSCertFile string // LEDGER_TLS_CERT_FILE
 	TLSKeyFile  string // LEDGER_TLS_KEY_FILE
@@ -805,7 +805,7 @@ func defaultPgMaxConns(sequencerMaxInFlight int) int32 {
 // SCOPE: only fields an external auditor needs to verify the log's
 // trust posture. Operational tunables (PG pool sizes, statement
 // timeout, internal file paths, WAL path) are intentionally absent
-// — they're surfaced via the boot banner log (G7) for operators
+// — they're surfaced via the boot banner log (G7) for administrators
 // to read from their log shipper.
 //
 // The ledger is zero-trust by design (L-1 dumb ledger, T-6
@@ -1052,7 +1052,7 @@ func main() {
 	}
 
 	// G7 — Boot banner. Single Info line at startup carrying the
-	// forensic identifiers an operator needs to correlate a pod
+	// forensic identifiers an administrator needs to correlate a pod
 	// with its source: build version, git commit, build time, SDK
 	// version pin, and the deployment-shaping config (NetworkID,
 	// LogDID, LedgerDID, gossip enable, witness count). Secrets
@@ -2334,7 +2334,7 @@ func main() {
 	// IdleTimeout). TLS termination is in-binary when TLSCertFile +
 	// TLSKeyFile are both populated; otherwise the binary speaks
 	// plain HTTP and a TLS-terminating proxy (k8s ingress, sidecar)
-	// is the operator's responsibility.
+	// is the administrator's responsibility.
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = cfg.ServerAddr
 	serverCfg.MaxEntrySize = cfg.MaxEntrySize
@@ -2711,7 +2711,7 @@ func main() {
 	shutdownChain.Run()
 
 	// I3 — Final shutdown summary log. Per-component drain
-	// duration + error so an operator can identify which
+	// duration + error so an administrator can identify which
 	// component stalled during a SIGTERM or pod-eviction.
 	for _, step := range shutdownChain.Summary() {
 		status := "ran"

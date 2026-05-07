@@ -3,7 +3,7 @@ FILE PATH: tests/e2e_v1_sct_test.go
 
 End-to-end coverage of the SCT/MMD architecture: real Postgres,
 real WAL, real Sequencer drain, real HTTP server. Reuses
-startE2EOperator from e2e_shipper_redirect_test.go (which already
+startE2ELedger from e2e_shipper_redirect_test.go (which already
 wires the Sequencer + unified /v1 handler + MMD endpoint).
 
 WHAT'S COVERED:
@@ -61,7 +61,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 
 	wire := buildAdmissibleWire(t, op, "did:example:happy", []byte("happy-payload"))
 	canonicalHash := sha256.Sum256(wire)
@@ -90,7 +90,7 @@ func TestE2E_V1_HappyPath_ReturnsValidSCT(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 
 	wire := buildAdmissibleWire(t, op, "did:example:hash-lookup", []byte("hash-lookup-payload"))
 	canonicalHash := sha256.Sum256(wire)
@@ -132,7 +132,7 @@ func TestE2E_V1_HashLookup_PendingThenSequenced(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_MMDEndpoint_ReturnsConfigured(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 
 	resp, err := http.Get(op.BaseURL + "/v1/admission/mmd")
 	if err != nil {
@@ -162,7 +162,7 @@ func TestE2E_V1_MMDEndpoint_ReturnsConfigured(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 	const N = 5
 	// Resolve difficulty once outside the loop — every submission
 	// in this test stamps against the same ledger state.
@@ -223,7 +223,7 @@ func TestE2E_V1_MultiSubmit_AllSequence(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_V1_SCTTamperResistance(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 
 	wire := buildAdmissibleWire(t, op, "did:example:tamper", []byte("tamper"))
 	body, status := postV1(t, op, wire)
@@ -254,7 +254,7 @@ func TestE2E_V1_SCTTamperResistance(t *testing.T) {
 // route assertion: prove the production server (with all middleware)
 // also returns 404 for the retired /v2 endpoint, not just the bare mux.
 func TestE2E_V1_V2RouteRetired(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 
 	resp, err := http.Post(op.BaseURL+"/v2/entries", "application/octet-stream", bytes.NewReader([]byte("anything")))
 	if err != nil {
@@ -271,7 +271,7 @@ func TestE2E_V1_V2RouteRetired(t *testing.T) {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-func postV1(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
+func postV1(t *testing.T, op *e2eLedger, wire []byte) ([]byte, int) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, op.BaseURL+"/v1/entries", bytes.NewReader(wire))
 	if err != nil {
@@ -297,7 +297,7 @@ func postV1(t *testing.T, op *e2eOperator, wire []byte) ([]byte, int) {
 // what work is required and produce exactly that, rather than
 // hard-coding a value that might drift from the ledger's
 // dynamic DiffController.
-func liveDifficulty(t *testing.T, op *e2eOperator) uint32 {
+func liveDifficulty(t *testing.T, op *e2eLedger) uint32 {
 	t.Helper()
 	resp, err := http.Get(op.BaseURL + "/v1/admission/difficulty")
 	if err != nil {
@@ -330,7 +330,7 @@ func liveDifficulty(t *testing.T, op *e2eOperator) uint32 {
 // Sets the Destination + EventTime fields the ledger's freshness
 // + binding checks require; buildModeBWireEntry doesn't fill these
 // in for the caller.
-func buildAdmissibleWire(t *testing.T, op *e2eOperator, signerDID string, payload []byte) []byte {
+func buildAdmissibleWire(t *testing.T, op *e2eLedger, signerDID string, payload []byte) []byte {
 	t.Helper()
 	difficulty := liveDifficulty(t, op)
 	header := envelope.ControlHeader{

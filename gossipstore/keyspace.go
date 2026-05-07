@@ -48,11 +48,12 @@ co-tenants gossip data with the existing WAL keyspace (prefixes
 
 # WHY NOT BATCH MERGE
 
-Badger's MergeOperator (atomic counter) was considered for stats.
+Badger's atomic-counter merge API
+(github.com/dgraph-io/badger/v4) was considered for stats.
 Rejected because:
   - Stats is a low-frequency read (boot, observability scrape)
     and is fine being computed inside the same txn as Append.
-  - MergeOperator has surprising recovery semantics on crash.
+  - The merge API has surprising recovery semantics on crash.
   - Single-byte read of a fixed-size record is simpler.
 
 # ENDIANNESS

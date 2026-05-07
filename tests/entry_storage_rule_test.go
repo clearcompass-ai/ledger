@@ -90,7 +90,7 @@ func TestRule_EntryIndex_HasNoByteColumns(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-rule", "did:example:exchange-rule", 100)
 
 	// Submit an entry via HTTP.
@@ -315,7 +315,7 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-e2e-rule", "did:example:exchange-e2e-rule", 100)
 
 	signerDID := "did:example:e2e-rule-signer"

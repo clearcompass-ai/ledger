@@ -27,7 +27,7 @@ KEY ARCHITECTURAL DECISIONS:
       compatible with the explicit Run path: whichever fires
       first does the work, the other becomes a no-op.
     - Summary returns a slice ordered by registration so the
-      final log line shows the same sequence operators registered.
+      final log line shows the same sequence administrators registered.
 
 OVERVIEW:
     Boot:

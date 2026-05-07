@@ -4,7 +4,7 @@ FILE PATH:
 
 DESCRIPTION:
     J1 — Fuzz the network bootstrap document JSON parser. The
-    bootstrap document is the operator-supplied trust anchor
+    bootstrap document is the administrator-supplied trust anchor
     (witness keys, NetworkID, K-of-N quorum); a parser bug here
     would let a hostile config file crash the boot path or
     silently corrupt the witness set.

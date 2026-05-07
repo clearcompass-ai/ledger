@@ -365,7 +365,7 @@ func envOr(key, fallback string) string {
 // parsePgStatementTimeout reads LEDGER_PG_STATEMENT_TIMEOUT as a Go
 // duration. Defaults to 5 s. An unparseable value silently falls
 // back to the default — the writer ledger emits a warning if its
-// own copy fails to parse, so the misconfig is still operator-
+// own copy fails to parse, so the misconfig is still administrator-
 // visible from the writer's logs.
 func parsePgStatementTimeout() time.Duration {
 	const def = 5 * time.Second

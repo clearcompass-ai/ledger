@@ -153,7 +153,7 @@ func (m *publicURLMapper) PublicURL(seq uint64, hash [32]byte) (string, error) {
 // Pre-condition for use: the bucket must have IAM
 // `allUsers: roles/storage.objectViewer` granted (or equivalent
 // public-read configuration). If the bucket is private, this URL
-// will return 403 — the operator MUST fix the bucket policy
+// will return 403 — the administrator MUST fix the bucket policy
 // (the architecture has no private-bucket read path).
 func DefaultGCSPublicBaseURL(bucket string) string {
 	return "https://storage.googleapis.com/" + bucket

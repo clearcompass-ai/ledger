@@ -5,7 +5,7 @@ FILE PATH:
 DESCRIPTION:
     Tests for GCSTiles. Runs against either fake-gcs-server (CI
     smoke path, gated by ATTESTA_TEST_GCS_ENDPOINT) OR real GCS
-    (operator-validated path, gated by ATTESTA_TEST_GCS_BUCKET +
+    (administrator-validated path, gated by ATTESTA_TEST_GCS_BUCKET +
     GOOGLE_APPLICATION_CREDENTIALS), via the requireGCS helper
     already in gcs_test.go.
 

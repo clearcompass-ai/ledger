@@ -319,7 +319,7 @@ gs://<bucket>/
            ...
 ```
 
-Operators can override either prefix:
+Administrators can override either prefix:
 
 ```sh
 export LEDGER_BYTE_STORE_GCS_BUCKET=ledger-prod-bytes
@@ -396,15 +396,15 @@ admission node should reject `/tile/...` traffic at the LB layer.
 ## Database hardening
 
 The ledger's Postgres surface is tuned for production via four
-in-binary mechanisms plus one operator-applied SQL file. F1
+in-binary mechanisms plus one administrator-applied SQL file. F1
 (versioned migrations) is intentionally NOT used: schema changes
 remain a single idempotent DDL block in `store/postgres.go::RunMigrations`
 to keep boot deterministic.
 
-### F2 — Append-only grants (operator-applied)
+### F2 — Append-only grants (administrator-applied)
 
 The application connects as a role (typically `ledger_app`).
-After `RunMigrations` populates the schema, an operator runs
+After `RunMigrations` populates the schema, an administrator runs
 `deploy/sql/grants.sql` ONCE to revoke `UPDATE`, `DELETE`,
 `TRUNCATE` privileges on the append-only tables. Even a
 SQL-injection bug or a buggy ORM cannot mutate the log; the
@@ -618,8 +618,8 @@ staleness floor an auditor accepts on the public surface.
 verify the log's trust posture. Operational tunables (`pg_max_conns`,
 `pg_statement_timeout`, internal file paths, WAL path,
 `max_concurrent_conns`) are NOT exposed here — they live in the
-boot banner log (G7) for operators reading from their log shipper,
-and pprof's private listener (`LEDGER_PPROF_ADDR`) gives operators
+boot banner log (G7) for administrators reading from their log shipper,
+and pprof's private listener (`LEDGER_PPROF_ADDR`) gives administrators
 deeper introspection. If a piece of information was sensitive
 enough to require auth, it doesn't belong on a runtime endpoint
 at all.
@@ -665,7 +665,7 @@ unauthenticated version probes).
 ### G7 — Boot banner
 
 A single Info line at startup carrying the forensic identifiers an
-operator needs to correlate a pod with its source build and
+administrator needs to correlate a pod with its source build and
 deployment shape. Secrets NEVER logged here; only public identifiers
 plus booleans for capability flags.
 
@@ -799,7 +799,7 @@ GET /debug/pprof/* private listener on LEDGER_PPROF_ADDR (default 127.0.0.1:6060
 | Value | Behavior | Use case |
 |---|---|---|
 | unset / `""` | NoOp tracer (zero overhead, default) | unit tests, one-shot tools |
-| `stdout` | Pretty-print spans to stderr | laptop dev, single operator |
+| `stdout` | Pretty-print spans to stderr | laptop dev, single administrator |
 | `localhost:4318` | OTLP HTTP (insecure) | Jaeger / OTel collector on the same host |
 | `http://otel:4318` | OTLP HTTP (insecure, explicit) | sidecar collector |
 | `https://otel.example.com` | OTLP HTTP over TLS | hosted Honeycomb / Datadog / Tempo |
@@ -830,8 +830,8 @@ fake-gcs harness explicitly.
 
 ```sh
 # Required: Docker + Go 1.21+ + a Google Cloud project
-git clone https://github.com/clearcompass-ai/ortholog-operator.git
-cd ortholog-operator
+git clone https://github.com/clearcompass-ai/ledger.git
+cd ledger
 
 # One-time GCS setup
 gcloud auth application-default login
@@ -1061,7 +1061,7 @@ dashboards to alert when witness fan-out has stalled.
 
 **H3** — `gossipstore.BadgerStore.Stats(ctx)` exposes the
 event_count + originator_count growth metric. The audit-telemetry
-goroutine logs them at Info every 5 min so operators see the
+goroutine logs them at Info every 5 min so administrators see the
 gossip-store growth trajectory.
 
 Trim policy is **NOT implemented in this commit**. Trimming gossip
@@ -1090,7 +1090,7 @@ equivocation_proofs
 
 Block + line comments are stripped before pattern matching so
 docstrings + file-header runbooks (which often quote the
-operator-run reset SQL for cmd/rebuild-tiles + similar one-shot
+administrator-run reset SQL for cmd/rebuild-tiles + similar one-shot
 tools) don't trip the guard.
 
 Defense-in-depth on top of F2 (`deploy/sql/grants.sql`):
@@ -1106,7 +1106,7 @@ A buggy commit can't slip past either layer.
 
 Pragmatic, transparency-log-shaped supply-chain story. Mirrors the
 practices used by Tessera (transparency-dev), Sigstore, and Let's
-Encrypt Boulder. Scope is operator-runnable today + CI-gated; nothing
+Encrypt Boulder. Scope is administrator-runnable today + CI-gated; nothing
 requires a release pipeline that doesn't exist yet.
 
 ### K1 + K2 — Reproducible release builds (`make release-build`)
@@ -1177,7 +1177,7 @@ CI workflows:
 ### K5 — SBOM (`make sbom`)
 
 CycloneDX 1.5 JSON SBOM via `cyclonedx-gomod` (pure Go — laptop-runnable,
-no Docker / syft dep). Operators publish this alongside the binary at
+no Docker / syft dep). Administrators publish this alongside the binary at
 release tags so downstream consumers can audit transitive deps.
 
 ```sh

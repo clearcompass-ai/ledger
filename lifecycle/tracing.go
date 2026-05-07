@@ -17,7 +17,7 @@ KEY ARCHITECTURAL DECISIONS:
     - Default NoOp. A laptop / unit-test / one-shot tool runs
       with zero tracing overhead and zero new dependencies on
       the wire path.
-    - "stdout" sink for the run-local.sh workflow: operators
+    - "stdout" sink for the run-local.sh workflow: administrators
       iterating on the ledger see spans in their terminal
       without standing up an OTel collector.
     - OTLP HTTP (not gRPC) because the HTTP exporter has lighter

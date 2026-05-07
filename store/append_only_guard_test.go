@@ -14,7 +14,7 @@ DESCRIPTION:
 KEY ARCHITECTURAL DECISIONS:
     - Build-time guard via `go test`, NOT a static-analysis
       linter, so the check runs in the same toolchain that
-      already compiles + tests the code. Operators don't need
+      already compiles + tests the code. Administrators don't need
       to install staticcheck or any new tooling.
     - Defense-in-depth on top of F2 (deploy/sql/grants.sql).
       F2 enforces at the DB role level — the application can't
@@ -96,7 +96,7 @@ func TestAppendOnlyGuard(t *testing.T) {
 			return err
 		}
 		// Strip block + line comments so docstrings + file-header
-		// runbooks (which often quote the operator-run reset SQL
+		// runbooks (which often quote the administrator-run reset SQL
 		// for cmd/rebuild-tiles + similar one-shot tools) don't
 		// trip the guard. This is a syntactic strip — string
 		// literals containing "/*" wouldn't be confused because

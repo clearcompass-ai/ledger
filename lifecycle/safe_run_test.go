@@ -187,7 +187,7 @@ func TestSafeRunInWG_NormalCompletion(t *testing.T) {
 // TestSafeRun_EmitsStartedAndStoppedLogs pins the E2 contract:
 // every wrapped goroutine emits a "goroutine started" line at
 // Info on entry AND a matching "goroutine stopped" line on exit.
-// Operators rely on this pair to prove from logs alone that each
+// Administrators rely on this pair to prove from logs alone that each
 // supervisor child launched and terminated cleanly.
 func TestSafeRun_EmitsStartedAndStoppedLogs(t *testing.T) {
 	t.Parallel()

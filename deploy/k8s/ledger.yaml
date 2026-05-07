@@ -5,15 +5,15 @@
 # DESCRIPTION:
 #     Single-file Kubernetes manifest for the ledger. Includes:
 #       - Namespace
-#       - ConfigMap (operator-supplied env)
-#       - Secret stub (DB DSN + signer key — operator fills via SOPS / Vault)
+#       - ConfigMap (administrator-supplied env)
+#       - Secret stub (DB DSN + signer key — administrator fills via SOPS / Vault)
 #       - PVC × 3 (WAL, Tessera storage, antispam)
 #       - Deployment (replicas: 1 — advisory lock enforces singleton writer)
 #       - Service (LB target)
 #       - PodDisruptionBudget (graceful eviction)
-#       - ServiceMonitor (Prometheus Operator scrape config — optional)
+#       - ServiceMonitor (Prometheus Administrator scrape config — optional)
 #
-# OPERATOR CHECKLIST:
+# ADMINISTRATOR CHECKLIST:
 #     1. Replace `<SET-AT-DEPLOY>` placeholders below.
 #     2. kubectl apply -f deploy/k8s/ledger.yaml
 #     3. After RunMigrations populates the schema (auto, on first boot):
@@ -40,7 +40,7 @@
 #       up based on TPS target. Sequencer is CPU-bound during
 #       batch processing.
 #     - Metrics: Prometheus scrape annotation on the pod;
-#       ServiceMonitor mirrors for Prometheus Operator setups.
+#       ServiceMonitor mirrors for Prometheus Administrator setups.
 #     - Tracing: LEDGER_OTLP_TRACES_ENDPOINT set to a sidecar
 #       OTel collector; defaults to "" (NoOp tracer) if you
 #       haven't deployed a collector.
@@ -80,7 +80,7 @@ metadata:
   namespace: ledger
 type: Opaque
 stringData:
-  # Operator fills these via SOPS / Vault / external-secrets-operator.
+  # Administrator fills these via SOPS / Vault / external-secrets-administrator.
   # Plain-text placeholders here are illustrative ONLY.
   LEDGER_DATABASE_URL: "postgres://ledger_app:<SET-AT-DEPLOY>@postgres.ledger:5432/ledger?sslmode=require"
   # Signer key paths intentionally OMITTED here — see the
@@ -215,7 +215,7 @@ spec:
     matchLabels:
       app.kubernetes.io/name: ledger
 ---
-# Optional — only apply if you run Prometheus Operator.
+# Optional — only apply if you run Prometheus Administrator.
 # Comment out otherwise.
 # apiVersion: monitoring.coreos.com/v1
 # kind: ServiceMonitor

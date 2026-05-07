@@ -495,7 +495,7 @@ func TestScale_SDKProcessBatch(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestScale_HTTPAdmission_10K(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	op.seedSession(t, "tok-scale", "did:example:exchange-scale", 100_000)
 
 	const N = 10_000
@@ -556,7 +556,7 @@ func TestScale_HTTPAdmission_10K(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 
 	// 1K Mode B entries at difficulty 8 → ~50ms per entry on commodity HW.
 	// At difficulty 16 (ledger default) this would take ~10x longer; we
