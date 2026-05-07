@@ -59,6 +59,7 @@ package tests
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -357,7 +358,18 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		_ = server.Shutdown(context.Background())
 		_ = walc.Close()
 		_ = walDB.Close()
-		cleanTables(t, pool)
+		// ATTESTA_SOAK_KEEP_DATA=1 preserves the populated entry_index
+		// + bytestore objects after the test exits, so the operator
+		// can inspect them with their own SQL / S3 tooling. Default
+		// (unset) cleans tables on teardown — same behavior soaks
+		// have always had — so back-to-back runs start clean.
+		if os.Getenv("ATTESTA_SOAK_KEEP_DATA") != "" {
+			t.Logf("ATTESTA_SOAK_KEEP_DATA set — skipping cleanTables. " +
+				"entry_index + bytestore objects preserved for manual inspection. " +
+				"Run `./scripts/run-soak.sh down` when done.")
+		} else {
+			cleanTables(t, pool)
+		}
 		pool.Close()
 	})
 
@@ -684,6 +696,18 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 
+	// Post-drain evidence verification — what the operator would
+	// otherwise check by hand:
+	//   1. Postgres COUNT(entry_index) == submitted (HARD)
+	//   2. sequence space contiguous: 0..submitted-1 (HARD)
+	//   3. every (seq, hash) tuple from PG fetchable from the
+	//      bytestore via Backend.ReadEntry → non-zero bytes (HARD)
+	// Each assertion is end-to-end evidence the system did what it
+	// promised; together they replace the manual `psql COUNT`,
+	// `psql MIN/MAX`, and `aws s3 ls` commands the operator used
+	// to run after every soak.
+	verifyEvidence(t, op, submitted.Load())
+
 	results := drainSubmissions(resultCh)
 	if len(results) > verifySamples {
 		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -933,4 +957,160 @@ func drainSubmissions(ch <-chan soakSubmission) []soakSubmission {
 		out = append(out, r)
 	}
 	return out
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Evidence verification — automates what the operator otherwise runs by hand
+// ─────────────────────────────────────────────────────────────────────
+
+// verifyEvidence asserts the three end-to-end transparency-log
+// invariants that hold after every successful soak:
+//
+//  1. Postgres entry_index has exactly `submitted` rows.
+//  2. The sequence column is contiguous on [0, submitted-1].
+//  3. Every (seq, canonical_hash) tuple is fetchable from the
+//     production bytestore — Backend.ReadEntry returns non-zero
+//     bytes for all N entries.
+//
+// All three assertions are hard t.Fatalf on mismatch. The fetch
+// step is parallelised (verifyEvidenceWorkers goroutines) so the
+// 100k → 1M soak doesn't pay 5 ms × N serial latency.
+//
+// PRINCIPLE COVERAGE:
+//   - L3 (SCT-as-SLA): every SCT the ledger handed back is honored
+//     by the time this function runs.
+//   - L8 (CQRS): proves the read-path bytestore agrees with the
+//     write-path WAL → entry_index commitment.
+//   - Trust Alignment 6 (Parse, Don't Validate): the test reads
+//     bytes directly from the bytestore, never trusting an HTTP
+//     response from the ledger to assert their existence.
+func verifyEvidence(t *testing.T, op *soakLedger, submitted uint64) {
+	t.Helper()
+	if submitted == 0 {
+		t.Fatal("verifyEvidence: submitted == 0 (caller bug)")
+	}
+	ctx := context.Background()
+
+	// 1) Postgres row count.
+	var rowCount int64
+	if err := op.Pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM entry_index").Scan(&rowCount); err != nil {
+		t.Fatalf("verifyEvidence: SELECT COUNT(*) FROM entry_index: %v", err)
+	}
+	if uint64(rowCount) != submitted {
+		t.Fatalf("verifyEvidence: entry_index has %d rows, want %d (submitted)",
+			rowCount, submitted)
+	}
+	t.Logf("verifyEvidence: ✓ entry_index rows = %d (matches submitted)", rowCount)
+
+	// 2) Sequence contiguity — MIN must be 0, MAX must be submitted-1.
+	var minSeq, maxSeq sql.NullInt64
+	if err := op.Pool.QueryRow(ctx,
+		"SELECT MIN(sequence), MAX(sequence) FROM entry_index",
+	).Scan(&minSeq, &maxSeq); err != nil {
+		t.Fatalf("verifyEvidence: SELECT MIN/MAX(sequence): %v", err)
+	}
+	if !minSeq.Valid || !maxSeq.Valid {
+		t.Fatalf("verifyEvidence: MIN/MAX(sequence) returned NULL (no rows?)")
+	}
+	if minSeq.Int64 != 0 {
+		t.Fatalf("verifyEvidence: MIN(sequence) = %d, want 0", minSeq.Int64)
+	}
+	expectedMax := int64(submitted) - 1
+	if maxSeq.Int64 != expectedMax {
+		t.Fatalf("verifyEvidence: MAX(sequence) = %d, want %d (submitted-1)",
+			maxSeq.Int64, expectedMax)
+	}
+	t.Logf("verifyEvidence: ✓ sequence space contiguous: [%d, %d]",
+		minSeq.Int64, maxSeq.Int64)
+
+	// 3) Every entry must be physically present in the bytestore.
+	verifyEvidenceFetchAll(t, ctx, op, submitted)
+}
+
+// verifyEvidenceFetchAll pulls (seq, canonical_hash) for every row
+// in entry_index and dispatches Backend.ReadEntry across a worker
+// pool. Failure on any single entry is fatal — transparency-log
+// invariants don't tolerate partial coverage.
+func verifyEvidenceFetchAll(t *testing.T, ctx context.Context, op *soakLedger, submitted uint64) {
+	t.Helper()
+
+	type ref struct {
+		seq  uint64
+		hash [32]byte
+	}
+
+	rows, err := op.Pool.Query(ctx,
+		"SELECT sequence, canonical_hash FROM entry_index ORDER BY sequence")
+	if err != nil {
+		t.Fatalf("verifyEvidence: SELECT all entries: %v", err)
+	}
+	refs := make([]ref, 0, submitted)
+	for rows.Next() {
+		var seq int64
+		var hashBytes []byte
+		if err := rows.Scan(&seq, &hashBytes); err != nil {
+			rows.Close()
+			t.Fatalf("verifyEvidence: scan entry_index: %v", err)
+		}
+		if len(hashBytes) != 32 {
+			rows.Close()
+			t.Fatalf("verifyEvidence: canonical_hash bytes = %d, want 32", len(hashBytes))
+		}
+		var r ref
+		r.seq = uint64(seq)
+		copy(r.hash[:], hashBytes)
+		refs = append(refs, r)
+	}
+	rows.Close()
+	if uint64(len(refs)) != submitted {
+		t.Fatalf("verifyEvidence: pulled %d refs from PG, want %d", len(refs), submitted)
+	}
+
+	const verifyEvidenceWorkers = 64
+	workers := verifyEvidenceWorkers
+	if len(refs) < workers {
+		workers = len(refs)
+	}
+	refCh := make(chan ref, workers*4)
+	var fetchOK, fetchFail atomic.Uint64
+	var firstFailMu sync.Mutex
+	var firstFail string
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range refCh {
+				bytes, err := op.Backend.ReadEntry(ctx, r.seq, r.hash)
+				if err != nil || len(bytes) == 0 {
+					fetchFail.Add(1)
+					firstFailMu.Lock()
+					if firstFail == "" {
+						firstFail = fmt.Sprintf("seq=%d hash=%x… err=%v len=%d",
+							r.seq, r.hash[:8], err, len(bytes))
+					}
+					firstFailMu.Unlock()
+					continue
+				}
+				fetchOK.Add(1)
+			}
+		}()
+	}
+	start := time.Now()
+	for _, r := range refs {
+		refCh <- r
+	}
+	close(refCh)
+	wg.Wait()
+	elapsed := time.Since(start).Round(time.Millisecond)
+
+	if fetchFail.Load() != 0 {
+		t.Fatalf("verifyEvidence: %d/%d entries failed bytestore ReadEntry — first failure: %s",
+			fetchFail.Load(), len(refs), firstFail)
+	}
+	t.Logf("verifyEvidence: ✓ %d/%d entries fetchable from bytestore in %s "+
+		"(every committed entry physically present)",
+		fetchOK.Load(), len(refs), elapsed)
 }
