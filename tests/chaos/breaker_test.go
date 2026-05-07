@@ -30,7 +30,7 @@ import (
 )
 
 // TestChaos_BreakerUnderRealPGOutage is a documented placeholder.
-// Skipped unless the operator opts in via env vars that confirm
+// Skipped unless the administrator opts in via env vars that confirm
 // the runner has the privileged operations available.
 func TestChaos_BreakerUnderRealPGOutage(t *testing.T) {
 	if os.Getenv("ATTESTA_TEST_DSN") == "" {

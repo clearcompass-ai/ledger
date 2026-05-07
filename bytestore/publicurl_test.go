@@ -13,7 +13,7 @@ DESCRIPTION:
       3. Default-URL helpers produce the documented prefixes for
          GCS, S3 path-style, and S3 virtual-host modes.
       4. Trailing slashes on the configured baseURL are
-         normalized away (operators frequently trip on this).
+         normalized away (administrators frequently trip on this).
       5. The same (seq, hash) → same URL across calls
          (deterministic; what makes consumer caches valid).
       6. PublicURL output ALIGNS with layoutKey output — a
@@ -165,7 +165,7 @@ func TestDefaultS3VirtualHostPublicBaseURL(t *testing.T) {
 // -------------------------------------------------------------------
 
 // TestPublicURLMapper_TrailingSlashNormalized pins the trailing-
-// slash defensive normalization. Operators frequently set
+// slash defensive normalization. Administrators frequently set
 // LEDGER_BYTE_STORE_PUBLIC_BASE_URL=https://cdn.example.com/ and
 // the resulting URLs would have a double-slash without this fix.
 func TestPublicURLMapper_TrailingSlashNormalized(t *testing.T) {

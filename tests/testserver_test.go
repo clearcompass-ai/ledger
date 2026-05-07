@@ -20,8 +20,8 @@ KEY ARCHITECTURAL DECISIONS:
 
 OVERVIEW:
 
-	startTestOperator creates: Postgres pool → clean tables → stores →
-	builder loop → HTTP server on random port. Returns testOperator with
+	startTestLedger creates: Postgres pool → clean tables → stores →
+	builder loop → HTTP server on random port. Returns testLedger with
 	all dependencies accessible for test assertions.
 
 KEY DEPENDENCIES:
@@ -63,7 +63,7 @@ import (
 // Test ledger instance
 // -------------------------------------------------------------------------------------------------
 
-type testOperator struct {
+type testLedger struct {
 	BaseURL string
 	Pool *pgxpool.Pool
 	Cursor *store.SequenceCursor
@@ -73,7 +73,7 @@ type testOperator struct {
 	cancel context.CancelFunc
 }
 
-func startTestOperator(t *testing.T) *testOperator {
+func startTestLedger(t *testing.T) *testLedger {
 	t.Helper()
 
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
@@ -262,7 +262,7 @@ func startTestOperator(t *testing.T) *testOperator {
 
 	go server.Serve(ln)
 
-	op := &testOperator{
+	op := &testLedger{
 		BaseURL: baseURL, Pool: pool, Cursor: sequenceCursor,
 		CreditStore: creditStore, EntryStore: entryStore,
 		EntryBytes: entryBytes, cancel: cancel,
@@ -292,7 +292,7 @@ func startTestOperator(t *testing.T) *testOperator {
 }
 
 // seedSession inserts a valid session token + credits.
-func (op *testOperator) seedSession(t *testing.T, token, exchangeDID string, credits int64) {
+func (op *testLedger) seedSession(t *testing.T, token, exchangeDID string, credits int64) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := op.Pool.Exec(ctx,
@@ -360,11 +360,11 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 //
 // Rather than duplicate the factory (risking drift between two
 // implementations of the same wiring), this helper delegates to
-// startTestOperator and exposes a minimal .URL/.Close() surface — the
+// startTestLedger and exposes a minimal .URL/.Close() surface — the
 // only surface destination_binding_test.go actually uses.
 //
 // The return type is a local *testServer rather than literal
-// *httptest.Server because startTestOperator already runs a real
+// *httptest.Server because startTestLedger already runs a real
 // HTTP server on a net.Listener. Creating an httptest.Server on top
 // would be a second server; wrapping the existing one with a type
 // that satisfies the call-site contract is both simpler and more
@@ -372,10 +372,10 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 
 type testServer struct {
 	URL string
-	op *testOperator // kept for lifetime ownership; teardown is via t.Cleanup.
+	op *testLedger // kept for lifetime ownership; teardown is via t.Cleanup.
 }
 
-// Close is a no-op. startTestOperator registers a t.Cleanup that
+// Close is a no-op. startTestLedger registers a t.Cleanup that
 // cancels the context, shuts down the HTTP server, cleans tables,
 // and closes the pool. This method exists only to satisfy the
 // `defer srv.Close()` idiom used by destination_binding_test.go.
@@ -387,10 +387,10 @@ func (s *testServer) Close() {}
 // by destination_binding_test.go's five security invariants.
 //
 // For tests that need richer access (seedSession, direct Pool queries,
-// CreditStore inspection), use startTestOperator directly.
+// CreditStore inspection), use startTestLedger directly.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	return &testServer{URL: op.BaseURL, op: op}
 }
 

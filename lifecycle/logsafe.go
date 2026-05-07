@@ -27,7 +27,7 @@ KEY ARCHITECTURAL DECISIONS:
     - HashHex returns the first 16 hex chars of SHA-256(bytes) —
       enough entropy for log-correlation, not enough to recover
       the source bytes. A full 64-char hex is overkill in logs.
-    - PresenceFlag returns "set" or "unset" so the operator can
+    - PresenceFlag returns "set" or "unset" so the administrator can
       confirm a secret-shaped field was supplied without
       exposing content (used by the LogInfo handler in api/info.go).
     - These helpers are the SOLE sanctioned way for production
@@ -115,7 +115,7 @@ func PresenceFlag(s string) string {
 
 // NetworkIDHex returns the first HashHexPrefixBytes hex chars of
 // a NetworkID — the deployment-correlation prefix that pairs
-// across operators / auditors / witnesses. Returns "" for an
+// across administrators / auditors / witnesses. Returns "" for an
 // all-zero NetworkID so a fresh-boot ledger doesn't log a
 // misleading hex prefix.
 //

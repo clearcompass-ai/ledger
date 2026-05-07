@@ -12,7 +12,7 @@ DESCRIPTION:
 KEY ARCHITECTURAL DECISIONS:
     - Caps live in one file so the audit surface is finite. A
       reviewer sees every per-route ceiling at one glance.
-    - Each cap is a typed int64 constant. Values are operator-
+    - Each cap is a typed int64 constant. Values are administrator-
       auditable and compile-time-constant — no runtime drift.
     - Caps include a small framing budget on top of the
       payload-shape ceiling because middleware.SizeLimit wraps

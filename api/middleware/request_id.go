@@ -4,7 +4,7 @@ FILE PATH:
 
 DESCRIPTION:
     Per-request correlation ID middleware. Reads an inbound
-    X-Request-ID header (operator-supplied or proxy-injected) or
+    X-Request-ID header (administrator-supplied or proxy-injected) or
     generates a fresh UUIDv4 when absent. The ID is echoed in the
     response header AND stitched into the request context so
     downstream handlers + structured logs carry the same ID end-to-

@@ -25,7 +25,7 @@ KEY ARCHITECTURAL DECISIONS:
       Without this label, the histogram has a blind spot in the
       saturated case (clients time out → no observation → p99
       looks artificially healthy under WAL backlog). With it,
-      operators alert on canceled-rate spikes AND compare
+      administrators alert on canceled-rate spikes AND compare
       committed-p99 to canceled-p99 to distinguish "WAL is slow"
       from "clients have aggressive timeouts".
     - Buckets tuned for 1ms-2s typical fsync windows (NVMe = sub-

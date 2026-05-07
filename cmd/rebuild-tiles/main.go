@@ -226,7 +226,7 @@ func main() {
 	// ── Idle watchdog: exit when entries counter stops advancing. ────
 	// SafeRun protects the watchdog from any panic in bl.Stats —
 	// rebuild-tiles is a one-shot tool, no fatal channel; a watchdog
-	// panic just stops the auto-shutdown path, the operator can SIGINT.
+	// panic just stops the auto-shutdown path, the administrator can SIGINT.
 	go func() {
 		_ = lifecycle.SafeRun(ctx, "rebuild-watchdog", logger, nil, func() error {
 			lastSeenEntries := int64(-1)

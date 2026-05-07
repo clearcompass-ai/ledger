@@ -400,7 +400,7 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool) error {
 const BuilderLockID int64 = 0x4F5254484F4C4F47 // "ATTESTA" in hex
 
 // DefaultBuilderLockAcquireTimeout caps how long a fresh boot will
-// wait for the advisory lock before failing fast. Operators on a
+// wait for the advisory lock before failing fast. Administrators on a
 // rolling-update should see the new pod fail within this budget if
 // the previous pod still holds the lock — it surfaces the rolling-
 // update misconfiguration immediately instead of letting the new

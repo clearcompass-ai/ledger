@@ -57,7 +57,7 @@ import (
 // via the writer; queries every read endpoint on BOTH; asserts
 // byte-identical responses.
 func TestDifferential_WriterVsReader(t *testing.T) {
-	op := startTestOperator(t)
+	op := startTestLedger(t)
 	// op.BaseURL is the writer.
 
 	// Build the reader-only sibling. Same deps; subset of Handlers.
@@ -199,9 +199,9 @@ func min(a, b int) int {
 // covers. Intent: at minimum, the test asserts the harness
 // builds + the writer endpoints respond. Full reader-side server
 // construction is a follow-up commit that mirrors
-// cmd/ledger-reader/main.go's wiring against the testOperator
+// cmd/ledger-reader/main.go's wiring against the testLedger
 // dep tree.
-func startTestReader(t *testing.T, op *testOperator) *testReader {
+func startTestReader(t *testing.T, op *testLedger) *testReader {
 	t.Helper()
 	// Stub: return the writer's URL so the differential test
 	// at minimum asserts byte-identical writer-vs-writer (a
@@ -209,7 +209,7 @@ func startTestReader(t *testing.T, op *testOperator) *testReader {
 	// requireSameStatus / body-equality plumbing works).
 	//
 	// Full reader-side construction is left as a follow-up: it
-	// requires extracting the testOperator's Handlers
+	// requires extracting the testLedger's Handlers
 	// construction into a reusable function so a reader-only
 	// variant can build a strict subset against the same deps.
 	return &testReader{
@@ -229,11 +229,11 @@ func (r *testReader) Close() {
 
 // -------------------------------------------------------------------------------------------------
 // 4) Submission + drain helpers (placeholders backed by the
-//    existing testOperator pattern; concrete implementations
+//    existing testLedger pattern; concrete implementations
 //    follow the helpers_test.go submission flow)
 // -------------------------------------------------------------------------------------------------
 
-func submitTestEntry(t *testing.T, op *testOperator, label string) {
+func submitTestEntry(t *testing.T, op *testLedger, label string) {
 	t.Helper()
 	// Mode B (no auth). Construct + sign a minimal entry; POST
 	// /v1/entries; expect 202.
@@ -257,7 +257,7 @@ func submitTestEntry(t *testing.T, op *testOperator, label string) {
 	}
 }
 
-func waitForDrain(t *testing.T, op *testOperator, n int) {
+func waitForDrain(t *testing.T, op *testLedger, n int) {
 	t.Helper()
 	// Poll the writer's tree/head until the size catches up.
 	// Total budget 10s; tick at 100ms.
@@ -314,9 +314,9 @@ func makeMinimalEntry(t *testing.T, label string) []byte {
 	return []byte{}
 }
 
-func (op *testOperator) allSequencedSeqs(t *testing.T) []uint64 {
+func (op *testLedger) allSequencedSeqs(t *testing.T) []uint64 {
 	t.Helper()
-	// PLACEHOLDER: the testOperator exposes a Pool field that
+	// PLACEHOLDER: the testLedger exposes a Pool field that
 	// can be queried directly:
 	//   SELECT sequence_number FROM entry_index ORDER BY sequence_number
 	// Concrete implementation is a 5-line query; intentional

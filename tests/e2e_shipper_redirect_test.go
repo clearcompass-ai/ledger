@@ -21,8 +21,8 @@ WHAT THIS COVERS (vs. the existing unit + http_integration suites):
 	  4. Following the URL fetches the same wire bytes the producer
 	     submitted.
 
-	This file builds a parallel harness (startE2EOperator) — separate
-	from startTestOperator — that wires a PublicURLer-capable bytestore
+	This file builds a parallel harness (startE2ELedger) — separate
+	from startTestLedger — that wires a PublicURLer-capable bytestore
 	and runs the Shipper. The harness omits builder/anchor/witness
 	pieces because those are exercised elsewhere and would only add
 	flake surface.
@@ -135,10 +135,10 @@ func (b *localPublicURLBackend) PublicURL(seq uint64, hash [32]byte) (string, er
 var _ opbytestore.Backend = (*localPublicURLBackend)(nil)
 
 // ─────────────────────────────────────────────────────────────────────
-// e2eOperator — minimal harness with WAL + Shipper + PublicURLer
+// e2eLedger — minimal harness with WAL + Shipper + PublicURLer
 // ─────────────────────────────────────────────────────────────────────
 
-type e2eOperator struct {
+type e2eLedger struct {
 	BaseURL string
 	Pool *pgxpool.Pool
 	WAL *wal.Committer
@@ -154,7 +154,7 @@ type e2eOperator struct {
 }
 
 // seedSession seeds an Authorization-Bearer-resolvable session.
-func (op *e2eOperator) seedSession(t *testing.T, token, exchangeDID string, credits int64) {
+func (op *e2eLedger) seedSession(t *testing.T, token, exchangeDID string, credits int64) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := op.Pool.Exec(ctx,
@@ -173,7 +173,7 @@ func (op *e2eOperator) seedSession(t *testing.T, token, exchangeDID string, cred
 	}
 }
 
-func startE2EOperator(t *testing.T) *e2eOperator {
+func startE2ELedger(t *testing.T) *e2eLedger {
 	t.Helper()
 
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
@@ -322,7 +322,7 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 	go func() { _ = seq.Run(ctx) }()
 	go func() { _ = ship.Run(ctx) }()
 
-	op := &e2eOperator{
+	op := &e2eLedger{
 		BaseURL:          baseURL,
 		Pool:             pool,
 		WAL:              walc,
@@ -361,7 +361,7 @@ func startE2EOperator(t *testing.T) *e2eOperator {
 
 // waitForShipped polls op.WAL.MetaState(hash) until the entry is
 // StateShipped or the deadline elapses. Fails the test on timeout.
-func waitForShipped(t *testing.T, op *e2eOperator, hash [32]byte, timeout time.Duration) {
+func waitForShipped(t *testing.T, op *e2eLedger, hash [32]byte, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	ctx := context.Background()
@@ -390,7 +390,7 @@ func noRedirectClient() *http.Client {
 // submitOneE2E POSTs a Mode A entry against op and returns the canonical
 // wire bytes plus the parsed (seq, hash) tuple. Fails the test on any
 // non-202 response.
-func submitOneE2E(t *testing.T, op *e2eOperator, token, signerDID string, payload []byte) (wire []byte, seq uint64, hash [32]byte) {
+func submitOneE2E(t *testing.T, op *e2eLedger, token, signerDID string, payload []byte) (wire []byte, seq uint64, hash [32]byte) {
 	t.Helper()
 	wire = buildWireEntry(t, envelope.ControlHeader{SignerDID: signerDID}, payload)
 	result := submitEntry(t, op.BaseURL, token, wire)
@@ -419,7 +419,7 @@ func submitOneE2E(t *testing.T, op *e2eOperator, token, signerDID string, payloa
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_RawEntry_InlineWhenSequenced(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 	op.seedSession(t, "tok-e2e-inline", "did:example:e2e-inline", 100)
 
 	// Stop the shipper goroutine indirectly: cancel the harness ctx
@@ -469,7 +469,7 @@ func TestE2E_RawEntry_InlineWhenSequenced(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_RawEntry_RedirectsAfterShipping(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 	op.seedSession(t, "tok-e2e-302", "did:example:e2e-302", 100)
 
 	wire, seq, hash := submitOneE2E(t, op, "tok-e2e-302", "did:example:redirect-signer", []byte("redirect-payload"))
@@ -525,7 +525,7 @@ func TestE2E_RawEntry_RedirectsAfterShipping(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestE2E_HWMAdvancesContiguously(t *testing.T) {
-	op := startE2EOperator(t)
+	op := startE2ELedger(t)
 	op.seedSession(t, "tok-e2e-hwm", "did:example:e2e-hwm", 100)
 
 	const n = 5

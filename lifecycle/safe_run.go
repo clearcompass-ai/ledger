@@ -127,7 +127,7 @@ func SafeRun(
 	pprof.SetGoroutineLabels(pprof.WithLabels(ctx, pprof.Labels("goroutine", name)))
 	defer pprof.SetGoroutineLabels(ctx)
 	// Entry log: every wrapped goroutine emits a "goroutine started"
-	// line at Info so operators can prove from logs alone that each
+	// line at Info so administrators can prove from logs alone that each
 	// supervisor child actually launched. The corresponding "stopped"
 	// line fires from the deferred branch below — including on panic
 	// — so the start/stop pair is symmetric.
@@ -138,7 +138,7 @@ func SafeRun(
 		rec := recover()
 		if rec == nil {
 			// Normal exit. Log the terminal error class (nil,
-			// context.Canceled, or other) so operators can
+			// context.Canceled, or other) so administrators can
 			// distinguish graceful shutdown from premature exit.
 			if logger != nil {
 				logger.InfoContext(ctx, "goroutine stopped",

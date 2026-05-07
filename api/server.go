@@ -107,7 +107,7 @@ type ServerConfig struct {
 	MaxEntrySize int64
 
 	// TLSCertFile / TLSKeyFile, when both non-empty, switch the
-	// listener to ListenAndServeTLS. Operator deployments that
+	// listener to ListenAndServeTLS. Administrator deployments that
 	// front the binary with a TLS-terminating proxy leave both
 	// empty and the server speaks plain HTTP. Standalone (VM /
 	// bare-metal / sigsum-witness) deployments populate both.
@@ -144,7 +144,7 @@ type Server struct {
 	// readinessProbe, when non-nil, is consulted on /readyz in
 	// addition to the s.ready atomic. Returning a non-nil error
 	// surfaces 503 with the error message in the body so an
-	// operator can grep for the specific subsystem that flipped
+	// administrator can grep for the specific subsystem that flipped
 	// readiness (e.g., "database unavailable: circuit breaker
 	// open"). Set via SetReadinessProbe; cmd/ledger wires the DB
 	// circuit breaker here.
@@ -266,7 +266,7 @@ func NewServer(
 		}
 		// Optional subsystem probe (e.g., DB circuit breaker).
 		// When set + erroring, return 503 with the probe's
-		// error message so operators see the specific subsystem
+		// error message so administrators see the specific subsystem
 		// that flipped readiness.
 		if probe := s.readinessProbe.Load(); probe != nil && *probe != nil {
 			if err := (*probe)(); err != nil {
@@ -499,7 +499,7 @@ func (s *Server) ListenAndServe() error {
 // ListenAndServeTLS runs. http.Server's automatic-HTTP/2-over-TLS
 // path is conditional on a nil-or-default NextProtos; setting it
 // explicitly is the documented opt-in for predictable ALPN
-// negotiation across deployment lanes (and lets operators audit
+// negotiation across deployment lanes (and lets administrators audit
 // the wire-protocol surface in code, not in framework defaults).
 func (s *Server) ListenAndServeTLS() error {
 	if s.cfg.TLSCertFile == "" || s.cfg.TLSKeyFile == "" {
@@ -543,7 +543,7 @@ func (s *Server) Serve(ln net.Listener) error {
 // automatic-HTTP/2-over-TLS path is conditional on a nil-or-
 // default NextProtos; setting it explicitly is the documented
 // opt-in for predictable ALPN negotiation across deployment lanes
-// (and lets operators audit the wire-protocol surface in code,
+// (and lets administrators audit the wire-protocol surface in code,
 // not in framework defaults).
 func (s *Server) ServeTLSWithListener(ln net.Listener) error {
 	if s.cfg.TLSCertFile == "" || s.cfg.TLSKeyFile == "" {

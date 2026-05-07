@@ -82,7 +82,7 @@ type Detector struct {
 	invariantFailures atomic.Uint64
 
 	// samplesVerified counts successful sample checks. Pairs
-	// with invariantFailures so operators can compute a failure
+	// with invariantFailures so administrators can compute a failure
 	// rate (failures / (failures + verified)) over a window.
 	samplesVerified atomic.Uint64
 }
@@ -173,7 +173,7 @@ func (d *Detector) SampleVerify(ctx context.Context) error {
 
 // InvariantFailures returns the cumulative count of sample-verify
 // cycles that detected divergence OR returned a verifier/WAL error.
-// Exposed for periodic operator logging + future D-category OTel
+// Exposed for periodic administrator logging + future D-category OTel
 // mirror as `attesta_audit_invariant_failures_total`. Read-only;
 // safe under any concurrency.
 func (d *Detector) InvariantFailures() uint64 {
