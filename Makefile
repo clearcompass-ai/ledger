@@ -14,7 +14,7 @@ SDK_MODULE  := github.com/clearcompass-ai/attesta
         dev-up dev-down dev-logs dev-status dev-rebuild dev-preflight \
         integration-up integration-down integration-logs integration-status \
         integration-gcs-tile \
-        release-build verify-deps lint sbom test-race
+        release-build verify-deps lint sbom test-race test-race-all
 
 DEV_COMPOSE := docker compose -f scripts/local/docker-compose.dev.yml
 INT_COMPOSE := docker compose -f scripts/local/docker-compose.integration.yml
@@ -314,3 +314,10 @@ test-race: ## Race detector on critical packages (merge gate)
 	    ./sequencer/ ./shipper/ ./store/ \
 	    ./tessera/ ./bytestore/ ./wal/ ./lifecycle/ \
 	    ./cmd/ledger/
+
+# J5 — Whole-module race detector. Slower (~3 min on a free-tier
+# runner); not a per-PR gate but useful for pre-release sweeps.
+# Use this when you've changed something that touches multiple
+# packages and want belt-and-suspenders confirmation.
+test-race-all: ## Race detector on EVERY package (pre-release sweep)
+	$(GO) test -race -count=1 -short ./...

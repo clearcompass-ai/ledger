@@ -277,6 +277,16 @@ func validRestPath(s string) bool {
 			return false
 		}
 	}
+	// Reject any path that has a "." or empty path component (i.e.,
+	// "tile/0/.", "tile//067", "."). Surfaced by the J1 fuzzer as a
+	// shape that producers never emit but storage backends would
+	// resolve inconsistently. Defense-in-depth on the path-traversal
+	// rejection above.
+	for _, seg := range strings.Split(s, "/") {
+		if seg == "" || seg == "." {
+			return false
+		}
+	}
 	return true
 }
 
