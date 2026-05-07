@@ -131,6 +131,21 @@ done
 # ── Local volumes ─────────────────────────────────────────────────
 mkdir -p "${RUN_DIR}/wal" "${RUN_DIR}/tessera" "${RUN_DIR}/antispam"
 
+# ── Witness K=1 self-loop bootstrap ───────────────────────────────
+# The ledger requires LEDGER_NETWORK_BOOTSTRAP_FILE when witness
+# mode is active (LEDGER_WITNESS_ENDPOINTS set below). Generate a
+# stable witness key + bootstrap doc on first run; subsequent runs
+# preserve the key (so the witness DID is stable across restarts)
+# and re-derive the bootstrap doc from it.
+WITNESS_KEY_FILE="${RUN_DIR}/witness.pem"
+NETWORK_BOOTSTRAP_FILE="${RUN_DIR}/network-bootstrap.json"
+echo "== generating witness key + network bootstrap =="
+go run ./cmd/init-network \
+    -out-witness-key="${WITNESS_KEY_FILE}" \
+    -out-bootstrap="${NETWORK_BOOTSTRAP_FILE}" \
+    -log-did="${LEDGER_LOG_DID:-did:attesta:ledger:local}" \
+    -network-name="local-dev"
+
 # ── Ledger env ─────────────────────────────────────────────────
 # Postgres
 export LEDGER_DATABASE_URL="${LEDGER_DATABASE_URL:-postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable}"
@@ -160,11 +175,14 @@ export LEDGER_ADDR="${LEDGER_ADDR:-:8080}"
 
 # Self-witness K=1 loopback: ledger becomes its own witness.
 # Same HeadSync → /v1/cosign → CosignHandler → tree_head_sigs path
-# as a production K=N deployment. Witness key is ephemeral.
+# as a production K=N deployment. Witness key is STABLE — the
+# init-network step above generates it on first run and preserves
+# it across restarts. The bootstrap doc declares this witness's
+# DID as the genesis witness set.
 export LEDGER_WITNESS_ENDPOINTS="${LEDGER_WITNESS_ENDPOINTS:-http://localhost:8080}"
 export LEDGER_WITNESS_QUORUM_K="${LEDGER_WITNESS_QUORUM_K:-1}"
-# LEDGER_WITNESS_KEY_FILE intentionally unset → ephemeral. Set
-# this if you want a stable witness identity across restarts.
+export LEDGER_WITNESS_KEY_FILE="${LEDGER_WITNESS_KEY_FILE:-${WITNESS_KEY_FILE}}"
+export LEDGER_NETWORK_BOOTSTRAP_FILE="${LEDGER_NETWORK_BOOTSTRAP_FILE:-${NETWORK_BOOTSTRAP_FILE}}"
 
 # Ledger entry signer — ephemeral did:key. cfg.LedgerDID is
 # overridden to match. Set LEDGER_SIGNER_KEY_FILE for a stable
@@ -197,6 +215,8 @@ echo "  LEDGER_ADDR=${LEDGER_ADDR}"
 echo "  LEDGER_BYTE_STORE_BACKEND=${LEDGER_BYTE_STORE_BACKEND} (bucket=${LEDGER_BYTE_STORE_GCS_BUCKET})"
 echo "  LEDGER_WAL_PATH=${LEDGER_WAL_PATH}"
 echo "  LEDGER_WITNESS_ENDPOINTS=${LEDGER_WITNESS_ENDPOINTS} (quorum_k=${LEDGER_WITNESS_QUORUM_K})"
+echo "  LEDGER_WITNESS_KEY_FILE=${LEDGER_WITNESS_KEY_FILE}"
+echo "  LEDGER_NETWORK_BOOTSTRAP_FILE=${LEDGER_NETWORK_BOOTSTRAP_FILE}"
 echo "  LEDGER_METRICS_ENABLE=${LEDGER_METRICS_ENABLE}"
 echo "  LEDGER_OTLP_TRACES_ENDPOINT=${LEDGER_OTLP_TRACES_ENDPOINT}"
 echo "  LEDGER_PPROF_ADDR=${LEDGER_PPROF_ADDR}"

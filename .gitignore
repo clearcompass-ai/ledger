@@ -130,6 +130,7 @@ override.tf.json
 /rebuild-tiles
 /seed-session
 /submit-stamp
+/init-network
 
 # --- Node.js / npm / yarn ---
 node_modules/
