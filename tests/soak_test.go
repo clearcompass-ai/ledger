@@ -1004,24 +1004,28 @@ func verifyEvidence(t *testing.T, op *soakLedger, submitted uint64) {
 	t.Logf("verifyEvidence: ✓ entry_index rows = %d (matches submitted)", rowCount)
 
 	// 2) Sequence contiguity — MIN must be 0, MAX must be submitted-1.
+	// Column name is `sequence_number`, NOT `sequence`. Confirmed via:
+	//   - store/entries.go:Insert SQL uses `sequence_number`
+	//   - store.EntryRow.SequenceNumber is the Go-side struct field
+	//   - the table CREATE in store/entries.go declares `sequence_number`
 	var minSeq, maxSeq sql.NullInt64
 	if err := op.Pool.QueryRow(ctx,
-		"SELECT MIN(sequence), MAX(sequence) FROM entry_index",
+		"SELECT MIN(sequence_number), MAX(sequence_number) FROM entry_index",
 	).Scan(&minSeq, &maxSeq); err != nil {
-		t.Fatalf("verifyEvidence: SELECT MIN/MAX(sequence): %v", err)
+		t.Fatalf("verifyEvidence: SELECT MIN/MAX(sequence_number): %v", err)
 	}
 	if !minSeq.Valid || !maxSeq.Valid {
-		t.Fatalf("verifyEvidence: MIN/MAX(sequence) returned NULL (no rows?)")
+		t.Fatalf("verifyEvidence: MIN/MAX(sequence_number) returned NULL (no rows?)")
 	}
 	if minSeq.Int64 != 0 {
-		t.Fatalf("verifyEvidence: MIN(sequence) = %d, want 0", minSeq.Int64)
+		t.Fatalf("verifyEvidence: MIN(sequence_number) = %d, want 0", minSeq.Int64)
 	}
 	expectedMax := int64(submitted) - 1
 	if maxSeq.Int64 != expectedMax {
-		t.Fatalf("verifyEvidence: MAX(sequence) = %d, want %d (submitted-1)",
+		t.Fatalf("verifyEvidence: MAX(sequence_number) = %d, want %d (submitted-1)",
 			maxSeq.Int64, expectedMax)
 	}
-	t.Logf("verifyEvidence: ✓ sequence space contiguous: [%d, %d]",
+	t.Logf("verifyEvidence: ✓ sequence_number space contiguous: [%d, %d]",
 		minSeq.Int64, maxSeq.Int64)
 
 	// 3) Every entry must be physically present in the bytestore.
@@ -1041,7 +1045,7 @@ func verifyEvidenceFetchAll(t *testing.T, ctx context.Context, op *soakLedger, s
 	}
 
 	rows, err := op.Pool.Query(ctx,
-		"SELECT sequence, canonical_hash FROM entry_index ORDER BY sequence")
+		"SELECT sequence_number, canonical_hash FROM entry_index ORDER BY sequence_number")
 	if err != nil {
 		t.Fatalf("verifyEvidence: SELECT all entries: %v", err)
 	}
