@@ -161,14 +161,14 @@ func startSoakOperator(t *testing.T) *soakOperator {
 
 	submissionDeps := &api.SubmissionDeps{
 		Storage: api.StorageDeps{
-			DB: pool, EntryStore: entryStore, WAL: walc, Tessera: merkle,
+			EntryStore: entryStore, WAL: walc, Tessera: merkle,
 		},
 		Admission: api.AdmissionConfig{
 			DiffController:        diffController,
 			EpochWindowSeconds:    testEpochWindowSeconds,
 			EpochAcceptanceWindow: testEpochAcceptanceWindow,
 		},
-		Identity:     api.IdentityDeps{CreditStore: creditStore},
+		Identity:     api.IdentityDeps{Credits: creditStore, DIDResolver: nil},
 		LogDID:       testLogDID,
 		MaxEntrySize: 1 << 20,
 		Logger:       logger,
@@ -190,7 +190,7 @@ func startSoakOperator(t *testing.T) *soakOperator {
 
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = "127.0.0.1:0"
-	server := api.NewServer(serverCfg, pool, handlers, logger)
+	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = walc.Close()
