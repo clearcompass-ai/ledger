@@ -60,13 +60,17 @@ import (
 
 func main() {
 	outWitnessKey := flag.String("out-witness-key", ".run/witness.pem",
-		"path to write (or load) the witness EC private key in PEM form")
+		"path to write (or load) the writer's witness EC private key in PEM form")
 	outBootstrap := flag.String("out-bootstrap", ".run/network-bootstrap.json",
 		"path to write the network BootstrapDocument JSON")
 	logDID := flag.String("log-did", "did:attesta:ledger:local",
 		"LogDID — used as exchange_did stand-in for local dev")
 	networkName := flag.String("network-name", "local-dev",
 		"network_name field of the BootstrapDocument")
+	extraWitnesses := flag.Int("extra-witnesses", 0,
+		"number of ADDITIONAL witness keys to generate (0 = single self-witness; "+
+			"N = writer + N standalone witnesses). Keys are written to "+
+			"<dir>/witness-<i>.pem under the directory of -out-witness-key.")
 	flag.Parse()
 
 	priv, generated, err := loadOrGenerateWitnessKey(*outWitnessKey)
@@ -79,14 +83,57 @@ func main() {
 	// SEC1 form; we compress it via elliptic.MarshalCompressed.
 	pubX, pubY := priv.X, priv.Y
 	compressed := elliptic.MarshalCompressed(elliptic.P256(), pubX, pubY)
-	witnessDID := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, compressed)
+	writerWitnessDID := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, compressed)
 	_ = ecdh.P256() // silence unused-import in case we later switch APIs
+
+	// genesis_witness_set defines the NETWORK's witness fleet.
+	// Two distinct topologies:
+	//
+	//   1. Single-instance dev (extra=0): the writer ledger ALSO
+	//      serves /v1/cosign as its own witness (K=1 self-loop).
+	//      The writer's DID is the single entry in the network's
+	//      genesis witness set — i.e., the writer is the network's
+	//      sole witness in this dev shortcut.
+	//
+	//   2. Multi-instance dev (extra=N>0): N standalone-witness
+	//      processes hold the network's witness keys. The writer
+	//      ledger is NOT a witness — it's purely a writer. Genesis
+	//      set is the N standalone-witness DIDs only. Writer's
+	//      own witness key (still generated above for code-path
+	//      parity with single-instance mode) is NOT in the
+	//      network's witness set.
+	//
+	// This is the SDK's network/ledger separation, made explicit:
+	// the genesis witness set describes the network, not the
+	// ledger.
+	var genesisDIDs []string
+	if *extraWitnesses == 0 {
+		genesisDIDs = []string{writerWitnessDID}
+	} else {
+		genesisDIDs = make([]string, 0, *extraWitnesses)
+	}
+
+	extraKeyPaths := make([]string, 0, *extraWitnesses)
+	for i := 1; i <= *extraWitnesses; i++ {
+		path := extraWitnessKeyPath(*outWitnessKey, i)
+		extraPriv, extraGen, kerr := loadOrGenerateWitnessKey(path)
+		if kerr != nil {
+			log.Fatalf("init-network: extra witness #%d (%s): %v", i, path, kerr)
+		}
+		extraCompressed := elliptic.MarshalCompressed(
+			elliptic.P256(), extraPriv.X, extraPriv.Y)
+		extraDID := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, extraCompressed)
+		genesisDIDs = append(genesisDIDs, extraDID)
+		extraKeyPaths = append(extraKeyPaths, path)
+		fmt.Printf("init-network: network witness #%d %s = %s -> %s\n",
+			i, ifGenerated(extraGen), path, extraDID)
+	}
 
 	doc := network.BootstrapDocument{
 		ProtocolVersion:   "v1",
 		ExchangeDID:       *logDID,
 		NetworkName:       *networkName,
-		GenesisWitnessSet: []string{witnessDID},
+		GenesisWitnessSet: genesisDIDs,
 		GenesisTreeHead: network.GenesisTreeHead{
 			RootHash: "0000000000000000000000000000000000000000000000000000000000000000",
 			TreeSize: 0,
@@ -107,13 +154,46 @@ func main() {
 		log.Fatalf("init-network: write bootstrap: %v", err)
 	}
 
-	keyAction := "loaded"
-	if generated {
-		keyAction = "generated"
+	fmt.Printf("init-network: writer key file    %s (%s)\n",
+		ifGenerated(generated), *outWitnessKey)
+	if *extraWitnesses == 0 {
+		fmt.Printf("init-network: topology           = K=1 self-loop (writer is the network's sole witness)\n")
+		fmt.Printf("init-network: writer witness did = %s\n", writerWitnessDID)
+	} else {
+		fmt.Printf("init-network: topology           = K=%d external witnesses (writer is NOT a witness)\n",
+			*extraWitnesses)
+		fmt.Printf("init-network: network witnesses  = %d standalone (key paths: %v)\n",
+			*extraWitnesses, extraKeyPaths)
 	}
-	fmt.Printf("init-network: witness key %s (%s)\n", keyAction, *outWitnessKey)
-	fmt.Printf("init-network: witness did  = %s\n", witnessDID)
-	fmt.Printf("init-network: bootstrap    = %s\n", *outBootstrap)
+	fmt.Printf("init-network: bootstrap          = %s\n", *outBootstrap)
+}
+
+// extraWitnessKeyPath derives "<dir>/witness-<i>.pem" relative to
+// the writer's witness key path. Mirrors the convention
+// scripts/run-local.sh consumes when --witnesses N is passed.
+func extraWitnessKeyPath(writerKey string, i int) string {
+	return fmt.Sprintf("%s/witnesses/witness-%d.pem",
+		dirOf(writerKey), i)
+}
+
+// dirOf returns the directory portion of path. For
+// ".run/witness.pem" it returns ".run".
+func dirOf(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[:i]
+		}
+	}
+	return "."
+}
+
+// ifGenerated returns "generated" or "loaded" — used in human
+// log lines to make first-vs-subsequent runs distinguishable.
+func ifGenerated(generated bool) string {
+	if generated {
+		return "generated"
+	}
+	return "loaded"
 }
 
 // loadOrGenerateWitnessKey loads a PEM-encoded EC private key
@@ -149,6 +229,9 @@ func loadOrGenerateWitnessKey(path string) (*ecdsa.PrivateKey, bool, error) {
 		Type:  "EC PRIVATE KEY",
 		Bytes: der,
 	})
+	if err := os.MkdirAll(dirOf(path), 0o755); err != nil {
+		return nil, false, fmt.Errorf("mkdir %q: %w", dirOf(path), err)
+	}
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		return nil, false, fmt.Errorf("write %q: %w", path, err)
 	}
