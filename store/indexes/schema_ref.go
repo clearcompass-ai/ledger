@@ -6,7 +6,6 @@ QueryBySchemaRef — all entries governed by a specific schema.
 package indexes
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/clearcompass-ai/attesta/types"
@@ -16,7 +15,7 @@ import (
 
 // QueryBySchemaRef returns entries referencing the given schema position.
 func (q *PostgresQueryAPI) QueryBySchemaRef(pos types.LogPosition) ([]types.EntryWithMetadata, error) {
-	ctx := context.TODO()
+	ctx := q.ctx
 	posBytes := store.SerializeLogPosition(pos)
 	rows, err := q.db.Query(ctx, `
 		SELECT sequence_number, log_time, canonical_hash

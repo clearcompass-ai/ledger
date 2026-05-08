@@ -6,7 +6,6 @@ QueryByTargetRoot — all entries targeting a specific root entity.
 package indexes
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/clearcompass-ai/attesta/types"
@@ -16,7 +15,7 @@ import (
 
 // QueryByTargetRoot returns entries whose Target_Root matches pos.
 func (q *PostgresQueryAPI) QueryByTargetRoot(pos types.LogPosition) ([]types.EntryWithMetadata, error) {
-	ctx := context.TODO()
+	ctx := q.ctx
 	posBytes := store.SerializeLogPosition(pos)
 	rows, err := q.db.Query(ctx, `
 		SELECT sequence_number, log_time, canonical_hash

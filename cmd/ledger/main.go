@@ -28,7 +28,7 @@ LEDGER INTERNAL SIGNATURES:
   - tessera.NewInMemoryEntryStore() → *InMemoryEntryStore. The only
     byte-store implementation shipped today. A persistent backend is the
     ledger's responsibility to swap in.
-  - store.NewPostgresNodeCache(pool, cacheSize) → *PostgresNodeCache.
+  - store.NewPostgresNodeCache(ctx, pool, cacheSize) → *PostgresNodeCache.
     Cache size MUST be passed; zero would be a pathological no-cache path.
   - builder.NewDeltaBufferStore(pool, windowSize, logger) → *DeltaBufferStore.
   - bufferStore.Load(ctx) → (*sdkbuilder.DeltaWindowBuffer, error).
@@ -1205,8 +1205,8 @@ func main() {
 	entryStore := store.NewEntryStore(pool)
 	creditStore := store.NewCreditStore(pool)
 	commitStore := store.NewCommitmentStore(pool)
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(pool, cfg.SMTNodeCacheSize)
+	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	nodeCache := store.NewPostgresNodeCache(ctx, pool, cfg.SMTNodeCacheSize)
 	treeHeadStore := store.NewTreeHeadStore(pool)
 
 	// ── WAL ───────────────────────────────────────────────────────────
@@ -1384,7 +1384,7 @@ func main() {
 		os.Exit(1)
 	}
 	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
-	tesseraAdapter := tessera.NewTesseraAdapter(embeddedAppender, tileReader, logger)
+	tesseraAdapter := tessera.NewTesseraAdapter(ctx, embeddedAppender, tileReader, logger)
 
 	// ── Composite byte reader ─────────────────────────────────────────
 	// Routes per-entry: WAL first (local NVMe, fast for un-shipped
@@ -1395,7 +1395,7 @@ func main() {
 	compositeReader := store.NewCompositeByteReader(walc, byteStore, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
-	fetcher := store.NewPostgresEntryFetcher(pool, compositeReader, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool, compositeReader, cfg.LogDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, logger)
 	// Builder pending-work source: CT-native log-tailing follower.
 	// Admission writes only entry_index; the cursor reader tails it
@@ -2043,7 +2043,7 @@ func main() {
 	// Query API also reads through the composite (WAL → bytestore
 	// fallback) so query-by-* endpoints get the same routing as
 	// the single-entry fetcher.
-	queryAPI := indexes.NewPostgresQueryAPI(pool, compositeReader, cfg.LogDID)
+	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, compositeReader, cfg.LogDID)
 
 	// ── Handler struct for api.Server ─────────────────────────────────
 	queryDeps := &api.QueryDeps{

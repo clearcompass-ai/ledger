@@ -91,7 +91,7 @@ func TestEquivocation_EndToEnd(t *testing.T) {
 			seqB: payloadB,
 		},
 	}
-	fetcher := store.NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := store.NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 	handler := opapi.NewCommitmentLookupHandler(&opapi.CryptographicCommitmentDeps{
 		Fetcher: fetcher,
 		Logger:  slog.Default(),

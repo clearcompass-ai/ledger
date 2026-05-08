@@ -41,14 +41,26 @@ const DefaultScanCount = 100
 // PostgresQueryAPI implements sdk log.LedgerQueryAPI.
 // Metadata from entry_index (Postgres). Bytes from EntryReader (Tessera).
 type PostgresQueryAPI struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
+
+	// ctx is the process-lifetime context bound at construction.
+	// The SDK's log.LedgerQueryAPI interface methods
+	// (QueryByCosignatureOf, QueryBySchemaRef, QueryBySignerDID,
+	// QueryByTargetRoot, ScanFromPosition) do not accept a
+	// context. Binding here so SIGTERM cancels in-flight queries.
+	ctx context.Context
 }
 
-// NewPostgresQueryAPI creates the query API for a log.
-func NewPostgresQueryAPI(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresQueryAPI {
-	return &PostgresQueryAPI{db: db, reader: reader, logDID: logDID}
+// NewPostgresQueryAPI creates the query API for a log. ctx is the
+// process-lifetime context (parent of every internal query issued
+// by the no-ctx LedgerQueryAPI interface methods).
+func NewPostgresQueryAPI(ctx context.Context, db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresQueryAPI {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &PostgresQueryAPI{db: db, reader: reader, logDID: logDID, ctx: ctx}
 }
 
 // indexMeta holds the metadata columns scanned from entry_index.

@@ -84,19 +84,36 @@ type AppenderBackend interface {
 // TesseraAdapter implements the ledger's MerkleAppender interface
 // over an AppenderBackend and uses tiles for proof computation.
 type TesseraAdapter struct {
-	backend AppenderBackend
+	backend    AppenderBackend
 	tileReader *TileReader
-	logger *slog.Logger
+	logger     *slog.Logger
+
+	// ctx is the process-lifetime context bound at construction.
+	// The InclusionProver / ConsistencyProver interfaces in
+	// api/tree.go (RawInclusionProof, ConsistencyProof,
+	// TypedInclusionProof) do not accept a per-request ctx.
+	// Binding the process ctx here means tile fetches inside
+	// proof computation cancel cleanly on SIGTERM rather than
+	// leaking goroutines past shutdown.
+	ctx context.Context
 }
 
 // NewTesseraAdapter creates an adapter over the supplied backend.
 // Production wires *EmbeddedAppender (in-process upstream Tessera);
 // tests inject lightweight fakes that satisfy AppenderBackend.
-func NewTesseraAdapter(backend AppenderBackend, tileReader *TileReader, logger *slog.Logger) *TesseraAdapter {
+//
+// ctx is the process-lifetime context: parent of every internal
+// tile fetch issued by the no-ctx prover interface methods. Pass
+// the same ctx that gates the builder loop and HTTP server.
+func NewTesseraAdapter(ctx context.Context, backend AppenderBackend, tileReader *TileReader, logger *slog.Logger) *TesseraAdapter {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &TesseraAdapter{
 		backend:    backend,
 		tileReader: tileReader,
 		logger:     logger,
+		ctx:        ctx,
 	}
 }
 
@@ -231,7 +248,7 @@ func (a *TesseraAdapter) computeInclusionProof(index, treeSize uint64) (any, err
 // computeInclusionSiblings computes the sibling path for a Merkle inclusion proof.
 // Uses the RFC 6962 proof algorithm, fetching node hashes from tiles on demand.
 func (a *TesseraAdapter) computeInclusionSiblings(index, treeSize uint64) ([][32]byte, error) {
-	ctx := context.TODO()
+	ctx := a.ctx
 
 	// The inclusion proof is the set of sibling hashes along the path from
 	// the leaf to the root. We compute this by decomposing the tree into
@@ -277,7 +294,7 @@ func (a *TesseraAdapter) computeInclusionSiblings(index, treeSize uint64) ([][32
 
 // computeConsistencySiblings computes the sibling path for a consistency proof.
 func (a *TesseraAdapter) computeConsistencySiblings(oldSize, newSize uint64) ([][32]byte, error) {
-	ctx := context.TODO()
+	ctx := a.ctx
 
 	var siblings [][32]byte
 

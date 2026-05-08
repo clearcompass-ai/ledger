@@ -56,9 +56,16 @@ import (
 // LogPosition (uniquely one row), this one is keyed by SplitID
 // (potentially multiple rows under equivocation).
 type PostgresCommitmentFetcher struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
+
+	// ctx is the process-lifetime context bound at construction.
+	// The SDK's types.CommitmentFetcher.FindCommitmentEntries
+	// interface does not accept a context. Binding here so SIGTERM
+	// cancels in-flight queries instead of holding pgx
+	// connections past shutdown.
+	ctx context.Context
 }
 
 // NewPostgresCommitmentFetcher returns a fetcher backed by db and
@@ -66,10 +73,16 @@ type PostgresCommitmentFetcher struct {
 // Position.LogDID field of every returned EntryWithMetadata so SDK
 // callers see a fully-qualified position even though the underlying
 // commitment_split_id row carries only the sequence number.
+//
+// ctx is the process-lifetime context: parent of every internal
+// query issued by the no-ctx FindCommitmentEntries interface method.
 func NewPostgresCommitmentFetcher(
-	db *pgxpool.Pool, reader bytestore.Reader, logDID string,
+	ctx context.Context, db *pgxpool.Pool, reader bytestore.Reader, logDID string,
 ) *PostgresCommitmentFetcher {
-	return &PostgresCommitmentFetcher{db: db, reader: reader, logDID: logDID}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &PostgresCommitmentFetcher{db: db, reader: reader, logDID: logDID, ctx: ctx}
 }
 
 // FindCommitmentEntries returns every entry in the ledger's log
@@ -110,12 +123,14 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 		return nil, errors.New("store/commitment_fetcher: empty schemaID")
 	}
 
-	// Use TODO() because the SDK CommitmentFetcher interface does
-	// not propagate a context. The query is bounded by the database
-	// pool's per-connection timeout configuration; long-running
-	// scans are not expected because the (schema_id, split_id)
-	// index makes the lookup an O(rows-matching) operation.
-	ctx := context.TODO()
+	// Use the process-lifetime ctx bound at construction. The SDK's
+	// CommitmentFetcher interface does not propagate a per-request
+	// context; binding here at least allows shutdown to cancel
+	// in-flight queries. The query is also bounded by the database
+	// pool's per-connection statement_timeout; long-running scans
+	// are not expected because the (schema_id, split_id) index
+	// makes the lookup an O(rows-matching) operation.
+	ctx := f.ctx
 
 	// Join: commitment_split_id provides the candidate sequence
 	// numbers under (schema_id, split_id); entry_index supplies the

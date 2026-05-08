@@ -178,7 +178,7 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch via PostgresEntryFetcher.
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
 	pos := types.LogPosition{LogDID: testLogDID, Sequence: seq}
 	ewm, err := fetcher.Fetch(pos)
 	if err != nil {
@@ -237,7 +237,7 @@ func TestRule_QueryAPIHydratesFromEntryReader(t *testing.T) {
 	}
 
 	// Query via LedgerQueryAPI.
-	qapi := indexes.NewPostgresQueryAPI(pool, entryBytes, testLogDID)
+	qapi := indexes.NewPostgresQueryAPI(ctx, pool, entryBytes, testLogDID)
 	results, err := qapi.QueryBySignerDID("did:example:query-rule-signer")
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch — should return EntryReader's bytes.
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
 	pos := types.LogPosition{LogDID: testLogDID, Sequence: seq}
 	ewm, err := fetcher.Fetch(pos)
 	if err != nil || ewm == nil {

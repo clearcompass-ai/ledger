@@ -7,7 +7,6 @@ Postgres provides sequence numbers + metadata. EntryReader provides bytes.
 package indexes
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/clearcompass-ai/attesta/types"
@@ -15,7 +14,7 @@ import (
 
 // QueryBySignerDID returns entries signed by the given DID.
 func (q *PostgresQueryAPI) QueryBySignerDID(did string) ([]types.EntryWithMetadata, error) {
-	ctx := context.TODO()
+	ctx := q.ctx
 	rows, err := q.db.Query(ctx, `
 		SELECT sequence_number, log_time, canonical_hash
 		FROM entry_index WHERE signer_did = $1 ORDER BY sequence_number ASC`,

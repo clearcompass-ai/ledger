@@ -13,7 +13,6 @@ KEY ARCHITECTURAL DECISIONS:
 package indexes
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/clearcompass-ai/attesta/types"
@@ -22,7 +21,7 @@ import (
 // ScanFromPosition returns entries starting at startPos in sequence order.
 // Count is clamped to MaxScanCount. Returns empty slice (never nil) if no results.
 func (q *PostgresQueryAPI) ScanFromPosition(startPos uint64, count int) ([]types.EntryWithMetadata, error) {
-	ctx := context.TODO()
+	ctx := q.ctx
 	if count <= 0 {
 		count = DefaultScanCount
 	}
