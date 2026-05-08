@@ -14,7 +14,13 @@ disable that and point at a managed instance (Cloud SQL, RDS).
 ### Quick start (laptop / smoke deploy)
 
 In-cluster Postgres via the bitnami sub-chart, ephemeral signer
-keys, no Prometheus Operator:
+keys, no Prometheus Operator. Note: `byteStore.backend` MUST be
+`gcs` or `s3` — those are the only values the ledger accepts at
+boot (`cmd/ledger/main.go:642–654`). The smoke-deploy path below
+assumes a developer-owned GCS bucket; for an air-gapped lab use a
+local S3-compatible service such as `rustfs` and set
+`byteStore.backend=s3` with the corresponding `byteStore.s3.*`
+fields.
 
 ```sh
 helm dependency build deploy/helm/ledger
@@ -23,7 +29,8 @@ helm install ledger deploy/helm/ledger \
     -n ledger --create-namespace \
     --set image.tag=1.0.0 \
     --set config.logDID=did:web:smoke.example.com \
-    --set config.byteStore.backend=posix \
+    --set config.byteStore.backend=gcs \
+    --set config.byteStore.gcs.bucket=my-smoke-bucket \
     --set config.tile.backend=posix \
     --set postgresql.enabled=true \
     --set postgresql.auth.password='choose-a-password'
@@ -104,9 +111,10 @@ Missing Secret → admission rejection, never a runtime crash.
 ## Singleton-writer discipline
 
 `replicas: 1` is non-negotiable. The Postgres advisory lock
-(`BuilderLockID = 0x4F5254484F4C4F47`) enforces singleton-writer at
-the DB level; a second pod fails fast with a rolling-update
-conflict message. `strategy.type: Recreate` for the same reason.
+(`store/postgres.go:400 BuilderLockID = 0x4F5254484F4C4F47`)
+enforces singleton-writer at the DB level; a second pod fails
+fast with a rolling-update conflict message.
+`strategy.type: Recreate` for the same reason.
 
 Read-scaling lives in `cmd/ledger-reader` (separate chart, not in
 this directory).
@@ -119,8 +127,8 @@ See `values.yaml` for the full schema. Notable knobs:
 |--------------------------------|-------------------------------------------------------|
 | `image.tag`                    | Pinned ledger image tag (defaults to AppVersion).     |
 | `config.logDID`                | Required in production; `LEDGER_LOG_DID`.             |
-| `config.byteStore.backend`     | `gcs` / `s3` / `posix`.                               |
-| `config.tile.backend`          | `gcs` / `posix`.                                      |
+| `config.byteStore.backend`     | `gcs` or `s3` — these are the only values the binary accepts. |
+| `config.tile.backend`          | `gcs` or `posix`.                                     |
 | `extraEnv`                     | Free-form `LEDGER_*` env (witness, gossip, MMD).      |
 | `extraEnvFrom`                 | `envFrom` Secret/ConfigMap refs (S3 creds, etc.).     |
 | `persistence.storageClassName` | Storage class for all three PVCs.                     |
@@ -128,6 +136,10 @@ See `values.yaml` for the full schema. Notable knobs:
 
 For the bitnami postgres knobs (`postgresql.*`) refer to the
 [upstream chart README](https://github.com/bitnami/charts/tree/main/bitnami/postgresql#parameters).
+
+The full `LEDGER_*` env contract — including which vars are
+required vs. optional and their defaults — is in
+[../../docs/configuration.md](../../docs/configuration.md).
 
 ## Local validation
 
@@ -138,5 +150,7 @@ helm template deploy/helm/ledger \
     --set postgresql.enabled=true \
     --set postgresql.auth.password=test \
     --set config.logDID=did:web:lint.test \
+    --set config.byteStore.backend=gcs \
+    --set config.byteStore.gcs.bucket=lint-test \
     | kubectl apply --dry-run=client -f -
 ```
