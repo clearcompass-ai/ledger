@@ -342,7 +342,7 @@ func TestGrantLifecycle_HappyPath(t *testing.T) {
 	reader := &stubEntryReader{
 		wireBySeq: map[uint64][]byte{seq: jsonPayload},
 	}
-	fetcher := store.NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := store.NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 	handler := opapi.NewCommitmentLookupHandler(&opapi.CryptographicCommitmentDeps{
 		Fetcher: fetcher,
 		Logger:  slog.Default(),

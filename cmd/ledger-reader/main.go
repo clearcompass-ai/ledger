@@ -102,7 +102,7 @@ func run(logger *slog.Logger) error {
 	}
 	tileReader := tessera.NewTileReader(tileBackend, cfg.TileCacheSize)
 	roAppender := tessera.NewReadOnlyAppender(tileBackend)
-	tesseraAdapter := tessera.NewTesseraAdapter(roAppender, tileReader, logger)
+	tesseraAdapter := tessera.NewTesseraAdapter(ctx, roAppender, tileReader, logger)
 	logger.Info("tessera initialized (read-only)", "storage_dir", cfg.TesseraStorageDir)
 
 	// ── Entry byte store ──────────────────────────────────────────────
@@ -142,8 +142,8 @@ func run(logger *slog.Logger) error {
 	)
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
-	leafStore := store.NewPostgresLeafStore(pool.DB)
-	nodeCache := store.NewPostgresNodeCache(pool.DB, cfg.SMTCacheSize)
+	leafStore := store.NewPostgresLeafStore(ctx, pool.DB)
+	nodeCache := store.NewPostgresNodeCache(ctx, pool.DB, cfg.SMTCacheSize)
 	tree := smt.NewTree(leafStore, nodeCache)
 	if err := nodeCache.WarmCache(ctx, cfg.WarmTopLevels); err != nil {
 		logger.Warn("cache warm failed (non-fatal)", "error", err)
@@ -152,7 +152,7 @@ func run(logger *slog.Logger) error {
 	// ── Stores ─────────────────────────────────────────────────────────
 	treeHeadStore := store.NewTreeHeadStore(pool.DB)
 	commitmentStore := store.NewCommitmentStore(pool.DB)
-	fetcher := store.NewPostgresEntryFetcher(pool.DB, entryBytes, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool.DB, entryBytes, cfg.LogDID)
 
 	// ── Difficulty (static) ────────────────────────────────────────────
 	diffController := middleware.NewDifficultyController(
@@ -169,7 +169,7 @@ func run(logger *slog.Logger) error {
 	entryStore := store.NewEntryStore(pool.DB)
 
 	// ── Query API ──────────────────────────────────────────────────────
-	queryAPI := indexes.NewPostgresQueryAPI(pool.DB, entryBytes, cfg.LogDID)
+	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool.DB, entryBytes, cfg.LogDID)
 
 	// ── HTTP handlers ──────────────────────────────────────────────────
 	treeDeps := &api.TreeDeps{

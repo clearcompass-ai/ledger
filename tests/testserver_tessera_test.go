@@ -169,7 +169,7 @@ func buildRealTesseraSlots(
 		t.Fatalf("buildRealTesseraSlots: NewPOSIXTileBackend: %v", err)
 	}
 	tileReader := optessera.NewTileReader(backend, 256)
-	adapter := optessera.NewTesseraAdapter(embedded, tileReader, logger)
+	adapter := optessera.NewTesseraAdapter(ctx, embedded, tileReader, logger)
 
 	return &tesseraSlots{
 		admission:   embedded,

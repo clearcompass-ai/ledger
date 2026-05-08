@@ -41,16 +41,27 @@ import (
 // Supports transactional writes for atomic builder commits via SetTx/DeleteTx.
 type PostgresLeafStore struct {
 	db *pgxpool.Pool
+
+	// ctx is the process-lifetime context bound at construction.
+	// Get/Set/Delete implement the SDK's smt.LeafStore interface,
+	// which does not accept a context. Binding here so SIGTERM
+	// cancels in-flight queries instead of stalling shutdown.
+	ctx context.Context
 }
 
-// NewPostgresLeafStore creates a leaf store.
-func NewPostgresLeafStore(db *pgxpool.Pool) *PostgresLeafStore {
-	return &PostgresLeafStore{db: db}
+// NewPostgresLeafStore creates a leaf store. ctx is the process-
+// lifetime context (parent of every internal query issued by the
+// no-ctx Get/Set/Delete interface methods).
+func NewPostgresLeafStore(ctx context.Context, db *pgxpool.Pool) *PostgresLeafStore {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &PostgresLeafStore{db: db, ctx: ctx}
 }
 
 // Get reads a leaf by key. Returns nil if not found.
 func (s *PostgresLeafStore) Get(key [32]byte) (*types.SMTLeaf, error) {
-	ctx := context.TODO()
+	ctx := s.ctx
 	var originTipBytes, authorityTipBytes []byte
 	err := s.db.QueryRow(ctx,
 		"SELECT origin_tip, authority_tip FROM smt_leaves WHERE leaf_key = $1",
@@ -79,7 +90,7 @@ func (s *PostgresLeafStore) Get(key [32]byte) (*types.SMTLeaf, error) {
 // Set writes a leaf using the connection pool (non-transactional).
 // Used during non-critical paths. Builder uses SetTx for atomic commits.
 func (s *PostgresLeafStore) Set(key [32]byte, leaf types.SMTLeaf) error {
-	ctx := context.TODO()
+	ctx := s.ctx
 	originBytes := SerializeLogPosition(leaf.OriginTip)
 	authBytes := SerializeLogPosition(leaf.AuthorityTip)
 
@@ -128,7 +139,7 @@ func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
 		return nil
 	}
 
-	ctx := context.TODO()
+	ctx := s.ctx
 	batch := &pgx.Batch{}
 
 	for _, leaf := range leaves {
@@ -159,7 +170,7 @@ func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
 
 // Delete removes a leaf.
 func (s *PostgresLeafStore) Delete(key [32]byte) error {
-	ctx := context.TODO()
+	ctx := s.ctx
 	_, err := s.db.Exec(ctx, "DELETE FROM smt_leaves WHERE leaf_key = $1", key[:])
 	if err != nil {
 		return fmt.Errorf("store/smt: delete leaf: %w", err)
@@ -169,7 +180,7 @@ func (s *PostgresLeafStore) Delete(key [32]byte) error {
 
 // Count returns the total number of SMT leaves.
 func (s *PostgresLeafStore) Count() (int, error) {
-	ctx := context.TODO()
+	ctx := s.ctx
 	var count int
 	err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM smt_leaves").Scan(&count)
 	if err != nil {
@@ -185,12 +196,18 @@ func (s *PostgresLeafStore) Count() (int, error) {
 // PostgresNodeCache implements sdk smt.NodeCache with write-through persistence.
 // Uses a simple map with access tracking for LRU eviction.
 type PostgresNodeCache struct {
-	db *pgxpool.Pool
-	mu sync.RWMutex
-	cache map[[32]byte]cacheEntry
-	access map[[32]byte]int64 // access counter for LRU
+	db      *pgxpool.Pool
+	mu      sync.RWMutex
+	cache   map[[32]byte]cacheEntry
+	access  map[[32]byte]int64 // access counter for LRU
 	counter int64
 	maxSize int
+
+	// ctx is the process-lifetime context bound at construction.
+	// The SDK smt.NodeCache interface methods (Get/Set/Delete by
+	// path key) do not accept a context. Binding here lets SIGTERM
+	// cancel in-flight write-through Postgres queries.
+	ctx context.Context
 }
 
 type cacheEntry struct {
@@ -199,15 +216,19 @@ type cacheEntry struct {
 }
 
 // NewPostgresNodeCache creates a node cache with the given LRU capacity.
-func NewPostgresNodeCache(db *pgxpool.Pool, maxSize int) *PostgresNodeCache {
+func NewPostgresNodeCache(ctx context.Context, db *pgxpool.Pool, maxSize int) *PostgresNodeCache {
 	if maxSize < 1024 {
 		maxSize = 100000
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return &PostgresNodeCache{
 		db:      db,
 		cache:   make(map[[32]byte]cacheEntry, maxSize),
 		access:  make(map[[32]byte]int64, maxSize),
 		maxSize: maxSize,
+		ctx:     ctx,
 	}
 }
 
@@ -225,7 +246,7 @@ func (c *PostgresNodeCache) Get(key [32]byte) ([]byte, bool) {
 	}
 
 	// Cache miss — fetch from Postgres.
-	ctx := context.TODO()
+	ctx := c.ctx
 	var hash []byte
 	err := c.db.QueryRow(ctx,
 		"SELECT hash FROM smt_nodes WHERE path_key = $1", key[:],
@@ -259,7 +280,7 @@ func (c *PostgresNodeCache) SetWithDepth(key [32]byte, value []byte, depth int) 
 	c.mu.Unlock()
 
 	// Write-through to Postgres.
-	ctx := context.TODO()
+	ctx := c.ctx
 	_, _ = c.db.Exec(ctx, `
 		INSERT INTO smt_nodes (path_key, hash, depth, updated_at)
 		VALUES ($1, $2, $3, NOW())

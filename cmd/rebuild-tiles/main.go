@@ -144,8 +144,8 @@ func main() {
 	defer pool.Close()
 
 	// ── Stores ────────────────────────────────────────────────────────
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(pool, *nodeCacheSize)
+	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	nodeCache := store.NewPostgresNodeCache(ctx, pool, *nodeCacheSize)
 
 	// CRITICAL: In production, replace NewInMemoryEntryStore with your
 	// persistent byte store implementation. The rebuild loop reads entry
@@ -193,10 +193,10 @@ func main() {
 			logger.Warn("tessera shutdown", "error", err)
 		}
 	}()
-	merkle := tessera.NewTesseraAdapter(embeddedAppender, nil, logger)
+	merkle := tessera.NewTesseraAdapter(ctx, embeddedAppender, nil, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
-	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, *logDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool, byteStore, *logDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, *deltaWindow, logger)
 	buffer, loadErr := bufferStore.Load(ctx)
 	if loadErr != nil {

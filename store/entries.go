@@ -151,14 +151,24 @@ func (s *EntryStore) FetchByHash(ctx context.Context, hash [32]byte) (uint64, bo
 //   - Returns nil for foreign log DIDs (this fetcher only resolves
 //     entries written into this ledger's own log).
 type PostgresEntryFetcher struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
+
+	// ctx is the process-lifetime context. The SDK's
+	// types.EntryFetcher.Fetch interface does not accept a
+	// context — bound here so SIGTERM cancels in-flight queries.
+	ctx context.Context
 }
 
-// NewPostgresEntryFetcher creates a fetcher for the given log.
-func NewPostgresEntryFetcher(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
-	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID}
+// NewPostgresEntryFetcher creates a fetcher for the given log. ctx
+// is the process-lifetime context (parent of every internal query
+// issued by the no-ctx Fetch interface method).
+func NewPostgresEntryFetcher(ctx context.Context, db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID, ctx: ctx}
 }
 
 // Fetch retrieves an entry by LogPosition.
@@ -168,7 +178,7 @@ func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMet
 		return nil, nil // Foreign log — not found locally.
 	}
 
-	ctx := context.TODO()
+	ctx := f.ctx
 
 	// (1) Metadata from entry_index. canonical_hash is required to
 	// construct the bytestore object key; log_time populates the

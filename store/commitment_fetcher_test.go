@@ -162,7 +162,7 @@ func TestFindCommitmentEntries_NoMatch(t *testing.T) {
 	resetFixtures(t, ctx, pool)
 
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
-	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 
 	var splitID [32]byte
 	splitID[0] = 0xAB
@@ -197,7 +197,7 @@ func TestFindCommitmentEntries_SingleRow(t *testing.T) {
 			seq: []byte("wire-100"),
 		},
 	}
-	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 
 	got, err := fetcher.FindCommitmentEntries(
 		artifact.PREGrantCommitmentSchemaID, splitID,
@@ -236,7 +236,7 @@ func TestFindCommitmentEntries_Equivocation(t *testing.T) {
 			200: []byte("wire-200"),
 		},
 	}
-	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 
 	got, err := fetcher.FindCommitmentEntries(
 		artifact.PREGrantCommitmentSchemaID, splitID,
@@ -267,7 +267,7 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 
 	// Reader has no entry for seq=300 so ReadEntry returns an error.
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
-	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
 
 	_, err := fetcher.FindCommitmentEntries(
 		artifact.PREGrantCommitmentSchemaID, splitID,
@@ -281,7 +281,7 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 // at the top of FindCommitmentEntries — a nil bytestore.Reader
 // would otherwise panic on the first ReadEntry call.
 func TestFindCommitmentEntries_NilReader(t *testing.T) {
-	fetcher := NewPostgresCommitmentFetcher(nil, nil, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(context.Background(), nil, nil, testLogDID)
 	_, err := fetcher.FindCommitmentEntries(
 		artifact.PREGrantCommitmentSchemaID, [32]byte{},
 	)
@@ -295,7 +295,7 @@ func TestFindCommitmentEntries_NilReader(t *testing.T) {
 // match no rows under any normal index population and is more likely
 // a programmer error than a legitimate query.
 func TestFindCommitmentEntries_EmptySchemaID(t *testing.T) {
-	fetcher := NewPostgresCommitmentFetcher(nil, &fakeEntryReader{}, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(context.Background(), nil, &fakeEntryReader{}, testLogDID)
 	_, err := fetcher.FindCommitmentEntries("", [32]byte{})
 	if err == nil {
 		t.Fatal("expected error from empty schemaID, got nil")

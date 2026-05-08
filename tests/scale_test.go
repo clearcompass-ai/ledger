@@ -318,10 +318,10 @@ func TestScale_BuilderThroughput(t *testing.T) {
 	t.Logf("seeding complete: %d entries in %s (%.0f entries/sec)", seeded, seedElapsed, float64(seeded)/seedElapsed.Seconds())
 
 	// Wire up builder using cursor-mode reader.
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(pool, 100_000)
+	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	nodeCache := store.NewPostgresNodeCache(ctx, pool, 100_000)
 	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
 	sequenceCursor := store.NewSequenceCursor(pool)
 	reader := opbuilder.NewCursorReader(sequenceCursor)
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
