@@ -152,7 +152,7 @@ func run(logger *slog.Logger) error {
 	// ── Stores ─────────────────────────────────────────────────────────
 	treeHeadStore := store.NewTreeHeadStore(pool.DB)
 	commitmentStore := store.NewCommitmentStore(pool.DB)
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool.DB, entryBytes, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool.DB, entryBytes, cfg.LogDID)
 
 	// ── Difficulty (static) ────────────────────────────────────────────
 	diffController := middleware.NewDifficultyController(

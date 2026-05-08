@@ -81,7 +81,7 @@ import (
 // EntryFetcher fetches a single entry by log position.
 // Satisfied by store.PostgresEntryFetcher.
 type EntryFetcher interface {
-	Fetch(pos types.LogPosition) (*types.EntryWithMetadata, error)
+	Fetch(ctx context.Context, pos types.LogPosition) (*types.EntryWithMetadata, error)
 }
 
 // EntryWALReader is the WAL surface the raw-bytes handler needs.
@@ -145,7 +145,7 @@ func NewEntryBySequenceHandler(deps *EntryReadDeps) http.HandlerFunc {
 		}
 
 		pos := types.LogPosition{LogDID: deps.LogDID, Sequence: seq}
-		entry, err := deps.Fetcher.Fetch(pos)
+		entry, err := deps.Fetcher.Fetch(ctx, pos)
 		if err != nil {
 			deps.Logger.Error("entry fetch", "sequence", seq, "error", err)
 			writeTypedError(ctx, w, apitypes.ErrorClassFetcherFailed,

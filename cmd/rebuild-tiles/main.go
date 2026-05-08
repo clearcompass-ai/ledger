@@ -196,7 +196,7 @@ func main() {
 	merkle := tessera.NewTesseraAdapter(ctx, embeddedAppender, nil, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, byteStore, *logDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, *logDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, *deltaWindow, logger)
 	buffer, loadErr := bufferStore.Load(ctx)
 	if loadErr != nil {

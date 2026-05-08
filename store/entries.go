@@ -154,31 +154,21 @@ type PostgresEntryFetcher struct {
 	db     *pgxpool.Pool
 	reader bytestore.Reader
 	logDID string
-
-	// ctx is the process-lifetime context. The SDK's
-	// types.EntryFetcher.Fetch interface does not accept a
-	// context — bound here so SIGTERM cancels in-flight queries.
-	ctx context.Context
 }
 
-// NewPostgresEntryFetcher creates a fetcher for the given log. ctx
-// is the process-lifetime context (parent of every internal query
-// issued by the no-ctx Fetch interface method).
-func NewPostgresEntryFetcher(ctx context.Context, db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID, ctx: ctx}
+// NewPostgresEntryFetcher creates a fetcher for the given log.
+// Per-call ctx is supplied via the SDK's types.EntryFetcher.Fetch
+// signature; nothing is bound on the struct.
+func NewPostgresEntryFetcher(db *pgxpool.Pool, reader bytestore.Reader, logDID string) *PostgresEntryFetcher {
+	return &PostgresEntryFetcher{db: db, reader: reader, logDID: logDID}
 }
 
 // Fetch retrieves an entry by LogPosition.
 // Metadata from Postgres. Bytes from Tessera. Returns nil if not found.
-func (f *PostgresEntryFetcher) Fetch(pos types.LogPosition) (*types.EntryWithMetadata, error) {
+func (f *PostgresEntryFetcher) Fetch(ctx context.Context, pos types.LogPosition) (*types.EntryWithMetadata, error) {
 	if pos.LogDID != f.logDID {
 		return nil, nil // Foreign log — not found locally.
 	}
-
-	ctx := f.ctx
 
 	// (1) Metadata from entry_index. canonical_hash is required to
 	// construct the bytestore object key; log_time populates the
