@@ -297,7 +297,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 // -------------------------------------------------------------------------------------------------
 
 func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
-	priorRoot, err := bl.tree.Root()
+	priorRoot, err := bl.tree.Root(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("prior root: %w", err)
 	}

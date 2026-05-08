@@ -142,7 +142,7 @@ func run(logger *slog.Logger) error {
 	)
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
-	leafStore := store.NewPostgresLeafStore(ctx, pool.DB)
+	leafStore := store.NewPostgresLeafStore(pool.DB)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool.DB, cfg.SMTCacheSize)
 	tree := smt.NewTree(leafStore, nodeCache)
 	if err := nodeCache.WarmCache(ctx, cfg.WarmTopLevels); err != nil {

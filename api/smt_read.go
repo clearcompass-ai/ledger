@@ -59,7 +59,7 @@ func NewSMTLeafHandler(deps *SMTDeps) http.HandlerFunc {
 		var key [32]byte
 		copy(key[:], keyBytes)
 
-		leaf, err := deps.LeafStore.Get(key)
+		leaf, err := deps.LeafStore.Get(ctx, key)
 		if err != nil {
 			deps.Logger.Error("smt leaf get", "key", keyHex[:16], "error", err)
 			writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
@@ -105,7 +105,7 @@ func NewSMTLeafBatchHandler(deps *SMTDeps) http.HandlerFunc {
 			}
 			var key [32]byte
 			copy(key[:], keyBytes)
-			leaf, err := deps.LeafStore.Get(key)
+			leaf, err := deps.LeafStore.Get(ctx, key)
 			if err != nil {
 				deps.Logger.Error("smt leaf batch get", "error", err)
 				writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,

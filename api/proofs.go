@@ -47,9 +47,9 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 		var key [32]byte
 		copy(key[:], keyBytes)
 
-		leaf, _ := deps.Tree.GetLeaf(key)
+		leaf, _ := deps.Tree.GetLeaf(ctx, key)
 		if leaf != nil {
-			proof, pErr := deps.Tree.GenerateMembershipProof(key)
+			proof, pErr := deps.Tree.GenerateMembershipProof(ctx, key)
 			if pErr != nil {
 				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 					http.StatusInternalServerError, "proof generation failed")
@@ -64,7 +64,7 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 			return
 		}
 
-		proof, err := deps.Tree.GenerateNonMembershipProof(key)
+		proof, err := deps.Tree.GenerateNonMembershipProof(ctx, key)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "non-membership proof failed")
@@ -115,7 +115,7 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 			copy(keys[i][:], kb)
 		}
 
-		proof, err := deps.Tree.GenerateBatchProof(keys)
+		proof, err := deps.Tree.GenerateBatchProof(ctx, keys)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "batch proof generation failed")
@@ -132,14 +132,14 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		root, err := deps.Tree.Root()
+		root, err := deps.Tree.Root(ctx)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "root computation failed")
 			deps.Logger.Error("smt root", "error", err)
 			return
 		}
-		leafCount, _ := deps.LeafStore.Count()
+		leafCount, _ := deps.LeafStore.Count(ctx)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"root":       hex.EncodeToString(root[:]),

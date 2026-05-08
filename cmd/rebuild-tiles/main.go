@@ -144,7 +144,7 @@ func main() {
 	defer pool.Close()
 
 	// ── Stores ────────────────────────────────────────────────────────
-	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, *nodeCacheSize)
 
 	// CRITICAL: In production, replace NewInMemoryEntryStore with your

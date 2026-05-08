@@ -16,6 +16,7 @@ DESCRIPTION:
 package lifecycle
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,7 +48,7 @@ func TestArchiveReader_FetchBytes_RetriesOn503(t *testing.T) {
 	defer srv.Close()
 
 	r := fixtureReader(t)
-	got, err := r.fetchBytes(srv.URL)
+	got, err := r.fetchBytes(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("fetchBytes: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestArchiveReader_FetchBytes_OversizeErrors(t *testing.T) {
 	defer srv.Close()
 
 	r := fixtureReader(t)
-	_, err := r.fetchBytes(srv.URL)
+	_, err := r.fetchBytes(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("expected error for oversize body")
 	}
@@ -91,7 +92,7 @@ func TestArchiveReader_FetchBytes_AtCapAccepted(t *testing.T) {
 	defer srv.Close()
 
 	r := fixtureReader(t)
-	got, err := r.fetchBytes(srv.URL)
+	got, err := r.fetchBytes(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("body at exact cap should be accepted: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestArchiveReader_FetchBytes_404Errors(t *testing.T) {
 	defer srv.Close()
 
 	r := fixtureReader(t)
-	_, err := r.fetchBytes(srv.URL)
+	_, err := r.fetchBytes(context.Background(), srv.URL)
 	if err == nil {
 		t.Fatal("expected error on 404")
 	}

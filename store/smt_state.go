@@ -4,12 +4,19 @@ FILE PATH: store/smt_state.go
 Postgres-backed implementations of sdk smt.LeafStore and sdk smt.NodeCache.
 
 KEY ARCHITECTURAL DECISIONS:
-  - PostgresLeafStore: supports both direct writes (pool) and transactional
-    writes (via SetTx for atomic builder commits). The builder loop uses
-    SetTx within its atomic commit transaction.
+  - PostgresLeafStore: every interface method takes ctx (Tier 1.3
+    of the v0.2.0 SDK migration). SetTx remains for atomic builder
+    commits.
   - PostgresNodeCache: write-through to both Postgres (smt_nodes) and an
     in-memory LRU. Top N levels warmed on startup. Depth tracked correctly
     per node for selective warming.
+
+    The SDK's smt.NodeCache interface is intentionally ctx-free
+    (per the upstream comment: "proof replay must never block on a
+    remote cache lookup"). The cache's Postgres write-through still
+    needs a ctx to bind shutdown cancellation to in-flight queries;
+    we keep a process-lifetime ctx field on the cache (set by
+    NewPostgresNodeCache) for that purpose only.
   - LogPosition serialization: length-prefixed DID + uint64, matching SDK
     canonical serialization.
 
@@ -41,27 +48,16 @@ import (
 // Supports transactional writes for atomic builder commits via SetTx/DeleteTx.
 type PostgresLeafStore struct {
 	db *pgxpool.Pool
-
-	// ctx is the process-lifetime context bound at construction.
-	// Get/Set/Delete implement the SDK's smt.LeafStore interface,
-	// which does not accept a context. Binding here so SIGTERM
-	// cancels in-flight queries instead of stalling shutdown.
-	ctx context.Context
 }
 
-// NewPostgresLeafStore creates a leaf store. ctx is the process-
-// lifetime context (parent of every internal query issued by the
-// no-ctx Get/Set/Delete interface methods).
-func NewPostgresLeafStore(ctx context.Context, db *pgxpool.Pool) *PostgresLeafStore {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return &PostgresLeafStore{db: db, ctx: ctx}
+// NewPostgresLeafStore creates a leaf store. Per-call ctx is supplied
+// via the SDK's smt.LeafStore interface methods.
+func NewPostgresLeafStore(db *pgxpool.Pool) *PostgresLeafStore {
+	return &PostgresLeafStore{db: db}
 }
 
 // Get reads a leaf by key. Returns nil if not found.
-func (s *PostgresLeafStore) Get(key [32]byte) (*types.SMTLeaf, error) {
-	ctx := s.ctx
+func (s *PostgresLeafStore) Get(ctx context.Context, key [32]byte) (*types.SMTLeaf, error) {
 	var originTipBytes, authorityTipBytes []byte
 	err := s.db.QueryRow(ctx,
 		"SELECT origin_tip, authority_tip FROM smt_leaves WHERE leaf_key = $1",
@@ -89,8 +85,7 @@ func (s *PostgresLeafStore) Get(key [32]byte) (*types.SMTLeaf, error) {
 
 // Set writes a leaf using the connection pool (non-transactional).
 // Used during non-critical paths. Builder uses SetTx for atomic commits.
-func (s *PostgresLeafStore) Set(key [32]byte, leaf types.SMTLeaf) error {
-	ctx := s.ctx
+func (s *PostgresLeafStore) Set(ctx context.Context, key [32]byte, leaf types.SMTLeaf) error {
 	originBytes := SerializeLogPosition(leaf.OriginTip)
 	authBytes := SerializeLogPosition(leaf.AuthorityTip)
 
@@ -134,12 +129,11 @@ func (s *PostgresLeafStore) SetTx(ctx context.Context, tx pgx.Tx, key [32]byte, 
 // Note: The builder loop uses SetTx within its own atomic transaction block
 // to commit mutations, but this method is required for interface compliance
 // and non-transactional bulk operations.
-func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
+func (s *PostgresLeafStore) SetBatch(ctx context.Context, leaves []types.SMTLeaf) error {
 	if len(leaves) == 0 {
 		return nil
 	}
 
-	ctx := s.ctx
 	batch := &pgx.Batch{}
 
 	for _, leaf := range leaves {
@@ -169,8 +163,7 @@ func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
 }
 
 // Delete removes a leaf.
-func (s *PostgresLeafStore) Delete(key [32]byte) error {
-	ctx := s.ctx
+func (s *PostgresLeafStore) Delete(ctx context.Context, key [32]byte) error {
 	_, err := s.db.Exec(ctx, "DELETE FROM smt_leaves WHERE leaf_key = $1", key[:])
 	if err != nil {
 		return fmt.Errorf("store/smt: delete leaf: %w", err)
@@ -179,8 +172,7 @@ func (s *PostgresLeafStore) Delete(key [32]byte) error {
 }
 
 // Count returns the total number of SMT leaves.
-func (s *PostgresLeafStore) Count() (int, error) {
-	ctx := s.ctx
+func (s *PostgresLeafStore) Count(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRow(ctx, "SELECT COUNT(*) FROM smt_leaves").Scan(&count)
 	if err != nil {
@@ -195,6 +187,12 @@ func (s *PostgresLeafStore) Count() (int, error) {
 
 // PostgresNodeCache implements sdk smt.NodeCache with write-through persistence.
 // Uses a simple map with access tracking for LRU eviction.
+//
+// The SDK's smt.NodeCache interface (Get/Set) is intentionally
+// ctx-free — proof replay must never block on a remote cache
+// lookup (per upstream comment). Postgres write-through inside Set
+// still needs a context for shutdown cancellation; we hold a
+// process-lifetime ctx on the cache, set at construction.
 type PostgresNodeCache struct {
 	db      *pgxpool.Pool
 	mu      sync.RWMutex
@@ -203,10 +201,11 @@ type PostgresNodeCache struct {
 	counter int64
 	maxSize int
 
-	// ctx is the process-lifetime context bound at construction.
-	// The SDK smt.NodeCache interface methods (Get/Set/Delete by
-	// path key) do not accept a context. Binding here lets SIGTERM
-	// cancel in-flight write-through Postgres queries.
+	// ctx is bound at construction. The SDK's smt.NodeCache interface
+	// is intentionally ctx-free (Tier 1.3); the only consumer of
+	// this field is the Postgres write-through inside Set, which
+	// the cache owns end-to-end. SIGTERM cancellation cancels
+	// in-flight write-through queries.
 	ctx context.Context
 }
 
@@ -216,6 +215,9 @@ type cacheEntry struct {
 }
 
 // NewPostgresNodeCache creates a node cache with the given LRU capacity.
+// ctx is the process-lifetime context — its lifetime governs the
+// internal Postgres write-through queries inside Set (the SDK's
+// smt.NodeCache interface methods are ctx-free by design).
 func NewPostgresNodeCache(ctx context.Context, db *pgxpool.Pool, maxSize int) *PostgresNodeCache {
 	if maxSize < 1024 {
 		maxSize = 100000
@@ -245,10 +247,12 @@ func (c *PostgresNodeCache) Get(key [32]byte) ([]byte, bool) {
 		return entry.hash, true
 	}
 
-	// Cache miss — fetch from Postgres.
-	ctx := c.ctx
+	// Cache miss — fetch from Postgres using the cache's bound ctx.
+	// The SDK's NodeCache.Get is ctx-free; binding the ctx at
+	// construction is the only way to make Postgres reads
+	// shutdown-cancellable.
 	var hash []byte
-	err := c.db.QueryRow(ctx,
+	err := c.db.QueryRow(c.ctx,
 		"SELECT hash FROM smt_nodes WHERE path_key = $1", key[:],
 	).Scan(&hash)
 	if err != nil {
@@ -280,8 +284,7 @@ func (c *PostgresNodeCache) SetWithDepth(key [32]byte, value []byte, depth int) 
 	c.mu.Unlock()
 
 	// Write-through to Postgres.
-	ctx := c.ctx
-	_, _ = c.db.Exec(ctx, `
+	_, _ = c.db.Exec(c.ctx, `
 		INSERT INTO smt_nodes (path_key, hash, depth, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (path_key) DO UPDATE SET

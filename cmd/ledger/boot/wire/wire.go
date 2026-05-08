@@ -224,7 +224,7 @@ func composeStores(ctx context.Context, cfg Config, d *deps.AppDeps) *tessera.Te
 	d.EntryStore = store.NewEntryStore(pool)
 	d.CreditStore = store.NewCreditStore(pool)
 	d.CommitStore = store.NewCommitmentStore(pool)
-	d.LeafStore = store.NewPostgresLeafStore(ctx, pool)
+	d.LeafStore = store.NewPostgresLeafStore(pool)
 	cacheSize := cfg.SMTNodeCacheSize
 	if cacheSize <= 0 {
 		cacheSize = 4096
