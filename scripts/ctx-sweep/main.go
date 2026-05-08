@@ -36,10 +36,9 @@ import (
 // callers are SelectorExpr nodes (`pkg.Symbol`) plus interface
 // satisfaction via type embedding.
 type tierSpec struct {
-	name      string
-	pkg       string
-	symbols   []string
-	overrides map[string]string // import-alias overrides per tier (rare)
+	name    string
+	pkg     string
+	symbols []string
 }
 
 var tiers = []tierSpec{
@@ -297,12 +296,12 @@ func main() {
 	// teardown shutdown contexts (parent ctx already canceled), and
 	// boot-helper bootstraps. Anything else is a leak boundary.
 	allowed := map[string]bool{
-		"cmd/ledger/main.go":               true,
-		"cmd/ledger-reader/main.go":        true,
-		"cmd/rebuild-tiles/main.go":        true,
-		"cmd/seed-session/main.go":         true,
-		"cmd/init-network/main.go":         true,
-		"cmd/submit-stamp/main.go":         true,
+		"cmd/ledger/main.go":                   true,
+		"cmd/ledger-reader/main.go":            true,
+		"cmd/rebuild-tiles/main.go":            true,
+		"cmd/seed-session/main.go":             true,
+		"cmd/init-network/main.go":             true,
+		"cmd/submit-stamp/main.go":             true,
 		"cmd/ledger/boot/teardown/teardown.go": true,
 	}
 	suspect := 0
