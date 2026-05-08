@@ -2,61 +2,64 @@
 
 /*
 FILE PATH:
-    tests/scenarios_fraud_test.go
+
+	tests/scenarios_fraud_test.go
 
 DESCRIPTION:
-    Layer 0 — FRAUD-EQV-01 + FRAUD-FRK-01: equivocation detection
-    via /v1/commitments/by-split-id (multi-row response) and
-    rollback rejection via /v1/tree/consistency (HTTP 400 on
-    old >= new). Together these are the cryptographic-evidence
-    surfaces a Court / Insurance / Audit network's fraud bot
-    polls.
+
+	Layer 0 — FRAUD-EQV-01 + FRAUD-FRK-01: equivocation detection
+	via /v1/commitments/by-split-id (multi-row response) and
+	rollback rejection via /v1/tree/consistency (HTTP 400 on
+	old >= new). Together these are the cryptographic-evidence
+	surfaces a Court / Insurance / Audit network's fraud bot
+	polls.
 
 KEY ARCHITECTURAL DECISIONS:
-    - EQV-01 inserts evidence directly into entry_index +
-      commitment_split_id + the in-process bytestore. This
-      bypasses the admission pipeline (which validates the
-      Pedersen commitment cryptographically and would reject
-      our synthetic blobs). The handler we're testing does NOT
-      validate commitment cryptography on the lookup path —
-      it returns whatever the (schema_id, split_id) tuple
-      points at. Direct insertion is therefore the correct
-      shortcut for THIS layer's contract.
-    - The 200 OK len=2+ contract is the API's documented
-      "cryptographic equivocation" signal (api/commitments.go
-      file docblock). Persona-style assertion walks the
-      response shape: entries[].position.sequence_number
-      ASC, canonical_bytes_hex non-empty, distinct hashes.
-    - FRK-01 is one HTTP probe: GET /v1/tree/consistency/100/50
-      MUST return 400 with the documented error class. We
-      assert the body is application/json and parses with
-      stdlib decoders — a future error-class drift surfaces
-      here, not at the SDK boundary.
-    - We do NOT exercise gossip publication of the
-      equivocation finding. The current ledger surfaces
-      equivocation via the lookup endpoint's response
-      shape + a structured log warning; gossip publication
-      of a typed finding is out of scope for the production
-      ledger today. Persona 4 covers gossip wire-protocol
-      tests separately.
+  - EQV-01 inserts evidence directly into entry_index +
+    commitment_split_id + the in-process bytestore. This
+    bypasses the admission pipeline (which validates the
+    Pedersen commitment cryptographically and would reject
+    our synthetic blobs). The handler we're testing does NOT
+    validate commitment cryptography on the lookup path —
+    it returns whatever the (schema_id, split_id) tuple
+    points at. Direct insertion is therefore the correct
+    shortcut for THIS layer's contract.
+  - The 200 OK len=2+ contract is the API's documented
+    "cryptographic equivocation" signal (api/commitments.go
+    file docblock). Persona-style assertion walks the
+    response shape: entries[].position.sequence_number
+    ASC, canonical_bytes_hex non-empty, distinct hashes.
+  - FRK-01 is one HTTP probe: GET /v1/tree/consistency/100/50
+    MUST return 400 with the documented error class. We
+    assert the body is application/json and parses with
+    stdlib decoders — a future error-class drift surfaces
+    here, not at the SDK boundary.
+  - We do NOT exercise gossip publication of the
+    equivocation finding. The current ledger surfaces
+    equivocation via the lookup endpoint's response
+    shape + a structured log warning; gossip publication
+    of a typed finding is out of scope for the production
+    ledger today. Persona 4 covers gossip wire-protocol
+    tests separately.
 
 OVERVIEW:
-    TestFraud_Defenses
-      EQV-01_DuplicateSplitID
-        → insert A (seq=N, split_id=X), B (seq=N+1, same X);
-          GET /v1/commitments/by-split-id returns 200 with
-          two entries in ASC sequence order; canonical_bytes
-          differ between the two entries.
-      FRK-01_RollbackConsistency400
-        → GET /v1/tree/consistency/100/50 returns HTTP 400
-          with a typed error body (apitypes.ErrorClass*).
+
+	TestFraud_Defenses
+	  EQV-01_DuplicateSplitID
+	    → insert A (seq=N, split_id=X), B (seq=N+1, same X);
+	      GET /v1/commitments/by-split-id returns 200 with
+	      two entries in ASC sequence order; canonical_bytes
+	      differ between the two entries.
+	  FRK-01_RollbackConsistency400
+	    → GET /v1/tree/consistency/100/50 returns HTTP 400
+	      with a typed error body (apitypes.ErrorClass*).
 
 KEY DEPENDENCIES:
-    - tests/scenarios_stack_test.go: NewScenariosStack.
-    - github.com/clearcompass-ai/attesta/crypto/artifact:
-      PREGrantCommitmentSchemaID (the wire-string value).
-    - api/commitments.go: handler under test.
-    - api/tree.go: NewTreeConsistencyHandler under test.
+  - tests/scenarios_stack_test.go: NewScenariosStack.
+  - github.com/clearcompass-ai/attesta/crypto/artifact:
+    PREGrantCommitmentSchemaID (the wire-string value).
+  - api/commitments.go: handler under test.
+  - api/tree.go: NewTreeConsistencyHandler under test.
 */
 package tests
 

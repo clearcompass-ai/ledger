@@ -1,43 +1,46 @@
 /*
 FILE PATH:
-    bytestore/gcs_tile_test.go
+
+	bytestore/gcs_tile_test.go
 
 DESCRIPTION:
-    Tests for GCSTiles. Runs against either fake-gcs-server (CI
-    smoke path, gated by ATTESTA_TEST_GCS_ENDPOINT) OR real GCS
-    (administrator-validated path, gated by ATTESTA_TEST_GCS_BUCKET +
-    GOOGLE_APPLICATION_CREDENTIALS), via the requireGCS helper
-    already in gcs_test.go.
+
+	Tests for GCSTiles. Runs against either fake-gcs-server (CI
+	smoke path, gated by ATTESTA_TEST_GCS_ENDPOINT) OR real GCS
+	(administrator-validated path, gated by ATTESTA_TEST_GCS_BUCKET +
+	GOOGLE_APPLICATION_CREDENTIALS), via the requireGCS helper
+	already in gcs_test.go.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One file covers both modes. The requireGCS helper detects
-      which mode by env var; tests are agnostic to the underlying
-      transport. Real-GCS-only invariants (concurrent reads at
-      scale, CDN cache header compatibility) live in
-      gcs_tile_integration_test.go (build tag gcs_integration).
-    - Each test uses a per-name prefix to isolate concurrent runs
-      AND to let t.Cleanup wipe its own objects (avoids real-GCS
-      accumulation).
-    - Tests exercise the c2sp.org/tlog-tiles paths verbatim
-      (tile/0/x001/067, tile/entries/x001/067, checkpoint) so a
-      regression in path encoding shows up on the wire, not as a
-      synthetic shape.
+  - One file covers both modes. The requireGCS helper detects
+    which mode by env var; tests are agnostic to the underlying
+    transport. Real-GCS-only invariants (concurrent reads at
+    scale, CDN cache header compatibility) live in
+    gcs_tile_integration_test.go (build tag gcs_integration).
+  - Each test uses a per-name prefix to isolate concurrent runs
+    AND to let t.Cleanup wipe its own objects (avoids real-GCS
+    accumulation).
+  - Tests exercise the c2sp.org/tlog-tiles paths verbatim
+    (tile/0/x001/067, tile/entries/x001/067, checkpoint) so a
+    regression in path encoding shows up on the wire, not as a
+    synthetic shape.
 
 OVERVIEW:
-    For each test:
-        1. requireGCS(t) returns a configured *GCS (or skips).
-        2. NewGCSTiles(g, prefix, timeout) constructs the
-           subject under test.
-        3. Upload synthetic tile bytes via g.bucket directly
-           (bypasses bytestore.GCS.WriteEntry's per-entry layout).
-        4. Exercise the contract: ReadTileByPath, ReadCheckpoint,
-           ErrNotExist mapping, path-traversal rejection,
-           MaxTileBytes enforcement.
+
+	For each test:
+	    1. requireGCS(t) returns a configured *GCS (or skips).
+	    2. NewGCSTiles(g, prefix, timeout) constructs the
+	       subject under test.
+	    3. Upload synthetic tile bytes via g.bucket directly
+	       (bypasses bytestore.GCS.WriteEntry's per-entry layout).
+	    4. Exercise the contract: ReadTileByPath, ReadCheckpoint,
+	       ErrNotExist mapping, path-traversal rejection,
+	       MaxTileBytes enforcement.
 
 KEY DEPENDENCIES:
-    - requireGCS, deletePrefix (both in gcs_test.go).
-    - cloud.google.com/go/storage: for direct uploads bypassing
-      the entry-layout key scheme.
+  - requireGCS, deletePrefix (both in gcs_test.go).
+  - cloud.google.com/go/storage: for direct uploads bypassing
+    the entry-layout key scheme.
 */
 package bytestore
 
@@ -65,13 +68,13 @@ func TestGCSTiles_ObjectKey_RejectsPathTraversal(t *testing.T) {
 	t.Parallel()
 	g := &GCSTiles{prefix: "tessera"}
 	cases := []string{
-		"",                  // empty
-		"..",                // traversal
-		"../etc/passwd",     // traversal
-		"a/../b",            // traversal in middle
-		"/etc/passwd",       // absolute
-		"valid\x00null",     // non-printable
-		"tile/0/\x7Fbad",    // DEL byte
+		"",               // empty
+		"..",             // traversal
+		"../etc/passwd",  // traversal
+		"a/../b",         // traversal in middle
+		"/etc/passwd",    // absolute
+		"valid\x00null",  // non-printable
+		"tile/0/\x7Fbad", // DEL byte
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {

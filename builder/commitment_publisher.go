@@ -30,10 +30,10 @@ has no value.
 SDK ALIGNMENT:
   - envelope.NewEntry(header, payload, signatures)  — fully signed
   - envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
-  The publisher constructs the commentary unsigned and hands it to
-  submitFn for signing and submission, so the right constructor is
-  NewUnsignedEntry. submitFn (or SubmitViaHTTP) is responsible for
-  populating entry.Signatures before envelope.Serialize is invoked.
+    The publisher constructs the commentary unsigned and hands it to
+    submitFn for signing and submission, so the right constructor is
+    NewUnsignedEntry. submitFn (or SubmitViaHTTP) is responsible for
+    populating entry.Signatures before envelope.Serialize is invoked.
 */
 package builder
 
@@ -53,21 +53,21 @@ import (
 
 // CommitmentPublisherConfig configures commitment frequency.
 type CommitmentPublisherConfig struct {
-	IntervalEntries int // Entries between commitments (default 1000).
-	IntervalTime time.Duration // Max time between commitments (default 1h).
+	IntervalEntries int           // Entries between commitments (default 1000).
+	IntervalTime    time.Duration // Max time between commitments (default 1h).
 }
 
 // CommitmentPublisher publishes derivation commitments.
 type CommitmentPublisher struct {
-	ledgerDID string
-	logDID string // destination for self-published commentary.
-	cfg CommitmentPublisherConfig
-	logger *slog.Logger
-	mu sync.Mutex
-	lastPublish time.Time
+	ledgerDID    string
+	logDID       string // destination for self-published commentary.
+	cfg          CommitmentPublisherConfig
+	logger       *slog.Logger
+	mu           sync.Mutex
+	lastPublish  time.Time
 	entriesSince int
-	submitFn func(entry *envelope.Entry) error
-	commitStore *store.CommitmentStore // nil = no table persistence
+	submitFn     func(entry *envelope.Entry) error
+	commitStore  *store.CommitmentStore // nil = no table persistence
 }
 
 // NewCommitmentPublisher creates a commitment publisher.

@@ -1,26 +1,28 @@
 /*
 FILE PATH:
-    wal/fuzz_test.go
+
+	wal/fuzz_test.go
 
 DESCRIPTION:
-    J1 — Fuzz the WAL Submit → Read round-trip. Property: the
-    bytes Read returns are EXACTLY the bytes Submit committed.
-    The WAL is the load-bearing durability primitive (Ledger
-    principle #3 SCT-as-SLA); any byte-corruption between
-    Submit and Read is a critical bug.
 
-    Run via:
-        go test -run=^$ -fuzz=^FuzzWALSubmitRead$ \
-            -fuzztime=30s ./wal/
+	J1 — Fuzz the WAL Submit → Read round-trip. Property: the
+	bytes Read returns are EXACTLY the bytes Submit committed.
+	The WAL is the load-bearing durability primitive (Ledger
+	principle #3 SCT-as-SLA); any byte-corruption between
+	Submit and Read is a critical bug.
+
+	Run via:
+	    go test -run=^$ -fuzz=^FuzzWALSubmitRead$ \
+	        -fuzztime=30s ./wal/
 
 KEY ARCHITECTURAL DECISIONS:
-    - In-memory Badger so the fuzzer can spawn many WALs
-      without touching disk.
-    - Hash is SHA-256 of the wire bytes (the canonical-hash
-      shape Submit expects). Fuzz inputs that wouldn't form
-      a valid envelope are still valid Submit inputs because
-      the WAL is byte-faithful to whatever Submit hands it.
-    - One WAL per fuzz iteration so we exercise fresh state.
+  - In-memory Badger so the fuzzer can spawn many WALs
+    without touching disk.
+  - Hash is SHA-256 of the wire bytes (the canonical-hash
+    shape Submit expects). Fuzz inputs that wouldn't form
+    a valid envelope are still valid Submit inputs because
+    the WAL is byte-faithful to whatever Submit hands it.
+  - One WAL per fuzz iteration so we exercise fresh state.
 */
 package wal
 

@@ -144,7 +144,7 @@ func TestE2E_V1_MMDEndpoint_ReturnsConfigured(t *testing.T) {
 	}
 	var body struct {
 		MMDSeconds float64 `json:"mmd_seconds"`
-		MMDHuman string `json:"mmd_human"`
+		MMDHuman   string  `json:"mmd_human"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -309,7 +309,7 @@ func liveDifficulty(t *testing.T, op *e2eLedger) uint32 {
 		t.Fatalf("difficulty endpoint: status=%d body=%s", resp.StatusCode, body)
 	}
 	var body struct {
-		Difficulty uint32 `json:"difficulty"`
+		Difficulty   uint32 `json:"difficulty"`
 		HashFunction string `json:"hash_function"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {

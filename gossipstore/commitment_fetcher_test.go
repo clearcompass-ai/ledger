@@ -109,8 +109,8 @@ func TestBadgerCommitmentFetcher_MultipleRows_SeqAscending(t *testing.T) {
 	// equivocation case (admit all, surface as evidence).
 	// Insert out of order to verify the fetcher orders by seq ASC.
 	rows := []struct {
-		seq uint64
-		bytes []byte
+		seq    uint64
+		bytes  []byte
 		micros int64
 	}{
 		{42, []byte("entry-42"), 4242},

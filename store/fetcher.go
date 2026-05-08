@@ -73,9 +73,9 @@ type WALByteReader interface {
 // Either wal or bytestore may be nil for tests / degraded modes;
 // the composite handles each case.
 type CompositeByteReader struct {
-	wal WALByteReader
+	wal       WALByteReader
 	bytestore bytestore.Reader
-	logger *slog.Logger
+	logger    *slog.Logger
 }
 
 // NewCompositeByteReader returns a composite rooted at the supplied

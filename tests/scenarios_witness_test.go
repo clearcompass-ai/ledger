@@ -2,48 +2,51 @@
 
 /*
 FILE PATH:
-    tests/scenarios_witness_test.go
+
+	tests/scenarios_witness_test.go
 
 DESCRIPTION:
-    K-of-N witness swarm fixture for the Layer 0 scenarios suite.
-    Spawns N independent cosign.WitnessHandler instances on httptest
-    servers, each backed by a freshly-generated ECDSA key. Persona
-    tests pass the swarm's URLs as the WitnessEndpoints in the
-    LogDID's DIDDocument; the SDK's WitnessCollector then drives the
-    Collect path against this swarm.
+
+	K-of-N witness swarm fixture for the Layer 0 scenarios suite.
+	Spawns N independent cosign.WitnessHandler instances on httptest
+	servers, each backed by a freshly-generated ECDSA key. Persona
+	tests pass the swarm's URLs as the WitnessEndpoints in the
+	LogDID's DIDDocument; the SDK's WitnessCollector then drives the
+	Collect path against this swarm.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Each witness is its own httptest.Server so latency / failure
-      injection can target one witness without affecting the others.
-    - Per-witness handler is wrapped in a switchable proxy
-      (httpFault) so tests can flip a witness from healthy → slow →
-      failing → healthy without restarting the server. Cheaper than
-      tearing down and re-spawning httptest.Server.
-    - All witnesses share the same NetworkID — production sometimes
-      runs multi-network witnesses (one process serves several
-      networks); the simpler single-network swarm is sufficient for
-      Layer 0 cosign verification tests.
-    - K is stored alongside N for documentation; the actual K-of-N
-      enforcement happens in the SDK's WitnessCollector at the
-      caller side, not in the swarm.
+  - Each witness is its own httptest.Server so latency / failure
+    injection can target one witness without affecting the others.
+  - Per-witness handler is wrapped in a switchable proxy
+    (httpFault) so tests can flip a witness from healthy → slow →
+    failing → healthy without restarting the server. Cheaper than
+    tearing down and re-spawning httptest.Server.
+  - All witnesses share the same NetworkID — production sometimes
+    runs multi-network witnesses (one process serves several
+    networks); the simpler single-network swarm is sufficient for
+    Layer 0 cosign verification tests.
+  - K is stored alongside N for documentation; the actual K-of-N
+    enforcement happens in the SDK's WitnessCollector at the
+    caller side, not in the swarm.
 
 OVERVIEW:
-    NewWitnessSwarm(t, n, k, networkID) → swarm of N httptest servers.
-    URLs() / PublicKeys() / Signers()  → fixtures the persona test
-                                         feeds to the auditor /
-                                         WitnessCollector.
-    Slow(idx, latency)                 → injects pre-handler delay.
-    Fail(idx, status)                  → returns the supplied HTTP
-                                         status without invoking the
-                                         witness handler.
-    RetryAfter(idx, after)             → returns 429 + Retry-After
-                                         header.
-    Heal(idx)                          → restores happy-path handler.
+
+	NewWitnessSwarm(t, n, k, networkID) → swarm of N httptest servers.
+	URLs() / PublicKeys() / Signers()  → fixtures the persona test
+	                                     feeds to the auditor /
+	                                     WitnessCollector.
+	Slow(idx, latency)                 → injects pre-handler delay.
+	Fail(idx, status)                  → returns the supplied HTTP
+	                                     status without invoking the
+	                                     witness handler.
+	RetryAfter(idx, after)             → returns 429 + Retry-After
+	                                     header.
+	Heal(idx)                          → restores happy-path handler.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/crypto/cosign:
-      NewWitnessHandler, NewECDSAWitnessSigner, NetworkID, Purpose.
-    - tests/scenarios_skel_test.go: scenarioKey helper.
+  - github.com/clearcompass-ai/attesta/crypto/cosign:
+    NewWitnessHandler, NewECDSAWitnessSigner, NetworkID, Purpose.
+  - tests/scenarios_skel_test.go: scenarioKey helper.
 */
 package tests
 
@@ -357,4 +360,3 @@ func TestWitnessSwarm_Conformance(t *testing.T) {
 		t.Fatal("requireIdx failed to Fatal on out-of-range idx")
 	}
 }
-

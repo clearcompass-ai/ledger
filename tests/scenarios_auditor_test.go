@@ -2,50 +2,53 @@
 
 /*
 FILE PATH:
-    tests/scenarios_auditor_test.go
+
+	tests/scenarios_auditor_test.go
 
 DESCRIPTION:
-    Lightweight HTTP auditor client for the Layer 0 scenarios suite.
-    Mimics the production auditor's pull path: extract LogDID, ask
-    the DID resolver for the CDN base, fetch tiles by deterministic
-    c2sp.org/tlog-tiles path, recompute the inclusion / consistency
-    proof locally from the tiles. No SDK builder import — the
-    auditor demonstrates that everything an external consumer
-    needs is reachable over plain HTTP + crypto/sha256 + the SDK's
-    TileReader-style fetch.
+
+	Lightweight HTTP auditor client for the Layer 0 scenarios suite.
+	Mimics the production auditor's pull path: extract LogDID, ask
+	the DID resolver for the CDN base, fetch tiles by deterministic
+	c2sp.org/tlog-tiles path, recompute the inclusion / consistency
+	proof locally from the tiles. No SDK builder import — the
+	auditor demonstrates that everything an external consumer
+	needs is reachable over plain HTTP + crypto/sha256 + the SDK's
+	TileReader-style fetch.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Built around the SDK's optessera.TileReader, which already
-      caches and decodes c2sp.org tiles. Reusing it avoids
-      re-implementing tile parsing in test code while still
-      proving the wire path is consumable from outside the
-      ledger process.
-    - Polling, never time.Sleep. WaitForLeaf and WaitForTreeSize
-      both take a context.Context with deadline; the polling
-      cadence (50 ms) is fixed but the deadline is the only
-      thing that controls flake-risk.
-    - The auditor consumes a *did.DIDEndpointAdapter, exactly the
-      shape an external auditor would obtain from the SDK's
-      production resolver chain.
-    - Inclusion-proof verification: walk the tile structure, hash
-      siblings up to the root, compare to the head's RootHash.
-      RFC 6962 leaf prefix (0x00) and node prefix (0x01) are
-      explicit constants — pinned here so a future encoding drift
-      surfaces as test failure not silent acceptance.
+  - Built around the SDK's optessera.TileReader, which already
+    caches and decodes c2sp.org tiles. Reusing it avoids
+    re-implementing tile parsing in test code while still
+    proving the wire path is consumable from outside the
+    ledger process.
+  - Polling, never time.Sleep. WaitForLeaf and WaitForTreeSize
+    both take a context.Context with deadline; the polling
+    cadence (50 ms) is fixed but the deadline is the only
+    thing that controls flake-risk.
+  - The auditor consumes a *did.DIDEndpointAdapter, exactly the
+    shape an external auditor would obtain from the SDK's
+    production resolver chain.
+  - Inclusion-proof verification: walk the tile structure, hash
+    siblings up to the root, compare to the head's RootHash.
+    RFC 6962 leaf prefix (0x00) and node prefix (0x01) are
+    explicit constants — pinned here so a future encoding drift
+    surfaces as test failure not silent acceptance.
 
 OVERVIEW:
-    NewAuditor(t, adapter, tileReader)    → constructor.
-    .ResolveLedgerEndpoint(logDID)        → DID resolver round-trip.
-    .ResolveCDNEndpoint(logDID)           → DID resolver round-trip.
-    .WaitForTreeSize(ctx, want)           → poll Head() until reached.
-    .ReadLevel0Tile(ctx, idx)             → tile bytes.
-    .VerifyLeafInclusion(leafHash, idx,
-                          treeSize, root) → recompute, compare.
+
+	NewAuditor(t, adapter, tileReader)    → constructor.
+	.ResolveLedgerEndpoint(logDID)        → DID resolver round-trip.
+	.ResolveCDNEndpoint(logDID)           → DID resolver round-trip.
+	.WaitForTreeSize(ctx, want)           → poll Head() until reached.
+	.ReadLevel0Tile(ctx, idx)             → tile bytes.
+	.VerifyLeafInclusion(leafHash, idx,
+	                      treeSize, root) → recompute, compare.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/did: DIDEndpointAdapter.
-    - github.com/clearcompass-ai/ledger/tessera: TileReader.
-    - tests/scenarios_skel_test.go: pollUntil / mustNotErr.
+  - github.com/clearcompass-ai/attesta/did: DIDEndpointAdapter.
+  - github.com/clearcompass-ai/ledger/tessera: TileReader.
+  - tests/scenarios_skel_test.go: pollUntil / mustNotErr.
 */
 package tests
 

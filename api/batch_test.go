@@ -286,7 +286,7 @@ func TestBatchHandler_AbsoluteCapEnforced(t *testing.T) {
 func TestEffectiveBatchPayloadCap_Bounds(t *testing.T) {
 	cases := []struct {
 		maxEntry int64
-		want int64
+		want     int64
 	}{
 		// Tiny per-entry → floor at maxBatchPayloadBytes (4 MiB).
 		{maxEntry: 1024, want: maxBatchPayloadBytes},

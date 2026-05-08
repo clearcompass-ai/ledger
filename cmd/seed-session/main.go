@@ -54,11 +54,11 @@ import (
 
 func main() {
 	var (
-		dsn = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
-		token = flag.String("token", "", "session token to mint (required)")
-		didStr = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
+		dsn     = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
+		token   = flag.String("token", "", "session token to mint (required)")
+		didStr  = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
 		credits = flag.Int64("credits", 100, "initial credit balance to seed")
-		ttl = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
+		ttl     = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
 	)
 	flag.Parse()
 

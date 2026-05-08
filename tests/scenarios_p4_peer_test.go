@@ -2,68 +2,71 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p4_peer_test.go
+
+	tests/scenarios_p4_peer_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 4 (Peer Ledger, gossip pull / anti-entropy).
-    Drives the SDK's gossip wire protocol against a multi-peer
-    fixture: each peer is an httptest.Server mounting
-    gossip.Handler (POST) + gossip.FeedHandler (GET) over its
-    own InMemoryStore. Sub-scenarios prove the convergence
-    semantics a Court / Insurance / Audit network running
-    Attesta depends on:
 
-      - Two peers reconcile to a common event set under a
-        healthy network in O(events).
-      - Two peers reconcile under packet loss (every other
-        Publish fails) in O(events × retries).
-      - The ledger's I9 invariant holds: the same event
-        published twice is appended once.
-      - Lamport regression is rejected with 409.
+	Layer 0 — Persona 4 (Peer Ledger, gossip pull / anti-entropy).
+	Drives the SDK's gossip wire protocol against a multi-peer
+	fixture: each peer is an httptest.Server mounting
+	gossip.Handler (POST) + gossip.FeedHandler (GET) over its
+	own InMemoryStore. Sub-scenarios prove the convergence
+	semantics a Court / Insurance / Audit network running
+	Attesta depends on:
 
-    Fault-injection paths (rate-limit, multi-sink fan-out,
-    network-id isolation) live in scenarios_p4_peer_faults_test.go;
-    fixtures live in scenarios_p4_peer_helpers_test.go.
+	  - Two peers reconcile to a common event set under a
+	    healthy network in O(events).
+	  - Two peers reconcile under packet loss (every other
+	    Publish fails) in O(events × retries).
+	  - The ledger's I9 invariant holds: the same event
+	    published twice is appended once.
+	  - Lamport regression is rejected with 409.
+
+	Fault-injection paths (rate-limit, multi-sink fan-out,
+	network-id isolation) live in scenarios_p4_peer_faults_test.go;
+	fixtures live in scenarios_p4_peer_helpers_test.go.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Each sub-scenario builds its own peer pair. State
-      isolation prevents cross-test contamination from a
-      previous test's chain head leaking forward.
-    - Convergence is asserted by Store.Stats / IterSince
-      counts, not by event-set hashing. Two stores carrying
-      the same set of EventIDs are equivalent under the
-      SDK's append semantics; we walk both to confirm
-      every event from one appears in the other.
-    - Strict-monotone Lamport. Every test threads through
-      p4Originator.nextChain() which increments Lamport by 1
-      per call; testing the regression path uses a hand-
-      crafted SignedEvent re-signed at an older Lamport.
-    - No time.Sleep. Pulls are deterministic — p4PullOnce
-      drains the source under one HTTP call. Tests that
-      need multi-round convergence loop p4PullOnce until
-      the dest store stops growing.
+  - Each sub-scenario builds its own peer pair. State
+    isolation prevents cross-test contamination from a
+    previous test's chain head leaking forward.
+  - Convergence is asserted by Store.Stats / IterSince
+    counts, not by event-set hashing. Two stores carrying
+    the same set of EventIDs are equivalent under the
+    SDK's append semantics; we walk both to confirm
+    every event from one appears in the other.
+  - Strict-monotone Lamport. Every test threads through
+    p4Originator.nextChain() which increments Lamport by 1
+    per call; testing the regression path uses a hand-
+    crafted SignedEvent re-signed at an older Lamport.
+  - No time.Sleep. Pulls are deterministic — p4PullOnce
+    drains the source under one HTTP call. Tests that
+    need multi-round convergence loop p4PullOnce until
+    the dest store stops growing.
 
 OVERVIEW:
-    TestPersona4_PeerLedger
-      ConvergesUnderHealthyNetwork
-        → publish 5 events to peer A; pull A → B; B has all 5.
-      ConvergesUnderPacketLoss
-        → publish 10 events to peer A; pull A → B with
-          25% drop simulated by partial pull; converges in
-          ≤ 4 pull rounds.
-      DuplicateAppendIsNoOp_I9
-        → publish event E twice; second Publish returns nil
-          (idempotent); store carries exactly one E.
-      LamportRegression_409
-        → re-sign E1 at Lamport=N-1 (regression); peer
-          rejects with ErrLamportRegression; store unchanged.
+
+	TestPersona4_PeerLedger
+	  ConvergesUnderHealthyNetwork
+	    → publish 5 events to peer A; pull A → B; B has all 5.
+	  ConvergesUnderPacketLoss
+	    → publish 10 events to peer A; pull A → B with
+	      25% drop simulated by partial pull; converges in
+	      ≤ 4 pull rounds.
+	  DuplicateAppendIsNoOp_I9
+	    → publish event E twice; second Publish returns nil
+	      (idempotent); store carries exactly one E.
+	  LamportRegression_409
+	    → re-sign E1 at Lamport=N-1 (regression); peer
+	      rejects with ErrLamportRegression; store unchanged.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/gossip:
-      ErrLamportRegression, IterCursor, FeedClient.
-    - tests/scenarios_p4_peer_helpers_test.go: gossipPeer,
-      p4Originator, p4Verifier, p4SignAndPublish, p4PullOnce,
-      p4MakeFinding.
+  - github.com/clearcompass-ai/attesta/gossip:
+    ErrLamportRegression, IterCursor, FeedClient.
+  - tests/scenarios_p4_peer_helpers_test.go: gossipPeer,
+    p4Originator, p4Verifier, p4SignAndPublish, p4PullOnce,
+    p4MakeFinding.
 */
 package tests
 

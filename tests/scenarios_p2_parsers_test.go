@@ -2,56 +2,59 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p2_parsers_test.go
+
+	tests/scenarios_p2_parsers_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 2 (Browser-Class Auditor, stdlib parsers).
-    Hand-rolled stdlib-only parsers for the read-side endpoints
-    Persona 2 consumes:
 
-      - GET /v1/tree/head             → p2FetchTreeHead
-      - GET /v1/tree/inclusion/{seq}  → p2FetchInclusion
-      - any JSON shape                → p2GetJSON
+	Layer 0 — Persona 2 (Browser-Class Auditor, stdlib parsers).
+	Hand-rolled stdlib-only parsers for the read-side endpoints
+	Persona 2 consumes:
 
-    Plus the small p2IsHexLen lowercase-hex predicate every JSON
-    string field is checked through.
+	  - GET /v1/tree/head             → p2FetchTreeHead
+	  - GET /v1/tree/inclusion/{seq}  → p2FetchInclusion
+	  - any JSON shape                → p2GetJSON
+
+	Plus the small p2IsHexLen lowercase-hex predicate every JSON
+	string field is checked through.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Parsers live in their own file because Persona 2 is structured
-      around "what can a downstream consumer in another language
-      reproduce?". Parsers are the single most-reused surface across
-      the four sub-files; isolating them makes that explicit.
-    - map[string]any decoding, not Go-side struct tags. The whole
-      point of Persona 2 is to refuse to inherit any struct-tag
-      knowledge the SDK already encodes; if the SDK rebrands a
-      JSON key tomorrow, this file must catch it.
-    - Lowercase-hex enforcement. p2IsHexLen rejects uppercase. The
-      ledger's writer emits lowercase hex; downstream consumers
-      that emit uppercase would silently fail to round-trip; this
-      parser pins the contract on the read side so a regression
-      surfaces here, not in Production.
-    - Two flavours of p2FetchTreeHead: the fatal-on-error variant
-      (p2FetchTreeHead) for synchronous tests, and the
-      error-returning variant (p2FetchTreeHeadAttempt) for
-      goroutine-driven readers (ConcurrentReads_NoCorruption)
-      that must not call t.Fatal off the main goroutine.
+  - Parsers live in their own file because Persona 2 is structured
+    around "what can a downstream consumer in another language
+    reproduce?". Parsers are the single most-reused surface across
+    the four sub-files; isolating them makes that explicit.
+  - map[string]any decoding, not Go-side struct tags. The whole
+    point of Persona 2 is to refuse to inherit any struct-tag
+    knowledge the SDK already encodes; if the SDK rebrands a
+    JSON key tomorrow, this file must catch it.
+  - Lowercase-hex enforcement. p2IsHexLen rejects uppercase. The
+    ledger's writer emits lowercase hex; downstream consumers
+    that emit uppercase would silently fail to round-trip; this
+    parser pins the contract on the read side so a regression
+    surfaces here, not in Production.
+  - Two flavours of p2FetchTreeHead: the fatal-on-error variant
+    (p2FetchTreeHead) for synchronous tests, and the
+    error-returning variant (p2FetchTreeHeadAttempt) for
+    goroutine-driven readers (ConcurrentReads_NoCorruption)
+    that must not call t.Fatal off the main goroutine.
 
 OVERVIEW:
-    p2TreeHead              → struct of {TreeSize, RootHashHex,
-                              HashAlgo, RawSignatures}.
-    p2FetchTreeHead         → fatal-on-error.
-    p2FetchTreeHeadAttempt  → error-returning.
-    p2InclusionProof        → struct of {LeafIndex, TreeSize, Hashes}.
-    p2FetchInclusion        → fatal-on-error.
-    p2GetJSON               → generic map[string]any.
-    p2IsHexLen              → lowercase-hex length check.
+
+	p2TreeHead              → struct of {TreeSize, RootHashHex,
+	                          HashAlgo, RawSignatures}.
+	p2FetchTreeHead         → fatal-on-error.
+	p2FetchTreeHeadAttempt  → error-returning.
+	p2InclusionProof        → struct of {LeafIndex, TreeSize, Hashes}.
+	p2FetchInclusion        → fatal-on-error.
+	p2GetJSON               → generic map[string]any.
+	p2IsHexLen              → lowercase-hex length check.
 
 KEY DEPENDENCIES:
-    - encoding/json, net/http, io: stdlib only.
-    - tests/scenarios_p2_minimal_auditor_test.go,
-      tests/scenarios_p2_proof_verify_test.go,
-      tests/scenarios_p2_cdn_test.go: callers.
-    - tests/scenarios_skel_test.go: mustNotErr.
+  - encoding/json, net/http, io: stdlib only.
+  - tests/scenarios_p2_minimal_auditor_test.go,
+    tests/scenarios_p2_proof_verify_test.go,
+    tests/scenarios_p2_cdn_test.go: callers.
+  - tests/scenarios_skel_test.go: mustNotErr.
 */
 package tests
 

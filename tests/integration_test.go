@@ -129,7 +129,8 @@ func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
 // TestAdmission_ExactlyMaxSize_SDK_D11 asserts that a near-cap entry
 // serializes successfully under the size invariant.
 //
-//  changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+//	changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+//
 // (= 65535) per envelope/api.go:69-80, closing ORTHO-BUG-005 (entries
 // admitted under the old 1 MiB cap would later panic inside
 // MarshalBundleEntry's uint16 length prefix). The previous test fixture

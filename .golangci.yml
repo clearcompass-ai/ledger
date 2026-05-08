@@ -3,7 +3,7 @@
 #     .golangci.yml
 #
 # DESCRIPTION:
-#     golangci-lint config. Mirrors Tessera + Boulder + Sigstore
+#     golangci-lint config (v2). Mirrors Tessera + Boulder + Sigstore
 #     conventions: a tight, opinionated set that catches real bugs
 #     without flooding noise.
 #
@@ -30,13 +30,8 @@ linters:
     - errcheck       # unchecked errors
     - govet          # stdlib's vet pass
     - ineffassign    # ineffectual assignments
-    - staticcheck    # the comprehensive static analyzer
+    - staticcheck    # the comprehensive static analyzer (includes gosimple in v2)
     - unused         # unused vars, funcs, types
-    - gosimple       # simplification suggestions
-
-    # Style (low-noise; bail out early in this list if developers complain).
-    - gofmt
-    - goimports
 
     # Security-shaped (zero-tolerance bugs in transparency-log code).
     - bodyclose      # unclosed http.Body
@@ -58,7 +53,19 @@ linters:
       check-blank: false
 
     staticcheck:
-      checks: ["all"]
+      # ST1000: package comment style — many packages use block /* ... */
+      #         comments per Tessera/SDK convention; this rule is
+      #         purely stylistic, not a bug-finder.
+      # ST1003: identifier style (LastErrTs vs LastErrTS) — naming
+      #         policy, not bugs.
+      # ST1012: error-var naming convention — naming policy.
+      # QF1011: quickfix style suggestions — not bugs.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1012
+        - -QF1011
 
     forbidigo:
       forbid:
@@ -66,29 +73,36 @@ linters:
         # If the SDK / external interface forces a no-ctx call site,
         # bind a process-lifetime ctx at construction (the Phase 2
         # pattern: ctx field on the struct, set in NewXxx). Allowed
-        # in *_test.go via the issues.exclude-rules section below.
+        # in *_test.go via the exclusions block below.
         - pattern: '^context\.TODO$'
           msg: >-
             context.TODO() is forbidden outside tests. Bind the
             process-lifetime ctx at struct construction (see Phase 2
             pattern in store/smt_state.go, store/entries.go, etc.).
 
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude-rules:
+  exclusions:
     # Tests can use over-allocations + shadowed err vars freely.
     # context.TODO() is also acceptable in tests (no shutdown to
     # propagate to; tests use t.Context() or context.Background()).
-    - path: _test\.go
-      linters:
-        - errcheck
-        - govet
-        - forbidigo
-    # Generated code (none today, but reserve the exclusion).
-    - path: \.gen\.go
-      linters:
-        - all
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - govet
+          - forbidigo
+          - bodyclose
+      # Generated code (none today, but reserve the exclusion).
+      - path: \.gen\.go
+        linters:
+          - errcheck
+          - govet
+          - staticcheck
+          - unused
+          - ineffassign
+          - bodyclose
+          - rowserrcheck
+          - sqlclosecheck
+          - forbidigo
 
 formatters:
   enable:

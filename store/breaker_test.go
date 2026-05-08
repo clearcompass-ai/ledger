@@ -1,24 +1,26 @@
 /*
 FILE PATH:
-    store/breaker_test.go
+
+	store/breaker_test.go
 
 DESCRIPTION:
-    Tests for the inline circuit breaker state machine. Pool
-    acquisitions are simulated via the recordResult path directly
-    so tests are fast (no real Postgres) and deterministic
-    (no timing flakes).
+
+	Tests for the inline circuit breaker state machine. Pool
+	acquisitions are simulated via the recordResult path directly
+	so tests are fast (no real Postgres) and deterministic
+	(no timing flakes).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Tests exercise the state machine via the public Acquire-
-      shape contract (gate + recordResult) using a no-pool
-      Breaker. The actual pool.Acquire round-trip is integration-
-      tested via the postgres.go round-trip suite when an
-      ATTESTA_TEST_DSN is configured.
-    - Each test pins ONE invariant. No table-driven hybrid that
-      masks which assertion failed.
-    - Time progression uses synthetic openedAt mutation rather
-      than time.Sleep so tests run in sub-millisecond and do not
-      flake under load.
+  - Tests exercise the state machine via the public Acquire-
+    shape contract (gate + recordResult) using a no-pool
+    Breaker. The actual pool.Acquire round-trip is integration-
+    tested via the postgres.go round-trip suite when an
+    ATTESTA_TEST_DSN is configured.
+  - Each test pins ONE invariant. No table-driven hybrid that
+    masks which assertion failed.
+  - Time progression uses synthetic openedAt mutation rather
+    than time.Sleep so tests run in sub-millisecond and do not
+    flake under load.
 */
 package store
 

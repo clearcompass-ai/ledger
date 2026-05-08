@@ -1,52 +1,55 @@
 /*
 FILE PATH:
-    api/server.go
+
+	api/server.go
 
 DESCRIPTION:
-    HTTP server initialization and route registration. Every
-    Attesta ledger endpoint lives under /v1/. Health checks at
-    /healthz and /readyz. The server is constructed against an
-    explicit Handlers struct (closure-fed dependencies, no
-    globals) and exposes ListenAndServe / ListenAndServeTLS /
-    Serve / Shutdown for the cmd/ledger orchestrator.
+
+	HTTP server initialization and route registration. Every
+	Attesta ledger endpoint lives under /v1/. Health checks at
+	/healthz and /readyz. The server is constructed against an
+	explicit Handlers struct (closure-fed dependencies, no
+	globals) and exposes ListenAndServe / ListenAndServeTLS /
+	Serve / Shutdown for the cmd/ledger orchestrator.
 
 KEY ARCHITECTURAL DECISIONS:
-    - net/http standard library only. No framework dependency —
-      the handler surface is small and the routing is purely
-      method+path so the stdlib mux is sufficient.
-    - DoS-immune timeouts. ReadHeaderTimeout caps the headers-
-      arrived window (Slowloris defense); IdleTimeout caps the
-      keep-alive idle window (long-lived-connection defense).
-      ReadTimeout/WriteTimeout cap the full-request lifetimes.
-    - Body caps applied via http.MaxBytesReader on every route
-      that reads a body. Routes that take no body (GET /healthz,
-      GET /readyz, every read endpoint) need no cap. Bounded I/O
-      is structural — the memory cost of a malicious peer is
-      mathematically capped.
-    - Per-request correlation ID middleware wraps the entire mux
-      so every handler + every structured log line carries the
-      same X-Request-ID for cross-component tracing.
-    - Readiness flag is atomic for thread-safe shutdown signalling.
-      Pre-drain handshake (flip readiness BEFORE Shutdown) is in
-      cmd/ledger/main.go; this file's Shutdown method is the
-      Shutdown-after-grace primitive.
-    - Optional handlers (WitnessCosign, GossipPost/Feed, read
-      endpoints, batch admission, tile-serving) are nil-guarded so
-      cmd/ledger-reader and trimmed test harnesses can omit them
-      without producing 500s through nil HandlerFuncs.
+  - net/http standard library only. No framework dependency —
+    the handler surface is small and the routing is purely
+    method+path so the stdlib mux is sufficient.
+  - DoS-immune timeouts. ReadHeaderTimeout caps the headers-
+    arrived window (Slowloris defense); IdleTimeout caps the
+    keep-alive idle window (long-lived-connection defense).
+    ReadTimeout/WriteTimeout cap the full-request lifetimes.
+  - Body caps applied via http.MaxBytesReader on every route
+    that reads a body. Routes that take no body (GET /healthz,
+    GET /readyz, every read endpoint) need no cap. Bounded I/O
+    is structural — the memory cost of a malicious peer is
+    mathematically capped.
+  - Per-request correlation ID middleware wraps the entire mux
+    so every handler + every structured log line carries the
+    same X-Request-ID for cross-component tracing.
+  - Readiness flag is atomic for thread-safe shutdown signalling.
+    Pre-drain handshake (flip readiness BEFORE Shutdown) is in
+    cmd/ledger/main.go; this file's Shutdown method is the
+    Shutdown-after-grace primitive.
+  - Optional handlers (WitnessCosign, GossipPost/Feed, read
+    endpoints, batch admission, tile-serving) are nil-guarded so
+    cmd/ledger-reader and trimmed test harnesses can omit them
+    without producing 500s through nil HandlerFuncs.
 
 OVERVIEW:
-    NewServer constructs the mux, registers routes (with
-    SizeLimit + Auth middleware on write paths), and wraps the
-    whole tree in WithRequestID. The resulting *http.Server is
-    started by ListenAndServe / ListenAndServeTLS / Serve and
-    drained by Shutdown.
+
+	NewServer constructs the mux, registers routes (with
+	SizeLimit + Auth middleware on write paths), and wraps the
+	whole tree in WithRequestID. The resulting *http.Server is
+	started by ListenAndServe / ListenAndServeTLS / Serve and
+	drained by Shutdown.
 
 KEY DEPENDENCIES:
-    - api/middleware: SizeLimit, Auth, WithRequestID — orthogonal
-      cross-cutting concerns.
-    - sync/atomic: lock-free readiness signal so /readyz never
-      contends with the rest of the request flow.
+  - api/middleware: SizeLimit, Auth, WithRequestID — orthogonal
+    cross-cutting concerns.
+  - sync/atomic: lock-free readiness signal so /readyz never
+    contends with the rest of the request flow.
 */
 package api
 

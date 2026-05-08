@@ -1,89 +1,91 @@
 /*
 FILE PATH:
-    bytestore/publicurl.go
+
+	bytestore/publicurl.go
 
 DESCRIPTION:
-    Public-URL composition for transparency-log-style deployments
-    where the bytestore bucket is anonymous-read.
 
-    PublicURLer is the architecture's only read-side URL surface.
-    It returns a deterministic, credential-free URL that any third
-    party can GET without auth — the only model compatible with
-    public verifiability (RFC 9162, c2sp.org/tlog-tiles).
+	Public-URL composition for transparency-log-style deployments
+	where the bytestore bucket is anonymous-read.
+
+	PublicURLer is the architecture's only read-side URL surface.
+	It returns a deterministic, credential-free URL that any third
+	party can GET without auth — the only model compatible with
+	public verifiability (RFC 9162, c2sp.org/tlog-tiles).
 
 ARCHITECTURE — TRANSPARENCY-LOG CONVENTION:
 
-    Every transparency-log ecosystem — RFC 9162 (Certificate
-    Transparency v2), c2sp.org/tlog-tiles, Tessera, Sigsum,
-    Sigstore Rekor, Go's golang.org/x/mod/sumdb/tlog — uses
-    the same model:
+	Every transparency-log ecosystem — RFC 9162 (Certificate
+	Transparency v2), c2sp.org/tlog-tiles, Tessera, Sigsum,
+	Sigstore Rekor, Go's golang.org/x/mod/sumdb/tlog — uses
+	the same model:
 
-      "Tile and entry URLs are deterministic compositions of a
-       monitor base URL plus the object key. No signing, no auth,
-       no expiry. Buckets are public-read."
+	  "Tile and entry URLs are deterministic compositions of a
+	   monitor base URL plus the object key. No signing, no auth,
+	   no expiry. Buckets are public-read."
 
-    Reasons:
-      1. Public verifiability. A witness, auditor, or random
-         third party must be able to fetch tiles to reconstruct
-         inclusion proofs. Auth would defeat transparency.
-      2. CDN-friendly. Deterministic URLs cache. Signed URLs
-         change per request and bypass caches.
-      3. Witness independence. A witness checking the log
-         shouldn't need a long-lived credential.
-      4. No signing-key blast radius. Presigning requires a key
-         online and reachable; public URLs don't.
+	Reasons:
+	  1. Public verifiability. A witness, auditor, or random
+	     third party must be able to fetch tiles to reconstruct
+	     inclusion proofs. Auth would defeat transparency.
+	  2. CDN-friendly. Deterministic URLs cache. Signed URLs
+	     change per request and bypass caches.
+	  3. Witness independence. A witness checking the log
+	     shouldn't need a long-lived credential.
+	  4. No signing-key blast radius. Presigning requires a key
+	     online and reachable; public URLs don't.
 
-    This file implements the CT-log model for the ledger:
+	This file implements the CT-log model for the ledger:
 
-      PublicURL(seq, hash) = baseURL + "/" + key(seq, hash)
-                              ^^^^^^^^^         ^^^^^^^^^^^^^^^
-                              per-deployment   per-bytestore
-                              (CDN URL,         (deterministic key
-                               bucket URL)       composition shared
-                                                 with the write path)
+	  PublicURL(seq, hash) = baseURL + "/" + key(seq, hash)
+	                          ^^^^^^^^^         ^^^^^^^^^^^^^^^
+	                          per-deployment   per-bytestore
+	                          (CDN URL,         (deterministic key
+	                           bucket URL)       composition shared
+	                                             with the write path)
 
 INVARIANTS (every implementation MUST satisfy):
 
-    Pure         — No I/O, no signing, no allocation that fails.
-                   Returns only the canonical URL or
-                   ErrPublicURLNotConfigured.
+	Pure         — No I/O, no signing, no allocation that fails.
+	               Returns only the canonical URL or
+	               ErrPublicURLNotConfigured.
 
-    Deterministic — Same (seq, hash) → same URL, forever. This is
-                    what makes consumer caches (CDN, witness,
-                    auditor) valid.
+	Deterministic — Same (seq, hash) → same URL, forever. This is
+	                what makes consumer caches (CDN, witness,
+	                auditor) valid.
 
-    Credential-free — URL has no signing query params, no expiry,
-                      no auth tokens. Anyone can fetch it.
+	Credential-free — URL has no signing query params, no expiry,
+	                  no auth tokens. Anyone can fetch it.
 
-    Layout-aligned — URL key MUST match the write path's keyOf().
-                     A bucket written by the GCS adapter is
-                     readable via the GCS adapter's PublicURL.
-                     Cross-adapter compatibility is preserved by
-                     the shared layoutKey() helper in
-                     bytestore.go.
+	Layout-aligned — URL key MUST match the write path's keyOf().
+	                 A bucket written by the GCS adapter is
+	                 readable via the GCS adapter's PublicURL.
+	                 Cross-adapter compatibility is preserved by
+	                 the shared layoutKey() helper in
+	                 bytestore.go.
 
 EXTENSIBILITY:
 
-    PublicURLer is part of Backend (Store + PublicURLer). Every
-    production backend implements it. Test/dev backends that don't
-    need URL emission (memory) satisfy only Store and are gated
-    out of production wiring by the factory.
+	PublicURLer is part of Backend (Store + PublicURLer). Every
+	production backend implements it. Test/dev backends that don't
+	need URL emission (memory) satisfy only Store and are gated
+	out of production wiring by the factory.
 
-    To add a new public-URL backend (Cloudflare R2 with a
-    custom-domain CDN, IPFS gateway, etc.), implement PublicURL
-    on the new adapter. The factory wires PublicBaseURL through
-    Config.
+	To add a new public-URL backend (Cloudflare R2 with a
+	custom-domain CDN, IPFS gateway, etc.), implement PublicURL
+	on the new adapter. The factory wires PublicBaseURL through
+	Config.
 
 DEFAULT MAPPERS:
 
-    Most deployments don't need to override the URL pattern.
-    Sensible defaults:
+	Most deployments don't need to override the URL pattern.
+	Sensible defaults:
 
-      DefaultGCSPublicBaseURL            (GCS bucket URL)
-      DefaultS3PathStylePublicBaseURL    (SeaweedFS, MinIO, R2 path-style)
-      DefaultS3VirtualHostPublicBaseURL  (AWS S3 virtual-host)
+	  DefaultGCSPublicBaseURL            (GCS bucket URL)
+	  DefaultS3PathStylePublicBaseURL    (SeaweedFS, MinIO, R2 path-style)
+	  DefaultS3VirtualHostPublicBaseURL  (AWS S3 virtual-host)
 
-    A CDN-fronted deployment overrides via cfg.PublicBaseURL.
+	A CDN-fronted deployment overrides via cfg.PublicBaseURL.
 */
 package bytestore
 

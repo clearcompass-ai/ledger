@@ -36,7 +36,7 @@ import (
 type stubSubmissionWAL struct {
 	submitErr error
 	submitted [][32]byte
-	metas map[[32]byte]wal.Meta
+	metas     map[[32]byte]wal.Meta
 }
 
 func (s *stubSubmissionWAL) Submit(ctx context.Context, hash [32]byte, wire []byte, logTimeMicros int64) error {
@@ -76,7 +76,7 @@ func (s *stubSubmissionWAL) MetaState(ctx context.Context, hash [32]byte) (wal.M
 type stubSubmissionDiffController struct{}
 
 func (s *stubSubmissionDiffController) CurrentDifficulty() uint32 { return 1 }
-func (s *stubSubmissionDiffController) HashFunction() string { return "sha256" }
+func (s *stubSubmissionDiffController) HashFunction() string      { return "sha256" }
 
 // stubSubmissionTessera should never be called from the unified
 // /v1 fast path — Tessera lives behind the Sequencer now.

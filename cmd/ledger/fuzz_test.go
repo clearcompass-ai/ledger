@@ -1,22 +1,24 @@
 /*
 FILE PATH:
-    cmd/ledger/fuzz_test.go
+
+	cmd/ledger/fuzz_test.go
 
 DESCRIPTION:
-    J1 — Fuzz the network bootstrap document JSON parser. The
-    bootstrap document is the administrator-supplied trust anchor
-    (witness keys, NetworkID, K-of-N quorum); a parser bug here
-    would let a hostile config file crash the boot path or
-    silently corrupt the witness set.
 
-    Run via:
-        go test -run=^$ -fuzz=^FuzzNetworkBootstrapJSON$ \
-            -fuzztime=30s ./cmd/ledger/
+	J1 — Fuzz the network bootstrap document JSON parser. The
+	bootstrap document is the administrator-supplied trust anchor
+	(witness keys, NetworkID, K-of-N quorum); a parser bug here
+	would let a hostile config file crash the boot path or
+	silently corrupt the witness set.
 
-    Property: parser NEVER PANICS on arbitrary JSON-shaped input.
-    A nil-deref or bounds violation in the deserializer is a
-    bug; rejection (return err) is the desired outcome for
-    invalid input.
+	Run via:
+	    go test -run=^$ -fuzz=^FuzzNetworkBootstrapJSON$ \
+	        -fuzztime=30s ./cmd/ledger/
+
+	Property: parser NEVER PANICS on arbitrary JSON-shaped input.
+	A nil-deref or bounds violation in the deserializer is a
+	bug; rejection (return err) is the desired outcome for
+	invalid input.
 */
 package main
 
@@ -33,10 +35,10 @@ func FuzzNetworkBootstrapJSON(f *testing.F) {
 	f.Add([]byte(`{"genesis_witness_set":[]}`))
 	f.Add([]byte(`{"genesis_witness_set":["did:web:w1","did:web:w2"]}`))
 	// Hostile seeds.
-	f.Add([]byte(``))           // empty
-	f.Add([]byte(`null`))       // null root
-	f.Add([]byte(`[]`))          // wrong shape
-	f.Add([]byte(`{`))            // truncated
+	f.Add([]byte(``))     // empty
+	f.Add([]byte(`null`)) // null root
+	f.Add([]byte(`[]`))   // wrong shape
+	f.Add([]byte(`{`))    // truncated
 	f.Add([]byte(`{"genesis_witness_set":null}`))
 	f.Add([]byte(`{"genesis_witness_set":["",""]}`)) // empty DIDs
 	// Deeply-nested JSON would otherwise blow the stack; use this

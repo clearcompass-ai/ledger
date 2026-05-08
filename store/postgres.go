@@ -51,15 +51,15 @@ import (
 
 // Pool wraps pgxpool.Pool with ledger lifecycle.
 type Pool struct {
-	DB *pgxpool.Pool
+	DB  *pgxpool.Pool
 	cfg PoolConfig
 }
 
 // PoolConfig configures the Postgres connection.
 type PoolConfig struct {
-	DSN string
-	MaxConns int32
-	MinConns int32
+	DSN             string
+	MaxConns        int32
+	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
 
@@ -159,7 +159,7 @@ func (p *Pool) Close() { p.DB.Close() }
 // Pools holds separate write and read connection pools.
 type Pools struct {
 	Write *pgxpool.Pool
-	Read *pgxpool.Pool
+	Read  *pgxpool.Pool
 }
 
 // InitPools creates write and read pools.

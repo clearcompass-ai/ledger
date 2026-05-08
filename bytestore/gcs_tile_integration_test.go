@@ -3,63 +3,66 @@
 
 /*
 FILE PATH:
-    bytestore/gcs_tile_integration_test.go
+
+	bytestore/gcs_tile_integration_test.go
 
 DESCRIPTION:
-    Real-GCS-only integration tests for GCSTiles. Build-tag-
-    isolated so `go test ./...` never invokes them — these tests
-    require a real bucket, real ADC credentials, and real network
-    round-trips. Opt-in via:
 
-        ATTESTA_TEST_GCS_BUCKET=ledger-tile-integration-<your-instance> \
-        GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json \
-        go test -tags=gcs_integration ./bytestore/ -run TestGCSTilesIntegration -v -count=1 -timeout 5m
+	Real-GCS-only integration tests for GCSTiles. Build-tag-
+	isolated so `go test ./...` never invokes them — these tests
+	require a real bucket, real ADC credentials, and real network
+	round-trips. Opt-in via:
 
-    The default unit-test path (bytestore/gcs_tile_test.go,
-    untagged) covers fake-gcs-server smoke + path-validation +
-    constructor defaults and runs in CI. THIS file covers the
-    properties only real GCS exercises:
+	    ATTESTA_TEST_GCS_BUCKET=ledger-tile-integration-<your-instance> \
+	    GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json \
+	    go test -tags=gcs_integration ./bytestore/ -run TestGCSTilesIntegration -v -count=1 -timeout 5m
 
-      - Concurrent reads at scale (1000 parallel goroutines).
-      - MaxTileBytes ceiling against a real 16-MiB+ upload.
-      - ErrNotExist mapping against the live storage.ErrObjectNotExist.
-      - Byte-identical round-trip across the wire (defends against
-        Content-Encoding / compression injection).
-      - Path-traversal rejection BEFORE the GCS API is called
-        (verified by timing — a rejected hostile path must complete
-        in sub-millisecond time, no network round-trip).
+	The default unit-test path (bytestore/gcs_tile_test.go,
+	untagged) covers fake-gcs-server smoke + path-validation +
+	constructor defaults and runs in CI. THIS file covers the
+	properties only real GCS exercises:
+
+	  - Concurrent reads at scale (1000 parallel goroutines).
+	  - MaxTileBytes ceiling against a real 16-MiB+ upload.
+	  - ErrNotExist mapping against the live storage.ErrObjectNotExist.
+	  - Byte-identical round-trip across the wire (defends against
+	    Content-Encoding / compression injection).
+	  - Path-traversal rejection BEFORE the GCS API is called
+	    (verified by timing — a rejected hostile path must complete
+	    in sub-millisecond time, no network round-trip).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Reuses requireGCS from gcs_test.go for credentials + cleanup.
-      requireGCS skips when env is unset; this file's tests will
-      simply skip in the same scenario, so the build tag is the
-      ONLY enforcement layer that real GCS is required.
-    - Each test gets a per-test prefix (via tilesFor) so concurrent
-      runs don't collide and t.Cleanup wipes its own object set.
-    - Latency assertion is conservative (p99 < 5s under 1000-way
-      concurrency) so flaky cloud weather doesn't fail the test.
-      The architectural property pinned is "the backend handles
-      1000-parallel reads without serialization or auth-flush";
-      the exact latency depends on the runner's network.
-    - Tests do NOT exercise the HTTP layer (api.NewTileHandler) —
-      that is fully covered by api/tile_handler_test.go with stub
-      backends. Re-running the same handler shape against real GCS
-      adds no incremental coverage; this file focuses on what only
-      real GCS can prove.
+  - Reuses requireGCS from gcs_test.go for credentials + cleanup.
+    requireGCS skips when env is unset; this file's tests will
+    simply skip in the same scenario, so the build tag is the
+    ONLY enforcement layer that real GCS is required.
+  - Each test gets a per-test prefix (via tilesFor) so concurrent
+    runs don't collide and t.Cleanup wipes its own object set.
+  - Latency assertion is conservative (p99 < 5s under 1000-way
+    concurrency) so flaky cloud weather doesn't fail the test.
+    The architectural property pinned is "the backend handles
+    1000-parallel reads without serialization or auth-flush";
+    the exact latency depends on the runner's network.
+  - Tests do NOT exercise the HTTP layer (api.NewTileHandler) —
+    that is fully covered by api/tile_handler_test.go with stub
+    backends. Re-running the same handler shape against real GCS
+    adds no incremental coverage; this file focuses on what only
+    real GCS can prove.
 
 OVERVIEW:
-    Each test:
-        1. requireGCS(t) returns a configured *GCS or t.Skip.
-        2. tilesFor(t, g) wraps it with a *GCSTiles under a per-
-           test prefix.
-        3. Direct uploadObject puts synthetic bytes (bypasses the
-           entry-layout key scheme used by *GCS.WriteEntry).
-        4. Exercise the contract through the real wire.
+
+	Each test:
+	    1. requireGCS(t) returns a configured *GCS or t.Skip.
+	    2. tilesFor(t, g) wraps it with a *GCSTiles under a per-
+	       test prefix.
+	    3. Direct uploadObject puts synthetic bytes (bypasses the
+	       entry-layout key scheme used by *GCS.WriteEntry).
+	    4. Exercise the contract through the real wire.
 
 KEY DEPENDENCIES:
-    - requireGCS, tilesFor, uploadObject (from gcs_test.go and
-      gcs_tile_test.go).
-    - cloud.google.com/go/storage: live storage.ErrObjectNotExist.
+  - requireGCS, tilesFor, uploadObject (from gcs_test.go and
+    gcs_tile_test.go).
+  - cloud.google.com/go/storage: live storage.ErrObjectNotExist.
 */
 package bytestore
 

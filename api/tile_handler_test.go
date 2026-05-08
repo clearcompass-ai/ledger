@@ -1,23 +1,25 @@
 /*
 FILE PATH:
-    api/tile_handler_test.go
+
+	api/tile_handler_test.go
 
 DESCRIPTION:
-    Tests for the Static-CT tile-serving handlers. Pin contracts:
-    happy-path success, 404 on os.ErrNotExist, 400 on path-
-    traversal attempts, Cache-Control header semantics, Range
-    header support via http.ServeContent, nil-backend defensive
-    503 path.
+
+	Tests for the Static-CT tile-serving handlers. Pin contracts:
+	happy-path success, 404 on os.ErrNotExist, 400 on path-
+	traversal attempts, Cache-Control header semantics, Range
+	header support via http.ServeContent, nil-backend defensive
+	503 path.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Use a synthetic stubBackend (api/-local) to keep tests
-      hermetic (no on-disk POSIX dir required). The interface is
-      already small and test-friendly by design.
-    - Each test exercises ONE invariant. No table-driven hybrid
-      that masks which assertion failed.
-    - Path-traversal tests cover stdlib mux's PathValue surface
-      directly so the handler's defense doesn't depend on the
-      mux reaching it cleanly.
+  - Use a synthetic stubBackend (api/-local) to keep tests
+    hermetic (no on-disk POSIX dir required). The interface is
+    already small and test-friendly by design.
+  - Each test exercises ONE invariant. No table-driven hybrid
+    that masks which assertion failed.
+  - Path-traversal tests cover stdlib mux's PathValue surface
+    directly so the handler's defense doesn't depend on the
+    mux reaching it cleanly.
 */
 package api
 
@@ -327,17 +329,17 @@ func TestTileHandler_RangeHeaderHonored(t *testing.T) {
 func TestValidPathSegment(t *testing.T) {
 	t.Parallel()
 	cases := map[string]bool{
-		"0":            true,
-		"5":            true,
-		"entries":      true,
-		"":             false,
-		".":            false,
-		"..":           false,
-		"a/b":          false,
-		"a\\b":         false,
-		"\x00":         false,
-		"\x7F":         false, // DEL is non-printable
-		"abcDEF":       true,
+		"0":       true,
+		"5":       true,
+		"entries": true,
+		"":        false,
+		".":       false,
+		"..":      false,
+		"a/b":     false,
+		"a\\b":    false,
+		"\x00":    false,
+		"\x7F":    false, // DEL is non-printable
+		"abcDEF":  true,
 	}
 	for in, want := range cases {
 		if got := validPathSegment(in); got != want {

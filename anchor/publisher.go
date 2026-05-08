@@ -17,13 +17,13 @@ KEY ARCHITECTURAL DECISIONS:
 SDK ALIGNMENT:
   - envelope.NewEntry(header, payload, signatures)        — fully signed
   - envelope.NewUnsignedEntry(header, payload)            — sign-then-attach
-  The publisher's flow is "construct, then submit through admission",
-  so it uses NewUnsignedEntry. Whatever path actually signs the
-  commentary (ledger's admission pipeline, SubmitViaHTTP, or a future
-  ledger-as-dealer signing surface) is responsible for populating
-  entry.Signatures before envelope.Serialize is invoked. An entry
-  without signatures fails entry.Validate() at admission, which is
-  the correct failure mode for a misconfigured deployment.
+    The publisher's flow is "construct, then submit through admission",
+    so it uses NewUnsignedEntry. Whatever path actually signs the
+    commentary (ledger's admission pipeline, SubmitViaHTTP, or a future
+    ledger-as-dealer signing surface) is responsible for populating
+    entry.Signatures before envelope.Serialize is invoked. An entry
+    without signatures fails entry.Validate() at admission, which is
+    the correct failure mode for a misconfigured deployment.
 */
 package anchor
 
@@ -48,15 +48,15 @@ import (
 
 // PublisherConfig configures the anchor publisher.
 type PublisherConfig struct {
-	LedgerDID string
-	LogDID string // destination-binding for self-published anchors.
-	Interval time.Duration
+	LedgerDID     string
+	LogDID        string // destination-binding for self-published anchors.
+	Interval      time.Duration
 	AnchorSources []AnchorSource
 }
 
 // AnchorSource is a remote log to anchor.
 type AnchorSource struct {
-	LogDID string
+	LogDID      string
 	EndpointURL string // Base URL with /v1/tree/head
 }
 
@@ -67,12 +67,12 @@ type MerkleHeadProvider interface {
 
 // Publisher periodically anchors remote tree heads to the local log.
 type Publisher struct {
-	cfg PublisherConfig
+	cfg    PublisherConfig
 	merkle MerkleHeadProvider
 	// submitFn submits a signed entry to the local admission pipeline.
 	submitFn func(entry *envelope.Entry) error
-	client *http.Client
-	logger *slog.Logger
+	client   *http.Client
+	logger   *slog.Logger
 }
 
 // NewPublisher creates an anchor publisher. LogDID in cfg MUST be non-empty —

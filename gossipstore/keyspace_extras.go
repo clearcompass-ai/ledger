@@ -212,8 +212,8 @@ func equivProjKey(binding [32]byte) []byte {
 // rows from multiple log DIDs without ambiguity).
 type EntryLookupIndexEntry struct {
 	CanonicalBytes []byte `json:"canonical_bytes"`
-	LogTimeMicros int64 `json:"log_time_micros"`
-	LogDID string `json:"log_did"`
+	LogTimeMicros  int64  `json:"log_time_micros"`
+	LogDID         string `json:"log_did"`
 }
 
 // entryLookupKey builds a key under 0x0C. Sort order is

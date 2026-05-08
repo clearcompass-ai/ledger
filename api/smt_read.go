@@ -28,14 +28,14 @@ import (
 const maxLeafBatchSize = 100
 
 type LeafResponse struct {
-	Key string `json:"key"`
-	OriginTip *PositionResponse `json:"origin_tip,omitempty"`
+	Key          string            `json:"key"`
+	OriginTip    *PositionResponse `json:"origin_tip,omitempty"`
 	AuthorityTip *PositionResponse `json:"authority_tip,omitempty"`
-	Exists bool `json:"exists"`
+	Exists       bool              `json:"exists"`
 }
 
 type PositionResponse struct {
-	LogDID string `json:"log_did"`
+	LogDID   string `json:"log_did"`
 	Sequence uint64 `json:"sequence"`
 }
 

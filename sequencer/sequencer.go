@@ -102,40 +102,40 @@ type Tessera interface {
 // to package defaults.
 type Config struct {
 	PollInterval time.Duration
-	MaxInFlight int
-	MaxAttempts uint32
-	BackoffBase time.Duration
-	BackoffMax time.Duration
-	Logger *slog.Logger
+	MaxInFlight  int
+	MaxAttempts  uint32
+	BackoffBase  time.Duration
+	BackoffMax   time.Duration
+	Logger       *slog.Logger
 }
 
 // Defaults applied to a zero-valued Config.
 const (
 	DefaultPollInterval = 1 * time.Second
-	DefaultMaxInFlight = 4
-	DefaultMaxAttempts = 10
-	DefaultBackoffBase = 1 * time.Second
-	DefaultBackoffMax = 60 * time.Second
+	DefaultMaxInFlight  = 4
+	DefaultMaxAttempts  = 10
+	DefaultBackoffBase  = 1 * time.Second
+	DefaultBackoffMax   = 60 * time.Second
 )
 
 // Metrics is the atomic counter snapshot the supervisor scrapes.
 // Concurrency-safe: every field is touched only via sync/atomic.
 type Metrics struct {
 	drainCycles atomic.Uint64
-	processed atomic.Uint64
-	failures atomic.Uint64
+	processed   atomic.Uint64
+	failures    atomic.Uint64
 	manualCount atomic.Uint64
-	currentLag atomic.Int64 // pending entries observed at last drain
+	currentLag  atomic.Int64 // pending entries observed at last drain
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
 	DrainCycles uint64
-	Processed uint64
-	Failures uint64
+	Processed   uint64
+	Failures    uint64
 	ManualCount uint64
-	CurrentLag int64
+	CurrentLag  int64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
@@ -177,8 +177,8 @@ type SplitIDIndexWriter interface {
 // type imports).
 type SplitIDIndexEntry struct {
 	EquivocatorDID string
-	CanonicalHash [32]byte
-	SigBytes []byte
+	CanonicalHash  [32]byte
+	SigBytes       []byte
 }
 
 // EntryLookupWriter is the ledger-internal hook the Sequencer
@@ -211,22 +211,22 @@ type EntryLookupWriter interface {
 // SplitIDIndexEntry is: the sequencer does not import gossipstore.
 type EntryLookupIndexEntry struct {
 	CanonicalBytes []byte
-	LogTimeMicros int64
-	LogDID string
+	LogTimeMicros  int64
+	LogDID         string
 }
 
 // Sequencer is the WAL → Tessera → entry_index pipeline worker.
 type Sequencer struct {
-	wal WAL
-	tessera Tessera
-	db *pgxpool.Pool
-	store *store.EntryStore
+	wal          WAL
+	tessera      Tessera
+	db           *pgxpool.Pool
+	store        *store.EntryStore
 	splitIDIndex SplitIDIndexWriter
-	entryLookup EntryLookupWriter
-	replayer *Replayer
-	logDID string
-	cfg Config
-	logger *slog.Logger
+	entryLookup  EntryLookupWriter
+	replayer     *Replayer
+	logDID       string
+	cfg          Config
+	logger       *slog.Logger
 
 	metrics Metrics
 
@@ -235,7 +235,7 @@ type Sequencer struct {
 	// — acceptable, MaxAttempts is a soft ceiling not a hard
 	// guarantee against retry storms.
 	attemptsMu sync.Mutex
-	attempts map[[32]byte]uint32
+	attempts   map[[32]byte]uint32
 }
 
 // NewSequencer wires the Sequencer with normalized config.

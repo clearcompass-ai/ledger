@@ -57,16 +57,16 @@ import (
 
 // EscrowOverrideRequest is the JSON request body shape.
 type EscrowOverrideRequest struct {
-	EscrowID string `json:"escrow_id"`
+	EscrowID     string `json:"escrow_id"`
 	DecisionHash string `json:"decision_hash"`
-	Effective uint64 `json:"effective"`
+	Effective    uint64 `json:"effective"`
 }
 
 // EscrowOverrideResponse is the JSON success response shape.
 type EscrowOverrideResponse struct {
-	EventID string `json:"event_id"`
-	Signatures int `json:"signatures"`
-	Lamport uint64 `json:"lamport"`
+	EventID    string `json:"event_id"`
+	Signatures int    `json:"signatures"`
+	Lamport    uint64 `json:"lamport"`
 }
 
 // EscrowOverrideHandler returns an http.HandlerFunc backed by

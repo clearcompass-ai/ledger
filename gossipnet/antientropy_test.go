@@ -86,7 +86,7 @@ type stubAEEvent struct {
 
 func (s stubAEEvent) Kind() sdkgossip.Kind { return s.kind }
 func (s stubAEEvent) Bindings() [][32]byte { return nil }
-func (s stubAEEvent) Validate() error { return nil }
+func (s stubAEEvent) Validate() error      { return nil }
 func (s stubAEEvent) CanonicalBytes() []byte {
 	out := []byte(s.kind)
 	out = append(out, '|')

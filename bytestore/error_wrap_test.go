@@ -2,35 +2,36 @@
 FILE PATH: bytestore/error_wrap_test.go
 
 DESCRIPTION:
-    Regression tests for the structural invariant that
-    NotFound-shaped errors returned by the GCS and S3 adapters
-    preserve TWO independent wrap chains:
 
-      errors.Is(err, ErrNotFound)               // adapter-agnostic
-      errors.Is(err, storage.ErrObjectNotExist) // adapter-specific (GCS)
-      errors.As(err, &*types.NoSuchKey)         // adapter-specific (S3)
+	Regression tests for the structural invariant that
+	NotFound-shaped errors returned by the GCS and S3 adapters
+	preserve TWO independent wrap chains:
 
-    Pre-fix shape (broken since the bytestore hexagonal refactor):
+	  errors.Is(err, ErrNotFound)               // adapter-agnostic
+	  errors.Is(err, storage.ErrObjectNotExist) // adapter-specific (GCS)
+	  errors.As(err, &*types.NoSuchKey)         // adapter-specific (S3)
 
-        return nil, fmt.Errorf("bytestore/gcs: ... %w (gcs: %v)",
-            ErrNotFound, err)
-                                            // ^^ %v stringifies — second
-                                            //    wrap chain is lost.
+	Pre-fix shape (broken since the bytestore hexagonal refactor):
 
-    Post-fix shape:
+	    return nil, fmt.Errorf("bytestore/gcs: ... %w (gcs: %v)",
+	        ErrNotFound, err)
+	                                        // ^^ %v stringifies — second
+	                                        //    wrap chain is lost.
 
-        return nil, fmt.Errorf("bytestore/gcs: ... %w (gcs: %w)",
-            ErrNotFound, err)
-                                            // ^^ %w (Go 1.20+ supports
-                                            //    multiple %w in one
-                                            //    fmt.Errorf via Unwrap()
-                                            //    []error).
+	Post-fix shape:
 
-    The pre-fix bug was silent in CI (fake-gcs returns a different
-    error shape) and only surfaced when running the real-GCS-gated
-    bytestore tests against a real bucket. These tests run as part
-    of the normal `go test ./...` invocation and need no real
-    backend, so the regression is now CI-visible.
+	    return nil, fmt.Errorf("bytestore/gcs: ... %w (gcs: %w)",
+	        ErrNotFound, err)
+	                                        // ^^ %w (Go 1.20+ supports
+	                                        //    multiple %w in one
+	                                        //    fmt.Errorf via Unwrap()
+	                                        //    []error).
+
+	The pre-fix bug was silent in CI (fake-gcs returns a different
+	error shape) and only surfaced when running the real-GCS-gated
+	bytestore tests against a real bucket. These tests run as part
+	of the normal `go test ./...` invocation and need no real
+	backend, so the regression is now CI-visible.
 */
 package bytestore
 

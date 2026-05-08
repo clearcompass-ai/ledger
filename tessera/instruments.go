@@ -1,24 +1,26 @@
 /*
 FILE PATH:
-    tessera/instruments.go
+
+	tessera/instruments.go
 
 DESCRIPTION:
-    D3 — Tessera AppendLeaf duration histogram.
 
-        attesta_tessera_append_duration_seconds
+	D3 — Tessera AppendLeaf duration histogram.
 
-    Records the wall time of every AppendLeaf call. The
-    integration future resolves when Tessera's batcher includes
-    the entry in the next checkpoint cycle, so this histogram
-    captures both the in-process append cost AND the wait for
-    the next batch boundary.
+	    attesta_tessera_append_duration_seconds
+
+	Records the wall time of every AppendLeaf call. The
+	integration future resolves when Tessera's batcher includes
+	the entry in the next checkpoint cycle, so this histogram
+	captures both the in-process append cost AND the wait for
+	the next batch boundary.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Single histogram, no labels. Tessera is a singleton; per-
-      tenant or per-route breakdown belongs upstream.
-    - Buckets tuned for 100ms-10s typical: BatchMaxAge defaults
-      to 250 ms in the SDK, so most appends land between 0 and
-      that bound. Outliers >5s flag a stuck batcher.
+  - Single histogram, no labels. Tessera is a singleton; per-
+    tenant or per-route breakdown belongs upstream.
+  - Buckets tuned for 100ms-10s typical: BatchMaxAge defaults
+    to 250 ms in the SDK, so most appends land between 0 and
+    that bound. Outliers >5s flag a stuck batcher.
 */
 package tessera
 

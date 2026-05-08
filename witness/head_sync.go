@@ -108,11 +108,11 @@ type HeadSyncConfig struct {
 // HeadSync manages tree head cosignature collection.
 // Implements builder.WitnessCosigner.
 type HeadSync struct {
-	cfg HeadSyncConfig
+	cfg       HeadSyncConfig
 	collector *cosign.WitnessCollector
 	endpoints []string // parallel to collector's clients; for persistence labels
-	store *store.TreeHeadStore
-	logger *slog.Logger
+	store     *store.TreeHeadStore
+	logger    *slog.Logger
 	publisher CosignedHeadPublisher
 }
 

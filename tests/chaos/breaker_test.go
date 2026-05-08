@@ -3,24 +3,26 @@
 
 /*
 FILE PATH:
-    tests/chaos/breaker_test.go
+
+	tests/chaos/breaker_test.go
 
 DESCRIPTION:
-    J4 — Chaos test placeholder for the Postgres circuit breaker
-    (B3) under real PG outage. Skipped without ATTESTA_TEST_DSN
-    because driving the breaker's state machine requires either:
 
-      (a) ATTESTA_TEST_DSN pointing at a Postgres the test can
-          stop/start (requires Docker socket + privileged ops);
-          OR
-      (b) iptables-based connection blocking (Linux-specific,
-          requires CAP_NET_ADMIN in the runner).
+	J4 — Chaos test placeholder for the Postgres circuit breaker
+	(B3) under real PG outage. Skipped without ATTESTA_TEST_DSN
+	because driving the breaker's state machine requires either:
 
-    The breaker's state machine is exhaustively unit-tested in
-    store/breaker_test.go (9 tests covering closed → open →
-    half-open → closed/re-open paths with synthetic time
-    progression). This file exists to document the chaos
-    follow-up and reserve the test name.
+	  (a) ATTESTA_TEST_DSN pointing at a Postgres the test can
+	      stop/start (requires Docker socket + privileged ops);
+	      OR
+	  (b) iptables-based connection blocking (Linux-specific,
+	      requires CAP_NET_ADMIN in the runner).
+
+	The breaker's state machine is exhaustively unit-tested in
+	store/breaker_test.go (9 tests covering closed → open →
+	half-open → closed/re-open paths with synthetic time
+	progression). This file exists to document the chaos
+	follow-up and reserve the test name.
 */
 package chaos
 

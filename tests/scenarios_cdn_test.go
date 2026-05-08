@@ -2,50 +2,53 @@
 
 /*
 FILE PATH:
-    tests/scenarios_cdn_test.go
+
+	tests/scenarios_cdn_test.go
 
 DESCRIPTION:
-    CDN tile-file server fixture for the Layer 0 scenarios suite.
-    Wraps http.FileServer over the Tessera POSIX storage root and
-    injects c2sp.org/tlog-tiles-conformant Cache-Control headers
-    (immutable for tile/* paths, max-age=1 for the checkpoint).
-    Persona 2 (browser-class auditor) and Persona 5 (indexer) read
-    tiles through this server; production deployments serve the
-    same paths from GCS / S3 + a real CDN.
+
+	CDN tile-file server fixture for the Layer 0 scenarios suite.
+	Wraps http.FileServer over the Tessera POSIX storage root and
+	injects c2sp.org/tlog-tiles-conformant Cache-Control headers
+	(immutable for tile/* paths, max-age=1 for the checkpoint).
+	Persona 2 (browser-class auditor) and Persona 5 (indexer) read
+	tiles through this server; production deployments serve the
+	same paths from GCS / S3 + a real CDN.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Strict path classification — paths matching /tile/ or
-      /tile/entries/ get the immutable cache header, /checkpoint
-      gets max-age=1, anything else (including /etc/passwd via
-      ../) is rejected before reaching FileServer. The reject
-      happens via filepath.Clean comparison after stripping the
-      mount prefix.
-    - In-process counter records every served path and how many
-      times it was requested. CDN-cache emulation tests assert
-      "the origin only saw N requests for K distinct paths" via
-      this counter.
-    - CORS open-by-default (Access-Control-Allow-Origin: *) so the
-      browser-class auditor in Persona 2 doesn't need a separate
-      CORS proxy. Production CDNs (Fastly/CloudFront) wire the
-      same.
-    - Read-only. The fixture explicitly rejects POST / PUT / etc
-      with 405; tile state is mutated only by the production
-      stack's Tessera writer.
+  - Strict path classification — paths matching /tile/ or
+    /tile/entries/ get the immutable cache header, /checkpoint
+    gets max-age=1, anything else (including /etc/passwd via
+    ../) is rejected before reaching FileServer. The reject
+    happens via filepath.Clean comparison after stripping the
+    mount prefix.
+  - In-process counter records every served path and how many
+    times it was requested. CDN-cache emulation tests assert
+    "the origin only saw N requests for K distinct paths" via
+    this counter.
+  - CORS open-by-default (Access-Control-Allow-Origin: *) so the
+    browser-class auditor in Persona 2 doesn't need a separate
+    CORS proxy. Production CDNs (Fastly/CloudFront) wire the
+    same.
+  - Read-only. The fixture explicitly rejects POST / PUT / etc
+    with 405; tile state is mutated only by the production
+    stack's Tessera writer.
 
 OVERVIEW:
-    NewCDNFileServer(t, root) → httptest.Server with:
-        GET /tile/...        → bytes from <root>/tile/...
-        GET /tile/entries/... → bytes from <root>/tile/entries/...
-        GET /checkpoint      → bytes from <root>/checkpoint
-        anything else        → 404 (paths) or 405 (methods)
 
-    BaseURL()                → URL the auditor / DID-doc points to.
-    HitCount(path)           → request count for a given path.
-    DistinctPaths()          → number of distinct paths served.
+	NewCDNFileServer(t, root) → httptest.Server with:
+	    GET /tile/...        → bytes from <root>/tile/...
+	    GET /tile/entries/... → bytes from <root>/tile/entries/...
+	    GET /checkpoint      → bytes from <root>/checkpoint
+	    anything else        → 404 (paths) or 405 (methods)
+
+	BaseURL()                → URL the auditor / DID-doc points to.
+	HitCount(path)           → request count for a given path.
+	DistinctPaths()          → number of distinct paths served.
 
 KEY DEPENDENCIES:
-    - net/http, net/http/httptest: standard server primitives.
-    - tests/scenarios_skel_test.go: tmpDir helper.
+  - net/http, net/http/httptest: standard server primitives.
+  - tests/scenarios_skel_test.go: tmpDir helper.
 */
 package tests
 
@@ -95,7 +98,9 @@ type cdnFileServer struct {
 // NewCDNFileServer returns a fresh fixture serving root. The root
 // is typically the Tessera POSIX storage path; the file server
 // strips the prefix so requests like
-//   GET <baseURL>/tile/0/x000
+//
+//	GET <baseURL>/tile/0/x000
+//
 // resolve to <root>/tile/0/x000.
 func NewCDNFileServer(t *testing.T, root string) *cdnFileServer {
 	t.Helper()
@@ -152,9 +157,9 @@ func (c *cdnFileServer) LastServedAt(path string) time.Time {
 //   - Method gating: GET / HEAD only. Other methods → 405.
 //   - CORS: every response carries Access-Control-Allow-Origin: *.
 //   - Path classification:
-//       /tile/...       → immutable cache header
-//       /checkpoint     → max-age=1 cache header
-//       (anything else) → 404
+//     /tile/...       → immutable cache header
+//     /checkpoint     → max-age=1 cache header
+//     (anything else) → 404
 //   - Path-traversal defence: filepath.Clean(joined) MUST stay
 //     under root; otherwise 403.
 func (c *cdnFileServer) routerHandler() http.Handler {

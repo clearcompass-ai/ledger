@@ -103,7 +103,7 @@ func scopeAuth() *envelope.AuthorityPath {
 // admission resolver.
 type synSigner struct {
 	priv *ecdsa.PrivateKey
-	did string
+	did  string
 }
 
 // resolveSyntheticSigner returns a stable keypair for a test label.
@@ -123,7 +123,7 @@ type synSigner struct {
 // suite relies on cross-process determinism). Concurrent-safe.
 var (
 	synSignersMu sync.Mutex
-	synSigners = make(map[string]synSigner)
+	synSigners   = make(map[string]synSigner)
 )
 
 func resolveSyntheticSigner(label string) synSigner {
@@ -371,7 +371,7 @@ func didForUser(i int) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type mockFetcher struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
 	entries map[types.LogPosition]*types.EntryWithMetadata
 }
 
@@ -415,10 +415,10 @@ func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher types.EntryF
 // ─────────────────────────────────────────────────────────────────────────────
 
 type testHarness struct {
-	tree *smt.Tree
+	tree    *smt.Tree
 	fetcher *mockFetcher
-	schema builder.SchemaResolver
-	buffer *builder.DeltaWindowBuffer
+	schema  builder.SchemaResolver
+	buffer  *builder.DeltaWindowBuffer
 }
 
 func newHarness() *testHarness {

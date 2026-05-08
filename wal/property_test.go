@@ -1,43 +1,46 @@
 /*
 FILE PATH:
-    wal/property_test.go
+
+	wal/property_test.go
 
 DESCRIPTION:
-    J2 — Property-based tests for the WAL state machine using
-    pgregory.net/rapid. Random sequences of {Submit, Sequence,
-    MarkShipped, MarkRetry, MarkManual} must satisfy every
-    documented invariant.
 
-    Catches subtle race-shape bugs that example tests miss
-    because example tests use a fixed sequence of operations;
-    rapid generates random sequences and shrinks failures to
-    minimal repros.
+	J2 — Property-based tests for the WAL state machine using
+	pgregory.net/rapid. Random sequences of {Submit, Sequence,
+	MarkShipped, MarkRetry, MarkManual} must satisfy every
+	documented invariant.
+
+	Catches subtle race-shape bugs that example tests miss
+	because example tests use a fixed sequence of operations;
+	rapid generates random sequences and shrinks failures to
+	minimal repros.
 
 KEY ARCHITECTURAL DECISIONS:
-    - In-memory Badger so the test runs in milliseconds and
-      doesn't touch disk. Production semantics are byte-faithful
-      to the in-memory backend (Badger's WriteBatch + memtable
-      paths are exercised the same way).
-    - Shadow model (`walModel`) mirrors the documented transition
-      table. After every random operation, the WAL's externally-
-      observable state must match the shadow model.
-    - Up to 100 entries per sequence × up to 200 ops gives ~20K
-      operations per Check invocation. rapid runs ~100 Checks by
-      default (configurable via -rapid.checks).
-    - Skips ops that are NoOps in the model (e.g., MarkRetry on a
-      hash not yet Submitted). Those are valid runtime patterns
-      and shouldn't bias the property's success criterion.
+  - In-memory Badger so the test runs in milliseconds and
+    doesn't touch disk. Production semantics are byte-faithful
+    to the in-memory backend (Badger's WriteBatch + memtable
+    paths are exercised the same way).
+  - Shadow model (`walModel`) mirrors the documented transition
+    table. After every random operation, the WAL's externally-
+    observable state must match the shadow model.
+  - Up to 100 entries per sequence × up to 200 ops gives ~20K
+    operations per Check invocation. rapid runs ~100 Checks by
+    default (configurable via -rapid.checks).
+  - Skips ops that are NoOps in the model (e.g., MarkRetry on a
+    hash not yet Submitted). Those are valid runtime patterns
+    and shouldn't bias the property's success criterion.
 
 OVERVIEW:
-    Properties pinned:
-      P1 hash uniqueness:    no two pending entries share a hash
-      P2 state monotonicity: Pending → Sequenced → Shipped/Manual,
-                              never backward
-      P3 wire fidelity:      Read after Submit returns same bytes
-      P4 idempotent Submit:  Submit(h, w) twice = one WAL entry
-      P5 idempotent Shipped: MarkShipped twice is a no-op (no error)
-      P6 retry invariant:    Attempts only increases monotonically
-      P7 terminal Shipped:   No state transition out of StateShipped
+
+	Properties pinned:
+	  P1 hash uniqueness:    no two pending entries share a hash
+	  P2 state monotonicity: Pending → Sequenced → Shipped/Manual,
+	                          never backward
+	  P3 wire fidelity:      Read after Submit returns same bytes
+	  P4 idempotent Submit:  Submit(h, w) twice = one WAL entry
+	  P5 idempotent Shipped: MarkShipped twice is a no-op (no error)
+	  P6 retry invariant:    Attempts only increases monotonically
+	  P7 terminal Shipped:   No state transition out of StateShipped
 */
 package wal
 

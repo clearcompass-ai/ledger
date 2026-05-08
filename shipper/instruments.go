@@ -1,20 +1,22 @@
 /*
 FILE PATH:
-    shipper/instruments.go
+
+	shipper/instruments.go
 
 DESCRIPTION:
-    D5 — Shipper pending-count gauge.
 
-        attesta_shipper_pending_total
+	D5 — Shipper pending-count gauge.
 
-    Records the count of StateSequenced entries waiting to be
-    shipped to the bytestore. Drives the SRE alert "shipper is
-    falling behind" — long-tail backlog growth indicates either
-    bytestore degradation OR insufficient shipper workers.
+	    attesta_shipper_pending_total
+
+	Records the count of StateSequenced entries waiting to be
+	shipped to the bytestore. Drives the SRE alert "shipper is
+	falling behind" — long-tail backlog growth indicates either
+	bytestore degradation OR insufficient shipper workers.
 
 KEY ARCHITECTURAL DECISIONS:
-    - ObservableGauge — read-on-scrape from a provider.
-    - Single value, no labels. The shipper is a singleton.
+  - ObservableGauge — read-on-scrape from a provider.
+  - Single value, no labels. The shipper is a singleton.
 */
 package shipper
 

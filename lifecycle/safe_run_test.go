@@ -1,23 +1,25 @@
 /*
 FILE PATH:
-    lifecycle/safe_run_test.go
+
+	lifecycle/safe_run_test.go
 
 DESCRIPTION:
-    Tests for SafeRun + SafeRunInWG. Pins the panic-recovery
-    contract: a goroutine that panics MUST surface the panic via
-    the fatal channel + slog event, and the recovered error MUST
-    wrap ErrPanicRecovered so callers can errors.Is on the
-    sentinel.
+
+	Tests for SafeRun + SafeRunInWG. Pins the panic-recovery
+	contract: a goroutine that panics MUST surface the panic via
+	the fatal channel + slog event, and the recovered error MUST
+	wrap ErrPanicRecovered so callers can errors.Is on the
+	sentinel.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Each test exercises ONE invariant. No table-driven hybrid
-      that masks which assertion failed.
-    - http.ErrAbortHandler re-panic is exercised explicitly via
-      a defer-recover in the test (mirrors the SDK's gossip +
-      cosign self-encapsulating recovery test pattern).
-    - WaitGroup variant pinned so callers using SafeRunInWG can
-      rely on wg.Wait() returning even when the goroutine
-      panicked.
+  - Each test exercises ONE invariant. No table-driven hybrid
+    that masks which assertion failed.
+  - http.ErrAbortHandler re-panic is exercised explicitly via
+    a defer-recover in the test (mirrors the SDK's gossip +
+    cosign self-encapsulating recovery test pattern).
+  - WaitGroup variant pinned so callers using SafeRunInWG can
+    rely on wg.Wait() returning even when the goroutine
+    panicked.
 */
 package lifecycle
 

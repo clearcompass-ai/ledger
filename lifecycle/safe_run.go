@@ -1,53 +1,56 @@
 /*
 FILE PATH:
-    lifecycle/safe_run.go
+
+	lifecycle/safe_run.go
 
 DESCRIPTION:
-    Panic-recovery wrapper for long-running background goroutines.
-    Every goroutine spawned by cmd/ledger/main.go (Sequencer, Shipper,
-    EquivocationScanner, AntiEntropy, AnchorPublisher, etc.) is
-    protected by a defer-recover that captures any panic, captures
-    a bounded stack trace, logs it as a structured event, and
-    surfaces the panic value via a fatal channel so the supervisor
-    can terminate the process cleanly.
+
+	Panic-recovery wrapper for long-running background goroutines.
+	Every goroutine spawned by cmd/ledger/main.go (Sequencer, Shipper,
+	EquivocationScanner, AntiEntropy, AnchorPublisher, etc.) is
+	protected by a defer-recover that captures any panic, captures
+	a bounded stack trace, logs it as a structured event, and
+	surfaces the panic value via a fatal channel so the supervisor
+	can terminate the process cleanly.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Mirrors the SDK's gossip + cosign self-encapsulating
-      defer-recover pattern (attesta v0.1.2). Where the SDK
-      protects HTTP handlers from panics surfaced inside its own
-      ServeHTTP, this protects the LEDGER's own background
-      goroutines from panics surfaced inside their hot loops.
-    - Stack capture is bounded to MaxRecoveredStackBytes (8 KiB)
-      to keep panic-storm log volume bounded — a runaway loop
-      panicking 1000×/sec must not flood the log shipper.
-    - Fatal-channel surfacing ensures a panicked goroutine
-      terminates the process via the supervisor's existing
-      fatal-channel pathway. Process-level termination is the
-      orchestrator's signal (k8s/systemd/bare-metal restart-loops).
-    - http.ErrAbortHandler is re-panicked (matches stdlib idiom);
-      it's an in-band abort signal used by stdlib's TimeoutHandler,
-      not a real panic.
-    - Pure function over a Run-shaped goroutine; doesn't introduce
-      a framework. The Go-idiomatic wrapper.
+  - Mirrors the SDK's gossip + cosign self-encapsulating
+    defer-recover pattern (attesta v0.1.2). Where the SDK
+    protects HTTP handlers from panics surfaced inside its own
+    ServeHTTP, this protects the LEDGER's own background
+    goroutines from panics surfaced inside their hot loops.
+  - Stack capture is bounded to MaxRecoveredStackBytes (8 KiB)
+    to keep panic-storm log volume bounded — a runaway loop
+    panicking 1000×/sec must not flood the log shipper.
+  - Fatal-channel surfacing ensures a panicked goroutine
+    terminates the process via the supervisor's existing
+    fatal-channel pathway. Process-level termination is the
+    orchestrator's signal (k8s/systemd/bare-metal restart-loops).
+  - http.ErrAbortHandler is re-panicked (matches stdlib idiom);
+    it's an in-band abort signal used by stdlib's TimeoutHandler,
+    not a real panic.
+  - Pure function over a Run-shaped goroutine; doesn't introduce
+    a framework. The Go-idiomatic wrapper.
 
 OVERVIEW:
-    Background goroutine is wrapped:
 
-        wg.Add(1)
-        go SafeRun(ctx, "sequencer", logger, fatalCh, func() error {
-            return seq.Run(ctx)
-        })
+	Background goroutine is wrapped:
 
-    Returns ctx.Err() OR the wrapped function's terminal error OR
-    the recovered panic value (wrapped in ErrPanicRecovered). On
-    panic the stack trace is logged BEFORE the fatal-channel send
-    so debugging artifacts are present in the log stream even if
-    the supervisor terminates the process before flushing.
+	    wg.Add(1)
+	    go SafeRun(ctx, "sequencer", logger, fatalCh, func() error {
+	        return seq.Run(ctx)
+	    })
+
+	Returns ctx.Err() OR the wrapped function's terminal error OR
+	the recovered panic value (wrapped in ErrPanicRecovered). On
+	panic the stack trace is logged BEFORE the fatal-channel send
+	so debugging artifacts are present in the log stream even if
+	the supervisor terminates the process before flushing.
 
 KEY DEPENDENCIES:
-    - log/slog: structured logging.
-    - runtime/debug: bounded stack capture.
-    - errors: typed sentinel for panic-classified errors.
+  - log/slog: structured logging.
+  - runtime/debug: bounded stack capture.
+  - errors: typed sentinel for panic-classified errors.
 */
 package lifecycle
 
@@ -100,15 +103,15 @@ var ErrPanicRecovered = errors.New("lifecycle: goroutine panic recovered")
 //
 // The standard cmd/ledger/main.go pattern is:
 //
-//   wg.Add(1)
-//   go func() {
-//       defer wg.Done()
-//       if err := lifecycle.SafeRun(ctx, "shipper", logger, fatal, func() error {
-//           return ship.Run(ctx)
-//       }); err != nil && !errors.Is(err, context.Canceled) {
-//           // err already in fatal channel + logged; nothing to do
-//       }
-//   }()
+//	wg.Add(1)
+//	go func() {
+//	    defer wg.Done()
+//	    if err := lifecycle.SafeRun(ctx, "shipper", logger, fatal, func() error {
+//	        return ship.Run(ctx)
+//	    }); err != nil && !errors.Is(err, context.Canceled) {
+//	        // err already in fatal channel + logged; nothing to do
+//	    }
+//	}()
 func SafeRun(
 	ctx context.Context,
 	name string,

@@ -87,7 +87,8 @@ func testKeyDID(t *testing.T) (*ecdsa.PrivateKey, string) {
 // header gate so tests can exercise the server's entry.Validate() step
 // against forged-malformed entries.
 //
-//  NOTE: The wire format embeds the multi-sig section INSIDE the
+//	NOTE: The wire format embeds the multi-sig section INSIDE the
+//
 // canonical bytes. envelope.Serialize is total only on entries whose
 // Signatures section is well-formed; an empty Signatures slice panics
 // per envelope/serialize.go:443. Both branches below sign the entry

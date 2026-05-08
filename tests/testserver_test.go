@@ -170,7 +170,7 @@ func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.Tre
 
 type testServer struct {
 	URL string
-	op *testLedger // kept for lifetime ownership; teardown is via t.Cleanup.
+	op  *testLedger // kept for lifetime ownership; teardown is via t.Cleanup.
 }
 
 // Close is a no-op. startTestLedger registers a t.Cleanup that

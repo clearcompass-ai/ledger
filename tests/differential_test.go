@@ -3,39 +3,41 @@
 
 /*
 FILE PATH:
-    tests/differential_test.go
+
+	tests/differential_test.go
 
 DESCRIPTION:
-    J3 — Differential test: cmd/ledger (writer) vs cmd/ledger-reader
-    (read-only replica) MUST serve byte-identical responses for
-    the same proof query against the same underlying state.
 
-    Confirms Pure CQRS read-path correctness (Ledger principle #8):
-    the read endpoints don't depend on which process serves them;
-    they depend only on the underlying Postgres + Tessera dir +
-    bytestore.
+	J3 — Differential test: cmd/ledger (writer) vs cmd/ledger-reader
+	(read-only replica) MUST serve byte-identical responses for
+	the same proof query against the same underlying state.
 
-    Run via:
-        ATTESTA_TEST_DSN=postgres://... \
-            go test -tags=differential -count=1 -timeout 5m ./tests/
+	Confirms Pure CQRS read-path correctness (Ledger principle #8):
+	the read endpoints don't depend on which process serves them;
+	they depend only on the underlying Postgres + Tessera dir +
+	bytestore.
+
+	Run via:
+	    ATTESTA_TEST_DSN=postgres://... \
+	        go test -tags=differential -count=1 -timeout 5m ./tests/
 
 KEY ARCHITECTURAL DECISIONS:
-    - Single in-process harness with TWO api.Server instances:
-      one with full Handlers (writer), one with read-only
-      Handlers (reader). Same deps (pool, tessera, bytestore)
-      threaded into both. Faithful to the production CQRS
-      contract: read handlers depend ONLY on the Reader/Fetcher
-      interfaces — never on writer-side state.
-    - Build tag isolates this from `go test ./...` because it
-      requires Postgres (ATTESTA_TEST_DSN).
-    - Per-endpoint comparison: status code + Content-Type +
-      body bytes must be byte-identical. Differences in
-      X-Request-ID and Date headers are tolerated; everything
-      else is required to match.
-    - Submission flow: writer admits N entries, drains
-      sequencer, advances HWM. After the cycle, both endpoints
-      produce identical responses for every (admitted, sequenced,
-      shipped) entry's proofs.
+  - Single in-process harness with TWO api.Server instances:
+    one with full Handlers (writer), one with read-only
+    Handlers (reader). Same deps (pool, tessera, bytestore)
+    threaded into both. Faithful to the production CQRS
+    contract: read handlers depend ONLY on the Reader/Fetcher
+    interfaces — never on writer-side state.
+  - Build tag isolates this from `go test ./...` because it
+    requires Postgres (ATTESTA_TEST_DSN).
+  - Per-endpoint comparison: status code + Content-Type +
+    body bytes must be byte-identical. Differences in
+    X-Request-ID and Date headers are tolerated; everything
+    else is required to match.
+  - Submission flow: writer admits N entries, drains
+    sequencer, advances HWM. After the cycle, both endpoints
+    produce identical responses for every (admitted, sequenced,
+    shipped) entry's proofs.
 */
 package tests
 

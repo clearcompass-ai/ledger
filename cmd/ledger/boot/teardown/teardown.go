@@ -57,9 +57,12 @@ import (
 // Spec order:
 //
 //  1. http-server (drain in-flight requests)
+//
 //  2. pprof-server (close diagnostic listener)
+//
 //  3. background-goroutines (wg.Wait — sequencer/shipper/builder/
 //     gossip observers all drain)
+//
 //  4. alloc closers in REVERSE registration order (newest first):
 //     gossip-bundle-closeable(s) → gossip-store → tessera-antispam →
 //     bytestore → tessera-embedded → wal-db → wal-committer →

@@ -36,9 +36,9 @@ type InclusionProver interface {
 // TreeDeps holds dependencies for tree handlers.
 type TreeDeps struct {
 	TreeHeadStore TreeHeadFetcher
-	Inclusion InclusionProver
-	Consistency ConsistencyProver
-	Logger *slog.Logger
+	Inclusion     InclusionProver
+	Consistency   ConsistencyProver
+	Logger        *slog.Logger
 }
 
 // NewTreeHeadHandler creates GET /v1/tree/head[?size=N].

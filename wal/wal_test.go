@@ -194,10 +194,10 @@ func TestWAL_StateMachine_PendingToShipped(t *testing.T) {
 	}
 
 	steps := []struct {
-		name string
-		do func() error
+		name      string
+		do        func() error
 		wantState EntryState
-		wantSeq uint64
+		wantSeq   uint64
 	}{
 		{"after submit", func() error { return nil }, StatePending, 0},
 		{"sequence", func() error { return c.Sequence(ctx, hash, 42) }, StateSequenced, 42},

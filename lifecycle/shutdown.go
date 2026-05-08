@@ -1,60 +1,63 @@
 /*
 FILE PATH:
-    lifecycle/shutdown.go
+
+	lifecycle/shutdown.go
 
 DESCRIPTION:
-    Ordered shutdown helper. Each registered step runs sequentially
-    with its OWN bounded ctx (per-component timeout, no shared
-    budget) so a slow tessera flush can't consume the budget that
-    pgxpool.Close needs. After all steps finish, Summary returns
-    per-component drain durations + errors for a final Info log.
+
+	Ordered shutdown helper. Each registered step runs sequentially
+	with its OWN bounded ctx (per-component timeout, no shared
+	budget) so a slow tessera flush can't consume the budget that
+	pgxpool.Close needs. After all steps finish, Summary returns
+	per-component drain durations + errors for a final Info log.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Steps run in REGISTRATION ORDER (not LIFO like Go defers).
-      This is the load-bearing invariant: cmd/ledger registers
-      steps in the order the I1 spec mandates (http.Shutdown →
-      sequencer cancel+wait → shipper cancel+wait → bytestore →
-      tessera → WAL → gossipstore → pgxpool → OTel) and Run
-      executes that order verbatim.
-    - Per-component timeouts (I2). A 30 s "shared" shutdown budget
-      is a footgun: if step 3 (http.Shutdown) consumes 28 s,
-      steps 4-11 get 2 s combined. Per-component budgets fix this
-      structurally — every step gets exactly its allotment, no
-      cross-talk.
-    - Each step's fn is called via sync.Once so registering AND
-      defer-fallback-calling the same step is idempotent. Keeps
-      the boot-time panic-safety pattern (defer some.Close())
-      compatible with the explicit Run path: whichever fires
-      first does the work, the other becomes a no-op.
-    - Summary returns a slice ordered by registration so the
-      final log line shows the same sequence administrators registered.
+  - Steps run in REGISTRATION ORDER (not LIFO like Go defers).
+    This is the load-bearing invariant: cmd/ledger registers
+    steps in the order the I1 spec mandates (http.Shutdown →
+    sequencer cancel+wait → shipper cancel+wait → bytestore →
+    tessera → WAL → gossipstore → pgxpool → OTel) and Run
+    executes that order verbatim.
+  - Per-component timeouts (I2). A 30 s "shared" shutdown budget
+    is a footgun: if step 3 (http.Shutdown) consumes 28 s,
+    steps 4-11 get 2 s combined. Per-component budgets fix this
+    structurally — every step gets exactly its allotment, no
+    cross-talk.
+  - Each step's fn is called via sync.Once so registering AND
+    defer-fallback-calling the same step is idempotent. Keeps
+    the boot-time panic-safety pattern (defer some.Close())
+    compatible with the explicit Run path: whichever fires
+    first does the work, the other becomes a no-op.
+  - Summary returns a slice ordered by registration so the
+    final log line shows the same sequence administrators registered.
 
 OVERVIEW:
-    Boot:
-        sc := lifecycle.NewShutdownChain(logger)
-        sc.Add("http-server", 30*time.Second, func(ctx) error {
-            return server.Shutdown(ctx)
-        })
-        sc.Add("sequencer", 10*time.Second, func(ctx) error {
-            seqCancel()
-            sequencerWG.Wait()
-            return nil
-        })
-        ... and so on for shipper, bytestore, tessera, WAL,
-        gossipstore, pgxpool, OTel ...
 
-    Shutdown:
-        sc.Run(context.Background())
-        for _, step := range sc.Summary() {
-            logger.Info("shutdown step",
-                "name", step.Name,
-                "duration", step.Duration,
-                "err", step.Err)
-        }
+	Boot:
+	    sc := lifecycle.NewShutdownChain(logger)
+	    sc.Add("http-server", 30*time.Second, func(ctx) error {
+	        return server.Shutdown(ctx)
+	    })
+	    sc.Add("sequencer", 10*time.Second, func(ctx) error {
+	        seqCancel()
+	        sequencerWG.Wait()
+	        return nil
+	    })
+	    ... and so on for shipper, bytestore, tessera, WAL,
+	    gossipstore, pgxpool, OTel ...
+
+	Shutdown:
+	    sc.Run(context.Background())
+	    for _, step := range sc.Summary() {
+	        logger.Info("shutdown step",
+	            "name", step.Name,
+	            "duration", step.Duration,
+	            "err", step.Err)
+	    }
 
 KEY DEPENDENCIES:
-    - context: per-component bounded ctx.
-    - sync.Once: idempotent fn.
+  - context: per-component bounded ctx.
+  - sync.Once: idempotent fn.
 */
 package lifecycle
 

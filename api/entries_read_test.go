@@ -44,9 +44,9 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type fakeSeqHashLookup struct {
-	hashesBySeq map[uint64][32]byte
+	hashesBySeq  map[uint64][32]byte
 	logTimeBySeq map[uint64]time.Time
-	err error
+	err          error
 }
 
 func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
@@ -61,11 +61,11 @@ func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]b
 }
 
 type fakeWAL struct {
-	mu sync.Mutex
-	wires map[[32]byte][]byte
-	metas map[[32]byte]wal.Meta
-	notFound map[[32]byte]bool // hashes for which MetaState returns wal.ErrNotFound
-	hardErr error
+	mu         sync.Mutex
+	wires      map[[32]byte][]byte
+	metas      map[[32]byte]wal.Meta
+	notFound   map[[32]byte]bool // hashes for which MetaState returns wal.ErrNotFound
+	hardErr    error
 	readHardEr error
 }
 
@@ -110,7 +110,7 @@ func (f *fakeWAL) MetaState(_ context.Context, hash [32]byte) (wal.Meta, error) 
 
 type fakePublicURLer struct {
 	urlByPair map[uint64]string
-	err error
+	err       error
 }
 
 func (f *fakePublicURLer) PublicURL(seq uint64, _ [32]byte) (string, error) {

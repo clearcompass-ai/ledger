@@ -67,7 +67,7 @@ func NewPostgresQueryAPI(ctx context.Context, db *pgxpool.Pool, reader bytestore
 // canonical_hash is required to construct the bytestore object key
 // for the read-side hydrate; log_time and seq populate the response.
 type indexMeta struct {
-	Seq uint64
+	Seq  uint64
 	Time time.Time
 	Hash [32]byte
 }
@@ -90,8 +90,8 @@ func (q *PostgresQueryAPI) scanAndHydrate(ctx context.Context, rows interface {
 	var metas []indexMeta
 	for rows.Next() {
 		var (
-			seq uint64
-			lt time.Time
+			seq     uint64
+			lt      time.Time
 			hashCol []byte
 		)
 		if err := rows.Scan(&seq, &lt, &hashCol); err != nil {

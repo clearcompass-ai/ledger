@@ -435,11 +435,11 @@ func (op *soakLedger) seedSoakSession(t *testing.T, token, exchangeDID string, c
 // ─────────────────────────────────────────────────────────────────────
 
 type latencySampler struct {
-	mu sync.Mutex
+	mu      sync.Mutex
 	samples []time.Duration
-	cap int
-	seen int
-	rng *rand.Rand
+	cap     int
+	seen    int
+	rng     *rand.Rand
 }
 
 func newLatencySampler(capacity int) *latencySampler {

@@ -1,47 +1,50 @@
 /*
 FILE PATH:
-    api/middleware/request_id.go
+
+	api/middleware/request_id.go
 
 DESCRIPTION:
-    Per-request correlation ID middleware. Reads an inbound
-    X-Request-ID header (administrator-supplied or proxy-injected) or
-    generates a fresh UUIDv4 when absent. The ID is echoed in the
-    response header AND stitched into the request context so
-    downstream handlers + structured logs carry the same ID end-to-
-    end.
+
+	Per-request correlation ID middleware. Reads an inbound
+	X-Request-ID header (administrator-supplied or proxy-injected) or
+	generates a fresh UUIDv4 when absent. The ID is echoed in the
+	response header AND stitched into the request context so
+	downstream handlers + structured logs carry the same ID end-to-
+	end.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Header-name + max length are constants. A hostile caller
-      cannot supply an unbounded ID — values longer than
-      MaxRequestIDLength are rejected and a fresh ID is generated.
-    - UUIDv4 generation goes through crypto/rand. No predictable
-      counter or wall-clock-derived ID — defends against forensic
-      ID-collision and against an attacker correlating IDs across
-      concurrent unrelated requests.
-    - context.Value uses an unexported sentinel type to prevent
-      cross-package collisions (Go idiom; the auth middleware
-      already uses the same pattern).
-    - Pure middleware: no logging, no metrics. Logging is the
-      handler's responsibility (slog.With("request_id", ...)).
-      Logging here would double-emit on every request and obscure
-      the per-handler vocabulary.
+  - Header-name + max length are constants. A hostile caller
+    cannot supply an unbounded ID — values longer than
+    MaxRequestIDLength are rejected and a fresh ID is generated.
+  - UUIDv4 generation goes through crypto/rand. No predictable
+    counter or wall-clock-derived ID — defends against forensic
+    ID-collision and against an attacker correlating IDs across
+    concurrent unrelated requests.
+  - context.Value uses an unexported sentinel type to prevent
+    cross-package collisions (Go idiom; the auth middleware
+    already uses the same pattern).
+  - Pure middleware: no logging, no metrics. Logging is the
+    handler's responsibility (slog.With("request_id", ...)).
+    Logging here would double-emit on every request and obscure
+    the per-handler vocabulary.
 
 OVERVIEW:
-    Wrap any http.Handler. On entry, read the X-Request-ID header.
-    Validate (non-empty, length-bounded, printable-ASCII). If
-    invalid OR absent, generate a UUIDv4. Set the context key.
-    Echo the ID in the response header so callers can correlate
-    their client-side logs against the ledger's logs by literal
-    string match. Call the wrapped handler.
+
+	Wrap any http.Handler. On entry, read the X-Request-ID header.
+	Validate (non-empty, length-bounded, printable-ASCII). If
+	invalid OR absent, generate a UUIDv4. Set the context key.
+	Echo the ID in the response header so callers can correlate
+	their client-side logs against the ledger's logs by literal
+	string match. Call the wrapped handler.
 
 KEY DEPENDENCIES:
-    - crypto/rand: cryptographically-strong UUIDv4 generation.
-    - encoding/hex: efficient byte-to-string formatting (UUIDv4
-      uses canonical 8-4-4-4-12 hex form).
-    - github.com/google/uuid (already in go.sum): standardized
-      UUIDv4 generation matching the wider Go ecosystem so
-      downstream tools (tracing, log aggregation) parse the form
-      without bespoke regex.
+  - crypto/rand: cryptographically-strong UUIDv4 generation.
+  - encoding/hex: efficient byte-to-string formatting (UUIDv4
+    uses canonical 8-4-4-4-12 hex form).
+  - github.com/google/uuid (already in go.sum): standardized
+    UUIDv4 generation matching the wider Go ecosystem so
+    downstream tools (tracing, log aggregation) parse the form
+    without bespoke regex.
 */
 package middleware
 

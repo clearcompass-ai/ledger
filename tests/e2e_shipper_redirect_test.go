@@ -140,15 +140,15 @@ var _ opbytestore.Backend = (*localPublicURLBackend)(nil)
 
 type e2eLedger struct {
 	BaseURL string
-	Pool *pgxpool.Pool
-	WAL *wal.Committer
+	Pool    *pgxpool.Pool
+	WAL     *wal.Committer
 	Backend *localPublicURLBackend
 	Shipper *shipper.Shipper
 
 	// SCT/MMD additions
 	LedgerSignerPriv *ecdsa.PrivateKey
-	LogDID string
-	MMD time.Duration
+	LogDID           string
+	MMD              time.Duration
 
 	cancel context.CancelFunc
 }

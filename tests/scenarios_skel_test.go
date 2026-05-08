@@ -2,39 +2,42 @@
 
 /*
 FILE PATH:
-    tests/scenarios_skel_test.go
+
+	tests/scenarios_skel_test.go
 
 DESCRIPTION:
-    Layer 0 scenarios suite — package-level scaffolding shared across the ten
-    persona / realistic-load test files. Build-tag isolated so the default
-    `go test ./...` run does not pull in real Tessera, witness HTTP servers,
-    or the CDN file emulator.
+
+	Layer 0 scenarios suite — package-level scaffolding shared across the ten
+	persona / realistic-load test files. Build-tag isolated so the default
+	`go test ./...` run does not pull in real Tessera, witness HTTP servers,
+	or the CDN file emulator.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Same `tests` package as the existing harness so `startTestLedger`,
-      `cleanTables`, `signedWire`, `testKeypair`, etc. compose without
-      re-export contortions. The `//go:build scenarios` tag isolates this
-      file's symbols from the default build.
-    - All scenarios skip when `ATTESTA_TEST_DSN` is unset, mirroring soak.
-    - `scenarioConfig` centralises tunables (MMD, batch size, log DID prefix)
-      so persona tests assert against a single source of truth.
-    - Topology is anchored cryptographically per Trust Alignment 3:
-      no static {DID → URL} map; bindings live in a signed
-      `KindOriginatorRotation` event the auditor verifies before
-      following the endpoint. See scenarios_topology_test.go.
+  - Same `tests` package as the existing harness so `startTestLedger`,
+    `cleanTables`, `signedWire`, `testKeypair`, etc. compose without
+    re-export contortions. The `//go:build scenarios` tag isolates this
+    file's symbols from the default build.
+  - All scenarios skip when `ATTESTA_TEST_DSN` is unset, mirroring soak.
+  - `scenarioConfig` centralises tunables (MMD, batch size, log DID prefix)
+    so persona tests assert against a single source of truth.
+  - Topology is anchored cryptographically per Trust Alignment 3:
+    no static {DID → URL} map; bindings live in a signed
+    `KindOriginatorRotation` event the auditor verifies before
+    following the endpoint. See scenarios_topology_test.go.
 
 OVERVIEW:
-    TestMain enforces the DSN gate once per package run, then defers
-    individual harness construction to per-persona files. `mustEnv`,
-    `tmpDir`, `freePort`, and the small `must*` helpers are reused by
-    every harness file.
+
+	TestMain enforces the DSN gate once per package run, then defers
+	individual harness construction to per-persona files. `mustEnv`,
+	`tmpDir`, `freePort`, and the small `must*` helpers are reused by
+	every harness file.
 
 KEY DEPENDENCIES:
-    - tests/testserver_test.go: provides `startTestLedger`,
-      `cleanTables`, `connectPostgres`, the in-memory bytestore, and
-      the SubmissionDeps wiring. Layer 0 builds on top, never replaces.
-    - tests/helpers_test.go: provides DID/key/test-entry fixtures we
-      reuse without modification.
+  - tests/testserver_test.go: provides `startTestLedger`,
+    `cleanTables`, `connectPostgres`, the in-memory bytestore, and
+    the SubmissionDeps wiring. Layer 0 builds on top, never replaces.
+  - tests/helpers_test.go: provides DID/key/test-entry fixtures we
+    reuse without modification.
 */
 package tests
 

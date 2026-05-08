@@ -2,67 +2,70 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p4_peer_faults_test.go
+
+	tests/scenarios_p4_peer_faults_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 4 (Peer Ledger, fault-injected sub-tests).
-    Three operationally-realistic perturbation paths the gossip
-    network must survive:
 
-      - HonorsRateLimit_429 — Peer returns 429 + Retry-After
-        on Publish; the gossip client's typed RateLimitedError
-        carries the parsed delay; the originator's publish loop
-        is expected to back off (we assert the typed error,
-        not auto-retry behaviour, because retry is a runtime
-        decision the SDK explicitly leaves to callers).
-      - RebroadcastSucceedsIfAnyPeerSucceeds — A 3-peer fan-out
-        where one peer is hard-down: the originator's "publish
-        to N peers" loop succeeds end-to-end as long as at least
-        one peer accepts. This is the gossip layer's contribution
-        to the propagation invariant a Court / Insurance network
-        depends on: even partial network partitions converge.
-      - NetworkIDIsolation — The peer is configured for
-        NetworkID-A; the originator publishes under NetworkID-B;
-        the peer rejects with 403 / ErrNetworkNotConfigured. The
-        store carries no event from the wrong-network publish.
+	Layer 0 — Persona 4 (Peer Ledger, fault-injected sub-tests).
+	Three operationally-realistic perturbation paths the gossip
+	network must survive:
+
+	  - HonorsRateLimit_429 — Peer returns 429 + Retry-After
+	    on Publish; the gossip client's typed RateLimitedError
+	    carries the parsed delay; the originator's publish loop
+	    is expected to back off (we assert the typed error,
+	    not auto-retry behaviour, because retry is a runtime
+	    decision the SDK explicitly leaves to callers).
+	  - RebroadcastSucceedsIfAnyPeerSucceeds — A 3-peer fan-out
+	    where one peer is hard-down: the originator's "publish
+	    to N peers" loop succeeds end-to-end as long as at least
+	    one peer accepts. This is the gossip layer's contribution
+	    to the propagation invariant a Court / Insurance network
+	    depends on: even partial network partitions converge.
+	  - NetworkIDIsolation — The peer is configured for
+	    NetworkID-A; the originator publishes under NetworkID-B;
+	    the peer rejects with 403 / ErrNetworkNotConfigured. The
+	    store carries no event from the wrong-network publish.
 
 KEY ARCHITECTURAL DECISIONS:
-    - 429 path uses an httptest.Server that wraps the SDK's
-      handler in a faultable proxy (mirrors witnessSwarm's
-      httpFault pattern). We can't fault inject INSIDE the SDK's
-      handler; we wrap.
-    - Multi-peer fan-out is hand-coded rather than using
-      gossip.MultiSink because the test's contract is "the
-      originator's publish-to-N pattern works under failure".
-      MultiSink is the SDK's blessed implementation; we're
-      asserting the underlying invariant any equivalent
-      implementation must satisfy.
-    - NetworkID isolation deliberately drives the SAME originator
-      key across mismatched networks. The SDK's handler-level
-      rejection is the test's contract; the fact that
-      cryptographically-valid signatures still get rejected on
-      AllowedNetworks mismatch is the cryptographic-isolation
-      guarantee.
+  - 429 path uses an httptest.Server that wraps the SDK's
+    handler in a faultable proxy (mirrors witnessSwarm's
+    httpFault pattern). We can't fault inject INSIDE the SDK's
+    handler; we wrap.
+  - Multi-peer fan-out is hand-coded rather than using
+    gossip.MultiSink because the test's contract is "the
+    originator's publish-to-N pattern works under failure".
+    MultiSink is the SDK's blessed implementation; we're
+    asserting the underlying invariant any equivalent
+    implementation must satisfy.
+  - NetworkID isolation deliberately drives the SAME originator
+    key across mismatched networks. The SDK's handler-level
+    rejection is the test's contract; the fact that
+    cryptographically-valid signatures still get rejected on
+    AllowedNetworks mismatch is the cryptographic-isolation
+    guarantee.
 
 OVERVIEW:
-    runP4HonorsRateLimit429
-        → publish to a 429-returning peer; expect typed
-          gossip.RateLimitedError with non-zero RetryAfter.
-    runP4RebroadcastIfAny
-        → 3 peers, peer 0 hard-down. Originator publishes one
-          event to all three; ≥ 2 succeed; the originator's
-          "any success" rule lets the publish round complete.
-    runP4NetworkIDIsolation
-        → peer configured for net A; originator publishes under
-          net B; peer rejects; store empty.
+
+	runP4HonorsRateLimit429
+	    → publish to a 429-returning peer; expect typed
+	      gossip.RateLimitedError with non-zero RetryAfter.
+	runP4RebroadcastIfAny
+	    → 3 peers, peer 0 hard-down. Originator publishes one
+	      event to all three; ≥ 2 succeed; the originator's
+	      "any success" rule lets the publish round complete.
+	runP4NetworkIDIsolation
+	    → peer configured for net A; originator publishes under
+	      net B; peer rejects; store empty.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/gossip:
-      RateLimitedError, ErrRateLimited, NewClient.
-    - tests/scenarios_p4_peer_helpers_test.go: gossipPeer,
-      p4Originator, p4Verifier, p4SignAndPublish, p4MakeFinding.
-    - tests/scenarios_witness_test.go: httpFault (re-used for
-      consistent fault-injection mechanics).
+  - github.com/clearcompass-ai/attesta/gossip:
+    RateLimitedError, ErrRateLimited, NewClient.
+  - tests/scenarios_p4_peer_helpers_test.go: gossipPeer,
+    p4Originator, p4Verifier, p4SignAndPublish, p4MakeFinding.
+  - tests/scenarios_witness_test.go: httpFault (re-used for
+    consistent fault-injection mechanics).
 */
 package tests
 

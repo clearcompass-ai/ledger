@@ -110,13 +110,13 @@ type Config struct {
 
 // Shipper is the sequenced→shipped pipeline.
 type Shipper struct {
-	wal WAL
+	wal       WAL
 	bytestore Bytestore
-	cfg Config
-	logger *slog.Logger
+	cfg       Config
+	logger    *slog.Logger
 
 	completion chan uint64 // worker → hwmAdvancer
-	metrics Metrics
+	metrics    Metrics
 
 	// inflight tracks seqs currently between scan dispatch and
 	// shipOne return. Without this guard, scan ticks at PollInterval

@@ -290,7 +290,7 @@ func (s *BadgerStore) LatestSTH(
 	}
 
 	var (
-		ev gossip.SignedEvent
+		ev    gossip.SignedEvent
 		found bool
 	)
 	err := s.db.View(func(txn *badger.Txn) error {

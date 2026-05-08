@@ -71,14 +71,14 @@ import (
 
 // ShardMeta describes an archived shard's location and range.
 type ShardMeta struct {
-	ShardDID string `json:"shard_did"`
-	SequenceStart uint64 `json:"sequence_start"`
-	SequenceEnd uint64 `json:"sequence_end"`
+	ShardDID            string `json:"shard_did"`
+	SequenceStart       uint64 `json:"sequence_start"`
+	SequenceEnd         uint64 `json:"sequence_end"`
 	TileArchiveEndpoint string `json:"tile_archive_endpoint"` // Static tile files (hash-only).
 	ByteArchiveEndpoint string `json:"byte_archive_endpoint"` // Full entry bytes.
-	FinalRootHash string `json:"final_root_hash"`
-	FinalTreeSize uint64 `json:"final_tree_size"`
-	ChainPosition int `json:"chain_position"`
+	FinalRootHash       string `json:"final_root_hash"`
+	FinalTreeSize       uint64 `json:"final_tree_size"`
+	ChainPosition       int    `json:"chain_position"`
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -88,7 +88,7 @@ type ShardMeta struct {
 // ArchiveReader fetches entries from archived shards.
 // Implements the same Fetch signature as builder.EntryFetcher.
 type ArchiveReader struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	shards map[string]ShardMeta
 	client *http.Client
 }

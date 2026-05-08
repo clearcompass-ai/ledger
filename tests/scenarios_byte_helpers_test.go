@@ -2,66 +2,69 @@
 
 /*
 FILE PATH:
-    tests/scenarios_byte_helpers_test.go
+
+	tests/scenarios_byte_helpers_test.go
 
 DESCRIPTION:
-    Layer 0 — fixtures for the byte-for-byte read verification
-    family (BYTE-VER-01/02/03). Two pieces:
 
-      1. byteStoreHTTPServer — an httptest.Server that fronts
-         the in-process Memory bytestore over an
-         unauthenticated GET path matching the production
-         layoutKey: "<prefix>/<seq:016x>/<hash_hex>". This is
-         the byte path a real auditor would fetch through
-         the credential-free public bucket policy
-         (RFC 9162 § 4 + c2sp.org/tlog-tiles + bytestore/
-         publicurl.go's mapper).
+	Layer 0 — fixtures for the byte-for-byte read verification
+	family (BYTE-VER-01/02/03). Two pieces:
 
-      2. staticPublicURLer — implements api.PublicURLer by
-         composing "<base>/<prefix>/<seq:016x>/<hash_hex>"
-         and returning that string verbatim. Wired into the
-         test ledger via scenariosStackOpts.PublicURLer so
-         /v1/entries/{seq}/raw issues a real 302 redirect
-         BYTE-VER-02 can follow.
+	  1. byteStoreHTTPServer — an httptest.Server that fronts
+	     the in-process Memory bytestore over an
+	     unauthenticated GET path matching the production
+	     layoutKey: "<prefix>/<seq:016x>/<hash_hex>". This is
+	     the byte path a real auditor would fetch through
+	     the credential-free public bucket policy
+	     (RFC 9162 § 4 + c2sp.org/tlog-tiles + bytestore/
+	     publicurl.go's mapper).
+
+	  2. staticPublicURLer — implements api.PublicURLer by
+	     composing "<base>/<prefix>/<seq:016x>/<hash_hex>"
+	     and returning that string verbatim. Wired into the
+	     test ledger via scenariosStackOpts.PublicURLer so
+	     /v1/entries/{seq}/raw issues a real 302 redirect
+	     BYTE-VER-02 can follow.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Layout discipline. Both the server and the URLer use
-      the SAME layout function (byteLayoutKey) — drift
-      between them would mean the URL points where bytes
-      aren't. Same as bytestore/bytestore.go's layoutKey
-      pattern.
-    - Hash-only auth. The server returns 200 only when a
-      GET path matches the (seq, hash) of a stored entry.
-      Mismatched hashes return 404. This matches the
-      production GCS / S3 bucket behaviour where the
-      object key IS the (seq, hash) — wrong key, no bytes.
-    - We do NOT implement HEAD, range requests, or
-      conditional GET. Production CDNs do; the test
-      contract is "GET returns the bytes" — the rest is
-      Tier-2 polish.
-    - Concurrency. The Memory bytestore is sync.RWMutex-
-      backed; the HTTP server is httptest's stock; both
-      are safe under parallel goroutines. BYTE-VER-01
-      drives 1000 random fetches across goroutines.
+  - Layout discipline. Both the server and the URLer use
+    the SAME layout function (byteLayoutKey) — drift
+    between them would mean the URL points where bytes
+    aren't. Same as bytestore/bytestore.go's layoutKey
+    pattern.
+  - Hash-only auth. The server returns 200 only when a
+    GET path matches the (seq, hash) of a stored entry.
+    Mismatched hashes return 404. This matches the
+    production GCS / S3 bucket behaviour where the
+    object key IS the (seq, hash) — wrong key, no bytes.
+  - We do NOT implement HEAD, range requests, or
+    conditional GET. Production CDNs do; the test
+    contract is "GET returns the bytes" — the rest is
+    Tier-2 polish.
+  - Concurrency. The Memory bytestore is sync.RWMutex-
+    backed; the HTTP server is httptest's stock; both
+    are safe under parallel goroutines. BYTE-VER-01
+    drives 1000 random fetches across goroutines.
 
 OVERVIEW:
-    byteStoreHTTPServer       → fixture handle.
-    newByteStoreHTTPServer    → constructor (binds to
-                                Memory + cleanup hook).
-    .BaseURL()                → URL the URLer composes against.
-    .ObjectPrefix()           → layout prefix component.
 
-    staticPublicURLer         → api.PublicURLer impl.
-    newStaticPublicURLer      → constructor.
+	byteStoreHTTPServer       → fixture handle.
+	newByteStoreHTTPServer    → constructor (binds to
+	                            Memory + cleanup hook).
+	.BaseURL()                → URL the URLer composes against.
+	.ObjectPrefix()           → layout prefix component.
 
-    byteLayoutKey             → the canonical
-                                "<prefix>/<seq:016x>/<hash_hex>"
-                                — mirrors bytestore.layoutKey.
+	staticPublicURLer         → api.PublicURLer impl.
+	newStaticPublicURLer      → constructor.
+
+	byteLayoutKey             → the canonical
+	                            "<prefix>/<seq:016x>/<hash_hex>"
+	                            — mirrors bytestore.layoutKey.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/ledger/bytestore: Memory.
-    - github.com/clearcompass-ai/ledger/api: PublicURLer
-      interface.
+  - github.com/clearcompass-ai/ledger/bytestore: Memory.
+  - github.com/clearcompass-ai/ledger/api: PublicURLer
+    interface.
 */
 package tests
 

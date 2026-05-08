@@ -2,49 +2,51 @@
 
 /*
 FILE PATH:
-    tests/scenarios_mmd_sla_test.go
+
+	tests/scenarios_mmd_sla_test.go
 
 DESCRIPTION:
-    Layer 0 — the L3 SCT-as-SLA assertion. The entire architecture
-    pivots on the Maximum Merge Delay contract: when the ledger
-    fsync's a wire entry to its WAL and returns an SCT, it has
-    cryptographically promised that within MMD seconds an auditor
-    will be able to fetch a valid inclusion proof for that entry
-    against the ledger's published tree head.
 
-    Before this commit, no test in the suite asserted the contract
-    end-to-end. Stub-Merkle paths instantly satisfied any
-    hypothetical SLA. With Commit A's UseRealTessera switch and
-    Commit B's collapse of the shadow append, the SLA becomes
-    testable for the first time.
+	Layer 0 — the L3 SCT-as-SLA assertion. The entire architecture
+	pivots on the Maximum Merge Delay contract: when the ledger
+	fsync's a wire entry to its WAL and returns an SCT, it has
+	cryptographically promised that within MMD seconds an auditor
+	will be able to fetch a valid inclusion proof for that entry
+	against the ledger's published tree head.
+
+	Before this commit, no test in the suite asserted the contract
+	end-to-end. Stub-Merkle paths instantly satisfied any
+	hypothetical SLA. With Commit A's UseRealTessera switch and
+	Commit B's collapse of the shadow append, the SLA becomes
+	testable for the first time.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One stopwatch. The clock starts at the moment of HTTP POST
-      (just before the wire is sent) and stops on the FIRST poll
-      cycle that returns a valid inclusion proof. The total
-      elapsed wall-clock is asserted < MMD.
-    - The inclusion proof is fetched from /v1/tree/inclusion/{seq},
-      the production API, so any drift in that handler is caught.
-      The proof is also locally re-verified by the auditor against
-      the published TreeHead — Trust Alignment 6 (Parse, Don't
-      Validate). A handler that returns garbage that happens to
-      look like a proof will fail the verification step.
-    - Polling, never time.Sleep at the test top level. The poll
-      cadence is fixed (50 ms); the deadline is the MMD bound.
-      Any flake comes from the system, not the test scaffolding.
-    - Exceptional diagnostics on failure. The error message
-      includes elapsed wall clock, last status code observed, the
-      latest tree-size, and the sequence number — exactly what
-      an SRE needs to triage an MMD violation in production.
+  - One stopwatch. The clock starts at the moment of HTTP POST
+    (just before the wire is sent) and stops on the FIRST poll
+    cycle that returns a valid inclusion proof. The total
+    elapsed wall-clock is asserted < MMD.
+  - The inclusion proof is fetched from /v1/tree/inclusion/{seq},
+    the production API, so any drift in that handler is caught.
+    The proof is also locally re-verified by the auditor against
+    the published TreeHead — Trust Alignment 6 (Parse, Don't
+    Validate). A handler that returns garbage that happens to
+    look like a proof will fail the verification step.
+  - Polling, never time.Sleep at the test top level. The poll
+    cadence is fixed (50 ms); the deadline is the MMD bound.
+    Any flake comes from the system, not the test scaffolding.
+  - Exceptional diagnostics on failure. The error message
+    includes elapsed wall clock, last status code observed, the
+    latest tree-size, and the sequence number — exactly what
+    an SRE needs to triage an MMD violation in production.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_auditor_full_test.go: persona1Difficulty,
-      persona1Submit, persona1WaitForSequence helpers re-used.
-    - tests/scenarios_stack_test.go: NewScenariosStack with
-      UseRealTessera=true.
-    - api /v1/admission/mmd: published MMD value (the contract).
-    - api /v1/tree/inclusion/{seq}: production inclusion-proof
-      endpoint.
+  - tests/scenarios_auditor_full_test.go: persona1Difficulty,
+    persona1Submit, persona1WaitForSequence helpers re-used.
+  - tests/scenarios_stack_test.go: NewScenariosStack with
+    UseRealTessera=true.
+  - api /v1/admission/mmd: published MMD value (the contract).
+  - api /v1/tree/inclusion/{seq}: production inclusion-proof
+    endpoint.
 */
 package tests
 

@@ -49,7 +49,6 @@ import (
 	"google.golang.org/api/option"
 )
 
-
 // MaxTileBytes is the largest c2sp.org/tlog-tiles tile body the
 // GCSTiles backend will read into memory. Mirrors the SDK's
 // log/tessera_fetcher.MaxTileBytes (attesta v0.1.2): a fully-
@@ -114,21 +113,21 @@ type GCSConfig struct {
 // GCS satisfies Backend (Store + PublicURLer) against a GCS
 // bucket with an LRU cache layer.
 type GCS struct {
-	client *storage.Client
-	bucket *storage.BucketHandle
-	bucketName string
+	client       *storage.Client
+	bucket       *storage.BucketHandle
+	bucketName   string
 	objectPrefix string
 	writeTimeout time.Duration
-	readTimeout time.Duration
+	readTimeout  time.Duration
 
 	// publicURL is the deterministic public-URL composer. May be
 	// nil-safe (returns ErrPublicURLNotConfigured) when no base
 	// URL was supplied.
 	publicURL *publicURLMapper
 
-	mu sync.Mutex
-	cache map[string][]byte
-	access map[string]int64
+	mu      sync.Mutex
+	cache   map[string][]byte
+	access  map[string]int64
 	counter int64
 	maxSize int
 }
@@ -308,7 +307,6 @@ func (s *GCS) ReadEntryBatch(ctx context.Context, refs []EntryRef) ([][]byte, er
 	}
 	return out, nil
 }
-
 
 func (s *GCS) evictLRULocked() {
 	var oldestKey string

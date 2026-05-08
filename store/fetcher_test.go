@@ -38,10 +38,10 @@ import (
 // or wal.ErrNotFound for unknown hashes; an injected non-NotFound
 // error path exercises the alarm-don't-mask invariant.
 type fakeWALReader struct {
-	wires map[[32]byte][]byte
-	hardErr error // returned for ANY hash read (transport-fail simulation)
+	wires      map[[32]byte][]byte
+	hardErr    error     // returned for ANY hash read (transport-fail simulation)
 	missedHash *[32]byte // returned as ErrNotFound; used to force fallback
-	calls map[[32]byte]int
+	calls      map[[32]byte]int
 }
 
 func newFakeWALReader() *fakeWALReader {
@@ -74,7 +74,7 @@ func (f *fakeWALReader) Read(_ context.Context, hash [32]byte) ([]byte, error) {
 type fakeBytestore struct {
 	wires map[[32]byte][]byte
 	calls map[uint64]int
-	err error
+	err   error
 }
 
 func newFakeBytestore() *fakeBytestore {

@@ -113,15 +113,15 @@ type PublicURLer interface {
 
 // EntryReadDeps holds dependencies for entry read handlers.
 type EntryReadDeps struct {
-	Fetcher EntryFetcher
-	QueryAPI QueryAPI
+	Fetcher    EntryFetcher
+	QueryAPI   QueryAPI
 	EntryStore SeqHashLookup
-	WAL EntryWALReader
+	WAL        EntryWALReader
 	// PublicURLer composes the credential-free 302 target. Required
 	// for the redirect path; nil → 500 on shipped entries.
 	PublicURLer PublicURLer
-	LogDID string
-	Logger *slog.Logger
+	LogDID      string
+	Logger      *slog.Logger
 }
 
 const maxBatchSize = 1000

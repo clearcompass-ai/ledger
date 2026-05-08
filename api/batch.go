@@ -58,16 +58,16 @@ type BatchSubmissionResponse struct {
 }
 
 type preparedEntry struct {
-	entry *envelope.Entry
-	canonical []byte
+	entry         *envelope.Entry
+	canonical     []byte
 	canonicalHash [32]byte
-	logTime time.Time
+	logTime       time.Time
 }
 
 type preflightError struct {
 	status int
-	msg string
-	class apitypes.ErrorClass
+	msg    string
+	class  apitypes.ErrorClass
 }
 
 func (e *preflightError) Error() string { return e.msg }

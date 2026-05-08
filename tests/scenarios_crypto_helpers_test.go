@@ -2,54 +2,57 @@
 
 /*
 FILE PATH:
-    tests/scenarios_crypto_helpers_test.go
+
+	tests/scenarios_crypto_helpers_test.go
 
 DESCRIPTION:
-    Layer 0 — shared helpers for the cryptographic-proof-verification
-    test family (CRYPTO-INT-01..03, CRYPTO-EXT-01..03). Wraps the
-    SDK-blessed RFC-6962 verifiers from
-    github.com/transparency-dev/merkle and the ledger's HTTP
-    surface so each persona test stays under the per-file LoC
-    ceiling.
+
+	Layer 0 — shared helpers for the cryptographic-proof-verification
+	test family (CRYPTO-INT-01..03, CRYPTO-EXT-01..03). Wraps the
+	SDK-blessed RFC-6962 verifiers from
+	github.com/transparency-dev/merkle and the ledger's HTTP
+	surface so each persona test stays under the per-file LoC
+	ceiling.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Verification uses transparency-dev/merkle/proof.VerifyInclusion
-      and proof.VerifyConsistency — the EXACT functions the
-      attesta SDK's verifier package calls (verifier/consistency.go
-      line 162). Using the same canonical verifier means a
-      future SDK upgrade to a different RFC-6962 implementation
-      either upgrades this test or surfaces the drift.
-    - Hasher is rfc6962.DefaultHasher (SHA-256, leaf prefix 0x00,
-      node prefix 0x01). All four crypto / tile / byte test files
-      thread the same hasher so RFC-6962 is asserted exactly
-      once per build.
-    - Tree-head + inclusion + consistency parsers decode into
-      typed structs (cryptoTreeHead, cryptoInclusion,
-      cryptoConsistency). Parsing happens here so a JSON-shape
-      drift fails one place rather than fifteen.
-    - Submission helpers (cryptoSubmitOne, cryptoSubmitMany)
-      depend on Persona 1's persona1Submit / persona1WaitForSequence;
-      we do not duplicate their logic. The "no shortcuts" rule
-      cuts both ways: re-implementing existing helpers in a
-      sibling file is itself a shortcut around shared code.
+  - Verification uses transparency-dev/merkle/proof.VerifyInclusion
+    and proof.VerifyConsistency — the EXACT functions the
+    attesta SDK's verifier package calls (verifier/consistency.go
+    line 162). Using the same canonical verifier means a
+    future SDK upgrade to a different RFC-6962 implementation
+    either upgrades this test or surfaces the drift.
+  - Hasher is rfc6962.DefaultHasher (SHA-256, leaf prefix 0x00,
+    node prefix 0x01). All four crypto / tile / byte test files
+    thread the same hasher so RFC-6962 is asserted exactly
+    once per build.
+  - Tree-head + inclusion + consistency parsers decode into
+    typed structs (cryptoTreeHead, cryptoInclusion,
+    cryptoConsistency). Parsing happens here so a JSON-shape
+    drift fails one place rather than fifteen.
+  - Submission helpers (cryptoSubmitOne, cryptoSubmitMany)
+    depend on Persona 1's persona1Submit / persona1WaitForSequence;
+    we do not duplicate their logic. The "no shortcuts" rule
+    cuts both ways: re-implementing existing helpers in a
+    sibling file is itself a shortcut around shared code.
 
 OVERVIEW:
-    cryptoTreeHead              → typed /v1/tree/head response.
-    cryptoFetchTreeHead         → GET + parse + assert structural.
-    cryptoFetchInclusion        → GET /v1/tree/inclusion/{seq}.
-    cryptoFetchConsistency      → GET /v1/tree/consistency/{old}/{new}.
-    cryptoVerifyInclusion       → SDK-aligned verifier wrapper.
-    cryptoVerifyConsistency     → SDK-aligned verifier wrapper.
-    cryptoLeafHash              → hasher.HashLeaf(canonical).
-    cryptoSubmitMany            → bulk submission helper.
+
+	cryptoTreeHead              → typed /v1/tree/head response.
+	cryptoFetchTreeHead         → GET + parse + assert structural.
+	cryptoFetchInclusion        → GET /v1/tree/inclusion/{seq}.
+	cryptoFetchConsistency      → GET /v1/tree/consistency/{old}/{new}.
+	cryptoVerifyInclusion       → SDK-aligned verifier wrapper.
+	cryptoVerifyConsistency     → SDK-aligned verifier wrapper.
+	cryptoLeafHash              → hasher.HashLeaf(canonical).
+	cryptoSubmitMany            → bulk submission helper.
 
 KEY DEPENDENCIES:
-    - github.com/transparency-dev/merkle/proof: VerifyInclusion,
-      VerifyConsistency.
-    - github.com/transparency-dev/merkle/rfc6962: DefaultHasher.
-    - tests/scenarios_p2_parsers_test.go: p2IsHexLen.
-    - tests/scenarios_auditor_full_test.go: persona1Submit /
-      persona1WaitForSequence / persona1HashWire (re-used).
+  - github.com/transparency-dev/merkle/proof: VerifyInclusion,
+    VerifyConsistency.
+  - github.com/transparency-dev/merkle/rfc6962: DefaultHasher.
+  - tests/scenarios_p2_parsers_test.go: p2IsHexLen.
+  - tests/scenarios_auditor_full_test.go: persona1Submit /
+    persona1WaitForSequence / persona1HashWire (re-used).
 */
 package tests
 

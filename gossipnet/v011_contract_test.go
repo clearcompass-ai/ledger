@@ -185,7 +185,7 @@ func TestV011_EquivocationPublisher_AcceptsPlainFinding(t *testing.T) {
 	// fails to build if a regression re-introduces the
 	// *VerifiedEquivocationFinding wrapper or any other shape.
 	var p *EquivocationPublisher // nil is fine for the type-only check
-	publishFn := p.Publish        // forces method-value resolution
+	publishFn := p.Publish       // forces method-value resolution
 	_ = publishFn
 
 	// Runtime: nil publisher returns immediately (defensive guard

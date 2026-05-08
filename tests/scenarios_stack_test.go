@@ -2,42 +2,45 @@
 
 /*
 FILE PATH:
-    tests/scenarios_stack_test.go
+
+	tests/scenarios_stack_test.go
 
 DESCRIPTION:
-    Production-stack composite for the Layer 0 scenarios suite. Drives
-    one ledger boot via startTestLedgerWithOpts(UseRealTessera=true)
-    so the ledger's own builder loop, the auditor, and the CDN all
-    read and write the SAME Tessera POSIX tree. There is no shadow.
+
+	Production-stack composite for the Layer 0 scenarios suite. Drives
+	one ledger boot via startTestLedgerWithOpts(UseRealTessera=true)
+	so the ledger's own builder loop, the auditor, and the CDN all
+	read and write the SAME Tessera POSIX tree. There is no shadow.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One state machine. Submitting through the ledger's HTTP API
-      is the only way a leaf reaches the tree. The auditor verifies
-      bytes the ledger actually committed; Trust Alignment 6
-      (Parse, Don't Validate) holds end-to-end.
-    - DID-anchored topology. The bound DIDDocument carries the
-      ledger URL plus the CDN URL pointing at the same POSIX root
-      the embedded Tessera writes into.
-    - Polling, never time.Sleep. WaitForCheckpoint takes a
-      context.Context with deadline; convergence is observed,
-      never assumed.
-    - Goroutine-safe accessors. The scenariosStack exposes
-      pointers through narrow accessor methods only, so persona
-      tests cannot accidentally mutate harness state.
+  - One state machine. Submitting through the ledger's HTTP API
+    is the only way a leaf reaches the tree. The auditor verifies
+    bytes the ledger actually committed; Trust Alignment 6
+    (Parse, Don't Validate) holds end-to-end.
+  - DID-anchored topology. The bound DIDDocument carries the
+    ledger URL plus the CDN URL pointing at the same POSIX root
+    the embedded Tessera writes into.
+  - Polling, never time.Sleep. WaitForCheckpoint takes a
+    context.Context with deadline; convergence is observed,
+    never assumed.
+  - Goroutine-safe accessors. The scenariosStack exposes
+    pointers through narrow accessor methods only, so persona
+    tests cannot accidentally mutate harness state.
 
 OVERVIEW:
-    NewScenariosStack(t, opts)  → composite handle.
-    .WaitForCheckpoint(ctx, n)  → poll Head() until TreeSize >= n.
-    .Head()                     → real EmbeddedAppender.Head().
-    .TileReader()               → real LRU-cached tile reader.
-    .CDNBaseURL()               → CDN serving real tile bytes.
-    .Resolver()                 → mockDIDResolver for adapter.
+
+	NewScenariosStack(t, opts)  → composite handle.
+	.WaitForCheckpoint(ctx, n)  → poll Head() until TreeSize >= n.
+	.Head()                     → real EmbeddedAppender.Head().
+	.TileReader()               → real LRU-cached tile reader.
+	.CDNBaseURL()               → CDN serving real tile bytes.
+	.Resolver()                 → mockDIDResolver for adapter.
 
 KEY DEPENDENCIES:
-    - tests/testserver_setup_test.go: startTestLedgerWithOpts.
-    - tests/testserver_tessera_test.go: real-Tessera wiring.
-    - tests/scenarios_didresolver_test.go: DID resolver fixture.
-    - tests/scenarios_cdn_test.go: c2sp tile-file server.
+  - tests/testserver_setup_test.go: startTestLedgerWithOpts.
+  - tests/testserver_tessera_test.go: real-Tessera wiring.
+  - tests/scenarios_didresolver_test.go: DID resolver fixture.
+  - tests/scenarios_cdn_test.go: c2sp tile-file server.
 */
 package tests
 

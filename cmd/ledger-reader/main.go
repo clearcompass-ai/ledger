@@ -259,37 +259,37 @@ func run(logger *slog.Logger) error {
 // -------------------------------------------------------------------------------------------------
 
 type readerConfig struct {
-	LogDID string
-	PostgresDSN string
-	ReplicaDSN string
-	MaxConns int
-	MinConns int
-	StatementTimeout time.Duration // LEDGER_PG_STATEMENT_TIMEOUT, default 5s
-	ServerAddr string
+	LogDID            string
+	PostgresDSN       string
+	ReplicaDSN        string
+	MaxConns          int
+	MinConns          int
+	StatementTimeout  time.Duration // LEDGER_PG_STATEMENT_TIMEOUT, default 5s
+	ServerAddr        string
 	TesseraStorageDir string // shared POSIX dir with the writer ledger
-	TileCacheSize int
-	WarmTopLevels int
-	SMTCacheSize int
+	TileCacheSize     int
+	WarmTopLevels     int
+	SMTCacheSize      int
 	InitialDifficulty int
-	MinDifficulty int
-	MaxDifficulty int
-	HashFunction string
+	MinDifficulty     int
+	MaxDifficulty     int
+	HashFunction      string
 
 	// Byte store. Reader and writer must agree on backend + bucket
 	// + prefix so reads return the same bytes
 	// the writer admitted. Backend selection mirrors the writer
 	// ledger: "gcs" or "s3" via LEDGER_BYTE_STORE_BACKEND.
-	ByteStoreBackend string
-	ByteStorePrefix string
+	ByteStoreBackend   string
+	ByteStorePrefix    string
 	ByteStoreCacheSize int
 	// GCS-specific.
-	ByteStoreGCSBucket string
+	ByteStoreGCSBucket   string
 	ByteStoreGCSEndpoint string
-	ByteStoreGCSAnon bool
+	ByteStoreGCSAnon     bool
 	// S3-specific.
-	ByteStoreS3Bucket string
-	ByteStoreS3Endpoint string
-	ByteStoreS3Region string
+	ByteStoreS3Bucket    string
+	ByteStoreS3Endpoint  string
+	ByteStoreS3Region    string
 	ByteStoreS3AccessKey string
 	ByteStoreS3SecretKey string
 	ByteStoreS3PathStyle bool

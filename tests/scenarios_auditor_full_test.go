@@ -2,55 +2,58 @@
 
 /*
 FILE PATH:
-    tests/scenarios_auditor_full_test.go
+
+	tests/scenarios_auditor_full_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 1 (Standalone Auditor, end-to-end). The smoke
-    gate for the entire scenarios suite. After the Commit B collapse
-    of the shadow-Tessera hack, the auditor's view of the tree is
-    populated exclusively by HTTP submissions through the ledger's
-    own /v1/entries handler — same writer for the ledger and the
-    auditor, no second state machine.
+
+	Layer 0 — Persona 1 (Standalone Auditor, end-to-end). The smoke
+	gate for the entire scenarios suite. After the Commit B collapse
+	of the shadow-Tessera hack, the auditor's view of the tree is
+	populated exclusively by HTTP submissions through the ledger's
+	own /v1/entries handler — same writer for the ledger and the
+	auditor, no second state machine.
 
 KEY ARCHITECTURAL DECISIONS:
-    - No shadow append. Every leaf reaches the tree via
-      ledger.SubmissionHandler → wal.Submit → builder loop →
-      tessera.NewTesseraAdapter.AppendLeaf. The auditor reads
-      tile bytes the ledger actually wrote (Trust Alignment 6:
-      Parse, Don't Validate).
-    - Polling, never time.Sleep. WaitForTreeSize / pollHashLookup
-      both ride on bounded ctx deadlines.
-    - DID-anchored. Every endpoint the auditor uses is resolved
-      through did.DIDEndpointAdapter from the bound DIDDocument
-      (Trust Alignment 3).
-    - Multi-scenario t.Run blocks so a regression in one path
-      does not mask other passing paths. Boot is shared because
-      spinning up real Tessera POSIX + Postgres + httptest.Server
-      is the bulk of the wall-clock cost (~500ms — 2s on cold
-      cache); each sub-scenario contributes hundreds of ms.
+  - No shadow append. Every leaf reaches the tree via
+    ledger.SubmissionHandler → wal.Submit → builder loop →
+    tessera.NewTesseraAdapter.AppendLeaf. The auditor reads
+    tile bytes the ledger actually wrote (Trust Alignment 6:
+    Parse, Don't Validate).
+  - Polling, never time.Sleep. WaitForTreeSize / pollHashLookup
+    both ride on bounded ctx deadlines.
+  - DID-anchored. Every endpoint the auditor uses is resolved
+    through did.DIDEndpointAdapter from the bound DIDDocument
+    (Trust Alignment 3).
+  - Multi-scenario t.Run blocks so a regression in one path
+    does not mask other passing paths. Boot is shared because
+    spinning up real Tessera POSIX + Postgres + httptest.Server
+    is the bulk of the wall-clock cost (~500ms — 2s on cold
+    cache); each sub-scenario contributes hundreds of ms.
 
 OVERVIEW:
-    TestPersona1_AuditorFull
-      EndpointResolution_RoundTrip
-        → adapter returns the harness-bound LedgerURL + CDNURL
-          verbatim.
-      Submit_To_TileBytes_RoundTrip
-        → build admissible wire → POST /v1/entries → poll
-          /v1/entries-hash/{hash} for sequence → WaitForTreeSize
-          → ReadLevel0Tile → hash bytes present in tile.
-      Tree_GrowsMonotonically
-        → submit two more entries; observe TreeSize strictly
-          increasing across the run; tree never shrinks.
-      DefensiveCopy_Resolver
-        → mutating doc.Service on a returned DIDDocument does
-          NOT corrupt the resolver's stored doc.
+
+	TestPersona1_AuditorFull
+	  EndpointResolution_RoundTrip
+	    → adapter returns the harness-bound LedgerURL + CDNURL
+	      verbatim.
+	  Submit_To_TileBytes_RoundTrip
+	    → build admissible wire → POST /v1/entries → poll
+	      /v1/entries-hash/{hash} for sequence → WaitForTreeSize
+	      → ReadLevel0Tile → hash bytes present in tile.
+	  Tree_GrowsMonotonically
+	    → submit two more entries; observe TreeSize strictly
+	      increasing across the run; tree never shrinks.
+	  DefensiveCopy_Resolver
+	    → mutating doc.Service on a returned DIDDocument does
+	      NOT corrupt the resolver's stored doc.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_stack_test.go: NewScenariosStack with real
-      Tessera under the hood.
-    - tests/scenarios_auditor_test.go: NewAuditor.
-    - tests/e2e_v1_sct_test.go: buildModeBWireEntry + pollHashLookup
-      helpers (re-used to avoid duplicating wire construction).
+  - tests/scenarios_stack_test.go: NewScenariosStack with real
+    Tessera under the hood.
+  - tests/scenarios_auditor_test.go: NewAuditor.
+  - tests/e2e_v1_sct_test.go: buildModeBWireEntry + pollHashLookup
+    helpers (re-used to avoid duplicating wire construction).
 */
 package tests
 

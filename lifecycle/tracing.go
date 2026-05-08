@@ -1,58 +1,61 @@
 /*
 FILE PATH:
-    lifecycle/tracing.go
+
+	lifecycle/tracing.go
 
 DESCRIPTION:
-    D2 — OpenTelemetry tracing setup. Builds a TracerProvider
-    based on LEDGER_OTLP_TRACES_ENDPOINT:
 
-        unset → NoOp tracer (zero overhead, default for laptop dev)
-        "stdout" → stdouttrace (single-line spans to stderr; debug)
-        "<host:port>" → OTLP HTTP exporter to that endpoint
+	D2 — OpenTelemetry tracing setup. Builds a TracerProvider
+	based on LEDGER_OTLP_TRACES_ENDPOINT:
 
-    The supervisor's shutdownChain calls the returned Shutdown
-    func at the end of shutdown so spans flush before OTel meter.
+	    unset → NoOp tracer (zero overhead, default for laptop dev)
+	    "stdout" → stdouttrace (single-line spans to stderr; debug)
+	    "<host:port>" → OTLP HTTP exporter to that endpoint
+
+	The supervisor's shutdownChain calls the returned Shutdown
+	func at the end of shutdown so spans flush before OTel meter.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Default NoOp. A laptop / unit-test / one-shot tool runs
-      with zero tracing overhead and zero new dependencies on
-      the wire path.
-    - "stdout" sink for the run-local.sh workflow: administrators
-      iterating on the ledger see spans in their terminal
-      without standing up an OTel collector.
-    - OTLP HTTP (not gRPC) because the HTTP exporter has lighter
-      transitive deps and serves Jaeger / Tempo / Honeycomb /
-      OTel collectors equally well. The collector / Jaeger can
-      receive HTTP/protobuf at /v1/traces.
-    - Resource attributes mirror what the meter provider sets
-      (service.name, service.version, deployment.environment)
-      so traces and metrics align in dashboards.
+  - Default NoOp. A laptop / unit-test / one-shot tool runs
+    with zero tracing overhead and zero new dependencies on
+    the wire path.
+  - "stdout" sink for the run-local.sh workflow: administrators
+    iterating on the ledger see spans in their terminal
+    without standing up an OTel collector.
+  - OTLP HTTP (not gRPC) because the HTTP exporter has lighter
+    transitive deps and serves Jaeger / Tempo / Honeycomb /
+    OTel collectors equally well. The collector / Jaeger can
+    receive HTTP/protobuf at /v1/traces.
+  - Resource attributes mirror what the meter provider sets
+    (service.name, service.version, deployment.environment)
+    so traces and metrics align in dashboards.
 
 OVERVIEW:
-    cmd/ledger/main.go calls:
 
-        tp, shutdownTracer, err := lifecycle.NewTracerProvider(
-            lifecycle.TracerProviderConfig{
-                ServiceName:    "ledger",
-                ServiceVersion: cfg.ServiceVersion,
-                Environment:    cfg.MetricsEnvironment,
-                OTLPEndpoint:   cfg.OTLPTracesEndpoint,
-            })
-        if err != nil { ... }
-        otel.SetTracerProvider(tp)
-        // register shutdownTracer in the shutdownChain at the end
+	cmd/ledger/main.go calls:
 
-    Then any package can call otel.Tracer("name").Start(ctx, ...)
-    to emit spans. NoOp provider produces no-op spans (allocations
-    are minimal but non-zero — call-site nil-check pattern is
-    still appropriate for the very-hot admission thread).
+	    tp, shutdownTracer, err := lifecycle.NewTracerProvider(
+	        lifecycle.TracerProviderConfig{
+	            ServiceName:    "ledger",
+	            ServiceVersion: cfg.ServiceVersion,
+	            Environment:    cfg.MetricsEnvironment,
+	            OTLPEndpoint:   cfg.OTLPTracesEndpoint,
+	        })
+	    if err != nil { ... }
+	    otel.SetTracerProvider(tp)
+	    // register shutdownTracer in the shutdownChain at the end
+
+	Then any package can call otel.Tracer("name").Start(ctx, ...)
+	to emit spans. NoOp provider produces no-op spans (allocations
+	are minimal but non-zero — call-site nil-check pattern is
+	still appropriate for the very-hot admission thread).
 
 KEY DEPENDENCIES:
-    - go.opentelemetry.io/otel/sdk/trace: TracerProvider impl
-    - go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp:
-      production OTLP HTTP exporter
-    - go.opentelemetry.io/otel/exporters/stdout/stdouttrace:
-      laptop-dev sink
+  - go.opentelemetry.io/otel/sdk/trace: TracerProvider impl
+  - go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp:
+    production OTLP HTTP exporter
+  - go.opentelemetry.io/otel/exporters/stdout/stdouttrace:
+    laptop-dev sink
 */
 package lifecycle
 

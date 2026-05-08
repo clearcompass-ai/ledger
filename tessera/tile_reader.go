@@ -64,14 +64,14 @@ type TileBackend interface {
 // Cache indefinitely.
 type TileReader struct {
 	backend TileBackend
-	mu sync.RWMutex
-	cache map[string]tileEntry
+	mu      sync.RWMutex
+	cache   map[string]tileEntry
 	counter int64
 	maxSize int
 }
 
 type tileEntry struct {
-	data []byte
+	data   []byte
 	access int64
 }
 
@@ -143,7 +143,7 @@ func (tr *TileReader) evictLRU() {
 		return
 	}
 	type kv struct {
-		key string
+		key    string
 		access int64
 	}
 	entries := make([]kv, 0, len(tr.cache))

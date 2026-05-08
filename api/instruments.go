@@ -1,33 +1,35 @@
 /*
 FILE PATH:
-    api/instruments.go
+
+	api/instruments.go
 
 DESCRIPTION:
-    D3 — Request-duration histogram for api/ HTTP handlers.
 
-        attesta_api_request_duration_seconds{route, method, status}
+	D3 — Request-duration histogram for api/ HTTP handlers.
 
-    Package-level instrument installed at boot from
-    cmd/ledger/main.go via api.InstallRequestDurationHistogram.
-    Same idiom as InstallErrorCounter: a global meter set up
-    once, no threading through the handler tree.
+	    attesta_api_request_duration_seconds{route, method, status}
+
+	Package-level instrument installed at boot from
+	cmd/ledger/main.go via api.InstallRequestDurationHistogram.
+	Same idiom as InstallErrorCounter: a global meter set up
+	once, no threading through the handler tree.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One histogram per request, recorded by an http.Handler
-      middleware (RequestDurationMiddleware). Mounted at the
-      top of the chain so it captures the full request budget
-      including authn middleware.
-    - Bounded label cardinality: route is the stdlib mux pattern
-      (literal — not the URL). method is the verb (GET / POST /
-      DELETE — 4 values typical). status is the HTTP code
-      (~10 values). Total: ~30 routes × ~4 methods × ~10 statuses
-      ≈ 1200 series. Well under Prometheus's recommended ceiling.
-    - Buckets tuned for 1ms-10s admission p99: standard OTel
-      defaults are wider; we use a custom set that lands the
-      ledger's typical p99 mid-range (so the histogram has high
-      resolution where SREs care most).
-    - nil meter is a no-op. Tests + dev runs that don't enable
-      metrics still pass through the middleware with zero overhead.
+  - One histogram per request, recorded by an http.Handler
+    middleware (RequestDurationMiddleware). Mounted at the
+    top of the chain so it captures the full request budget
+    including authn middleware.
+  - Bounded label cardinality: route is the stdlib mux pattern
+    (literal — not the URL). method is the verb (GET / POST /
+    DELETE — 4 values typical). status is the HTTP code
+    (~10 values). Total: ~30 routes × ~4 methods × ~10 statuses
+    ≈ 1200 series. Well under Prometheus's recommended ceiling.
+  - Buckets tuned for 1ms-10s admission p99: standard OTel
+    defaults are wider; we use a custom set that lands the
+    ledger's typical p99 mid-range (so the histogram has high
+    resolution where SREs care most).
+  - nil meter is a no-op. Tests + dev runs that don't enable
+    metrics still pass through the middleware with zero overhead.
 */
 package api
 

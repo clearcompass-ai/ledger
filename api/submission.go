@@ -165,14 +165,14 @@ type TesseraAppender interface {
 // (entry_index INSERT) lives entirely in the sequencer goroutine.
 type StorageDeps struct {
 	EntryStore EntryStore
-	WAL WALCommitter
-	Tessera TesseraAppender
+	WAL        WALCommitter
+	Tessera    TesseraAppender
 }
 
 // AdmissionConfig groups parameters that govern admission proof verification.
 type AdmissionConfig struct {
-	DiffController *middleware.DifficultyController
-	EpochWindowSeconds int
+	DiffController        *middleware.DifficultyController
+	EpochWindowSeconds    int
 	EpochAcceptanceWindow int
 }
 
@@ -183,19 +183,19 @@ type AdmissionConfig struct {
 // The interface's tx-less Deduct(ctx, exchangeDID) signature lets
 // the api package hold zero pgx imports.
 type IdentityDeps struct {
-	Credits CreditDeducter
+	Credits     CreditDeducter
 	DIDResolver DIDResolver
 }
 
 // SubmissionDeps is the dependency surface for the POST /v1/entries handler.
 type SubmissionDeps struct {
-	Storage StorageDeps
-	Admission AdmissionConfig
-	Identity IdentityDeps
-	LogDID string
-	LedgerDID string
+	Storage      StorageDeps
+	Admission    AdmissionConfig
+	Identity     IdentityDeps
+	LogDID       string
+	LedgerDID    string
 	MaxEntrySize int64
-	Logger *slog.Logger
+	Logger       *slog.Logger
 
 	// LedgerSignerPriv signs SCTs returned by asynchronous
 	// submission endpoints, including POST /v1/entries/batch.
@@ -227,12 +227,12 @@ type SubmissionDeps struct {
 // admission fast path. The handler diverges at step 10+ to deduct
 // credits, persist to the WAL, and sign the SCT.
 type preparedSubmission struct {
-	raw []byte
-	entry *envelope.Entry
+	raw           []byte
+	entry         *envelope.Entry
 	canonicalHash [32]byte
-	logTime time.Time
+	logTime       time.Time
 	authenticated bool
-	exchangeDID string
+	exchangeDID   string
 
 	// idempotentReplay is true when the canonical hash already
 	// has a Meta record in the WAL (byte-identical resubmission).
@@ -248,9 +248,9 @@ type preparedSubmission struct {
 // the helper free of *http.ResponseWriter so it can be unit-tested
 // without httptest plumbing.
 type submissionError struct {
-	Status int
+	Status  int
 	Message string
-	Class apitypes.ErrorClass
+	Class   apitypes.ErrorClass
 }
 
 // submissionFail constructs a typed *submissionError. Every

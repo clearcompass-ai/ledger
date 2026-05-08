@@ -93,13 +93,13 @@ type EscrowOverrideServiceConfig struct {
 
 // EscrowOverrideService runs the ledger-side override flow.
 type EscrowOverrideService struct {
-	collector *sdkcosign.WitnessCollector
-	store sdkgossip.Store
-	sink sdkgossip.Sink
-	signer sdkcosign.WitnessSigner
-	networkID sdkcosign.NetworkID
+	collector  *sdkcosign.WitnessCollector
+	store      sdkgossip.Store
+	sink       sdkgossip.Sink
+	signer     sdkcosign.WitnessSigner
+	networkID  sdkcosign.NetworkID
 	originator string
-	logger *slog.Logger
+	logger     *slog.Logger
 }
 
 // NewEscrowOverrideService constructs the service. Returns an

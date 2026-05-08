@@ -1,33 +1,35 @@
 /*
 FILE PATH:
-    tests/testserver_tessera_test.go
+
+	tests/testserver_tessera_test.go
 
 DESCRIPTION:
-    Real-Tessera-vs-stub branch helpers for the integration-test
-    harness. Split out of testserver_setup_test.go to keep both
-    files under the per-file LoC ceiling.
+
+	Real-Tessera-vs-stub branch helpers for the integration-test
+	harness. Split out of testserver_setup_test.go to keep both
+	files under the per-file LoC ceiling.
 
 KEY ARCHITECTURAL DECISIONS:
-    - tesseraSlots is the single struct every caller-facing
-      production role (admission TesseraAppender, builder
-      MerkleAppender, InclusionProver, ConsistencyProver) reads
-      from. There is exactly one switch (opts.UseRealTessera) and
-      exactly one filling for every slot.
-    - The real path mirrors cmd/ledger/main.go's six-line wiring
-      (GenerateEphemeralSigner → posix.New → NewEmbeddedAppender →
-      NewPOSIXTileBackend → NewTileReader → NewTesseraAdapter)
-      exactly, so a production-side bug in any of those calls is
-      visible to the integration test on the next run.
-    - Cleanup-aware. The returned closer drains background
-      batchers + the checkpoint signer goroutine. Stub path
-      returns a no-op closer for uniform calling code.
+  - tesseraSlots is the single struct every caller-facing
+    production role (admission TesseraAppender, builder
+    MerkleAppender, InclusionProver, ConsistencyProver) reads
+    from. There is exactly one switch (opts.UseRealTessera) and
+    exactly one filling for every slot.
+  - The real path mirrors cmd/ledger/main.go's six-line wiring
+    (GenerateEphemeralSigner → posix.New → NewEmbeddedAppender →
+    NewPOSIXTileBackend → NewTileReader → NewTesseraAdapter)
+    exactly, so a production-side bug in any of those calls is
+    visible to the integration test on the next run.
+  - Cleanup-aware. The returned closer drains background
+    batchers + the checkpoint signer goroutine. Stub path
+    returns a no-op closer for uniform calling code.
 
 KEY DEPENDENCIES:
-    - github.com/transparency-dev/tessera/storage/posix: POSIX
-      driver. Lifecycle is the EmbeddedAppender's; nothing extra
-      to close on the driver.
-    - github.com/clearcompass-ai/ledger/tessera: every wrapper
-      type the production main.go uses.
+  - github.com/transparency-dev/tessera/storage/posix: POSIX
+    driver. Lifecycle is the EmbeddedAppender's; nothing extra
+    to close on the driver.
+  - github.com/clearcompass-ai/ledger/tessera: every wrapper
+    type the production main.go uses.
 */
 package tests
 

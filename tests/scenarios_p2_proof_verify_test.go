@@ -2,57 +2,60 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p2_proof_verify_test.go
+
+	tests/scenarios_p2_proof_verify_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 2 (Browser-Class Auditor, proof verification +
-    deterministic tile path). Two sub-scenarios that prove a downstream
-    consumer in another language can:
 
-      1. Verify an inclusion proof using only crypto/sha256 + the
-         JSON-decoded {leaf_index, tree_size, hashes[]} returned by
-         GET /v1/tree/inclusion/{seq}, with the canonical leaf hash
-         derived from the entry wire bytes the producer originally
-         POSTed.
+	Layer 0 — Persona 2 (Browser-Class Auditor, proof verification +
+	deterministic tile path). Two sub-scenarios that prove a downstream
+	consumer in another language can:
 
-      2. Recompute the c2sp.org/tlog-tiles tile path for level 0 from
-         a leaf index, fetch the tile bytes from the CDN with a plain
-         HTTP GET, and find the canonical leaf hash inside.
+	  1. Verify an inclusion proof using only crypto/sha256 + the
+	     JSON-decoded {leaf_index, tree_size, hashes[]} returned by
+	     GET /v1/tree/inclusion/{seq}, with the canonical leaf hash
+	     derived from the entry wire bytes the producer originally
+	     POSTed.
+
+	  2. Recompute the c2sp.org/tlog-tiles tile path for level 0 from
+	     a leaf index, fetch the tile bytes from the CDN with a plain
+	     HTTP GET, and find the canonical leaf hash inside.
 
 KEY ARCHITECTURAL DECISIONS:
-    - p2VerifyInclusion is a fresh, in-file implementation of the
-      RFC 6962 inclusion verifier. It deliberately does NOT call
-      auditor.VerifyLeafInclusion (which lives one file away in the
-      same package). The whole point of Persona 2 is to prove the
-      verification can be done without ANY pre-existing helper —
-      a TypeScript implementation would mirror this body line-for-
-      line.
-    - Tile-path encoding is reproduced inline as p2EncodeTileIndex.
-      Same reason: the wire spec lives in c2sp.org/tlog-tiles; the
-      Go SDK is one of many consumers; a regression in the Go
-      encoder must not be papered over by reusing the encoder for
-      the test.
-    - RFC 6962 prefixes (0x00 leaf, 0x01 node) are local constants
-      so a future reader can see the entire leaf-hash → root-hash
-      derivation in this one file without cross-referencing.
+  - p2VerifyInclusion is a fresh, in-file implementation of the
+    RFC 6962 inclusion verifier. It deliberately does NOT call
+    auditor.VerifyLeafInclusion (which lives one file away in the
+    same package). The whole point of Persona 2 is to prove the
+    verification can be done without ANY pre-existing helper —
+    a TypeScript implementation would mirror this body line-for-
+    line.
+  - Tile-path encoding is reproduced inline as p2EncodeTileIndex.
+    Same reason: the wire spec lives in c2sp.org/tlog-tiles; the
+    Go SDK is one of many consumers; a regression in the Go
+    encoder must not be papered over by reusing the encoder for
+    the test.
+  - RFC 6962 prefixes (0x00 leaf, 0x01 node) are local constants
+    so a future reader can see the entire leaf-hash → root-hash
+    derivation in this one file without cross-referencing.
 
 OVERVIEW:
-    runP2MerkleProofWithSHA256Only — submit, fetch /v1/tree/head +
-        /v1/tree/inclusion/{seq}, run p2VerifyInclusion, assert
-        the recomputed root equals head.root_hash.
 
-    runP2TilePathDeterministic — for a known seq, compute the
-        level-0 tile path locally via p2EncodeTileIndex; fetch
-        from the CDN; assert canonical leaf-hash bytes appear in
-        the bytes; assert the path matches the SDK's HashTilePath
-        (regression guard against drift in either direction).
+	runP2MerkleProofWithSHA256Only — submit, fetch /v1/tree/head +
+	    /v1/tree/inclusion/{seq}, run p2VerifyInclusion, assert
+	    the recomputed root equals head.root_hash.
+
+	runP2TilePathDeterministic — for a known seq, compute the
+	    level-0 tile path locally via p2EncodeTileIndex; fetch
+	    from the CDN; assert canonical leaf-hash bytes appear in
+	    the bytes; assert the path matches the SDK's HashTilePath
+	    (regression guard against drift in either direction).
 
 KEY DEPENDENCIES:
-    - tests/scenarios_p2_minimal_auditor_test.go: shared parsers
-      (p2FetchTreeHead / p2FetchInclusion) and TestPersona2_MinimalAuditor
-      umbrella.
-    - github.com/clearcompass-ai/ledger/tessera: HashTilePath, used
-      ONLY for the regression guard, not for the path computation.
+  - tests/scenarios_p2_minimal_auditor_test.go: shared parsers
+    (p2FetchTreeHead / p2FetchInclusion) and TestPersona2_MinimalAuditor
+    umbrella.
+  - github.com/clearcompass-ai/ledger/tessera: HashTilePath, used
+    ONLY for the regression guard, not for the path computation.
 */
 package tests
 

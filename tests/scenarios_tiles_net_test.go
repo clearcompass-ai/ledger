@@ -2,65 +2,68 @@
 
 /*
 FILE PATH:
-    tests/scenarios_tiles_net_test.go
+
+	tests/scenarios_tiles_net_test.go
 
 DESCRIPTION:
-    Layer 0 — TILE-NET-01/02: tile fetch over the public CDN
-    surface. Two sub-tests pin the operational contracts a
-    browser-class auditor depends on:
 
-      NET-01 (Deterministic Discovery): Clients compute the
-              public object URL for a level-L hash tile and a
-              level-0 entry tile WITHOUT any SDK helper, then
-              fetch via plain unauthenticated HTTP GET. Bytes
-              match the tile reader's authoritative read.
-      NET-02 (Partial-to-Full Fallback): An auditor that
-              previously fetched a partial tile at "tile/L/idx
-              .p/N" finds it now sealed: GET on the partial
-              path returns 404, fallback GET on the sealed
-              path "tile/L/idx" succeeds, the byte range we
-              previously consumed (the first N×32 bytes)
-              still matches.
+	Layer 0 — TILE-NET-01/02: tile fetch over the public CDN
+	surface. Two sub-tests pin the operational contracts a
+	browser-class auditor depends on:
+
+	  NET-01 (Deterministic Discovery): Clients compute the
+	          public object URL for a level-L hash tile and a
+	          level-0 entry tile WITHOUT any SDK helper, then
+	          fetch via plain unauthenticated HTTP GET. Bytes
+	          match the tile reader's authoritative read.
+	  NET-02 (Partial-to-Full Fallback): An auditor that
+	          previously fetched a partial tile at "tile/L/idx
+	          .p/N" finds it now sealed: GET on the partial
+	          path returns 404, fallback GET on the sealed
+	          path "tile/L/idx" succeeds, the byte range we
+	          previously consumed (the first N×32 bytes)
+	          still matches.
 
 KEY ARCHITECTURAL DECISIONS:
-    - URL computation in NET-01 uses a hand-rolled three-digit
-      encoder (p2EncodeTileIndex / p2HashTilePath in
-      scenarios_p2_proof_verify_test.go) — explicitly NOT the
-      SDK's helper. The whole point of "deterministic
-      discovery" is that an external implementation can mirror
-      the spec without our package. We then cross-check
-      against optessera.HashTilePath as a regression guard
-      (drift in either direction trips the test).
-    - The CDN fixture's path-traversal defense is exercised
-      indirectly — NET-01's GET passes a clean encoded path,
-      no fixture-internal logic to validate.
-    - NET-02 simulates the partial→sealed transition by
-      submitting in two phases. The auditor's pre-seal fetch
-      sees ".p/N"; the post-seal fetch sees the sealed path.
-      The partial path stays present (Tessera doesn't always
-      delete) but a re-fetch logic that always tries the
-      sealed path first SHOULD succeed.
-    - Byte-range equivalence: the first N×32 bytes of the
-      sealed (256 nodes × 32 = 8192 bytes) tile MUST equal
-      the entire content of the prior partial (N nodes × 32).
+  - URL computation in NET-01 uses a hand-rolled three-digit
+    encoder (p2EncodeTileIndex / p2HashTilePath in
+    scenarios_p2_proof_verify_test.go) — explicitly NOT the
+    SDK's helper. The whole point of "deterministic
+    discovery" is that an external implementation can mirror
+    the spec without our package. We then cross-check
+    against optessera.HashTilePath as a regression guard
+    (drift in either direction trips the test).
+  - The CDN fixture's path-traversal defense is exercised
+    indirectly — NET-01's GET passes a clean encoded path,
+    no fixture-internal logic to validate.
+  - NET-02 simulates the partial→sealed transition by
+    submitting in two phases. The auditor's pre-seal fetch
+    sees ".p/N"; the post-seal fetch sees the sealed path.
+    The partial path stays present (Tessera doesn't always
+    delete) but a re-fetch logic that always tries the
+    sealed path first SHOULD succeed.
+  - Byte-range equivalence: the first N×32 bytes of the
+    sealed (256 nodes × 32 = 8192 bytes) tile MUST equal
+    the entire content of the prior partial (N nodes × 32).
 
 OVERVIEW:
-    TestTiles_Network
-      NET-01_DeterministicDiscovery
-        → submit, wait, compute paths locally, GET via
-          CDN, assert bytes match TileReader output.
-      NET-02_PartialToFullFallback
-        → submit partial (n=64), capture partial bytes;
-          submit to seal (n=256); GET sealed path,
-          slice [0:64*32] == partial bytes.
+
+	TestTiles_Network
+	  NET-01_DeterministicDiscovery
+	    → submit, wait, compute paths locally, GET via
+	      CDN, assert bytes match TileReader output.
+	  NET-02_PartialToFullFallback
+	    → submit partial (n=64), capture partial bytes;
+	      submit to seal (n=256); GET sealed path,
+	      slice [0:64*32] == partial bytes.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_cdn_test.go: cdnFileServer.
-    - tests/scenarios_p2_proof_verify_test.go: p2HashTilePath.
-    - github.com/clearcompass-ai/ledger/tessera: HashTilePath
-      (regression cross-check), EntryTilePath.
-    - github.com/transparency-dev/tessera/api/layout:
-      TileWidth, TilePath.
+  - tests/scenarios_cdn_test.go: cdnFileServer.
+  - tests/scenarios_p2_proof_verify_test.go: p2HashTilePath.
+  - github.com/clearcompass-ai/ledger/tessera: HashTilePath
+    (regression cross-check), EntryTilePath.
+  - github.com/transparency-dev/tessera/api/layout:
+    TileWidth, TilePath.
 */
 package tests
 

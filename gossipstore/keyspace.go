@@ -77,12 +77,12 @@ const prefixGossipRoot byte = 0x07
 // Sub-prefix tags. Single bytes chosen so all of one index's keys
 // are contiguous in Badger's sort order.
 const (
-	subEvent byte = 0x01 // by-eventID
-	subChain byte = 0x02 // per-originator chain
-	subKindIndex byte = 0x03 // per-kind global
-	subHead byte = 0x04 // per-originator head pointer
-	subSTHIndex byte = 0x05 // per-originator STH reverse index
-	subStats byte = 0x06 // singleton stats record
+	subEvent      byte = 0x01 // by-eventID
+	subChain      byte = 0x02 // per-originator chain
+	subKindIndex  byte = 0x03 // per-kind global
+	subHead       byte = 0x04 // per-originator head pointer
+	subSTHIndex   byte = 0x05 // per-originator STH reverse index
+	subStats      byte = 0x06 // singleton stats record
 	subOrigExists byte = 0x07 // existence marker for originator count
 
 	// subBindingIndex holds the inverted index from a 32-byte
@@ -347,7 +347,7 @@ func allHeadsPrefix() []byte {
 // pointer: 32 byte prevHash || 8 byte lamport (big-endian).
 type headRecord struct {
 	prevHash [32]byte
-	lamport uint64
+	lamport  uint64
 }
 
 func encodeHead(h headRecord) []byte {
@@ -369,7 +369,7 @@ func decodeHead(raw []byte) (headRecord, error) {
 
 // statsRecord is the on-disk stats: EventCount + OriginatorCount.
 type statsRecord struct {
-	eventCount uint64
+	eventCount      uint64
 	originatorCount uint64
 }
 

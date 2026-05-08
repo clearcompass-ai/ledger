@@ -2,64 +2,67 @@
 
 /*
 FILE PATH:
-    tests/scenarios_crypto_auditor_test.go
+
+	tests/scenarios_crypto_auditor_test.go
 
 DESCRIPTION:
-    Layer 0 — CRYPTO-EXT-01/02/03: standalone-auditor proof
-    workflow plus partial-tile bridging plus across-restart
-    consistency. The "external" half of the cryptographic-proof
-    family; the "internal" random/boundary half lives in
-    scenarios_crypto_proofs_test.go.
+
+	Layer 0 — CRYPTO-EXT-01/02/03: standalone-auditor proof
+	workflow plus partial-tile bridging plus across-restart
+	consistency. The "external" half of the cryptographic-proof
+	family; the "internal" random/boundary half lives in
+	scenarios_crypto_proofs_test.go.
 
 KEY ARCHITECTURAL DECISIONS:
-    - EXT-01 mirrors the standalone-auditor pull workflow:
-      pull STH (/v1/tree/head) → calculate required tile
-      indices for every leaf in [0, N) → fetch each tile via
-      the CDN → recompute leaf hashes from the entry tile
-      bytes → verify inclusion proofs against the STH root
-      using the SDK-aligned VerifyInclusion. No SDK-internal
-      shortcuts: tile indices are computed via leaf_idx/256;
-      entry-tile bundle bytes parsed via tessera.ParseEntryBundle
-      (the same parser the SDK uses).
-    - EXT-02 deliberately exercises old=N / new=N+1 across a
-      tile boundary. The TileReader serves partial tiles as
-      ".p/N" suffixed paths; the consistency proof must
-      navigate seamlessly.
-    - EXT-03 restart: TileRoot is supplied by the test and
-      preserved across a 2-phase t.Run sequence. Phase 1
-      submits, captures (size1, root1), and ends — the
-      sub-test's t.Cleanup tears down the harness. Phase 2
-      brings up a NEW stack at the SAME TileRoot, submits,
-      captures (size2, root2), and verifies the consistency
-      proof. This proves Tessera's POSIX state survives a
-      ledger process restart at the cryptographic-evidence
-      layer, which is the auditor's only contract.
-    - Postgres entry_index is wiped between Phase 1 and Phase 2
-      (the harness's standard cleanup discipline). EXT-03
-      therefore reads pre-restart heads via the on-disk
-      checkpoint (stack.Tessera().Head()) rather than via
-      /v1/tree/head — the latter requires the TreeHeadStore
-      Postgres row, which does not survive cleanTables.
+  - EXT-01 mirrors the standalone-auditor pull workflow:
+    pull STH (/v1/tree/head) → calculate required tile
+    indices for every leaf in [0, N) → fetch each tile via
+    the CDN → recompute leaf hashes from the entry tile
+    bytes → verify inclusion proofs against the STH root
+    using the SDK-aligned VerifyInclusion. No SDK-internal
+    shortcuts: tile indices are computed via leaf_idx/256;
+    entry-tile bundle bytes parsed via tessera.ParseEntryBundle
+    (the same parser the SDK uses).
+  - EXT-02 deliberately exercises old=N / new=N+1 across a
+    tile boundary. The TileReader serves partial tiles as
+    ".p/N" suffixed paths; the consistency proof must
+    navigate seamlessly.
+  - EXT-03 restart: TileRoot is supplied by the test and
+    preserved across a 2-phase t.Run sequence. Phase 1
+    submits, captures (size1, root1), and ends — the
+    sub-test's t.Cleanup tears down the harness. Phase 2
+    brings up a NEW stack at the SAME TileRoot, submits,
+    captures (size2, root2), and verifies the consistency
+    proof. This proves Tessera's POSIX state survives a
+    ledger process restart at the cryptographic-evidence
+    layer, which is the auditor's only contract.
+  - Postgres entry_index is wiped between Phase 1 and Phase 2
+    (the harness's standard cleanup discipline). EXT-03
+    therefore reads pre-restart heads via the on-disk
+    checkpoint (stack.Tessera().Head()) rather than via
+    /v1/tree/head — the latter requires the TreeHeadStore
+    Postgres row, which does not survive cleanTables.
 
 OVERVIEW:
-    TestCrypto_Auditor
-      EXT-01_StandaloneAuditorWorkflow
-        → STH pull, recompute every leaf from entry tile,
-          verify all N inclusion proofs.
-      EXT-02_BridgePartialTile
-        → submit N then N+1; consistency proof through the
-          partial → partial transition verifies.
-      EXT-03_AcrossRestart
-        → 2-phase: submit + capture; restart with same
-          TileRoot; submit + capture; verify consistency.
+
+	TestCrypto_Auditor
+	  EXT-01_StandaloneAuditorWorkflow
+	    → STH pull, recompute every leaf from entry tile,
+	      verify all N inclusion proofs.
+	  EXT-02_BridgePartialTile
+	    → submit N then N+1; consistency proof through the
+	      partial → partial transition verifies.
+	  EXT-03_AcrossRestart
+	    → 2-phase: submit + capture; restart with same
+	      TileRoot; submit + capture; verify consistency.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_crypto_helpers_test.go: cryptoFetchTreeHead,
-      cryptoFetchConsistency, cryptoVerifyInclusion,
-      cryptoVerifyConsistency, cryptoSubmitOne, cryptoSubmitMany,
-      cryptoLeafHash.
-    - github.com/clearcompass-ai/ledger/tessera: ParseEntryBundle,
-      EntriesPerTile, EntryTilePath.
+  - tests/scenarios_crypto_helpers_test.go: cryptoFetchTreeHead,
+    cryptoFetchConsistency, cryptoVerifyInclusion,
+    cryptoVerifyConsistency, cryptoSubmitOne, cryptoSubmitMany,
+    cryptoLeafHash.
+  - github.com/clearcompass-ai/ledger/tessera: ParseEntryBundle,
+    EntriesPerTile, EntryTilePath.
 */
 package tests
 

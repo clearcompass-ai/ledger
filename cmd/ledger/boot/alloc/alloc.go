@@ -481,4 +481,3 @@ func allocateGossipStore(cfg Config, d *deps.AppDeps) error {
 	d.Logger.Info("gossip store ready", "co_tenant_with", "wal-db")
 	return nil
 }
-

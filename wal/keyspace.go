@@ -45,11 +45,11 @@ import (
 // Keyspace prefixes. Single-byte tags chosen so the BadgerDB sort
 // order groups related keys (e.g., all `entry:` keys are contiguous).
 const (
-	prefixEntry byte = 0x01
-	prefixMeta byte = 0x02
-	prefixSeqIndex byte = 0x03
-	prefixInflight byte = 0x04
-	prefixHWM byte = 0x05
+	prefixEntry        byte = 0x01
+	prefixMeta         byte = 0x02
+	prefixSeqIndex     byte = 0x03
+	prefixInflight     byte = 0x04
+	prefixHWM          byte = 0x05
 	prefixTesseraDedup byte = 0x06
 )
 

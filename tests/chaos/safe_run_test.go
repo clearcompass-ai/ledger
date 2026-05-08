@@ -3,20 +3,22 @@
 
 /*
 FILE PATH:
-    tests/chaos/safe_run_test.go
+
+	tests/chaos/safe_run_test.go
 
 DESCRIPTION:
-    J4 — Chaos test: lifecycle.SafeRun panic-recovery primitive
-    under repeated panic load. Pins:
-      - Repeated panics in a goroutine never crash the process.
-      - Each panic surfaces to fatalCh exactly once.
-      - The wrapping caller's wg.Wait returns deterministically.
-      - WaitGroup discipline is preserved across N panics.
 
-    Foundational chaos: SafeRun is the load-bearing wrapper
-    used by every supervisor goroutine (E1+B5). If it deadlocks
-    or leaks goroutines under repeated panic, the entire
-    panic-handling story breaks.
+	J4 — Chaos test: lifecycle.SafeRun panic-recovery primitive
+	under repeated panic load. Pins:
+	  - Repeated panics in a goroutine never crash the process.
+	  - Each panic surfaces to fatalCh exactly once.
+	  - The wrapping caller's wg.Wait returns deterministically.
+	  - WaitGroup discipline is preserved across N panics.
+
+	Foundational chaos: SafeRun is the load-bearing wrapper
+	used by every supervisor goroutine (E1+B5). If it deadlocks
+	or leaks goroutines under repeated panic, the entire
+	panic-handling story breaks.
 */
 package chaos
 
