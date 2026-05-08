@@ -162,12 +162,12 @@ func TestFindCommitmentEntries_NoMatch(t *testing.T) {
 	resetFixtures(t, ctx, pool)
 
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
-	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 
 	var splitID [32]byte
 	splitID[0] = 0xAB
 	got, err := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, splitID,
+		ctx, artifact.PREGrantCommitmentSchemaID, splitID,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -197,10 +197,10 @@ func TestFindCommitmentEntries_SingleRow(t *testing.T) {
 			seq: []byte("wire-100"),
 		},
 	}
-	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 
 	got, err := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, splitID,
+		ctx, artifact.PREGrantCommitmentSchemaID, splitID,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -236,10 +236,10 @@ func TestFindCommitmentEntries_Equivocation(t *testing.T) {
 			200: []byte("wire-200"),
 		},
 	}
-	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 
 	got, err := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, splitID,
+		ctx, artifact.PREGrantCommitmentSchemaID, splitID,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -267,10 +267,10 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 
 	// Reader has no entry for seq=300 so ReadEntry returns an error.
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
-	fetcher := NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 
 	_, err := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, splitID,
+		ctx, artifact.PREGrantCommitmentSchemaID, splitID,
 	)
 	if err == nil {
 		t.Fatal("expected error from missing Tessera entry, got nil")
@@ -281,9 +281,9 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 // at the top of FindCommitmentEntries — a nil bytestore.Reader
 // would otherwise panic on the first ReadEntry call.
 func TestFindCommitmentEntries_NilReader(t *testing.T) {
-	fetcher := NewPostgresCommitmentFetcher(context.Background(), nil, nil, testLogDID)
+	fetcher := NewPostgresCommitmentFetcher(nil, nil, testLogDID)
 	_, err := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, [32]byte{},
+		context.Background(), artifact.PREGrantCommitmentSchemaID, [32]byte{},
 	)
 	if err == nil {
 		t.Fatal("expected error from nil reader, got nil")
@@ -295,10 +295,41 @@ func TestFindCommitmentEntries_NilReader(t *testing.T) {
 // match no rows under any normal index population and is more likely
 // a programmer error than a legitimate query.
 func TestFindCommitmentEntries_EmptySchemaID(t *testing.T) {
-	fetcher := NewPostgresCommitmentFetcher(context.Background(), nil, &fakeEntryReader{}, testLogDID)
-	_, err := fetcher.FindCommitmentEntries("", [32]byte{})
+	fetcher := NewPostgresCommitmentFetcher(nil, &fakeEntryReader{}, testLogDID)
+	_, err := fetcher.FindCommitmentEntries(context.Background(), "", [32]byte{})
 	if err == nil {
 		t.Fatal("expected error from empty schemaID, got nil")
+	}
+}
+
+// TestFindCommitmentEntries_ContextCancelled pins Tier 1.2's
+// load-bearing contract: the SDK now propagates ctx into
+// CommitmentFetcher, so cancellation MUST reach the bottom-layer
+// pgxpool driver instead of being silently absorbed by a struct-
+// bound context (the P2 fallback this commit eliminated).
+//
+// We cancel BEFORE issuing the call so pgxpool returns immediately
+// rather than racing the test deadline; the assertion is purely
+// "did the cancellation propagate".
+func TestFindCommitmentEntries_ContextCancelled(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	resetFixtures(t, context.Background(), pool)
+
+	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
+	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetcher.FindCommitmentEntries(
+		cancelledCtx, artifact.PREGrantCommitmentSchemaID, [32]byte{},
+	)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error chain to contain context.Canceled, got: %v", err)
 	}
 }
 

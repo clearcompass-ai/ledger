@@ -386,9 +386,10 @@ func TestDeterminism_CommutativeSchemas(t *testing.T) {
 }
 
 func TestDeterminism_EmptyBatch(t *testing.T) {
+	ctx := context.Background()
 	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeCache())
-	rootBefore, _ := tree.Root()
-	result, _ := builder.ProcessBatch(tree, nil, nil, newMockFetcher(), nil, testLogDID, builder.NewDeltaWindowBuffer(10))
+	rootBefore, _ := tree.Root(ctx)
+	result, _ := builder.ProcessBatch(ctx, tree, nil, nil, newMockFetcher(), nil, testLogDID, builder.NewDeltaWindowBuffer(10))
 	if result.NewRoot != rootBefore {
 		t.Fatal("empty batch should not change root")
 	}
@@ -407,7 +408,7 @@ func TestSMT_LeafCreation(t *testing.T) {
 	if r.NewLeafCounts != 1 {
 		t.Fatal("expected 1 leaf")
 	}
-	leaf, _ := h.tree.GetLeaf(smt.DeriveKey(pos(1)))
+	leaf, _ := h.tree.GetLeaf(context.Background(), smt.DeriveKey(pos(1)))
 	if leaf == nil {
 		t.Fatal("leaf should exist")
 	}
@@ -508,10 +509,10 @@ func TestSMT_DelegationLiveness(t *testing.T) {
 	}
 	// Revoke delegation.
 	key := smt.DeriveKey(pos(2))
-	leaf, _ := h.tree.GetLeaf(key)
+	leaf, _ := h.tree.GetLeaf(context.Background(), key)
 	u := *leaf
 	u.OriginTip = pos(4)
-	h.tree.SetLeaf(key, u)
+	h.tree.SetLeaf(context.Background(), key, u)
 	// Revoked: should fail.
 	r2 := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:delegate", TargetRoot: ptrTo(pos(1)), AuthorityPath: delegation(), DelegationPointers: []types.LogPosition{pos(2)}}, nil), pos(5))
 	if r2.PathDCounts != 1 {
@@ -687,7 +688,7 @@ func TestTreeHead_MerkleInclusion(t *testing.T) {
 	if head.TreeSize != 3 {
 		t.Fatal("size should be 3")
 	}
-	proof, err := mt.InclusionProof(1, head.TreeSize)
+	proof, err := mt.InclusionProof(context.Background(), 1, head.TreeSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +710,7 @@ func TestTreeHead_Consistency(t *testing.T) {
 	if h50.RootHash == h100.RootHash {
 		t.Fatal("roots should differ")
 	}
-	proof, _ := mt.InclusionProof(25, h100.TreeSize)
+	proof, _ := mt.InclusionProof(context.Background(), 25, h100.TreeSize)
 	if smt.VerifyMerkleInclusion(proof, h100.RootHash) != nil {
 		t.Fatal("entry from batch 1 should be provable at size 100")
 	}
@@ -1034,10 +1035,10 @@ func TestGov_DelegationRevocationCascade(t *testing.T) {
 		t.Fatal("depth-3 should succeed")
 	}
 	key := smt.DeriveKey(pos(2))
-	leaf, _ := h.tree.GetLeaf(key)
+	leaf, _ := h.tree.GetLeaf(context.Background(), key)
 	u := *leaf
 	u.OriginTip = pos(6)
-	h.tree.SetLeaf(key, u)
+	h.tree.SetLeaf(context.Background(), key, u)
 	r2 := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:deputy", TargetRoot: ptrTo(pos(1)), AuthorityPath: delegation(), DelegationPointers: []types.LogPosition{pos(4), pos(3), pos(2)}}, nil), pos(7))
 	if r2.PathDCounts != 1 {
 		t.Fatal("revoked judge should break chain")

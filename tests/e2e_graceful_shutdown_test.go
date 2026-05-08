@@ -141,7 +141,7 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 	entryStore := store.NewEntryStore(pool)
 	creditStore := store.NewCreditStore(pool)
 	sequenceCursor := store.NewSequenceCursor(pool)
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, composite, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
 	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
 	diffController := middleware.NewDifficultyController(

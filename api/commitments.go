@@ -188,7 +188,7 @@ func NewCommitmentLookupHandler(deps *CryptographicCommitmentDeps) http.HandlerF
 		var splitID [32]byte
 		copy(splitID[:], raw)
 
-		entries, err := deps.Fetcher.FindCommitmentEntries(schemaID, splitID)
+		entries, err := deps.Fetcher.FindCommitmentEntries(ctx, schemaID, splitID)
 		if err != nil {
 			deps.Logger.Error("commitment lookup",
 				"schema_id", schemaID,

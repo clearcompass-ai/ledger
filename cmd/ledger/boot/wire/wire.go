@@ -224,7 +224,7 @@ func composeStores(ctx context.Context, cfg Config, d *deps.AppDeps) *tessera.Te
 	d.EntryStore = store.NewEntryStore(pool)
 	d.CreditStore = store.NewCreditStore(pool)
 	d.CommitStore = store.NewCommitmentStore(pool)
-	d.LeafStore = store.NewPostgresLeafStore(ctx, pool)
+	d.LeafStore = store.NewPostgresLeafStore(pool)
 	cacheSize := cfg.SMTNodeCacheSize
 	if cacheSize <= 0 {
 		cacheSize = 4096
@@ -250,7 +250,7 @@ func composeBuilderLoop(
 	// Composite byte reader: WAL fast-path → bytestore fallback.
 	compositeReader := store.NewCompositeByteReader(d.WALCommitter, d.ByteStore, d.Logger)
 
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, compositeReader, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, compositeReader, cfg.LogDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, d.Logger)
 	sequenceCursor := store.NewSequenceCursor(pool)
 	reader := builder.NewCursorReader(sequenceCursor)
@@ -321,7 +321,7 @@ func composeHandlers(
 ) (api.Handlers, error) {
 	pool := d.PgPool.DB
 	compositeReader := store.NewCompositeByteReader(d.WALCommitter, d.ByteStore, d.Logger)
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, compositeReader, cfg.LogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, compositeReader, cfg.LogDID)
 	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, compositeReader, cfg.LogDID)
 
 	// BLS quorum verifier — embedded-tree-head check; no-op until

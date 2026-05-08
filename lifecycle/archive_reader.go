@@ -169,7 +169,7 @@ func (r *ArchiveReader) AddShard(meta ShardMeta) {
 // hot-path entries. Archive consumers that need log_time pair this
 // fetcher with a separate metadata index (out of scope for the
 // archive reader).
-func (r *ArchiveReader) Fetch(pos types.LogPosition) (*types.EntryWithMetadata, error) {
+func (r *ArchiveReader) Fetch(ctx context.Context, pos types.LogPosition) (*types.EntryWithMetadata, error) {
 	shard, err := r.resolveShard(pos)
 	if err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func (r *ArchiveReader) Fetch(pos types.LogPosition) (*types.EntryWithMetadata, 
 
 	// Fetch full wire bytes from the byte archive.
 	byteURL := fmt.Sprintf("%s/bytes/%d", shard.ByteArchiveEndpoint, pos.Sequence)
-	wireBytes, err := r.fetchBytes(byteURL)
+	wireBytes, err := r.fetchBytes(ctx, byteURL)
 	if err != nil {
 		return nil, fmt.Errorf("lifecycle/archive: fetch bytes seq=%d from %s: %w",
 			pos.Sequence, shard.ShardDID, err)
@@ -199,7 +199,7 @@ func (r *ArchiveReader) Fetch(pos types.LogPosition) (*types.EntryWithMetadata, 
 
 // FetchHash retrieves the 32-byte SHA-256 hash for an entry from the shard's
 // tile archive. Used for Merkle proof verification against frozen shards.
-func (r *ArchiveReader) FetchHash(pos types.LogPosition) ([32]byte, error) {
+func (r *ArchiveReader) FetchHash(ctx context.Context, pos types.LogPosition) ([32]byte, error) {
 	shard, err := r.resolveShard(pos)
 	if err != nil {
 		return [32]byte{}, err
@@ -211,7 +211,7 @@ func (r *ArchiveReader) FetchHash(pos types.LogPosition) ([32]byte, error) {
 	// Fetch entry tile from tile archive.
 	tilePath := tessera.EntryTilePath(tileIndex)
 	tileURL := fmt.Sprintf("%s/%s", shard.TileArchiveEndpoint, tilePath)
-	tileData, err := r.fetchBytes(tileURL)
+	tileData, err := r.fetchBytes(ctx, tileURL)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("lifecycle/archive: fetch entry tile %d from %s: %w",
 			tileIndex, shard.ShardDID, err)
@@ -237,10 +237,10 @@ func (r *ArchiveReader) FetchHash(pos types.LogPosition) ([32]byte, error) {
 // -------------------------------------------------------------------------------------------------
 
 // FetchBatch retrieves multiple entries' full bytes.
-func (r *ArchiveReader) FetchBatch(positions []types.LogPosition) ([]*types.EntryWithMetadata, error) {
+func (r *ArchiveReader) FetchBatch(ctx context.Context, positions []types.LogPosition) ([]*types.EntryWithMetadata, error) {
 	results := make([]*types.EntryWithMetadata, len(positions))
 	for i, pos := range positions {
-		ewm, err := r.Fetch(pos)
+		ewm, err := r.Fetch(ctx, pos)
 		if err != nil {
 			return nil, fmt.Errorf("lifecycle/archive: batch fetch pos %d: %w", i, err)
 		}
@@ -290,8 +290,12 @@ func (r *ArchiveReader) resolveShard(pos types.LogPosition) (*ShardMeta, error) 
 	return nil, fmt.Errorf("lifecycle/archive: no shard found for %s@%d", pos.LogDID, pos.Sequence)
 }
 
-func (r *ArchiveReader) fetchBytes(url string) ([]byte, error) {
-	resp, err := r.client.Get(url)
+func (r *ArchiveReader) fetchBytes(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, err
 	}

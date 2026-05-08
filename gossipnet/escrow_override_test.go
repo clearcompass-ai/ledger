@@ -46,7 +46,7 @@ func stubCosignServer(t *testing.T, signer cosign.WitnessSigner, networkID cosig
 		}
 		_ = nid // we ignore — single-network test fixture
 		algo := cosign.HashAlgoSHA256
-		sig, err := signer.Sign(payload, networkID, algo)
+		sig, err := signer.Sign(r.Context(), payload, networkID, algo)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return

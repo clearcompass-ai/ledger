@@ -297,7 +297,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 // -------------------------------------------------------------------------------------------------
 
 func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
-	priorRoot, err := bl.tree.Root()
+	priorRoot, err := bl.tree.Root(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("prior root: %w", err)
 	}
@@ -328,7 +328,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	metas := make([]*types.EntryWithMetadata, 0, len(seqs))
 	for _, seq := range seqs {
 		p := types.LogPosition{LogDID: bl.cfg.LogDID, Sequence: seq}
-		meta, fetchErr := bl.fetcher.Fetch(p)
+		meta, fetchErr := bl.fetcher.Fetch(ctx, p)
 		if fetchErr != nil || meta == nil {
 			return 0, fmt.Errorf("fetch seq=%d: not found or error: %w", seq, fetchErr)
 		}
@@ -352,6 +352,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	overlayTree := smt.NewTree(overlayStore, bl.nodeCache)
 
 	result, err := sdkbuilder.ProcessBatch(
+		ctx,
 		overlayTree, entries, positions,
 		bl.fetcher, bl.schema, bl.cfg.LogDID, bl.buffer,
 	)

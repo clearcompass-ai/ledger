@@ -144,7 +144,7 @@ func main() {
 	defer pool.Close()
 
 	// ── Stores ────────────────────────────────────────────────────────
-	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, *nodeCacheSize)
 
 	// CRITICAL: In production, replace NewInMemoryEntryStore with your
@@ -196,7 +196,7 @@ func main() {
 	merkle := tessera.NewTesseraAdapter(ctx, embeddedAppender, nil, logger)
 
 	// ── Builder dependencies ──────────────────────────────────────────
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, byteStore, *logDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, byteStore, *logDID)
 	bufferStore := builder.NewDeltaBufferStore(pool, *deltaWindow, logger)
 	buffer, loadErr := bufferStore.Load(ctx)
 	if loadErr != nil {

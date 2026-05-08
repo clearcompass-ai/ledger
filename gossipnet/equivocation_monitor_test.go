@@ -74,7 +74,7 @@ func cosignHead(t *testing.T, ws fixtureWitnesses, head types.TreeHead, networkI
 	payload := cosign.NewTreeHeadPayload(head)
 	sigs := make([]types.WitnessSignature, 0, len(ws.signers))
 	for _, s := range ws.signers {
-		sig, err := s.Sign(payload, networkID, cosign.HashAlgoSHA256)
+		sig, err := s.Sign(context.Background(), payload, networkID, cosign.HashAlgoSHA256)
 		if err != nil {
 			t.Fatalf("Sign: %v", err)
 		}

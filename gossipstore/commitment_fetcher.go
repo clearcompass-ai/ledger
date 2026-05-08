@@ -79,18 +79,16 @@ func NewBadgerCommitmentFetcher(store *BadgerStore) *BadgerCommitmentFetcher {
 // 0x0C for the (schemaID, splitID) tuple and converts every hit
 // into an *EntryWithMetadata.
 //
-// The SDK interface is context-free, but the underlying Badger
-// View is a synchronous read-only transaction; we use a
-// background context internally. Callers needing cancellation
-// should run the fetcher behind their own context-aware wrapper.
+// The supplied ctx is threaded into the underlying Badger View;
+// SIGTERM cancellation aborts an in-flight scan rather than
+// holding the read transaction past shutdown.
 func (f *BadgerCommitmentFetcher) FindCommitmentEntries(
-	schemaID string, splitID [32]byte,
+	ctx context.Context, schemaID string, splitID [32]byte,
 ) ([]*types.EntryWithMetadata, error) {
 	if schemaID == "" {
 		return nil, fmt.Errorf("gossipstore/BadgerCommitmentFetcher: empty schemaID")
 	}
-	hits, err := f.store.ListEntryLookupEntriesAt(
-		context.Background(), schemaID, splitID)
+	hits, err := f.store.ListEntryLookupEntriesAt(ctx, schemaID, splitID)
 	if err != nil {
 		return nil, fmt.Errorf("gossipstore/BadgerCommitmentFetcher: list 0x0C: %w", err)
 	}

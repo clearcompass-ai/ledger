@@ -152,10 +152,10 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	sequenceCursor := store.NewSequenceCursor(pool)
 	reader := opbuilder.NewCursorReader(sequenceCursor)
 	treeHeadStore := store.NewTreeHeadStore(pool)
-	leafStore := store.NewPostgresLeafStore(ctx, pool)
+	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
 
 	walDB, err := wal.OpenInMemory(nil)
@@ -256,7 +256,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 	cryptoCommitDeps := &api.CryptographicCommitmentDeps{
-		Fetcher: store.NewPostgresCommitmentFetcher(ctx, pool, entryBytes, testLogDID),
+		Fetcher: store.NewPostgresCommitmentFetcher(pool, entryBytes, testLogDID),
 		Logger:  logger,
 	}
 

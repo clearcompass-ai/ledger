@@ -173,7 +173,7 @@ func TestCrossLedger_STHRoundTrip(t *testing.T) {
 		TreeSize: 4242,
 		RootHash: [32]byte{0xCA, 0xFE, 0xBA, 0xBE},
 	}
-	witSig, err := witSigner.Sign(cosign.NewTreeHeadPayload(headBare),
+	witSig, err := witSigner.Sign(context.Background(), cosign.NewTreeHeadPayload(headBare),
 		netID, cosign.HashAlgoSHA256)
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestCrossLedger_LatestSTH(t *testing.T) {
 		TreeSize: 9999,
 		RootHash: [32]byte{0xDE, 0xAD},
 	}
-	witSig, err := witSigner.Sign(cosign.NewTreeHeadPayload(bareHead),
+	witSig, err := witSigner.Sign(context.Background(), cosign.NewTreeHeadPayload(bareHead),
 		netID, cosign.HashAlgoSHA256)
 	if err != nil {
 		t.Fatal(err)

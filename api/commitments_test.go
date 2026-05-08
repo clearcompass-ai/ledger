@@ -59,7 +59,7 @@ type stubFetcher struct {
 }
 
 func (s *stubFetcher) FindCommitmentEntries(
-	schemaID string, splitID [32]byte,
+	_ context.Context, schemaID string, splitID [32]byte,
 ) ([]*types.EntryWithMetadata, error) {
 	return s.rows, s.err
 }

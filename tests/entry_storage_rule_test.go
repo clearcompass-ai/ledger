@@ -178,9 +178,9 @@ func TestRule_FetcherHydratesFromEntryReader(t *testing.T) {
 	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch via PostgresEntryFetcher.
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	pos := types.LogPosition{LogDID: testLogDID, Sequence: seq}
-	ewm, err := fetcher.Fetch(pos)
+	ewm, err := fetcher.Fetch(ctx, pos)
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -292,9 +292,9 @@ func TestRule_EntryReaderIsAuthoritative(t *testing.T) {
 	entryBytes.WriteEntry(ctx, seq, hash, wire)
 
 	// Fetch — should return EntryReader's bytes.
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	pos := types.LogPosition{LogDID: testLogDID, Sequence: seq}
-	ewm, err := fetcher.Fetch(pos)
+	ewm, err := fetcher.Fetch(ctx, pos)
 	if err != nil || ewm == nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
