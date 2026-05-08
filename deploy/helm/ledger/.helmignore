@@ -1,0 +1,20 @@
+# Patterns to ignore when packaging Helm charts.
+# Mirrors Helm's stock .helmignore plus repo-specific noise.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.hg/
+.hgignore
+.svn/
+*.tmp
+*.orig
+*.bak
+.idea/
+.vscode/
+*.swp
+*.swo
+OWNERS
+README.md.bak
+# Sample / overlay values files are read by operators, NOT packaged.
+values-*.example.yaml
