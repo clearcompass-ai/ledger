@@ -64,7 +64,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"log/slog"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -77,6 +79,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/clearcompass-ai/ledger/anchor"
+	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	"github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/bytestore"
@@ -170,10 +173,31 @@ type AppDeps struct {
 	Sequencer       *sequencer.Sequencer
 	Shipper         *shipper.Shipper
 	AnchorPublisher *anchor.Publisher
-	GossipBundle    *gossipnet.Bundle      // nil when gossip disabled
+	GossipBundle    *gossipnet.Bundle       // nil when gossip disabled
 	GossipPublisher *gossipnet.STHPublisher // nil when gossip disabled
-	HTTPServer      *http.Server
-	PprofServer     *http.Server // nil when pprof disabled
+
+	// HTTPServer is the *api.Server wrapper — exposes Shutdown +
+	// SetReady. Stdlib http.Server lives inside it; teardown calls
+	// HTTPServer.Shutdown.
+	HTTPServer *api.Server
+	// HTTPListener is the netutil.LimitListener-wrapped listener
+	// the HTTP server runs on. Held so teardown can close it
+	// directly if Shutdown's drain misbehaves.
+	HTTPListener net.Listener
+
+	// HTTPTLSEnabled mirrors (cfg.TLSCertFile != "" && cfg.TLSKeyFile
+	// != "") so the http-server goroutine knows which Serve method
+	// to call without re-reading the original config.
+	HTTPTLSEnabled bool
+
+	// PprofServer is nil when pprof is disabled.
+	PprofServer *http.Server
+
+	// WG joins every long-running goroutine started in Phase B
+	// (HTTP server, builder loop, sequencer, shipper, etc.).
+	// teardown waits on this group as part of the
+	// "background-goroutines" shutdown step.
+	WG sync.WaitGroup
 
 	// ── closeStack — owned by Phase A, transcribed by Phase C ────
 	closeStack []NamedCloser
