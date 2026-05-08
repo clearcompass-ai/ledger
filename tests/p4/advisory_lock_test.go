@@ -14,20 +14,20 @@
 // Each test case is one row of the matrix and asserts a single
 // invariant. Failures point at the exact wire the regression cut.
 //
-//   1. Concurrent acquire — second acquire times out within
-//      DefaultBuilderLockAcquireTimeout (default 30s, overridden in
-//      this test to keep CI fast).
-//   2. Release allows acquisition — first releases; second's NEXT
-//      acquire succeeds within a small grace window.
-//   3. LockID stability — pin BuilderLockID == 0x4F5254484F4C4F47
-//      ("ATTESTA" big-endian) so a refactor that silently rotates
-//      the magic number doesn't split-brain a fleet that still uses
-//      the old value.
-//   4. Default timeout invariant — pin the 30s default so a refactor
-//      can't silently widen or zero out the rolling-update SLA.
-//   5. Handoff sequence — A acquires, B blocks; A releases; B
-//      completes within sub-second of A.Release.
-//   6. Concurrent contention — N pools race; exactly 1 wins.
+//  1. Concurrent acquire — second acquire times out within
+//     DefaultBuilderLockAcquireTimeout (default 30s, overridden in
+//     this test to keep CI fast).
+//  2. Release allows acquisition — first releases; second's NEXT
+//     acquire succeeds within a small grace window.
+//  3. LockID stability — pin BuilderLockID == 0x4F5254484F4C4F47
+//     ("ATTESTA" big-endian) so a refactor that silently rotates
+//     the magic number doesn't split-brain a fleet that still uses
+//     the old value.
+//  4. Default timeout invariant — pin the 30s default so a refactor
+//     can't silently widen or zero out the rolling-update SLA.
+//  5. Handoff sequence — A acquires, B blocks; A releases; B
+//     completes within sub-second of A.Release.
+//  6. Concurrent contention — N pools race; exactly 1 wins.
 //
 // The 30s default acquire timeout would dominate test runtime, so
 // each test drives its own bounded context (typically 2–5s).
@@ -272,19 +272,26 @@ func TestP4_AdvisoryLock_ConcurrentAcquireOneWinsOneLoses(t *testing.T) {
 	close(out)
 
 	winners := 0
+	var heldLocks []*store.BuilderLock
 	for r := range out {
 		if r.err == nil {
 			winners++
-			// Defer release so subsequent table runs see a clean
-			// state. Captured by reference into the deferred
-			// closure.
-			defer func(l *store.BuilderLock) { l.Release() }(r.lock)
+			// Collect winners' locks; release at function exit (a
+			// defer inside the loop body would never run because
+			// staticcheck SA9001 catches the no-fire-until-channel-
+			// closed pattern).
+			heldLocks = append(heldLocks, r.lock)
 			continue
 		}
 		if !isDeadlineError(r.err) {
 			t.Errorf("goroutine %d: unexpected error type: %v", r.idx, r.err)
 		}
 	}
+	defer func() {
+		for _, l := range heldLocks {
+			l.Release()
+		}
+	}()
 	if winners != 1 {
 		t.Fatalf("got %d winners under contention; want exactly 1 "+
 			"(single-writer invariant)", winners)
