@@ -67,10 +67,10 @@ const defaultScanCount = 100
 //	                 is what the read-only ledger wants.
 //	Logger — slog handle.
 type QueryDeps struct {
-	EntryStore EntryStore
-	QueryAPI QueryAPI
+	EntryStore     EntryStore
+	QueryAPI       QueryAPI
 	DiffController *middleware.DifficultyController
-	Logger *slog.Logger
+	Logger         *slog.Logger
 
 	// WAL is the optional WAL probe surface used by
 	// NewHashLookupHandler to detect entries that have been
@@ -95,12 +95,12 @@ type QueryDeps struct {
 // GET /v1/entries/{seq} and inspect the envelope locally.
 type EntryResponse struct {
 	SequenceNumber uint64 `json:"sequence_number"`
-	CanonicalHash string `json:"canonical_hash"`
-	LogTime string `json:"log_time"`
-	SignerDID string `json:"signer_did,omitempty"`
-	ProtocolVer uint16 `json:"protocol_version"`
-	PayloadSize int `json:"payload_size"`
-	CanonicalSize int `json:"canonical_size"`
+	CanonicalHash  string `json:"canonical_hash"`
+	LogTime        string `json:"log_time"`
+	SignerDID      string `json:"signer_did,omitempty"`
+	ProtocolVer    uint16 `json:"protocol_version"`
+	PayloadSize    int    `json:"payload_size"`
+	CanonicalSize  int    `json:"canonical_size"`
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -440,8 +440,8 @@ func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 		}
 		count := defaultScanCount
 		if countStr != "" {
-			parsed, err := strconv.Atoi(countStr)
-			if err != nil || parsed <= 0 {
+			parsed, pErr := strconv.Atoi(countStr)
+			if pErr != nil || parsed <= 0 {
 				writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
 					http.StatusBadRequest, "invalid count parameter")
 				return

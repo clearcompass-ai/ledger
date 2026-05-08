@@ -36,7 +36,7 @@ func TestMMDHandler_RoundsToConfiguredValue(t *testing.T) {
 		}
 		var body struct {
 			MMDSeconds float64 `json:"mmd_seconds"`
-			MMDHuman string `json:"mmd_human"`
+			MMDHuman   string  `json:"mmd_human"`
 		}
 		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 			t.Errorf("mmd=%v: decode: %v", mmd, err)
@@ -62,7 +62,7 @@ func TestMMDHandler_SubSecondMMD(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	var body struct {
 		MMDSeconds float64 `json:"mmd_seconds"`
-		MMDHuman string `json:"mmd_human"`
+		MMDHuman   string  `json:"mmd_human"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -89,7 +89,7 @@ func TestMMDHandler_ZeroDuration(t *testing.T) {
 	}
 	var body struct {
 		MMDSeconds float64 `json:"mmd_seconds"`
-		MMDHuman string `json:"mmd_human"`
+		MMDHuman   string  `json:"mmd_human"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)

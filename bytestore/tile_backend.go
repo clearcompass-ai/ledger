@@ -1,46 +1,49 @@
 /*
 FILE PATH:
-    bytestore/tile_backend.go
+
+	bytestore/tile_backend.go
 
 DESCRIPTION:
-    The TileBackend interface — the storage-side contract behind
-    the ledger's Static-CT tile-serving HTTP routes (api/
-    tile_handler.go). Implementations:
 
-        *tessera.POSIXTileBackend    (POSIX directory)
-        *bytestore.GCSTiles          (GCS object store, this package)
+	The TileBackend interface — the storage-side contract behind
+	the ledger's Static-CT tile-serving HTTP routes (api/
+	tile_handler.go). Implementations:
 
-    Auditors fetch tiles via the SDK's log/tessera_fetcher.go
-    primitive at known c2sp.org/tlog-tiles paths. The HTTP layer
-    consumes a TileBackend; the backend is opaque about whether
-    the bytes come from disk, cloud, or memory.
+	    *tessera.POSIXTileBackend    (POSIX directory)
+	    *bytestore.GCSTiles          (GCS object store, this package)
+
+	Auditors fetch tiles via the SDK's log/tessera_fetcher.go
+	primitive at known c2sp.org/tlog-tiles paths. The HTTP layer
+	consumes a TileBackend; the backend is opaque about whether
+	the bytes come from disk, cloud, or memory.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Defined in bytestore (not api) so the compile-time
-      interface guard `var _ TileBackend = (*GCSTiles)(nil)` lives
-      with the implementation. The api package consumes the
-      interface; bytestore owns it.
-    - Two methods only. Read-only. The ledger never writes tiles
-      via this interface — Tessera owns tile writes (via its own
-      storage driver). Reads are the exclusively-served surface
-      for /checkpoint and /tile/{level}/{rest...}.
-    - os.ErrNotExist verbatim signaling: the SDK's
-      log/tessera_fetcher.fetchTesseraTile expects errors.Is(err,
-      os.ErrNotExist) to drive the partial-then-full fallback.
-      Implementations MUST translate their underlying "not found"
-      sentinel (storage.ErrObjectNotExist for GCS, the kernel's
-      ENOENT for POSIX) to os.ErrNotExist.
+  - Defined in bytestore (not api) so the compile-time
+    interface guard `var _ TileBackend = (*GCSTiles)(nil)` lives
+    with the implementation. The api package consumes the
+    interface; bytestore owns it.
+  - Two methods only. Read-only. The ledger never writes tiles
+    via this interface — Tessera owns tile writes (via its own
+    storage driver). Reads are the exclusively-served surface
+    for /checkpoint and /tile/{level}/{rest...}.
+  - os.ErrNotExist verbatim signaling: the SDK's
+    log/tessera_fetcher.fetchTesseraTile expects errors.Is(err,
+    os.ErrNotExist) to drive the partial-then-full fallback.
+    Implementations MUST translate their underlying "not found"
+    sentinel (storage.ErrObjectNotExist for GCS, the kernel's
+    ENOENT for POSIX) to os.ErrNotExist.
 
 OVERVIEW:
-    Used by api.NewCheckpointHandler and api.NewTileHandler to
-    serve the c2sp.org/tlog-tiles HTTP routes. The interface is
-    deliberately tiny — anything beyond reading a path or the
-    canonical checkpoint belongs in a richer storage interface,
-    not this one.
+
+	Used by api.NewCheckpointHandler and api.NewTileHandler to
+	serve the c2sp.org/tlog-tiles HTTP routes. The interface is
+	deliberately tiny — anything beyond reading a path or the
+	canonical checkpoint belongs in a richer storage interface,
+	not this one.
 
 KEY DEPENDENCIES:
-    - context.Context: bounded I/O timeout discipline.
-    - os.ErrNotExist: canonical "tile absent" signal.
+  - context.Context: bounded I/O timeout discipline.
+  - os.ErrNotExist: canonical "tile absent" signal.
 */
 package bytestore
 

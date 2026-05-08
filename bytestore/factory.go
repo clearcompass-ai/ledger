@@ -51,7 +51,7 @@ type Config struct {
 	// WriteTimeout / ReadTimeout cap individual operations. Optional.
 	// Defaults to 30s each.
 	WriteTimeout time.Duration
-	ReadTimeout time.Duration
+	ReadTimeout  time.Duration
 
 	// ── GCS-specific ──────────────────────────────────────────────
 	// Endpoint overrides the default GCS endpoint (set for fake-gcs).

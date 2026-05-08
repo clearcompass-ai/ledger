@@ -479,7 +479,7 @@ func composeHandlers(
 		CommitmentLookup: commitmentLookupHandler,
 		Checkpoint:       checkpointHandler,
 		Tile:             tileHandler,
-		LogInfo: api.NewLogInfoHandler(cfg.LogInfo),
+		LogInfo:          api.NewLogInfoHandler(cfg.LogInfo),
 		Version: api.NewVersionHandler(api.VersionInfo{
 			Version:    cfg.Version,
 			Commit:     cfg.Commit,

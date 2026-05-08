@@ -126,7 +126,7 @@ type ReplayConfig struct {
 
 // Replayer back-populates 0x0A + 0x0C from Postgres at boot.
 type Replayer struct {
-	cfg ReplayConfig
+	cfg    ReplayConfig
 	logger *slog.Logger
 }
 
@@ -165,12 +165,12 @@ func NewReplayer(cfg ReplayConfig) (*Replayer, error) {
 
 // replayRow is the in-memory shape of one Postgres row.
 type replayRow struct {
-	seq uint64
+	seq      uint64
 	schemaID string
-	splitID [32]byte
-	signer string
-	hash [32]byte
-	logTime int64 // unix-micros
+	splitID  [32]byte
+	signer   string
+	hash     [32]byte
+	logTime  int64 // unix-micros
 }
 
 // Replay scans Postgres for commitment-schema rows above the

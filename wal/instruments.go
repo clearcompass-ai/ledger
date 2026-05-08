@@ -1,38 +1,40 @@
 /*
 FILE PATH:
-    wal/instruments.go
+
+	wal/instruments.go
 
 DESCRIPTION:
-    D3 — wal Submit duration histogram.
 
-        attesta_wal_submit_duration_seconds{outcome}
+	D3 — wal Submit duration histogram.
 
-    Records the wall time of every wal.Committer.Submit call:
-    queue-wait + group-commit batch-window + Badger txn + fsync.
-    Drives the SRE alert "WAL is the bottleneck" — submit p99
-    spiking is the earliest signal of disk-pressure or
-    fsync-latency degradation.
+	    attesta_wal_submit_duration_seconds{outcome}
+
+	Records the wall time of every wal.Committer.Submit call:
+	queue-wait + group-commit batch-window + Badger txn + fsync.
+	Drives the SRE alert "WAL is the bottleneck" — submit p99
+	spiking is the earliest signal of disk-pressure or
+	fsync-latency degradation.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One label, "outcome", with bounded cardinality 2:
-        outcome="committed" — group commit completed; submitter
-                              got a definitive (nil or err) result.
-        outcome="canceled"  — submitter ctx expired before the
-                              group commit completed. The
-                              submission may have flushed
-                              afterwards, but the SUBMITTER
-                              observed a deadline.
-      Without this label, the histogram has a blind spot in the
-      saturated case (clients time out → no observation → p99
-      looks artificially healthy under WAL backlog). With it,
-      administrators alert on canceled-rate spikes AND compare
-      committed-p99 to canceled-p99 to distinguish "WAL is slow"
-      from "clients have aggressive timeouts".
-    - Buckets tuned for 1ms-2s typical fsync windows (NVMe = sub-
-      ms; spinning rust = double-digit ms). Outliers >2s flag a
-      stuck batcher.
-    - nil histogram is no-op. Tests + dev runs without metrics
-      pass through with zero overhead.
+  - One label, "outcome", with bounded cardinality 2:
+    outcome="committed" — group commit completed; submitter
+    got a definitive (nil or err) result.
+    outcome="canceled"  — submitter ctx expired before the
+    group commit completed. The
+    submission may have flushed
+    afterwards, but the SUBMITTER
+    observed a deadline.
+    Without this label, the histogram has a blind spot in the
+    saturated case (clients time out → no observation → p99
+    looks artificially healthy under WAL backlog). With it,
+    administrators alert on canceled-rate spikes AND compare
+    committed-p99 to canceled-p99 to distinguish "WAL is slow"
+    from "clients have aggressive timeouts".
+  - Buckets tuned for 1ms-2s typical fsync windows (NVMe = sub-
+    ms; spinning rust = double-digit ms). Outliers >2s flag a
+    stuck batcher.
+  - nil histogram is no-op. Tests + dev runs without metrics
+    pass through with zero overhead.
 */
 package wal
 

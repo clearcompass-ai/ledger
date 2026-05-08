@@ -9,7 +9,8 @@
 //	Versioned-SQL migration runner. Replaces the historical inline
 //	schemaDDL[] in postgres.go. Mirrors the Boulder / upstream Tessera
 //	pattern — numbered .sql files in store/migrations/, embedded via
-//	go:embed, applied in order, recorded in schema_migrations.
+//	the //go:embed directive, applied in order, recorded in
+//	schema_migrations.
 //
 //	No external dependency. No DSL. ~200 LoC of in-tree Go.
 //

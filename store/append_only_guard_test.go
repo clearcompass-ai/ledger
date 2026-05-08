@@ -1,37 +1,39 @@
 /*
 FILE PATH:
-    store/append_only_guard_test.go
+
+	store/append_only_guard_test.go
 
 DESCRIPTION:
-    H4 — Code-level append-only assertion. Scans every .go file
-    under store/ for SQL string literals that mutate the
-    append-only tables (entry_index, commitment_split_id,
-    derivation_commitments, tree_heads, tree_head_sigs,
-    equivocation_proofs). If any UPDATE / DELETE / TRUNCATE
-    statement is constructed against these tables in production
-    code, the test fails the build.
+
+	H4 — Code-level append-only assertion. Scans every .go file
+	under store/ for SQL string literals that mutate the
+	append-only tables (entry_index, commitment_split_id,
+	derivation_commitments, tree_heads, tree_head_sigs,
+	equivocation_proofs). If any UPDATE / DELETE / TRUNCATE
+	statement is constructed against these tables in production
+	code, the test fails the build.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Build-time guard via `go test`, NOT a static-analysis
-      linter, so the check runs in the same toolchain that
-      already compiles + tests the code. Administrators don't need
-      to install staticcheck or any new tooling.
-    - Defense-in-depth on top of F2 (deploy/sql/grants.sql).
-      F2 enforces at the DB role level — the application can't
-      mutate even if the code tries. H4 enforces at compile-
-      check time — the code can't even contain the mutation
-      string. Together: a buggy commit can't slip past either
-      layer.
-    - Heuristic-but-bounded: we look for case-insensitive
-      "UPDATE <table>", "DELETE FROM <table>", "TRUNCATE <table>"
-      patterns inside string literals. False positives are
-      tolerable (the test will fail on a renamed-but-similar
-      table); false negatives would mean the guard misses a
-      real mutation, so the patterns favor over-matching.
-    - Test-only files (*_test.go) are explicitly NOT scanned —
-      tests sometimes need to set up DELETE-FROM fixtures.
-    - The guard runs against the entire repo, not just store/,
-      so api/ or builder/ breaches surface here too.
+  - Build-time guard via `go test`, NOT a static-analysis
+    linter, so the check runs in the same toolchain that
+    already compiles + tests the code. Administrators don't need
+    to install staticcheck or any new tooling.
+  - Defense-in-depth on top of F2 (deploy/sql/grants.sql).
+    F2 enforces at the DB role level — the application can't
+    mutate even if the code tries. H4 enforces at compile-
+    check time — the code can't even contain the mutation
+    string. Together: a buggy commit can't slip past either
+    layer.
+  - Heuristic-but-bounded: we look for case-insensitive
+    "UPDATE <table>", "DELETE FROM <table>", "TRUNCATE <table>"
+    patterns inside string literals. False positives are
+    tolerable (the test will fail on a renamed-but-similar
+    table); false negatives would mean the guard misses a
+    real mutation, so the patterns favor over-matching.
+  - Test-only files (*_test.go) are explicitly NOT scanned —
+    tests sometimes need to set up DELETE-FROM fixtures.
+  - The guard runs against the entire repo, not just store/,
+    so api/ or builder/ breaches surface here too.
 */
 package store
 

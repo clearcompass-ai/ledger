@@ -54,11 +54,11 @@ import (
 
 func main() {
 	var (
-		dsn = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
-		token = flag.String("token", "", "session token to mint (required)")
-		didStr = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
+		dsn     = flag.String("dsn", os.Getenv("LEDGER_DATABASE_URL"), "Postgres DSN (defaults to $LEDGER_DATABASE_URL)")
+		token   = flag.String("token", "", "session token to mint (required)")
+		didStr  = flag.String("did", "", "exchange DID; empty → generate a fresh did:key and print it")
 		credits = flag.Int64("credits", 100, "initial credit balance to seed")
-		ttl = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
+		ttl     = flag.Duration("ttl", 24*time.Hour, "session lifetime from now")
 	)
 	flag.Parse()
 
@@ -90,15 +90,15 @@ func main() {
 	defer pool.Close()
 
 	expiresAt := time.Now().UTC().Add(*ttl)
-	if _, err := pool.Exec(ctx,
+	if _, iErr := pool.Exec(ctx,
 		`INSERT INTO sessions (token, exchange_did, expires_at)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (token) DO UPDATE SET
 		   exchange_did = EXCLUDED.exchange_did,
 		   expires_at = EXCLUDED.expires_at`,
 		*token, exchangeDID, expiresAt,
-	); err != nil {
-		log.Fatalf("seed-session: insert session: %v", err)
+	); iErr != nil {
+		log.Fatalf("seed-session: insert session: %v", iErr)
 	}
 
 	creditStore := store.NewCreditStore(pool)

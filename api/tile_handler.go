@@ -1,72 +1,75 @@
 /*
 FILE PATH:
-    api/tile_handler.go
+
+	api/tile_handler.go
 
 DESCRIPTION:
-    Static-CT tile-serving handlers. Mounts three routes that
-    follow c2sp.org/tlog-tiles exactly:
 
-        GET /checkpoint
-        GET /tile/{level}/{rest...}             (hash tiles)
-        GET /tile/entries/{rest...}             (entry-bundle tiles)
+	Static-CT tile-serving handlers. Mounts three routes that
+	follow c2sp.org/tlog-tiles exactly:
 
-    External auditors fetch these to reconstruct inclusion +
-    consistency proofs offline using the SDK's
-    log/tessera_fetcher primitive — no per-entry round-trip to
-    the ledger required, no ledger CPU consumed past one
-    os.ReadFile per tile.
+	    GET /checkpoint
+	    GET /tile/{level}/{rest...}             (hash tiles)
+	    GET /tile/entries/{rest...}             (entry-bundle tiles)
+
+	External auditors fetch these to reconstruct inclusion +
+	consistency proofs offline using the SDK's
+	log/tessera_fetcher primitive — no per-entry round-trip to
+	the ledger required, no ledger CPU consumed past one
+	os.ReadFile per tile.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Path-traversal defense in depth. The TileBackend already
-      defends against ".." escape via filepath.Clean +
-      prefix-check; this handler ALSO refuses path segments
-      containing "..", absolute paths, and non-printable bytes
-      BEFORE calling the backend. A malicious URL never reaches
-      the filesystem layer.
-    - Cache-Control matched to c2sp.org / Sigsum / Sigstore
-      Rekor convention so a generic CDN (CloudFront, Cloud CDN,
-      Fastly) fronts these routes without bespoke config:
-          full tiles       Cache-Control: public, max-age=86400, immutable
-          partial tiles    Cache-Control: public, max-age=2
-          checkpoint       Cache-Control: max-age=2
-      Full-tile immutability is a structural property of the
-      c2sp spec — once written, a full tile never changes.
-    - Range header support via stdlib http.ServeContent. Lets
-      auditors resume large entry-bundle downloads without re-
-      fetching from byte 0.
-    - Single dispatcher for /tile/{level}/{rest...} routes by
-      LITERAL path-segment match: level=="entries" → entry
-      bundles, otherwise hash tiles. Stdlib's mux pattern
-      coverage stays unambiguous (no specificity collision
-      with /tile/entries/...).
-    - LEDGER_TILE_SERVE_DISABLE escape hatch in cmd/ledger
-      composes by passing nil handlers to api.NewServer; this
-      file's helpers are pure constructors and impose no
-      requirement.
-    - Bounded I/O. The TileBackend's underlying os.ReadFile is
-      bounded by the file size on disk; we don't add an in-handler
-      cap because tile sizes are mathematically bounded by the
-      c2sp spec (256 entries × MaxBundleEntrySize). The SDK's
-      log/tessera_fetcher.MaxTileBytes (~16 MiB) is the matching
-      ceiling on the fetch side.
+  - Path-traversal defense in depth. The TileBackend already
+    defends against ".." escape via filepath.Clean +
+    prefix-check; this handler ALSO refuses path segments
+    containing "..", absolute paths, and non-printable bytes
+    BEFORE calling the backend. A malicious URL never reaches
+    the filesystem layer.
+  - Cache-Control matched to c2sp.org / Sigsum / Sigstore
+    Rekor convention so a generic CDN (CloudFront, Cloud CDN,
+    Fastly) fronts these routes without bespoke config:
+    full tiles       Cache-Control: public, max-age=86400, immutable
+    partial tiles    Cache-Control: public, max-age=2
+    checkpoint       Cache-Control: max-age=2
+    Full-tile immutability is a structural property of the
+    c2sp spec — once written, a full tile never changes.
+  - Range header support via stdlib http.ServeContent. Lets
+    auditors resume large entry-bundle downloads without re-
+    fetching from byte 0.
+  - Single dispatcher for /tile/{level}/{rest...} routes by
+    LITERAL path-segment match: level=="entries" → entry
+    bundles, otherwise hash tiles. Stdlib's mux pattern
+    coverage stays unambiguous (no specificity collision
+    with /tile/entries/...).
+  - LEDGER_TILE_SERVE_DISABLE escape hatch in cmd/ledger
+    composes by passing nil handlers to api.NewServer; this
+    file's helpers are pure constructors and impose no
+    requirement.
+  - Bounded I/O. The TileBackend's underlying os.ReadFile is
+    bounded by the file size on disk; we don't add an in-handler
+    cap because tile sizes are mathematically bounded by the
+    c2sp spec (256 entries × MaxBundleEntrySize). The SDK's
+    log/tessera_fetcher.MaxTileBytes (~16 MiB) is the matching
+    ceiling on the fetch side.
 
 OVERVIEW:
-    Each handler:
-        1. Validates the path segment(s) for traversal /
-           printable-ASCII discipline.
-        2. Calls TileBackend.ReadTileByPath (or ReadCheckpoint)
-           with the request context.
-        3. On os.ErrNotExist → 404. On other errors → 500.
-        4. On success → ServeContent with the appropriate
-           Cache-Control header. ServeContent handles If-Modified-
-           Since, If-None-Match, Range, and HEAD verbs natively.
+
+	Each handler:
+	    1. Validates the path segment(s) for traversal /
+	       printable-ASCII discipline.
+	    2. Calls TileBackend.ReadTileByPath (or ReadCheckpoint)
+	       with the request context.
+	    3. On os.ErrNotExist → 404. On other errors → 500.
+	    4. On success → ServeContent with the appropriate
+	       Cache-Control header. ServeContent handles If-Modified-
+	       Since, If-None-Match, Range, and HEAD verbs natively.
 
 KEY DEPENDENCIES:
-    - tessera/posix_tile_backend.go: TileBackend impl backing
-      ReadTileByPath / ReadCheckpoint.
-    - net/http: ServeContent for Range + ETag handling.
-    - apitypes.ErrorClass: typed error_class taxonomy for the
-      structured-error responses.
+  - tessera/posix_tile_backend.go: TileBackend impl backing
+    ReadTileByPath / ReadCheckpoint.
+  - net/http: ServeContent for Range + ETag handling.
+  - apitypes.ErrorClass: typed error_class taxonomy for the
+    structured-error responses.
 */
 package api
 

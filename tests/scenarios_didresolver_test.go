@@ -2,49 +2,52 @@
 
 /*
 FILE PATH:
-    tests/scenarios_didresolver_test.go
+
+	tests/scenarios_didresolver_test.go
 
 DESCRIPTION:
-    Mock DID resolver for the Layer 0 scenarios suite. Topology in this
-    architecture is W3C-DID-anchored: an auditor extracts a LogDID,
-    passes it to a did.DIDResolver, and reads the returned DIDDocument's
-    Service array to find the ledger / witness / CDN URLs. There is no
-    centralized "topology registry" — routing is identity physics.
+
+	Mock DID resolver for the Layer 0 scenarios suite. Topology in this
+	architecture is W3C-DID-anchored: an auditor extracts a LogDID,
+	passes it to a did.DIDResolver, and reads the returned DIDDocument's
+	Service array to find the ledger / witness / CDN URLs. There is no
+	centralized "topology registry" — routing is identity physics.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Implements the SDK's did.DIDResolver interface (single method
-      `Resolve(did string) (*did.DIDDocument, error)`). Auditor / peer
-      / fraud-bot composites consume the resolver verbatim; production
-      wires the SDK's WebDIDResolver or KeyResolver behind the same
-      interface, so tests prove the wire shape works without coupling
-      to a particular DID method.
-    - Documents follow the SDK's DIDDocument layout exactly, including
-      the Attesta extensions (witness_endpoints / ledger_endpoint /
-      WitnessQuorumK) so DIDDocument.LedgerEndpointURL() and
-      WitnessEndpointURLs() return values the auditor can consume.
-    - Goroutine-safe via sync.RWMutex. Persona tests run multiple
-      auditors in parallel against one resolver instance.
-    - No fast path. The auditor calls Resolve on every endpoint
-      lookup; production wraps the resolver in did.CachingResolver
-      with explicit TTL — the test resolver does NOT cache, so
-      tests can mutate bindings and observe immediate effects.
+  - Implements the SDK's did.DIDResolver interface (single method
+    `Resolve(did string) (*did.DIDDocument, error)`). Auditor / peer
+    / fraud-bot composites consume the resolver verbatim; production
+    wires the SDK's WebDIDResolver or KeyResolver behind the same
+    interface, so tests prove the wire shape works without coupling
+    to a particular DID method.
+  - Documents follow the SDK's DIDDocument layout exactly, including
+    the Attesta extensions (witness_endpoints / ledger_endpoint /
+    WitnessQuorumK) so DIDDocument.LedgerEndpointURL() and
+    WitnessEndpointURLs() return values the auditor can consume.
+  - Goroutine-safe via sync.RWMutex. Persona tests run multiple
+    auditors in parallel against one resolver instance.
+  - No fast path. The auditor calls Resolve on every endpoint
+    lookup; production wraps the resolver in did.CachingResolver
+    with explicit TTL — the test resolver does NOT cache, so
+    tests can mutate bindings and observe immediate effects.
 
 OVERVIEW:
-    NewMockDIDResolver(t)              → fresh resolver, empty map.
-    Bind(logDID, urls)                 → install one DIDDocument
-                                         carrying ledger / cdn /
-                                         witness service entries.
-    Rotate(logDID, urls)               → replace document; the
-                                         older binding is gone (a
-                                         resolver mock, not a chain).
-    Resolve(did)                       → SDK DIDResolver method;
-                                         returns the installed doc
-                                         or did.ErrDIDDocumentNotFound.
-    AuditorAdapter()                   → wraps in did.DIDEndpointAdapter.
+
+	NewMockDIDResolver(t)              → fresh resolver, empty map.
+	Bind(logDID, urls)                 → install one DIDDocument
+	                                     carrying ledger / cdn /
+	                                     witness service entries.
+	Rotate(logDID, urls)               → replace document; the
+	                                     older binding is gone (a
+	                                     resolver mock, not a chain).
+	Resolve(did)                       → SDK DIDResolver method;
+	                                     returns the installed doc
+	                                     or did.ErrDIDDocumentNotFound.
+	AuditorAdapter()                   → wraps in did.DIDEndpointAdapter.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/did: DIDResolver, DIDDocument,
-      Service, DIDEndpointAdapter.
+  - github.com/clearcompass-ai/attesta/did: DIDResolver, DIDDocument,
+    Service, DIDEndpointAdapter.
 */
 package tests
 
@@ -73,10 +76,10 @@ var (
 // field is optional but at least one must be set; tests that only
 // need a ledger URL leave the others empty.
 type endpointBundle struct {
-	LedgerURL    string   // "AttestaLedgerEndpoint" service entry.
-	CDNURL       string   // "AttestaArtifactStore" service entry.
-	WitnessURLs  []string // "AttestaWitnessEndpoint" service entries.
-	WitnessQuorumK int    // populates DIDDocument.WitnessQuorumK.
+	LedgerURL      string   // "AttestaLedgerEndpoint" service entry.
+	CDNURL         string   // "AttestaArtifactStore" service entry.
+	WitnessURLs    []string // "AttestaWitnessEndpoint" service entries.
+	WitnessQuorumK int      // populates DIDDocument.WitnessQuorumK.
 }
 
 // -------------------------------------------------------------------------------------------------

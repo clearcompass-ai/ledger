@@ -55,22 +55,7 @@ import (
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
-	"github.com/clearcompass-ai/attesta/did"
 )
-
-// testKeypair returns a freshly-generated secp256k1 keypair plus its
-// did:key identifier. Suitable as the SignerDID for any test entry.
-//
-// did:key resolution is purely parse-based (no network IO, no
-// registry), so this helper works against any test server config.
-func testKeypair(t *testing.T) (*ecdsa.PrivateKey, string) {
-	t.Helper()
-	kp, err := did.GenerateDIDKeySecp256k1()
-	if err != nil {
-		t.Fatalf("GenerateDIDKeySecp256k1: %v", err)
-	}
-	return kp.PrivateKey, kp.DID
-}
 
 // makeSignedEntry constructs a canonical signed *envelope.Entry
 // that is safe to feed to envelope.Serialize, envelope.EntryIdentity,

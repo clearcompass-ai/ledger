@@ -1,12 +1,14 @@
 /*
 FILE PATH:
-    lifecycle/shutdown_test.go
+
+	lifecycle/shutdown_test.go
 
 DESCRIPTION:
-    Tests for ShutdownChain. Pin (a) registration-order
-    execution, (b) per-component timeout independence, (c)
-    sync.Once idempotency between Run and defer-fallback paths,
-    (d) summary captures durations + errors per step.
+
+	Tests for ShutdownChain. Pin (a) registration-order
+	execution, (b) per-component timeout independence, (c)
+	sync.Once idempotency between Run and defer-fallback paths,
+	(d) summary captures durations + errors per step.
 */
 package lifecycle
 

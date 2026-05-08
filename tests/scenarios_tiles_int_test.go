@@ -2,67 +2,70 @@
 
 /*
 FILE PATH:
-    tests/scenarios_tiles_int_test.go
+
+	tests/scenarios_tiles_int_test.go
 
 DESCRIPTION:
-    Layer 0 — TILE-INT-01/02/03: tile-structure integrity.
-    Three sub-tests pin the c2sp.org/tlog-tiles invariants
-    a CT-class auditor relies on:
 
-      INT-01: a level-0 hash tile contains LEAF hashes
-              (RFC-6962 HashLeaf). Pairwise hashing within
-              the tile builds a tile-root that, when the
-              tile is sealed (256 leaves), equals the value
-              the level-1 tile stores at the corresponding
-              index. Partial tiles satisfy the same internal
-              pair-hash invariant for the contained subset.
-      INT-02: full-vs-partial sealing. Until a tile reaches
-              256 entries it lives at "tile/<L>/<idx>.p/<n>"
-              and "tile/<L>/<idx>" does NOT exist. After
-              sealing, "tile/<L>/<idx>" appears and
-              ".p/<n>" remnants are gone.
-      INT-03: no orphan tiles. Walking <tileRoot>/tile and
-              <tileRoot>/tile/entries enumerates exactly the
-              files that the tree size mandates — no extras,
-              no missing.
+	Layer 0 — TILE-INT-01/02/03: tile-structure integrity.
+	Three sub-tests pin the c2sp.org/tlog-tiles invariants
+	a CT-class auditor relies on:
+
+	  INT-01: a level-0 hash tile contains LEAF hashes
+	          (RFC-6962 HashLeaf). Pairwise hashing within
+	          the tile builds a tile-root that, when the
+	          tile is sealed (256 leaves), equals the value
+	          the level-1 tile stores at the corresponding
+	          index. Partial tiles satisfy the same internal
+	          pair-hash invariant for the contained subset.
+	  INT-02: full-vs-partial sealing. Until a tile reaches
+	          256 entries it lives at "tile/<L>/<idx>.p/<n>"
+	          and "tile/<L>/<idx>" does NOT exist. After
+	          sealing, "tile/<L>/<idx>" appears and
+	          ".p/<n>" remnants are gone.
+	  INT-03: no orphan tiles. Walking <tileRoot>/tile and
+	          <tileRoot>/tile/entries enumerates exactly the
+	          files that the tree size mandates — no extras,
+	          no missing.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Tile parsing uses github.com/transparency-dev/tessera/api.
-      HashTile{}.UnmarshalText (concatenated 32-byte nodes,
-      no length prefix). Re-using the upstream parser means
-      a future tile-format change in upstream surfaces here.
-    - Pair hashing uses cryptoHasher (rfc6962.DefaultHasher
-      from the crypto helpers file) so the leaf vs. node
-      domain separation is asserted via the SDK-aligned
-      hasher rather than re-rolled.
-    - Path generation uses layout.TilePath / layout.EntriesPath
-      from upstream Tessera. Direct concatenation would diverge
-      if upstream's three-digit encoding changes.
-    - Each sub-test boots its own stack with a known TileRoot
-      so we can walk the on-disk layout deterministically.
-      LowDifficulty is required for INT-01-FULL (256 entries).
+  - Tile parsing uses github.com/transparency-dev/tessera/api.
+    HashTile{}.UnmarshalText (concatenated 32-byte nodes,
+    no length prefix). Re-using the upstream parser means
+    a future tile-format change in upstream surfaces here.
+  - Pair hashing uses cryptoHasher (rfc6962.DefaultHasher
+    from the crypto helpers file) so the leaf vs. node
+    domain separation is asserted via the SDK-aligned
+    hasher rather than re-rolled.
+  - Path generation uses layout.TilePath / layout.EntriesPath
+    from upstream Tessera. Direct concatenation would diverge
+    if upstream's three-digit encoding changes.
+  - Each sub-test boots its own stack with a known TileRoot
+    so we can walk the on-disk layout deterministically.
+    LowDifficulty is required for INT-01-FULL (256 entries).
 
 OVERVIEW:
-    TestTiles_Integrity
-      INT-01_PairHashRecomputesParent
-        → submit >= 256 entries; verify HashLeaf chain
-          inside level-0 tile reaches a root equal to
-          level-1 tile's first node.
-      INT-02_PartialThenSealed
-        → submit < 256; on-disk shows ".p/<n>" only;
-          submit to reach 256; sealed-path file appears.
-      INT-03_NoOrphanTiles
-        → walk <tileRoot>/tile recursively; every file's
-          (level, index, partial-suffix) must match the
-          expected enumeration for the current tree size.
+
+	TestTiles_Integrity
+	  INT-01_PairHashRecomputesParent
+	    → submit >= 256 entries; verify HashLeaf chain
+	      inside level-0 tile reaches a root equal to
+	      level-1 tile's first node.
+	  INT-02_PartialThenSealed
+	    → submit < 256; on-disk shows ".p/<n>" only;
+	      submit to reach 256; sealed-path file appears.
+	  INT-03_NoOrphanTiles
+	    → walk <tileRoot>/tile recursively; every file's
+	      (level, index, partial-suffix) must match the
+	      expected enumeration for the current tree size.
 
 KEY DEPENDENCIES:
-    - github.com/transparency-dev/tessera/api: HashTile,
-      EntryBundle.
-    - github.com/transparency-dev/tessera/api/layout:
-      TilePath, EntriesPath, PartialTileSize, TileWidth.
-    - tests/scenarios_crypto_helpers_test.go: cryptoHasher,
-      cryptoSubmitMany, cryptoWaitForSize.
+  - github.com/transparency-dev/tessera/api: HashTile,
+    EntryBundle.
+  - github.com/transparency-dev/tessera/api/layout:
+    TilePath, EntriesPath, PartialTileSize, TileWidth.
+  - tests/scenarios_crypto_helpers_test.go: cryptoHasher,
+    cryptoSubmitMany, cryptoWaitForSize.
 */
 package tests
 

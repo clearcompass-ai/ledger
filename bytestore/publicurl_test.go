@@ -1,28 +1,30 @@
 /*
 FILE PATH:
-    bytestore/publicurl_test.go
+
+	bytestore/publicurl_test.go
 
 DESCRIPTION:
-    Pins the Path B public-URL contract:
 
-      1. URL composition matches the canonical CT-log shape
-         (baseURL + "/" + layoutKey).
-      2. Empty baseURL returns ErrPublicURLNotConfigured (the
-         api 302 handler treats this as a misconfiguration and
-         returns 500 — there is no private-bucket fallback).
-      3. Default-URL helpers produce the documented prefixes for
-         GCS, S3 path-style, and S3 virtual-host modes.
-      4. Trailing slashes on the configured baseURL are
-         normalized away (administrators frequently trip on this).
-      5. The same (seq, hash) → same URL across calls
-         (deterministic; what makes consumer caches valid).
-      6. PublicURL output ALIGNS with layoutKey output — a
-         bucket written by WriteEntry can be read via the
-         PublicURL it produces.
+	Pins the Path B public-URL contract:
 
-    Each test pins one structural property. A regression that
-    silently changes the URL shape (e.g., adds a query string,
-    changes the path separator, drops the prefix) fails here.
+	  1. URL composition matches the canonical CT-log shape
+	     (baseURL + "/" + layoutKey).
+	  2. Empty baseURL returns ErrPublicURLNotConfigured (the
+	     api 302 handler treats this as a misconfiguration and
+	     returns 500 — there is no private-bucket fallback).
+	  3. Default-URL helpers produce the documented prefixes for
+	     GCS, S3 path-style, and S3 virtual-host modes.
+	  4. Trailing slashes on the configured baseURL are
+	     normalized away (administrators frequently trip on this).
+	  5. The same (seq, hash) → same URL across calls
+	     (deterministic; what makes consumer caches valid).
+	  6. PublicURL output ALIGNS with layoutKey output — a
+	     bucket written by WriteEntry can be read via the
+	     PublicURL it produces.
+
+	Each test pins one structural property. A regression that
+	silently changes the URL shape (e.g., adds a query string,
+	changes the path separator, drops the prefix) fails here.
 */
 package bytestore
 

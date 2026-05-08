@@ -110,13 +110,13 @@ type Config struct {
 
 // Shipper is the sequenced→shipped pipeline.
 type Shipper struct {
-	wal WAL
+	wal       WAL
 	bytestore Bytestore
-	cfg Config
-	logger *slog.Logger
+	cfg       Config
+	logger    *slog.Logger
 
 	completion chan uint64 // worker → hwmAdvancer
-	metrics Metrics
+	metrics    Metrics
 
 	// inflight tracks seqs currently between scan dispatch and
 	// shipOne return. Without this guard, scan ticks at PollInterval
@@ -190,10 +190,12 @@ func (s *Shipper) Run(ctx context.Context) error {
 		// Each worker wrapped in SafeRun so a panic in
 		// per-entry processing logs + exits cleanly without
 		// crashing the binary. wg.Done is called inside s.worker.
-		go lifecycle.SafeRun(ctx, "shipper-worker", s.logger, nil, func() error {
-			s.worker(ctx, workCh, &workersWG)
-			return nil
-		})
+		go func() {
+			_ = lifecycle.SafeRun(ctx, "shipper-worker", s.logger, nil, func() error {
+				s.worker(ctx, workCh, &workersWG)
+				return nil
+			})
+		}()
 	}
 
 	advancerDone := make(chan struct{})
@@ -247,8 +249,8 @@ func (s *Shipper) scanAndDispatch(ctx context.Context, workCh chan<- wal.Sequenc
 	skippedBackoff := 0
 
 	err = s.wal.IterateSequenced(ctx, hwm, func(e wal.SequencedEntry) error {
-		if err := ctx.Err(); err != nil {
-			return err
+		if cErr := ctx.Err(); cErr != nil {
+			return cErr
 		}
 		// Backoff filter: previously-failed entries wait for
 		// LastErrTs + backoff(Attempts) before retrying.

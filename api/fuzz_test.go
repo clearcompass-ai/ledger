@@ -1,32 +1,34 @@
 /*
 FILE PATH:
-    api/fuzz_test.go
+
+	api/fuzz_test.go
 
 DESCRIPTION:
-    J1 — Fuzz tests for every wire-format parser the api package
-    consumes from untrusted bytes. Untrusted-bytes parsers are
-    the #1 historical CVE class for transparency logs (Trillian
-    CVE-2022-23552, Gin CVE-2023-29401, etc.).
 
-    Run nightly via .github/workflows/fuzz.yml; one-off invocations:
+	J1 — Fuzz tests for every wire-format parser the api package
+	consumes from untrusted bytes. Untrusted-bytes parsers are
+	the #1 historical CVE class for transparency logs (Trillian
+	CVE-2022-23552, Gin CVE-2023-29401, etc.).
 
-        go test -run=^$ -fuzz=^FuzzTileHandlerPath$ -fuzztime=30s ./api/
-        go test -run=^$ -fuzz=^FuzzAdmissionEnvelope$ -fuzztime=30s ./api/
+	Run nightly via .github/workflows/fuzz.yml; one-off invocations:
 
-    A crash artifact lands in testdata/fuzz/<FuzzName>/<crash-hash>;
-    add it to the seed corpus permanently so the fuzzer never
-    regresses.
+	    go test -run=^$ -fuzz=^FuzzTileHandlerPath$ -fuzztime=30s ./api/
+	    go test -run=^$ -fuzz=^FuzzAdmissionEnvelope$ -fuzztime=30s ./api/
+
+	A crash artifact lands in testdata/fuzz/<FuzzName>/<crash-hash>;
+	add it to the seed corpus permanently so the fuzzer never
+	regresses.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Properties are RANGE properties (rejection is closed under
-      arbitrary 8-bit input), not specific-value properties. The
-      validator must say no to EVERY hostile path.
-    - Seed corpus reuses production-shaped inputs from existing
-      tile_handler_test.go so the fuzzer starts from realistic
-      coverage.
-    - Each fuzzer panics ONLY on a property violation; never on
-      the wire-parser itself (the fuzzer tolerates errors;
-      missing bounds-checks become the failure mode).
+  - Properties are RANGE properties (rejection is closed under
+    arbitrary 8-bit input), not specific-value properties. The
+    validator must say no to EVERY hostile path.
+  - Seed corpus reuses production-shaped inputs from existing
+    tile_handler_test.go so the fuzzer starts from realistic
+    coverage.
+  - Each fuzzer panics ONLY on a property violation; never on
+    the wire-parser itself (the fuzzer tolerates errors;
+    missing bounds-checks become the failure mode).
 */
 package api
 

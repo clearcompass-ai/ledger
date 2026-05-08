@@ -129,7 +129,8 @@ func TestAdmission_CorruptSignature_SDK_D5(t *testing.T) {
 // TestAdmission_ExactlyMaxSize_SDK_D11 asserts that a near-cap entry
 // serializes successfully under the size invariant.
 //
-//  changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+//	changed MaxCanonicalBytes from 1 MiB → MaxBundleEntrySize
+//
 // (= 65535) per envelope/api.go:69-80, closing ORTHO-BUG-005 (entries
 // admitted under the old 1 MiB cap would later panic inside
 // MarshalBundleEntry's uint16 length prefix). The previous test fixture
@@ -765,10 +766,15 @@ func TestLogTime_Monotonicity(t *testing.T) {
 }
 
 func TestLogTime_OutsideCanonicalHash(t *testing.T) {
+	// Re-serializing the same entry MUST produce byte-identical
+	// canonical bytes — log_time is tracked separately and never
+	// participates in the hash. We serialize twice and confirm
+	// the two SHA-256 digests match.
 	e := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a"}, nil)
-	c := mustSerialize(e)
-	if sha256.Sum256(c) != sha256.Sum256(c) {
-		t.Fatal("hash should be stable")
+	c1 := mustSerialize(e)
+	c2 := mustSerialize(e)
+	if sha256.Sum256(c1) != sha256.Sum256(c2) {
+		t.Fatal("hash should be stable across re-serialization")
 	}
 }
 

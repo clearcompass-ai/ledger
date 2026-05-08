@@ -45,8 +45,8 @@ import (
 // entries_read_test.go to avoid the Read method requirement
 // (this stub doesn't need Read for the hash-lookup handler).
 type hashLookupWAL struct {
-	state wal.EntryState
-	seq uint64
+	state   wal.EntryState
+	seq     uint64
 	metaErr error
 }
 
@@ -88,7 +88,7 @@ func TestHashLookup_PendingState_Returns200WithStatePayload(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var body struct {
-		State string `json:"state"`
+		State         string `json:"state"`
 		CanonicalHash string `json:"canonical_hash"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {

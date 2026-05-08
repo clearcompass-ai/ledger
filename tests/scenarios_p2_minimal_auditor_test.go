@@ -2,62 +2,65 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p2_minimal_auditor_test.go
+
+	tests/scenarios_p2_minimal_auditor_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 2 (Browser-Class Auditor, top-level + wire round-
-    trip). Pure HTTP-only consumer. Imports nothing from
-    github.com/clearcompass-ai/attesta/{api,types,crypto,gossip,...}
-    on the verification path — only crypto/sha256 + encoding/hex +
-    encoding/json + net/http. Proves the wire format is consumable
-    from any language (TypeScript, Rust, Python, ...).
+
+	Layer 0 — Persona 2 (Browser-Class Auditor, top-level + wire round-
+	trip). Pure HTTP-only consumer. Imports nothing from
+	github.com/clearcompass-ai/attesta/{api,types,crypto,gossip,...}
+	on the verification path — only crypto/sha256 + encoding/hex +
+	encoding/json + net/http. Proves the wire format is consumable
+	from any language (TypeScript, Rust, Python, ...).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Submission path may use the existing helpers (buildModeBWireEntry
-      / persona1Submit) because constructing an ADMISSIBLE entry needs
-      Mode-B PoW + Ed25519 signing — that's a producer concern, not a
-      verifier concern. Persona 2's claim is on the READ side: every
-      byte the auditor observes after POST /v1/entries is parseable
-      with stdlib only.
-    - JSON-shape pinning. Persona 2 hand-decodes /v1/tree/head,
-      /v1/tree/inclusion/{seq}, and /v1/admission/mmd into
-      map[string]any so a wire-shape regression (e.g., renaming
-      "leaf_index" → "leafIndex") fails this persona before the SDK's
-      types catch it.
-    - Network builds (CT for Courts / Insurance) need the wire format
-      to outlive Go. This persona is the lock-test — every JSON key,
-      every hex encoding, every header is asserted explicitly here so
-      a downstream consumer in another language can mirror the same
-      contract.
-    - One stack boot, four sub-scenarios (t.Run). Wall-clock cost of
-      real Tessera POSIX boot (~500ms-2s) is amortised; sub-scenario
-      isolation is preserved by t.Run's failure scoping.
+  - Submission path may use the existing helpers (buildModeBWireEntry
+    / persona1Submit) because constructing an ADMISSIBLE entry needs
+    Mode-B PoW + Ed25519 signing — that's a producer concern, not a
+    verifier concern. Persona 2's claim is on the READ side: every
+    byte the auditor observes after POST /v1/entries is parseable
+    with stdlib only.
+  - JSON-shape pinning. Persona 2 hand-decodes /v1/tree/head,
+    /v1/tree/inclusion/{seq}, and /v1/admission/mmd into
+    map[string]any so a wire-shape regression (e.g., renaming
+    "leaf_index" → "leafIndex") fails this persona before the SDK's
+    types catch it.
+  - Network builds (CT for Courts / Insurance) need the wire format
+    to outlive Go. This persona is the lock-test — every JSON key,
+    every hex encoding, every header is asserted explicitly here so
+    a downstream consumer in another language can mirror the same
+    contract.
+  - One stack boot, four sub-scenarios (t.Run). Wall-clock cost of
+    real Tessera POSIX boot (~500ms-2s) is amortised; sub-scenario
+    isolation is preserved by t.Run's failure scoping.
 
 OVERVIEW:
-    TestPersona2_MinimalAuditor
-      WireFormatRoundTrip
-        → submit one entry, fetch /v1/tree/head + /v1/tree/inclusion,
-          parse into map[string]any, assert every documented field
-          present and well-typed.
-      EndpointShapesAdvertised
-        → /v1/admission/mmd + /v1/admission/difficulty parse cleanly,
-          fields advertised match what an external consumer expects.
-      MultiEntry_TreeHeadShape
-        → submit two entries, /v1/tree/head reflects both, root_hash
-          is 64 hex chars, signatures slice is non-nil.
-      ConcurrentReads_NoCorruption
-        → 8 parallel GETs to /v1/tree/head all decode, all see the
-          same tree_size if served close in time (read-after-write
-          serializability is best-effort under load; we only assert
-          monotone-non-decreasing).
+
+	TestPersona2_MinimalAuditor
+	  WireFormatRoundTrip
+	    → submit one entry, fetch /v1/tree/head + /v1/tree/inclusion,
+	      parse into map[string]any, assert every documented field
+	      present and well-typed.
+	  EndpointShapesAdvertised
+	    → /v1/admission/mmd + /v1/admission/difficulty parse cleanly,
+	      fields advertised match what an external consumer expects.
+	  MultiEntry_TreeHeadShape
+	    → submit two entries, /v1/tree/head reflects both, root_hash
+	      is 64 hex chars, signatures slice is non-nil.
+	  ConcurrentReads_NoCorruption
+	    → 8 parallel GETs to /v1/tree/head all decode, all see the
+	      same tree_size if served close in time (read-after-write
+	      serializability is best-effort under load; we only assert
+	      monotone-non-decreasing).
 
 KEY DEPENDENCIES:
-    - tests/scenarios_stack_test.go: NewScenariosStack with
-      UseRealTessera=true.
-    - tests/scenarios_p2_proof_verify_test.go: MerkleProofWithSHA256Only
-      sub-scenario lives there.
-    - tests/scenarios_p2_cdn_test.go: CDNHeadersConformant and
-      CORSAllowsBrowserFetch sub-scenarios live there.
+  - tests/scenarios_stack_test.go: NewScenariosStack with
+    UseRealTessera=true.
+  - tests/scenarios_p2_proof_verify_test.go: MerkleProofWithSHA256Only
+    sub-scenario lives there.
+  - tests/scenarios_p2_cdn_test.go: CDNHeadersConformant and
+    CORSAllowsBrowserFetch sub-scenarios live there.
 */
 package tests
 

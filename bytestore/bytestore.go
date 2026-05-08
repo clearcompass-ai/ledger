@@ -46,7 +46,7 @@ INTERFACE SURFACE:
   - Reader: ReadEntry, ReadEntryBatch — opaque byte fetch
   - Writer: WriteEntry — opaque byte write
   - PublicURLer: PublicURL — credential-free monitor URL
-                 (transparency-log convention; see publicurl.go)
+    (transparency-log convention; see publicurl.go)
   - Store = Reader + Writer (test/dev impls satisfy this)
   - Backend = Store + PublicURLer (production impls satisfy this)
 
@@ -72,7 +72,7 @@ import (
 // statically verify the URL points at the promised bytes before
 // fetching.
 type EntryRef struct {
-	Seq uint64
+	Seq  uint64
 	Hash [32]byte
 }
 

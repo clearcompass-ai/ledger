@@ -41,7 +41,7 @@ import (
 // fakeBytestoreReader satisfies bytestore.Reader for replay tests.
 type fakeBytestoreReader struct {
 	bytesByHash map[[32]byte][]byte
-	readErr error
+	readErr     error
 }
 
 func (f *fakeBytestoreReader) ReadEntry(_ context.Context, _ uint64, hash [32]byte) ([]byte, error) {
@@ -55,10 +55,10 @@ func (f *fakeBytestoreReader) ReadEntry(_ context.Context, _ uint64, hash [32]by
 	return b, nil
 }
 
-func (f *fakeBytestoreReader) ReadEntryBatch(_ context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
+func (f *fakeBytestoreReader) ReadEntryBatch(ctx context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
 	out := make([][]byte, len(refs))
 	for i, r := range refs {
-		b, err := f.ReadEntry(nil, r.Seq, r.Hash)
+		b, err := f.ReadEntry(ctx, r.Seq, r.Hash)
 		if err != nil {
 			return nil, err
 		}
@@ -69,15 +69,15 @@ func (f *fakeBytestoreReader) ReadEntryBatch(_ context.Context, refs []bytestore
 
 // fakeSplitIDWriter records calls.
 type fakeSplitIDWriter struct {
-	calls []splitWriteCall
+	calls   []splitWriteCall
 	failErr error
 }
 
 type splitWriteCall struct {
 	schemaID string
-	splitID [32]byte
-	seq uint64
-	entry SplitIDIndexEntry
+	splitID  [32]byte
+	seq      uint64
+	entry    SplitIDIndexEntry
 }
 
 func (f *fakeSplitIDWriter) WriteSplitIDIndexEntry(
@@ -93,15 +93,15 @@ func (f *fakeSplitIDWriter) WriteSplitIDIndexEntry(
 
 // fakeLookupWriter records calls.
 type fakeLookupWriter struct {
-	calls []lookupWriteCall
+	calls   []lookupWriteCall
 	failErr error
 }
 
 type lookupWriteCall struct {
 	schemaID string
-	splitID [32]byte
-	seq uint64
-	entry EntryLookupIndexEntry
+	splitID  [32]byte
+	seq      uint64
+	entry    EntryLookupIndexEntry
 }
 
 func (f *fakeLookupWriter) WriteEntryLookupEntry(
@@ -117,7 +117,7 @@ func (f *fakeLookupWriter) WriteEntryLookupEntry(
 
 // fakeReplayCursor implements SplitIDReplayCursor.
 type fakeReplayCursor struct {
-	hwm uint64
+	hwm    uint64
 	getErr error
 	setErr error
 }
@@ -191,8 +191,8 @@ func TestNewReplayer_RejectsMissingDeps(t *testing.T) {
 	}
 
 	cases := []struct {
-		name string
-		mutate func(*ReplayConfig)
+		name    string
+		mutate  func(*ReplayConfig)
 		wantErr string
 	}{
 		{"missing DB", func(c *ReplayConfig) { c.DB = nil }, "DB required"},

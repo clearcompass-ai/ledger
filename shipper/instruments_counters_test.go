@@ -2,18 +2,19 @@
 FILE PATH: shipper/instruments_counters_test.go
 
 DESCRIPTION:
-    Pins the canonical-shipper-alerts contract: every counter
-    in shipper.MetricsSnapshot that drives an alert MUST be
-    surfaced as an OTel ObservableCounter via InstallCounters.
 
-    Catches a future refactor that drops one of the five
-    counters (e.g. removes uniqueShipped because it "looks
-    unused") — the alert ratio shipped/uniqueShipped breaks
-    silently. With this test, the regression fails at CI.
+	Pins the canonical-shipper-alerts contract: every counter
+	in shipper.MetricsSnapshot that drives an alert MUST be
+	surfaced as an OTel ObservableCounter via InstallCounters.
 
-    Also pins idempotency: a second InstallCounters call MUST
-    return false without panicking on duplicate-instrument-
-    registration.
+	Catches a future refactor that drops one of the five
+	counters (e.g. removes uniqueShipped because it "looks
+	unused") — the alert ratio shipped/uniqueShipped breaks
+	silently. With this test, the regression fails at CI.
+
+	Also pins idempotency: a second InstallCounters call MUST
+	return false without panicking on duplicate-instrument-
+	registration.
 */
 package shipper
 

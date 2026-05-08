@@ -2,79 +2,82 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p3_witness_test.go
+
+	tests/scenarios_p3_witness_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 3 (Witness Daemon, K-of-N cosignature
-    collection). The cryptographic-quorum smoke gate. The SDK's
-    cosign.WitnessCollector is driven against the Layer-0
-    witnessSwarm under every operationally-realistic perturbation
-    a production fleet sees: healthy-fast, slow-but-eventually-
-    available, hard-down, rate-limited, and below-quorum. The
-    network-isolation and disallowed-purpose paths live in
-    scenarios_p3_witness_helpers_test.go (split for the per-file
-    LoC budget).
 
-    Persona 3 is the proof that a Court / Insurance / Audit log
-    using Attesta can:
+	Layer 0 — Persona 3 (Witness Daemon, K-of-N cosignature
+	collection). The cryptographic-quorum smoke gate. The SDK's
+	cosign.WitnessCollector is driven against the Layer-0
+	witnessSwarm under every operationally-realistic perturbation
+	a production fleet sees: healthy-fast, slow-but-eventually-
+	available, hard-down, rate-limited, and below-quorum. The
+	network-isolation and disallowed-purpose paths live in
+	scenarios_p3_witness_helpers_test.go (split for the per-file
+	LoC budget).
 
-      - Survive 2-of-5 witness loss without the originator's
-        commit pipeline blocking past the wall-clock of the K-th
-        witness (the collector short-circuits at quorum).
-      - Refuse to advance under K-1 (no silent under-quorum
-        publication; the originator MUST observe the failure
-        and replay).
-      - Attribute every per-endpoint failure to a typed error so
-        operators can drill down to the bad witness.
-      - Maintain cryptographic isolation between networks /
-        purposes (helpers file).
+	Persona 3 is the proof that a Court / Insurance / Audit log
+	using Attesta can:
+
+	  - Survive 2-of-5 witness loss without the originator's
+	    commit pipeline blocking past the wall-clock of the K-th
+	    witness (the collector short-circuits at quorum).
+	  - Refuse to advance under K-1 (no silent under-quorum
+	    publication; the originator MUST observe the failure
+	    and replay).
+	  - Attribute every per-endpoint failure to a typed error so
+	    operators can drill down to the bad witness.
+	  - Maintain cryptographic isolation between networks /
+	    purposes (helpers file).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Each sub-scenario builds its own swarm. K-of-N collector
-      state is per-call but the witness handler caches no state;
-      sharing a swarm would only save boot cost (5 httptest
-      servers ~ 5ms each), and at the cost of cross-test
-      contamination from Slow / Fail mutations. Distinct boots
-      are simpler to read.
-    - Real cosign.WitnessCollector, not a re-implementation. We
-      drive the SDK; if the SDK changes its quorum semantics
-      tomorrow, this test catches it.
-    - Wall-clock bounds are explicit. HappyPath asserts the
-      collector returns under 1s; OneSlowOneFlaky asserts
-      it still returns under 2s under one Slow(500ms)
-      injected witness. Production deployments care about
-      tail latency — the test pins it.
-    - Per-endpoint outcomes are asserted explicitly. Tests do
-      not collapse "K-1 valid, 2 errors" into "fewer than K";
-      they walk PerEndpoint and assert which specific
-      endpoints failed and why.
+  - Each sub-scenario builds its own swarm. K-of-N collector
+    state is per-call but the witness handler caches no state;
+    sharing a swarm would only save boot cost (5 httptest
+    servers ~ 5ms each), and at the cost of cross-test
+    contamination from Slow / Fail mutations. Distinct boots
+    are simpler to read.
+  - Real cosign.WitnessCollector, not a re-implementation. We
+    drive the SDK; if the SDK changes its quorum semantics
+    tomorrow, this test catches it.
+  - Wall-clock bounds are explicit. HappyPath asserts the
+    collector returns under 1s; OneSlowOneFlaky asserts
+    it still returns under 2s under one Slow(500ms)
+    injected witness. Production deployments care about
+    tail latency — the test pins it.
+  - Per-endpoint outcomes are asserted explicitly. Tests do
+    not collapse "K-1 valid, 2 errors" into "fewer than K";
+    they walk PerEndpoint and assert which specific
+    endpoints failed and why.
 
 OVERVIEW:
-    TestPersona3_WitnessDaemon
-      HappyPath_3of5
-        → 5 healthy witnesses, K=3. Collect short-circuits at
-          K, returns 3 valid signatures, returns under 1s.
-      OneSlowOneFlaky_StillReachesK
-        → 5 witnesses, idx 0 Slow(500ms), idx 1 Fail(500). K=3
-          is reached from witnesses 2/3/4; collect returns
-          under 2s.
-      KMinusOneAlive_Fails
-        → 5 witnesses, 3 hard-failed (Fail 500). Only 2 healthy;
-          K=3 unreachable. Collect returns ErrQuorumCollectionFailed
-          with PerEndpoint[3 hard-failed] all carrying err.
-      Retry429_Honored
-        → 5 witnesses, idx 0 RetryAfter(2s). The SDK's collector
-          does not auto-retry; the rate-limited endpoint reports
-          ErrRateLimited; the four healthy ones still meet K=3.
-      WitnessSignsWrongNetworkID_Rejected — see helpers file.
-      DisallowedPurpose_403                — see helpers file.
+
+	TestPersona3_WitnessDaemon
+	  HappyPath_3of5
+	    → 5 healthy witnesses, K=3. Collect short-circuits at
+	      K, returns 3 valid signatures, returns under 1s.
+	  OneSlowOneFlaky_StillReachesK
+	    → 5 witnesses, idx 0 Slow(500ms), idx 1 Fail(500). K=3
+	      is reached from witnesses 2/3/4; collect returns
+	      under 2s.
+	  KMinusOneAlive_Fails
+	    → 5 witnesses, 3 hard-failed (Fail 500). Only 2 healthy;
+	      K=3 unreachable. Collect returns ErrQuorumCollectionFailed
+	      with PerEndpoint[3 hard-failed] all carrying err.
+	  Retry429_Honored
+	    → 5 witnesses, idx 0 RetryAfter(2s). The SDK's collector
+	      does not auto-retry; the rate-limited endpoint reports
+	      ErrRateLimited; the four healthy ones still meet K=3.
+	  WitnessSignsWrongNetworkID_Rejected — see helpers file.
+	  DisallowedPurpose_403                — see helpers file.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/crypto/cosign:
-      WitnessCollector, NewTreeHeadPayload, ErrQuorumCollectionFailed.
-    - tests/scenarios_witness_test.go: witnessSwarm.
-    - tests/scenarios_p3_witness_helpers_test.go: p3BuildClients,
-      p3BuildCollector, p3SyntheticTreeHead, p3MakeNetworkID.
+  - github.com/clearcompass-ai/attesta/crypto/cosign:
+    WitnessCollector, NewTreeHeadPayload, ErrQuorumCollectionFailed.
+  - tests/scenarios_witness_test.go: witnessSwarm.
+  - tests/scenarios_p3_witness_helpers_test.go: p3BuildClients,
+    p3BuildCollector, p3SyntheticTreeHead, p3MakeNetworkID.
 */
 package tests
 

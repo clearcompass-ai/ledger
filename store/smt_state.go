@@ -159,7 +159,7 @@ func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
 
 	// SendBatch executes the queued statements.
 	br := s.db.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	if _, err := br.Exec(); err != nil {
 		return fmt.Errorf("store/smt: set batch: %w", err)
@@ -211,7 +211,7 @@ type PostgresNodeCache struct {
 }
 
 type cacheEntry struct {
-	hash []byte
+	hash  []byte
 	depth int
 }
 
@@ -324,7 +324,7 @@ func (c *PostgresNodeCache) evictLRU() {
 	// Find the access threshold: remove entries with lowest access counters.
 	// Simple approach: remove entries until below target.
 	type kv struct {
-		key [32]byte
+		key    [32]byte
 		access int64
 	}
 	entries := make([]kv, 0, len(c.cache))

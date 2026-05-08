@@ -3,16 +3,18 @@
 
 /*
 FILE PATH:
-    tests/chaos/shutdown_drain_test.go
+
+	tests/chaos/shutdown_drain_test.go
 
 DESCRIPTION:
-    J4 — Chaos test: lifecycle.ShutdownChain runs every step in
-    spec order, with per-component bounded ctx, even when one
-    step times out. Pins I1+I2+I3:
-      - Spec order respected even on slow steps
-      - Per-component timeout caps each step independently
-      - Final summary captures every step's duration + error
-      - Slow step doesn't consume the budget for downstream steps
+
+	J4 — Chaos test: lifecycle.ShutdownChain runs every step in
+	spec order, with per-component bounded ctx, even when one
+	step times out. Pins I1+I2+I3:
+	  - Spec order respected even on slow steps
+	  - Per-component timeout caps each step independently
+	  - Final summary captures every step's duration + error
+	  - Slow step doesn't consume the budget for downstream steps
 */
 package chaos
 

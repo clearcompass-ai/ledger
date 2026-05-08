@@ -2,70 +2,73 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p4_peer_helpers_test.go
+
+	tests/scenarios_p4_peer_helpers_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 4 (Peer Ledger, fixtures + helpers). The
-    minimal moving parts a peer-ledger gossip test needs:
 
-      - gossipPeer: an httptest.Server mounting the SDK's
-        gossip.Handler (POST /v1/gossip) + gossip.FeedHandler
-        (GET /v1/gossip/since etc.) over a *gossip.InMemoryStore.
-      - p4Verifier: a tiny OriginatorKeyManager implementation
-        backed by a single (originator, *ecdsa.PublicKey) entry,
-        suitable for the test's single-originator topology.
-      - p4Originator: bundles the originator's signing key
-        (cosign.WitnessSigner) + its DID + its current Lamport /
-        prev-hash chain state, threaded across signs.
-      - Sign-and-publish + pull-once helpers wrapping the SDK's
-        gossip.Sign + Publish + FeedClient.Since.
+	Layer 0 — Persona 4 (Peer Ledger, fixtures + helpers). The
+	minimal moving parts a peer-ledger gossip test needs:
+
+	  - gossipPeer: an httptest.Server mounting the SDK's
+	    gossip.Handler (POST /v1/gossip) + gossip.FeedHandler
+	    (GET /v1/gossip/since etc.) over a *gossip.InMemoryStore.
+	  - p4Verifier: a tiny OriginatorKeyManager implementation
+	    backed by a single (originator, *ecdsa.PublicKey) entry,
+	    suitable for the test's single-originator topology.
+	  - p4Originator: bundles the originator's signing key
+	    (cosign.WitnessSigner) + its DID + its current Lamport /
+	    prev-hash chain state, threaded across signs.
+	  - Sign-and-publish + pull-once helpers wrapping the SDK's
+	    gossip.Sign + Publish + FeedClient.Since.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One InMemoryStore per peer. Each peer owns its own append
-      log; convergence is asserted by event-set equality across
-      stores after a round of pull. The SDK's reference store is
-      the system under test, so we drive it directly rather than
-      replacing it with a mock.
-    - p4Verifier holds a single originator. Multi-originator
-      scenarios are out of scope for Persona 4 (they belong to
-      Persona 7's cross-network tests). The verifier returns
-      gossip.ErrUnknownOriginator for any other originator,
-      mirroring the SDK's typed-error contract.
-    - Pull is one shot. p4PullOnce fetches /v1/gossip/since on the
-      source peer, then Append's every event into the dest peer's
-      store. Real production pull uses a background goroutine with
-      backoff; that's a peer-runtime concern, not a wire-protocol
-      concern. Persona 4 tests the protocol; the runtime is left
-      to production code.
-    - p4Originator is value-tagged (Lamport, PrevHash) but the
-      pointer-receiver helpers mutate the in-process state. This
-      mirrors a real originator's signing-loop where every signed
-      event advances the chain head.
+  - One InMemoryStore per peer. Each peer owns its own append
+    log; convergence is asserted by event-set equality across
+    stores after a round of pull. The SDK's reference store is
+    the system under test, so we drive it directly rather than
+    replacing it with a mock.
+  - p4Verifier holds a single originator. Multi-originator
+    scenarios are out of scope for Persona 4 (they belong to
+    Persona 7's cross-network tests). The verifier returns
+    gossip.ErrUnknownOriginator for any other originator,
+    mirroring the SDK's typed-error contract.
+  - Pull is one shot. p4PullOnce fetches /v1/gossip/since on the
+    source peer, then Append's every event into the dest peer's
+    store. Real production pull uses a background goroutine with
+    backoff; that's a peer-runtime concern, not a wire-protocol
+    concern. Persona 4 tests the protocol; the runtime is left
+    to production code.
+  - p4Originator is value-tagged (Lamport, PrevHash) but the
+    pointer-receiver helpers mutate the in-process state. This
+    mirrors a real originator's signing-loop where every signed
+    event advances the chain head.
 
 OVERVIEW:
-    p4Originator               → originator state.
-    newP4Originator(t, did)    → fresh originator + key.
-    p4Verifier                 → in-test OriginatorKeyManager.
-    newP4Verifier(t, orig)     → constructor.
-    gossipPeer                 → test peer fixture.
-    newGossipPeer(t, ver, nid) → peer with handlers mounted.
-    p4SignAndPublish(t, ev,
-                     orig, peer)   → sign, publish, advance chain.
-    p4PullOnce(t, src, dst)        → drain src.Since → dst.Append.
-    p4MakeFinding(t, originator,
-                  treeSize)        → fresh CosignedTreeHeadFinding.
+
+	p4Originator               → originator state.
+	newP4Originator(t, did)    → fresh originator + key.
+	p4Verifier                 → in-test OriginatorKeyManager.
+	newP4Verifier(t, orig)     → constructor.
+	gossipPeer                 → test peer fixture.
+	newGossipPeer(t, ver, nid) → peer with handlers mounted.
+	p4SignAndPublish(t, ev,
+	                 orig, peer)   → sign, publish, advance chain.
+	p4PullOnce(t, src, dst)        → drain src.Since → dst.Append.
+	p4MakeFinding(t, originator,
+	              treeSize)        → fresh CosignedTreeHeadFinding.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/gossip:
-      Handler / FeedHandler / Sign / NewClient / NewFeedClient /
-      InMemoryStore / NewInMemoryKeyManager / Event /
-      OriginatorVerifier / SignedEvent.
-    - github.com/clearcompass-ai/attesta/gossip/findings:
-      NewCosignedTreeHeadFinding.
-    - github.com/clearcompass-ai/attesta/crypto/cosign:
-      NewECDSAWitnessSigner, WitnessSigner.
-    - github.com/clearcompass-ai/attesta/crypto/signatures:
-      VerifyEntry (raw R||S ECDSA verify).
+  - github.com/clearcompass-ai/attesta/gossip:
+    Handler / FeedHandler / Sign / NewClient / NewFeedClient /
+    InMemoryStore / NewInMemoryKeyManager / Event /
+    OriginatorVerifier / SignedEvent.
+  - github.com/clearcompass-ai/attesta/gossip/findings:
+    NewCosignedTreeHeadFinding.
+  - github.com/clearcompass-ai/attesta/crypto/cosign:
+    NewECDSAWitnessSigner, WitnessSigner.
+  - github.com/clearcompass-ai/attesta/crypto/signatures:
+    VerifyEntry (raw R||S ECDSA verify).
 */
 package tests
 
@@ -150,9 +153,9 @@ func (o *p4Originator) recordChainHead(eventID [32]byte) {
 // the handler casts to internally). RotateOriginator is a no-op;
 // rotation is out of scope for Persona 4.
 type p4Verifier struct {
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 	originator string
-	pubKey    *ecdsa.PublicKey
+	pubKey     *ecdsa.PublicKey
 }
 
 // newP4Verifier returns a verifier preloaded with the originator's

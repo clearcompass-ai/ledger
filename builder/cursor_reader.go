@@ -85,9 +85,9 @@ type BatchReader interface {
 type CursorReader struct {
 	cursor *store.SequenceCursor
 
-	mu sync.Mutex
-	current uint64 // in-memory cursor; -1 sentinel via initialized=false
-	initFromDB bool // false until Read() bootstraps from the database
+	mu         sync.Mutex
+	current    uint64 // in-memory cursor; -1 sentinel via initialized=false
+	initFromDB bool   // false until Read() bootstraps from the database
 }
 
 // NewCursorReader constructs a reader over the supplied cursor.

@@ -124,20 +124,20 @@ type S3Config struct {
 // S3-compatible object store. Buckets are anonymous-read by
 // design; PublicURL composes deterministic credential-free URLs.
 type S3 struct {
-	client *s3.Client
-	bucket string
+	client       *s3.Client
+	bucket       string
 	objectPrefix string
 	writeTimeout time.Duration
-	readTimeout time.Duration
+	readTimeout  time.Duration
 
 	// publicURL is the deterministic public-URL composer. May be
 	// nil-safe (returns ErrPublicURLNotConfigured) when no base
 	// URL was supplied AND no default could be derived.
 	publicURL *publicURLMapper
 
-	mu sync.Mutex
-	cache map[string][]byte
-	access map[string]int64
+	mu      sync.Mutex
+	cache   map[string][]byte
+	access  map[string]int64
 	counter int64
 	maxSize int
 }
@@ -336,7 +336,7 @@ func (s *S3) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, 
 		}
 		return nil, fmt.Errorf("bytestore/s3: GetObject seq=%d: %w", seq, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 
 	blob, err := io.ReadAll(out.Body)
 	if err != nil {

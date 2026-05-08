@@ -8,8 +8,8 @@
 //
 //	Config struct + loadConfig + Validate + the small helpers
 //	(defaultPgMaxConns, buildLogInfo, networkIDHex,
-//	validateTesseraStorageDir, validatePgPoolSizing,
-//	toBytestoreConfig). Extracted from cmd/ledger/main.go as part of
+//	validatePgPoolSizing, toBytestoreConfig). Extracted from
+//	cmd/ledger/main.go as part of
 //	the lifecycle-phase decomposition (P3): config loading + boot
 //	allocation + topology wiring + teardown registration must each be
 //	separable surfaces. This file owns the first.
@@ -32,14 +32,15 @@ import (
 	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/sequencer"
 )
+
 // ─────────────────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────────────────
 
 type Config struct {
-	ServerAddr string
+	ServerAddr  string
 	DatabaseURL string
-	PgMaxConns int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
+	PgMaxConns  int32 // LEDGER_PG_MAX_CONNS; defaults to defaultPgMaxConns(MaxInFlight).
 
 	// PgStatementTimeout, when > 0, is applied via the AfterConnect
 	// hook on every pool connection so EVERY query gets a DB-side
@@ -49,7 +50,7 @@ type Config struct {
 	// Set via LEDGER_PG_STATEMENT_TIMEOUT (Go duration syntax).
 	PgStatementTimeout time.Duration
 
-	LogDID string // Destination for self-published entries (anchors, commitments).
+	LogDID    string // Destination for self-published entries (anchors, commitments).
 	LedgerDID string // Signer DID for ledger-authored commentary.
 
 	// TLSCertFile / TLSKeyFile, when both non-empty, switch the
@@ -108,21 +109,21 @@ type Config struct {
 	// when TileBackend=="gcs".
 	TileBucketPrefix string // LEDGER_TILE_BUCKET_PREFIX
 
-	MaxEntrySize int64
-	BatchSize int
-	PollInterval time.Duration
-	EpochWindowSeconds int
+	MaxEntrySize          int64
+	BatchSize             int
+	PollInterval          time.Duration
+	EpochWindowSeconds    int
 	EpochAcceptanceWindow int
-	AnchorInterval time.Duration
-	AnchorSources []anchor.AnchorSource
+	AnchorInterval        time.Duration
+	AnchorSources         []anchor.AnchorSource
 
 	// Sequencer settings (SCT/MMD architecture). The Sequencer
 	// drains StatePending entries asynchronously; v2 admission
 	// returns an SCT immediately after WAL fsync and the
 	// Sequencer redeems the promise within MMD.
-	SequencerInterval time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
-	SequencerMaxInFlight int // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
-	MMD time.Duration // default 24h; LEDGER_MMD
+	SequencerInterval    time.Duration // default 1s; LEDGER_SEQUENCER_INTERVAL
+	SequencerMaxInFlight int           // default 4; LEDGER_SEQUENCER_MAX_INFLIGHT
+	MMD                  time.Duration // default 24h; LEDGER_MMD
 
 	// ShipperMaxInFlight is the worker-pool size for parallel
 	// bytestore uploads. Drain rate ceiling ≈ MaxInFlight ÷
@@ -148,9 +149,9 @@ type Config struct {
 	// production.
 	// TesseraOrigin is the c2sp.org/tlog-tiles origin string
 	// embedded in every signed checkpoint. Defaults to LogDID.
-	TesseraStorageDir string
+	TesseraStorageDir    string
 	TesseraSignerKeyFile string
-	TesseraOrigin string
+	TesseraOrigin        string
 	// LedgerSignerKeyFile is the path to a PEM-encoded
 	// secp256k1 ECDSA private key the ledger uses to sign its
 	// own entries (anchor publisher, commitment publisher). When
@@ -187,22 +188,22 @@ type Config struct {
 	// "memory" is intentionally rejected at the composition root —
 	// production must select a real backend. Tests that need a
 	// Store-only impl call bytestore.NewMemory directly.
-	ByteStoreBackend string
-	ByteStorePrefix string // empty = "entries"
+	ByteStoreBackend   string
+	ByteStorePrefix    string // empty = "entries"
 	ByteStoreCacheSize int
 
 	// GCS-specific.
-	ByteStoreGCSBucket string
+	ByteStoreGCSBucket   string
 	ByteStoreGCSEndpoint string // empty = default GCS endpoint
-	ByteStoreGCSAnon bool // true = no auth (fake-gcs-server)
+	ByteStoreGCSAnon     bool   // true = no auth (fake-gcs-server)
 
 	// S3-specific.
-	ByteStoreS3Bucket string
-	ByteStoreS3Endpoint string // empty = default AWS S3 endpoint
-	ByteStoreS3Region string // empty = us-east-1 in factory
+	ByteStoreS3Bucket    string
+	ByteStoreS3Endpoint  string // empty = default AWS S3 endpoint
+	ByteStoreS3Region    string // empty = us-east-1 in factory
 	ByteStoreS3AccessKey string // empty = default credential chain
 	ByteStoreS3SecretKey string // empty = default credential chain
-	ByteStoreS3PathStyle bool // true for RustFS; false for AWS S3
+	ByteStoreS3PathStyle bool   // true for RustFS; false for AWS S3
 
 	// Public-URL routing (transparency-log convention; see
 	// bytestore/publicurl.go). The architecture has only one read
@@ -219,9 +220,9 @@ type Config struct {
 	// bucket.
 	// Env: LEDGER_BYTE_STORE_PUBLIC_BASE_URL
 	ByteStorePublicBaseURL string
-	TileCacheSize int
-	SMTNodeCacheSize int
-	DeltaWindow int
+	TileCacheSize          int
+	SMTNodeCacheSize       int
+	DeltaWindow            int
 	// WitnessEndpoints is the comma-separated list of peer witness
 	// URLs the builder loop's HeadSync requester posts cosign
 	// requests to. Empty (default) → no cosignature collection;
@@ -234,7 +235,7 @@ type Config struct {
 	// LEDGER_WITNESS_KEY_FILE — same code paths as production
 	// K=N witnesses, no test-mode flag.
 	WitnessEndpoints []string
-	WitnessQuorumK int
+	WitnessQuorumK   int
 
 	// WitnessKeyFile is the path to a PEM-encoded secp256k1
 	// ECDSA private key the witness cosign endpoint
@@ -358,25 +359,25 @@ func loadConfig() (*Config, error) {
 		// Public-URL routing — transparency-log convention is the
 		// only read path. Optional CDN / custom-DNS override.
 		ByteStorePublicBaseURL: os.Getenv("LEDGER_BYTE_STORE_PUBLIC_BASE_URL"),
-		TileCacheSize:        10_000,
-		SMTNodeCacheSize:     100_000,
-		DeltaWindow:          10,
-		WitnessEndpoints:     parseCSV(os.Getenv("LEDGER_WITNESS_ENDPOINTS")),
-		WitnessQuorumK:       envIntOr("LEDGER_WITNESS_QUORUM_K", 1),
-		WitnessKeyFile:       os.Getenv("LEDGER_WITNESS_KEY_FILE"),
-		NetworkBootstrapFile: os.Getenv("LEDGER_NETWORK_BOOTSTRAP_FILE"),
-		GossipPeerEndpoints:  parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_ENDPOINTS")),
-		GossipPeerDIDs:       parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_DIDS")),
-		GossipDisable:        os.Getenv("LEDGER_GOSSIP_DISABLE") == "true",
+		TileCacheSize:          10_000,
+		SMTNodeCacheSize:       100_000,
+		DeltaWindow:            10,
+		WitnessEndpoints:       parseCSV(os.Getenv("LEDGER_WITNESS_ENDPOINTS")),
+		WitnessQuorumK:         envIntOr("LEDGER_WITNESS_QUORUM_K", 1),
+		WitnessKeyFile:         os.Getenv("LEDGER_WITNESS_KEY_FILE"),
+		NetworkBootstrapFile:   os.Getenv("LEDGER_NETWORK_BOOTSTRAP_FILE"),
+		GossipPeerEndpoints:    parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_ENDPOINTS")),
+		GossipPeerDIDs:         parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_DIDS")),
+		GossipDisable:          os.Getenv("LEDGER_GOSSIP_DISABLE") == "true",
 		// D1 — Metrics default ON. Disabled-by-default observability
 		// is a footgun. Set LEDGER_METRICS_ENABLE=false to opt out
 		// (e.g., for resource-constrained edge deployments).
-		MetricsEnable: os.Getenv("LEDGER_METRICS_ENABLE") != "false",
-		MetricsEnvironment:   envOr("LEDGER_METRICS_ENVIRONMENT", "dev"),
-		ServiceVersion:       envOr("LEDGER_SERVICE_VERSION", "dev"),
-		OTLPTracesEndpoint:   os.Getenv("LEDGER_OTLP_TRACES_ENDPOINT"),
-		WALPath:              envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
-		TesseraAntispamPath:  envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
+		MetricsEnable:       os.Getenv("LEDGER_METRICS_ENABLE") != "false",
+		MetricsEnvironment:  envOr("LEDGER_METRICS_ENVIRONMENT", "dev"),
+		ServiceVersion:      envOr("LEDGER_SERVICE_VERSION", "dev"),
+		OTLPTracesEndpoint:  os.Getenv("LEDGER_OTLP_TRACES_ENDPOINT"),
+		WALPath:             envOr("LEDGER_WAL_PATH", "/var/lib/attesta/wal"),
+		TesseraAntispamPath: envOr("LEDGER_TESSERA_ANTISPAM_PATH", "/var/lib/attesta/tessera-antispam"),
 
 		// HTTP-server hardening knobs.
 		TLSCertFile:        os.Getenv("LEDGER_TLS_CERT_FILE"),
@@ -456,9 +457,9 @@ func loadConfig() (*Config, error) {
 				cfg.NetworkBootstrapFile, err)
 		}
 		var doc network.BootstrapDocument
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		if uErr := json.Unmarshal(raw, &doc); uErr != nil {
 			return nil, fmt.Errorf("parse network bootstrap %s: %w",
-				cfg.NetworkBootstrapFile, err)
+				cfg.NetworkBootstrapFile, uErr)
 		}
 		ids, err := doc.IDs()
 		if err != nil {
@@ -483,20 +484,20 @@ func loadConfig() (*Config, error) {
 // Config. Every check is fail-fast: a misconfigured deployment
 // surfaces a clear, single-line error at boot instead of a
 // runtime surprise.
-func (c *Config) Validate() error {
+func (cfg *Config) Validate() error {
 	// TLS: cert + key must be both-set or both-unset. Half-
 	// configured TLS would silently fall back to plain HTTP and
 	// be an exposure surprise.
-	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return fmt.Errorf("LEDGER_TLS_CERT_FILE and LEDGER_TLS_KEY_FILE must be both set or both unset (got cert=%q key=%q)",
-			c.TLSCertFile, c.TLSKeyFile)
+			cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
-	if c.TLSCertFile != "" {
-		if _, err := os.Stat(c.TLSCertFile); err != nil {
-			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", c.TLSCertFile, err)
+	if cfg.TLSCertFile != "" {
+		if _, err := os.Stat(cfg.TLSCertFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", cfg.TLSCertFile, err)
 		}
-		if _, err := os.Stat(c.TLSKeyFile); err != nil {
-			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", c.TLSKeyFile, err)
+		if _, err := os.Stat(cfg.TLSKeyFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", cfg.TLSKeyFile, err)
 		}
 	}
 
@@ -504,21 +505,21 @@ func (c *Config) Validate() error {
 	// length so each peer has both an identity and a base URL.
 	// Mismatched lengths point at a deployment misconfig where
 	// one env var was forgotten or has a stale value.
-	if len(c.GossipPeerDIDs) != len(c.GossipPeerEndpoints) {
+	if len(cfg.GossipPeerDIDs) != len(cfg.GossipPeerEndpoints) {
 		return fmt.Errorf("LEDGER_GOSSIP_PEER_DIDS (%d) and LEDGER_GOSSIP_PEER_ENDPOINTS (%d) must have the same length",
-			len(c.GossipPeerDIDs), len(c.GossipPeerEndpoints))
+			len(cfg.GossipPeerDIDs), len(cfg.GossipPeerEndpoints))
 	}
 
 	// Tile backend: gcs requires the byte-store backend to also
 	// be gcs (the GCSTiles handle reuses the *GCS bucket handle).
-	if c.TileBackend == "gcs" && c.ByteStoreBackend != "gcs" {
+	if cfg.TileBackend == "gcs" && cfg.ByteStoreBackend != "gcs" {
 		return fmt.Errorf("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs (got %q)",
-			c.ByteStoreBackend)
+			cfg.ByteStoreBackend)
 	}
-	switch c.TileBackend {
+	switch cfg.TileBackend {
 	case "", "posix", "gcs":
 	default:
-		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", c.TileBackend)
+		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", cfg.TileBackend)
 	}
 
 	// Durations: every exposed duration MUST be positive. Zero
@@ -528,9 +529,9 @@ func (c *Config) Validate() error {
 		name string
 		v    time.Duration
 	}{
-		{"LEDGER_SEQUENCER_INTERVAL", c.SequencerInterval},
-		{"LEDGER_MMD", c.MMD},
-		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", c.PgStatementTimeout},
+		{"LEDGER_SEQUENCER_INTERVAL", cfg.SequencerInterval},
+		{"LEDGER_MMD", cfg.MMD},
+		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", cfg.PgStatementTimeout},
 	} {
 		if d.v < 0 {
 			return fmt.Errorf("%s must be >= 0 (got %v)", d.name, d.v)
@@ -539,13 +540,13 @@ func (c *Config) Validate() error {
 
 	// Witness quorum K must be positive when witnesses are
 	// configured (a 0-of-N quorum would never finalize a head).
-	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK <= 0 {
+	if len(cfg.WitnessEndpoints) > 0 && cfg.WitnessQuorumK <= 0 {
 		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K must be > 0 when LEDGER_WITNESS_ENDPOINTS is set (got %d)",
-			c.WitnessQuorumK)
+			cfg.WitnessQuorumK)
 	}
-	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK > len(c.WitnessEndpoints) {
+	if len(cfg.WitnessEndpoints) > 0 && cfg.WitnessQuorumK > len(cfg.WitnessEndpoints) {
 		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K (%d) cannot exceed LEDGER_WITNESS_ENDPOINTS count (%d)",
-			c.WitnessQuorumK, len(c.WitnessEndpoints))
+			cfg.WitnessQuorumK, len(cfg.WitnessEndpoints))
 	}
 
 	return nil
@@ -604,10 +605,10 @@ func buildLogInfo(cfg *Config) api.LogInfo {
 
 		// Storage backend types — auditor needs to know whether
 		// to fetch tiles from POSIX origin or GCS bucket.
-		"byte_store_backend":  cfg.ByteStoreBackend,
-		"tile_backend":        cfg.TileBackend,
-		"tile_bucket_prefix":  cfg.TileBucketPrefix,
-		"tile_serve_disable":  cfg.TileServeDisable,
+		"byte_store_backend": cfg.ByteStoreBackend,
+		"tile_backend":       cfg.TileBackend,
+		"tile_bucket_prefix": cfg.TileBucketPrefix,
+		"tile_serve_disable": cfg.TileServeDisable,
 
 		// Witness topology — drives K-of-N quorum verification.
 		"witness_endpoint_count": len(cfg.WitnessEndpoints),
@@ -638,45 +639,10 @@ func networkIDHex(id cosign.NetworkID) string {
 	return fmt.Sprintf("%x", id[:8])
 }
 
-// validateTesseraStorageDir confirms the Tessera POSIX directory
-// is in a consistent state: either empty (fresh init) OR contains
-// a `checkpoint` file (resuming an existing log). A dir with
-// tile artifacts but no checkpoint indicates a half-initialized
-// volume — partial restore, aborted migration, manual file
-// shuffling — and re-initializing on top of it would corrupt
-// the log silently. Boot fails fast instead.
-func validateTesseraStorageDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("read dir: %w", err)
-	}
-	if len(entries) == 0 {
-		// Fresh init — Tessera will populate.
-		return nil
-	}
-	checkpoint := dir + string(os.PathSeparator) + "checkpoint"
-	if _, err := os.Stat(checkpoint); err == nil {
-		// Healthy: existing log with checkpoint. Tessera will
-		// resume from where it left off.
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat checkpoint: %w", err)
-	}
-	// Has files but no checkpoint — half-initialized.
-	names := make([]string, 0, len(entries))
-	for i, e := range entries {
-		if i >= 5 {
-			names = append(names, "...")
-			break
-		}
-		names = append(names, e.Name())
-	}
-	return fmt.Errorf("dir non-empty (%v) but no checkpoint file — "+
-		"refusing to re-initialize on top of partial state. "+
-		"To start fresh, empty the directory; to resume an existing log, "+
-		"restore the checkpoint file alongside the tile artifacts",
-		names)
-}
+// validateTesseraStorageDir was moved to cmd/ledger/boot/alloc as
+// part of P3.4 (alloc.allocateTessera owns the dir-sanity step). The
+// stub here is removed; the doc-comment cross-link in package docs
+// continues to reference its current home.
 
 func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 	mif := sequencerMaxInFlight

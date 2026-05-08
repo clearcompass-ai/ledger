@@ -56,7 +56,7 @@ const (
 // errorCounterState holds the package-level OTel counter. nil
 // counter is a no-op — the default at process start.
 var errorCounterState struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
 	counter metric.Int64Counter
 }
 

@@ -1,40 +1,43 @@
 /*
 FILE PATH:
-    api/body_caps.go
+
+	api/body_caps.go
 
 DESCRIPTION:
-    Per-route HTTP body-size caps. Every route that reads a body
-    has a documented, finite ceiling so an over-streaming peer
-    is rejected with HTTP 413 by middleware.SizeLimit BEFORE the
-    handler allocates memory. Routes that take no body (every
-    GET) need no cap.
+
+	Per-route HTTP body-size caps. Every route that reads a body
+	has a documented, finite ceiling so an over-streaming peer
+	is rejected with HTTP 413 by middleware.SizeLimit BEFORE the
+	handler allocates memory. Routes that take no body (every
+	GET) need no cap.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Caps live in one file so the audit surface is finite. A
-      reviewer sees every per-route ceiling at one glance.
-    - Each cap is a typed int64 constant. Values are administrator-
-      auditable and compile-time-constant — no runtime drift.
-    - Caps include a small framing budget on top of the
-      payload-shape ceiling because middleware.SizeLimit wraps
-      r.Body in http.MaxBytesReader which fires AT-OR-BEFORE the
-      cap; the handler still has to parse JSON / unmarshal a
-      length-prefixed envelope, which can carry small amounts of
-      structural overhead.
-    - Defense-in-depth: handlers MAY enforce tighter caps after
-      parse (e.g., AbsoluteMaxBatchPayloadBytes is the transport
-      cap; the batch handler enforces the per-deployment
-      MaxBatchSize × MaxEntrySize derived ceiling on top).
+  - Caps live in one file so the audit surface is finite. A
+    reviewer sees every per-route ceiling at one glance.
+  - Each cap is a typed int64 constant. Values are administrator-
+    auditable and compile-time-constant — no runtime drift.
+  - Caps include a small framing budget on top of the
+    payload-shape ceiling because middleware.SizeLimit wraps
+    r.Body in http.MaxBytesReader which fires AT-OR-BEFORE the
+    cap; the handler still has to parse JSON / unmarshal a
+    length-prefixed envelope, which can carry small amounts of
+    structural overhead.
+  - Defense-in-depth: handlers MAY enforce tighter caps after
+    parse (e.g., AbsoluteMaxBatchPayloadBytes is the transport
+    cap; the batch handler enforces the per-deployment
+    MaxBatchSize × MaxEntrySize derived ceiling on top).
 
 OVERVIEW:
-    middleware.SizeLimit wraps r.Body for every route registered
-    by api/server.go::NewServer. The ceiling chosen here is the
-    transport-level absolute upper bound. Over-cap requests are
-    rejected with HTTP 413 by net/http's MaxBytesReader on first
-    Read, before the handler allocates any state.
+
+	middleware.SizeLimit wraps r.Body for every route registered
+	by api/server.go::NewServer. The ceiling chosen here is the
+	transport-level absolute upper bound. Over-cap requests are
+	rejected with HTTP 413 by net/http's MaxBytesReader on first
+	Read, before the handler allocates any state.
 
 KEY DEPENDENCIES:
-    - api/middleware.SizeLimit: applies http.MaxBytesReader.
-    - api/server.go: registers routes wrapped by SizeLimit.
+  - api/middleware.SizeLimit: applies http.MaxBytesReader.
+  - api/server.go: registers routes wrapped by SizeLimit.
 */
 package api
 

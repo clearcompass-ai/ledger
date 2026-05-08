@@ -2,79 +2,82 @@
 
 /*
 FILE PATH:
-    tests/scenarios_byte_verify_test.go
+
+	tests/scenarios_byte_verify_test.go
 
 DESCRIPTION:
-    Layer 0 — BYTE-VER-01/02/03: byte-for-byte read verification.
-    Three sub-tests pin the data-integrity contract every
-    network consumer (auditor, indexer, fraud bot) depends on:
 
-      VER-01 (Internal Match): pick K random sequences from a
-              tree, fetch each via the public-URL fixture
-              (the credential-free path a CDN would surface),
-              SHA-256 the bytes, and compare to the
-              canonical_hash recorded in entry_index. Any
-              mismatch is a torn-byte fault.
-      VER-02 (Auditor 302 Redirects): emulate the
-              auditor's GET /v1/entries/{seq}/raw call.
-              Verify the ledger returns 302 with Location
-              pointing at the public URL. Follow the
-              redirect; SHA-256 the resulting bytes; compare
-              to canonical_hash. The X-Sequence and X-Log-Time
-              headers MUST be set on the 302 (per the SDK's
-              EntryFetcher contract).
-      VER-03 (Domain Indexer Batches): GET /v1/entries/batch
-              with start/count covering the entire tree.
-              For each entry in the batch, look up bytes via
-              the public-URL path; SHA-256(bytes) must match
-              the metadata's canonical_hash.
+	Layer 0 — BYTE-VER-01/02/03: byte-for-byte read verification.
+	Three sub-tests pin the data-integrity contract every
+	network consumer (auditor, indexer, fraud bot) depends on:
+
+	  VER-01 (Internal Match): pick K random sequences from a
+	          tree, fetch each via the public-URL fixture
+	          (the credential-free path a CDN would surface),
+	          SHA-256 the bytes, and compare to the
+	          canonical_hash recorded in entry_index. Any
+	          mismatch is a torn-byte fault.
+	  VER-02 (Auditor 302 Redirects): emulate the
+	          auditor's GET /v1/entries/{seq}/raw call.
+	          Verify the ledger returns 302 with Location
+	          pointing at the public URL. Follow the
+	          redirect; SHA-256 the resulting bytes; compare
+	          to canonical_hash. The X-Sequence and X-Log-Time
+	          headers MUST be set on the 302 (per the SDK's
+	          EntryFetcher contract).
+	  VER-03 (Domain Indexer Batches): GET /v1/entries/batch
+	          with start/count covering the entire tree.
+	          For each entry in the batch, look up bytes via
+	          the public-URL path; SHA-256(bytes) must match
+	          the metadata's canonical_hash.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Public-URL fixture: the byteStoreHTTPServer + the
-      staticPublicURLer (scenarios_byte_helpers_test.go) form
-      a closed loop. The PublicURLer composes the same URL
-      shape the server expects. Both use the SAME byteLayoutKey
-      function — drift would be a compile-time impossibility.
-    - VER-02 follows the 302 redirect manually (http.Client
-      with CheckRedirect = nil follows by default; we use a
-      manual unfollow to assert the 302 status code first,
-      then a second GET on the Location).
-    - All three tests submit at LowDifficulty so a tree of
-      meaningful size builds in seconds, not minutes.
-    - "Live-to-archive boundary" in VER-03's spec refers to
-      the WAL → bytestore migration that the Shipper does in
-      production. The in-memory test ledger has WAL-resident
-      entries only; bytes still come from EntryBytes (the
-      Memory bytestore), so the contract we exercise is
-      "every entry's recorded canonical_hash matches the
-      bytes the public URL returns" — the same guarantee
-      across both shard states.
-    - Concurrency. VER-01 fans out 8 goroutines over the
-      sample set so the parallel byte-read path is exercised
-      against the in-memory bytestore's RWMutex.
+  - Public-URL fixture: the byteStoreHTTPServer + the
+    staticPublicURLer (scenarios_byte_helpers_test.go) form
+    a closed loop. The PublicURLer composes the same URL
+    shape the server expects. Both use the SAME byteLayoutKey
+    function — drift would be a compile-time impossibility.
+  - VER-02 follows the 302 redirect manually (http.Client
+    with CheckRedirect = nil follows by default; we use a
+    manual unfollow to assert the 302 status code first,
+    then a second GET on the Location).
+  - All three tests submit at LowDifficulty so a tree of
+    meaningful size builds in seconds, not minutes.
+  - "Live-to-archive boundary" in VER-03's spec refers to
+    the WAL → bytestore migration that the Shipper does in
+    production. The in-memory test ledger has WAL-resident
+    entries only; bytes still come from EntryBytes (the
+    Memory bytestore), so the contract we exercise is
+    "every entry's recorded canonical_hash matches the
+    bytes the public URL returns" — the same guarantee
+    across both shard states.
+  - Concurrency. VER-01 fans out 8 goroutines over the
+    sample set so the parallel byte-read path is exercised
+    against the in-memory bytestore's RWMutex.
 
 OVERVIEW:
-    TestByte_Verification
-      VER-01_RandomSampleHashMatch
-        → submit n entries; sample S random seqs; for each:
-          GET via public URL; assert SHA-256(bytes) ==
-          canonical_hash.
-      VER-02_RawEndpointRedirect
-        → submit one entry; GET /v1/entries/{seq}/raw with
-          redirect-following disabled; assert 302 + Location
-          + X-Sequence + X-Log-Time; follow Location;
-          assert bytes hash to canonical_hash.
-      VER-03_BatchByteIdentity
-        → submit n entries; GET /v1/entries/batch?start=0&
-          count=n; for each entry's metadata, fetch bytes
-          via public URL; assert SHA-256(bytes) ==
-          canonical_hash.
+
+	TestByte_Verification
+	  VER-01_RandomSampleHashMatch
+	    → submit n entries; sample S random seqs; for each:
+	      GET via public URL; assert SHA-256(bytes) ==
+	      canonical_hash.
+	  VER-02_RawEndpointRedirect
+	    → submit one entry; GET /v1/entries/{seq}/raw with
+	      redirect-following disabled; assert 302 + Location
+	      + X-Sequence + X-Log-Time; follow Location;
+	      assert bytes hash to canonical_hash.
+	  VER-03_BatchByteIdentity
+	    → submit n entries; GET /v1/entries/batch?start=0&
+	      count=n; for each entry's metadata, fetch bytes
+	      via public URL; assert SHA-256(bytes) ==
+	      canonical_hash.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_byte_helpers_test.go: byteStoreHTTPServer,
-      staticPublicURLer, byteLayoutKey, byteObjectPrefix.
-    - tests/scenarios_crypto_helpers_test.go: cryptoSubmitMany,
-      cryptoSubmitOne, cryptoWaitForSize.
+  - tests/scenarios_byte_helpers_test.go: byteStoreHTTPServer,
+    staticPublicURLer, byteLayoutKey, byteObjectPrefix.
+  - tests/scenarios_crypto_helpers_test.go: cryptoSubmitMany,
+    cryptoSubmitOne, cryptoWaitForSize.
 */
 package tests
 
@@ -150,8 +153,8 @@ func runByteVER01RandomSampleHashMatch(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(int64(byteVerTreeSize)))
 	type job struct {
-		idx int
-		seq uint64
+		idx           int
+		seq           uint64
 		canonicalHash [32]byte
 	}
 	jobs := make(chan job, byteVerSamples)

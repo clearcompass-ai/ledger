@@ -1,37 +1,40 @@
 /*
 FILE PATH:
-    tests/testserver_setup_test.go
+
+	tests/testserver_setup_test.go
 
 DESCRIPTION:
-    Opts-driven entry point for the integration-test ledger harness.
-    startTestLedger delegates here with a zero-value opts (legacy
-    stub default); scenarios / persona tests pass UseRealTessera=true
-    to wire production-shape Tessera (POSIX + EmbeddedAppender +
-    TesseraAdapter) instead.
+
+	Opts-driven entry point for the integration-test ledger harness.
+	startTestLedger delegates here with a zero-value opts (legacy
+	stub default); scenarios / persona tests pass UseRealTessera=true
+	to wire production-shape Tessera (POSIX + EmbeddedAppender +
+	TesseraAdapter) instead.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Sibling, not flag mutation. Existing 600+ tests reach this
-      function via the unchanged startTestLedger delegator; their
-      stub path is byte-for-byte equivalent.
-    - Single decision point. buildTesseraForTests returns a
-      tesseraSlots struct filling all four production roles
-      (admission TesseraAppender, builder MerkleAppender,
-      InclusionProver, ConsistencyProver). Every slot uses the
-      same source of truth.
-    - Lifecycle ordering. Real Tessera owns background batchers +
-      a checkpoint signer; cleanup drains them before pool.Close.
+  - Sibling, not flag mutation. Existing 600+ tests reach this
+    function via the unchanged startTestLedger delegator; their
+    stub path is byte-for-byte equivalent.
+  - Single decision point. buildTesseraForTests returns a
+    tesseraSlots struct filling all four production roles
+    (admission TesseraAppender, builder MerkleAppender,
+    InclusionProver, ConsistencyProver). Every slot uses the
+    same source of truth.
+  - Lifecycle ordering. Real Tessera owns background batchers +
+    a checkpoint signer; cleanup drains them before pool.Close.
 
 OVERVIEW:
-    startTestLedgerWithOpts → pool → tessera slots → builder loop
-    → handlers → http.Server on random port → testLedger.
-    buildTesseraForTests → (admission, builder, incl, consist,
-    embedded?, tileReader?, tileRoot, closer).
+
+	startTestLedgerWithOpts → pool → tessera slots → builder loop
+	→ handlers → http.Server on random port → testLedger.
+	buildTesseraForTests → (admission, builder, incl, consist,
+	embedded?, tileReader?, tileRoot, closer).
 
 KEY DEPENDENCIES:
-    - testserver_test.go: testLedger + stubs + testServer.
-    - ledger/tessera: NewEmbeddedAppender, NewPOSIXTileBackend,
-      NewTileReader, NewTesseraAdapter, GenerateEphemeralSigner.
-    - transparency-dev/tessera/storage/posix: driver.
+  - testserver_test.go: testLedger + stubs + testServer.
+  - ledger/tessera: NewEmbeddedAppender, NewPOSIXTileBackend,
+    NewTileReader, NewTesseraAdapter, GenerateEphemeralSigner.
+  - transparency-dev/tessera/storage/posix: driver.
 */
 package tests
 

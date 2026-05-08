@@ -269,15 +269,14 @@ func allocatePostgres(ctx context.Context, cfg Config, fatal chan error, d *deps
 		"sequencer_max_inflight", cfg.SequencerMaxInFlight,
 	)
 
-	if err := store.RunMigrationsWithMode(ctx, pgPool.DB, cfg.DBMigrateMode); err != nil {
-		return fmt.Errorf("migrations (mode=%v): %w", cfg.DBMigrateMode, err)
+	if mErr := store.RunMigrationsWithMode(ctx, pgPool.DB, cfg.DBMigrateMode); mErr != nil {
+		return fmt.Errorf("migrations (mode=%v): %w", cfg.DBMigrateMode, mErr)
 	}
 
 	lock, err := store.AcquireBuilderLock(ctx, pgPool.DB, fatal, d.Logger)
 	if err != nil {
 		return fmt.Errorf("builder advisory lock: %w", err)
 	}
-	d.BuilderLock = lock
 	d.AppendCloser(deps.NamedCloser{
 		Name:    "builder-advisory-lock",
 		Timeout: 5 * time.Second,
@@ -361,6 +360,12 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	if err := os.MkdirAll(cfg.TesseraStorageDir, 0o755); err != nil {
 		return fmt.Errorf("tessera storage dir %q: %w", cfg.TesseraStorageDir, err)
 	}
+	// G3: refuse to boot on a half-initialized directory (tile
+	// artifacts present but no checkpoint file). Re-initializing on
+	// top of partial state would silently corrupt the log.
+	if err := validateTesseraStorageDir(cfg.TesseraStorageDir); err != nil {
+		return fmt.Errorf("tessera storage dir sanity check: %w", err)
+	}
 	driver, err := tposix.New(ctx, tposix.Config{Path: cfg.TesseraStorageDir})
 	if err != nil {
 		return fmt.Errorf("tessera posix driver: %w", err)
@@ -374,7 +379,6 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	if err != nil {
 		return fmt.Errorf("tessera signer: %w", err)
 	}
-	d.TesseraSigner = signer
 
 	// tessera.NewEmbeddedAppender requires a note.Signer; the loader
 	// returned a NoteSigner-shaped interface. They have the same
@@ -457,6 +461,42 @@ func allocateAntispam(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	return nil
 }
 
+// validateTesseraStorageDir confirms the Tessera POSIX directory is
+// in a consistent state: either empty (fresh init) OR contains a
+// `checkpoint` file (resuming an existing log). A dir with tile
+// artifacts but no checkpoint indicates a half-initialized volume —
+// partial restore, aborted migration, manual file shuffling — and
+// re-initializing on top of it would corrupt the log silently. Boot
+// fails fast instead.
+func validateTesseraStorageDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read dir: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	checkpoint := dir + string(os.PathSeparator) + "checkpoint"
+	if _, err := os.Stat(checkpoint); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat checkpoint: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for i, e := range entries {
+		if i >= 5 {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, e.Name())
+	}
+	return fmt.Errorf("dir non-empty (%v) but no checkpoint file — "+
+		"refusing to re-initialize on top of partial state. "+
+		"To start fresh, empty the directory; to resume an existing log, "+
+		"restore the checkpoint file alongside the tile artifacts",
+		names)
+}
+
 // allocateGossipStore co-tenants the WAL's Badger handle under the
 // gossipstore keyspace prefix. Only allocates when gossip is enabled
 // and a non-zero NetworkID is configured.
@@ -481,4 +521,3 @@ func allocateGossipStore(cfg Config, d *deps.AppDeps) error {
 	d.Logger.Info("gossip store ready", "co_tenant_with", "wal-db")
 	return nil
 }
-

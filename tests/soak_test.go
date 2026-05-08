@@ -91,6 +91,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/core/smt"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -435,11 +436,11 @@ func (op *soakLedger) seedSoakSession(t *testing.T, token, exchangeDID string, c
 // ─────────────────────────────────────────────────────────────────────
 
 type latencySampler struct {
-	mu sync.Mutex
+	mu      sync.Mutex
 	samples []time.Duration
-	cap int
-	seen int
-	rng *rand.Rand
+	cap     int
+	seen    int
+	rng     *rand.Rand
 }
 
 func newLatencySampler(capacity int) *latencySampler {
@@ -731,6 +732,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	// to run after every soak.
 	verifyEvidence(t, op, submitted.Load())
 	verifyTreeIntegrity(t, op, submitted.Load())
+	verifySMTConsistency(t, op, submitted.Load())
 
 	results := drainSubmissions(resultCh)
 	if len(results) > verifySamples {
@@ -1331,6 +1333,124 @@ func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
 	}
 	t.Logf("verifyTreeIntegrity: ✓ %d/%d random inclusion proofs verified against tree_size=%d root=%x…",
 		verified, n, head.TreeSize, root[:8])
+}
+
+// verifySMTConsistency asserts the per-key Sparse Merkle Tree state
+// is consistent: pulls the current /v1/smt/root, then for N random
+// entries fetches /v1/smt/proof/{key} and runs the SDK's
+// smt.VerifyMembershipProof against the live root.
+//
+// The SMT is the second cryptographic projection alongside the dense
+// log Merkle tree (verifyTreeIntegrity). The dense tree binds
+// sequence → canonical bytes; the SMT binds (LogDID, sequence) →
+// log-position state. A divergence between the two means a builder
+// regression silently corrupted state-of-network without breaking
+// the dense-tree inclusion proofs.
+//
+// Sample size N is ATTESTA_SOAK_SMT_PROOF_SAMPLES (default 100).
+// Accepts either an absolute count or a percentage, like the
+// inclusion-proof sampler.
+func verifySMTConsistency(t *testing.T, op *soakLedger, submitted uint64) {
+	t.Helper()
+	if submitted == 0 {
+		t.Fatal("verifySMTConsistency: submitted == 0 (caller bug)")
+	}
+	ctx := context.Background()
+
+	// 1) Fetch SMT root.
+	rootURL := op.BaseURL + "/v1/smt/root"
+	resp, err := http.Get(rootURL)
+	if err != nil {
+		t.Fatalf("verifySMTConsistency: GET /v1/smt/root: %v", err)
+	}
+	rootBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("verifySMTConsistency: /v1/smt/root status=%d body=%s", resp.StatusCode, rootBody)
+	}
+	var rootResp struct {
+		Root      string `json:"root"`
+		LeafCount uint64 `json:"leaf_count"`
+	}
+	if err := json.Unmarshal(rootBody, &rootResp); err != nil {
+		t.Fatalf("verifySMTConsistency: decode /v1/smt/root: %v body=%s", err, rootBody)
+	}
+	rootBytes, err := hex.DecodeString(rootResp.Root)
+	if err != nil || len(rootBytes) != 32 {
+		t.Fatalf("verifySMTConsistency: malformed root=%q", rootResp.Root)
+	}
+	var smtRoot [32]byte
+	copy(smtRoot[:], rootBytes)
+	t.Logf("verifySMTConsistency: ✓ smt_root=%x… leaf_count=%d (submitted=%d)",
+		smtRoot[:8], rootResp.LeafCount, submitted)
+
+	// 2) Sample N entries; verify each proof against smtRoot.
+	n := envSampleCount("ATTESTA_SOAK_SMT_PROOF_SAMPLES", 100, submitted)
+	if n <= 0 {
+		t.Logf("verifySMTConsistency: ATTESTA_SOAK_SMT_PROOF_SAMPLES=%d → skipping", n)
+		return
+	}
+	if uint64(n) > submitted {
+		n = int(submitted)
+	}
+
+	// LogDID is a test constant; the soak server is configured with
+	// testLogDID at startSoakLedger.
+	logDID := testLogDID
+	_ = op // op is not needed for key derivation
+
+	rng := rand.New(rand.NewSource(int64(submitted) * 31))
+	seen := make(map[uint64]struct{}, n)
+	verified := 0
+	for verified < n {
+		seq := uint64(rng.Int63n(int64(submitted)))
+		if _, dup := seen[seq]; dup {
+			continue
+		}
+		seen[seq] = struct{}{}
+
+		key := smt.DeriveKey(types.LogPosition{LogDID: logDID, Sequence: seq})
+		proofURL := fmt.Sprintf("%s/v1/smt/proof/%x", op.BaseURL, key[:])
+		pr, err := http.Get(proofURL)
+		if err != nil {
+			t.Fatalf("verifySMTConsistency: GET smt/proof seq=%d: %v", seq, err)
+		}
+		body, _ := io.ReadAll(pr.Body)
+		pr.Body.Close()
+		if pr.StatusCode != http.StatusOK {
+			t.Fatalf("verifySMTConsistency: smt/proof seq=%d status=%d body=%s",
+				seq, pr.StatusCode, body)
+		}
+
+		var wrap struct {
+			Type  string         `json:"type"`
+			Proof types.SMTProof `json:"proof"`
+		}
+		if err := json.Unmarshal(body, &wrap); err != nil {
+			t.Fatalf("verifySMTConsistency: decode proof seq=%d: %v body=%s", seq, err, body)
+		}
+		// Membership: the entry's key MUST be present at this state.
+		// Non-membership for an entry we know was sequenced is a
+		// builder regression and is a hard failure.
+		if wrap.Type != "membership" {
+			t.Fatalf("verifySMTConsistency: seq=%d expected membership proof, got %q "+
+				"(entry was sequenced but SMT reports non-membership)", seq, wrap.Type)
+		}
+		// The proof's Key MUST equal the derived key — pin the
+		// SDK's contract that proof binds to the requested key.
+		if wrap.Proof.Key != key {
+			t.Fatalf("verifySMTConsistency: seq=%d proof.Key=%x want=%x",
+				seq, wrap.Proof.Key[:8], key[:8])
+		}
+		if err := smt.VerifyMembershipProof(&wrap.Proof, smtRoot); err != nil {
+			t.Fatalf("verifySMTConsistency: VerifyMembershipProof seq=%d: %v "+
+				"(SMT root or proof corrupted)", seq, err)
+		}
+		verified++
+	}
+	_ = ctx
+	t.Logf("verifySMTConsistency: ✓ %d/%d random membership proofs verified against smt_root=%x…",
+		verified, n, smtRoot[:8])
 }
 
 // verifyEvidenceFetchAll pulls (seq, canonical_hash) for every row

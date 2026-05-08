@@ -1,24 +1,26 @@
 /*
 FILE PATH:
-    bytestore/instruments.go
+
+	bytestore/instruments.go
 
 DESCRIPTION:
-    D3 — bytestore PUT/GET duration histogram.
 
-        attesta_bytestore_put_duration_seconds{op}
+	D3 — bytestore PUT/GET duration histogram.
 
-    Records the wall time of every WriteEntry / ReadEntry call.
-    The `op` label is "put" or "get". Drives the SRE alert
-    "bytestore is the bottleneck" — PUT p99 spiking is the
-    earliest signal of GCS / S3 / network degradation.
+	    attesta_bytestore_put_duration_seconds{op}
+
+	Records the wall time of every WriteEntry / ReadEntry call.
+	The `op` label is "put" or "get". Drives the SRE alert
+	"bytestore is the bottleneck" — PUT p99 spiking is the
+	earliest signal of GCS / S3 / network degradation.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Single histogram with `op` label. Cardinality 2 — minimal.
-    - Buckets tuned for 10ms-10s (GCS PUT typical 50-200ms;
-      large objects + cold connections occasionally seconds).
-    - Recorded by the *GCS adapter (and a future S3 adapter)
-      directly. Centralized here so multiple backends share one
-      metric.
+  - Single histogram with `op` label. Cardinality 2 — minimal.
+  - Buckets tuned for 10ms-10s (GCS PUT typical 50-200ms;
+    large objects + cold connections occasionally seconds).
+  - Recorded by the *GCS adapter (and a future S3 adapter)
+    directly. Centralized here so multiple backends share one
+    metric.
 */
 package bytestore
 

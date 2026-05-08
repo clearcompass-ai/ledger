@@ -103,7 +103,7 @@ func scopeAuth() *envelope.AuthorityPath {
 // admission resolver.
 type synSigner struct {
 	priv *ecdsa.PrivateKey
-	did string
+	did  string
 }
 
 // resolveSyntheticSigner returns a stable keypair for a test label.
@@ -123,7 +123,7 @@ type synSigner struct {
 // suite relies on cross-process determinism). Concurrent-safe.
 var (
 	synSignersMu sync.Mutex
-	synSigners = make(map[string]synSigner)
+	synSigners   = make(map[string]synSigner)
 )
 
 func resolveSyntheticSigner(label string) synSigner {
@@ -257,18 +257,6 @@ func makeAdmissibleEntry(t *testing.T, h envelope.ControlHeader, payload []byte)
 	return entry
 }
 
-func canonicalHashBytes(entry *envelope.Entry) [32]byte {
-	id, err := envelope.EntryIdentity(entry)
-	if err != nil {
-		// helpers_test fixtures construct via NewUnsignedEntry +
-		// Validate, so EntryIdentity should never fail here. Panic
-		// rather than silently returning the zero hash — a bad
-		// fixture must surface loudly during test development.
-		panic("canonicalHashBytes: EntryIdentity: " + err.Error())
-	}
-	return id
-}
-
 // mustSerialize is a test-only helper: serialize the entry and
 // panic on error. Helpers that construct entries via the
 // NewUnsignedEntry → Sign → Validate path can never trigger a
@@ -371,7 +359,7 @@ func didForUser(i int) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type mockFetcher struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
 	entries map[types.LogPosition]*types.EntryWithMetadata
 }
 
@@ -415,10 +403,10 @@ func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher types.EntryF
 // ─────────────────────────────────────────────────────────────────────────────
 
 type testHarness struct {
-	tree *smt.Tree
+	tree    *smt.Tree
 	fetcher *mockFetcher
-	schema builder.SchemaResolver
-	buffer *builder.DeltaWindowBuffer
+	schema  builder.SchemaResolver
+	buffer  *builder.DeltaWindowBuffer
 }
 
 func newHarness() *testHarness {
@@ -479,22 +467,6 @@ func (h *testHarness) process(t *testing.T, entry *envelope.Entry, p types.LogPo
 	h.fetcher.storeEntry(p, entry)
 	result, err := builder.ProcessBatch(
 		h.tree, []*envelope.Entry{entry}, []types.LogPosition{p},
-		h.fetcher, h.schema, testLogDID, h.buffer,
-	)
-	if err != nil {
-		t.Fatalf("ProcessBatch: %v", err)
-	}
-	return result
-}
-
-// processBatch runs multiple entries through ProcessBatch.
-func (h *testHarness) processBatch(t *testing.T, entries []*envelope.Entry, positions []types.LogPosition) *builder.BatchResult {
-	t.Helper()
-	for i, entry := range entries {
-		h.fetcher.storeEntry(positions[i], entry)
-	}
-	result, err := builder.ProcessBatch(
-		h.tree, entries, positions,
 		h.fetcher, h.schema, testLogDID, h.buffer,
 	)
 	if err != nil {
@@ -630,9 +602,9 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 		"witness_sets", "equivocation_proofs", "sessions",
 	}
 	for _, table := range tables {
-		if _, err := pool.Exec(ctx, "DELETE FROM "+table); err != nil {
-			// Table might not exist yet; ignore.
-		}
+		// Table might not exist yet on a fresh schema; ignore the
+		// error rather than failing the test setup.
+		_, _ = pool.Exec(ctx, "DELETE FROM "+table)
 	}
 	// Reset sequence.
 	// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first
@@ -704,59 +676,3 @@ var _ = fmt.Sprintf
 // ─────────────────────────────────────────────────────────────────────────────
 // Real-GCS gating for integration tests
 // ─────────────────────────────────────────────────────────────────────────────
-
-// requireRealGCS returns a real-GCS-backed bytestore.Backend for
-// integration tests that exercise the full byte-storage path. The
-// integration suite is REAL-GCS-ONLY — fake-gcs-server is rejected.
-//
-// Resolution chain (matches bytestore.NewGCS production path):
-//
-//  1. ATTESTA_TEST_GCS_BUCKET — required. Skip the test if unset.
-//  2. ATTESTA_TEST_GCS_ENDPOINT — must be EMPTY. The integration
-//     suite refuses fake-gcs to keep production behavior pinned
-//     (presigned URLs, V4 signing, ADC chain). Set the variable
-//     to fail the test loudly.
-//  3. ADC chain (in priority order):
-//     a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
-//     b. gcloud application-default login (developer workstation)
-//     c. Workload Identity (GKE / Cloud Run / GCE metadata server)
-//
-// The bucket must grant the test identity:
-//
-//   - storage.objects.create
-//   - storage.objects.get
-//   - storage.objects.list
-//   - storage.objects.delete
-//
-// On any wiring failure, the test fails (NOT skips) so a broken
-// CI configuration doesn't silently turn into a green build.
-func requireRealGCS(t *testing.T) opbytestore.Backend {
-	t.Helper()
-
-	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
-	if bucket == "" {
-		t.Skip("ATTESTA_TEST_GCS_BUCKET unset; integration suite skipped")
-	}
-
-	if endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT"); endpoint != "" {
-		t.Fatalf(
-			"integration suite refuses fake-gcs (ATTESTA_TEST_GCS_ENDPOINT=%q). "+
-				"Real-GCS only — point ATTESTA_TEST_GCS_BUCKET at a real bucket "+
-				"and rely on ADC / Workload Identity for credentials.", endpoint,
-		)
-	}
-
-	store, err := opbytestore.NewFromConfig(context.Background(), opbytestore.Config{
-		Backend: "gcs",
-		Bucket:  bucket,
-		// No GCSEndpoint, no GCSAnonymous → ADC default chain.
-	})
-	if err != nil {
-		t.Fatalf("requireRealGCS: bytestore.NewFromConfig: %v "+
-			"(ADC credentials unavailable? ensure GOOGLE_APPLICATION_CREDENTIALS, "+
-			"gcloud application-default login, or Workload Identity is configured)", err)
-	}
-	// Backend impls handle their own connection lifetime; no Close
-	// method exists on the interface.
-	return store
-}

@@ -51,15 +51,15 @@ import (
 
 // Pool wraps pgxpool.Pool with ledger lifecycle.
 type Pool struct {
-	DB *pgxpool.Pool
+	DB  *pgxpool.Pool
 	cfg PoolConfig
 }
 
 // PoolConfig configures the Postgres connection.
 type PoolConfig struct {
-	DSN string
-	MaxConns int32
-	MinConns int32
+	DSN             string
+	MaxConns        int32
+	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
 
@@ -101,8 +101,8 @@ func InitPool(ctx context.Context, cfg PoolConfig) (*Pool, error) {
 		stmt := fmt.Sprintf("SET statement_timeout = %d",
 			int64(cfg.StatementTimeout/time.Millisecond))
 		poolCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("store: AfterConnect SET statement_timeout: %w", err)
+			if _, eErr := conn.Exec(ctx, stmt); eErr != nil {
+				return fmt.Errorf("store: AfterConnect SET statement_timeout: %w", eErr)
 			}
 			return nil
 		}
@@ -159,7 +159,7 @@ func (p *Pool) Close() { p.DB.Close() }
 // Pools holds separate write and read connection pools.
 type Pools struct {
 	Write *pgxpool.Pool
-	Read *pgxpool.Pool
+	Read  *pgxpool.Pool
 }
 
 // InitPools creates write and read pools.

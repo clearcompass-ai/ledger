@@ -2,70 +2,73 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p2_cdn_test.go
+
+	tests/scenarios_p2_cdn_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 2 (Browser-Class Auditor, CDN conformance).
-    Two sub-scenarios that drive the LIVE production-stack CDN
-    after a real submission, asserting browser-class consumers
-    can:
 
-      1. Fetch /tile/... and /checkpoint with stdlib HTTP, observe
-         Cache-Control headers exactly matching c2sp.org/tlog-tiles
-         + the SDK's published immutable / mutable cache policy.
+	Layer 0 — Persona 2 (Browser-Class Auditor, CDN conformance).
+	Two sub-scenarios that drive the LIVE production-stack CDN
+	after a real submission, asserting browser-class consumers
+	can:
 
-      2. Issue a "simple request" (CORS-spec terminology: GET / HEAD
-         with no custom request headers) and observe
-         Access-Control-Allow-Origin: * — the minimum a browser-
-         class auditor running at any origin needs to read the log.
+	  1. Fetch /tile/... and /checkpoint with stdlib HTTP, observe
+	     Cache-Control headers exactly matching c2sp.org/tlog-tiles
+	     + the SDK's published immutable / mutable cache policy.
+
+	  2. Issue a "simple request" (CORS-spec terminology: GET / HEAD
+	     with no custom request headers) and observe
+	     Access-Control-Allow-Origin: * — the minimum a browser-
+	     class auditor running at any origin needs to read the log.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Live stack, not synthetic root. tests/scenarios_cdn_test.go
-      already covers the synthetic-fixture conformance; what's new
-      here is asserting the headers on tiles the production stack
-      actually wrote. A regression where the CDN fixture stays
-      conformant but the production-stack tile path drifts would
-      pass the synthetic test and fail Persona 2 — exactly the
-      point.
-    - Cache-Control values pinned to the exact bytes
-      cdnImmutableCacheControl / cdnMutableCacheControl. Drift in
-      either direction is a wire-format regression for downstream
-      consumers (CDN edge nodes, browser cache).
-    - CORS check is the "simple request" path. Persona 2 explicitly
-      does not test the OPTIONS preflight path: the current CDN
-      fixture is GET/HEAD-only by design, and a browser-class
-      auditor that only fetches static tiles (GET, default headers)
-      does not require preflight. A future Persona that issues
-      authenticated-fetch will need OPTIONS conformance and a
-      separate test file.
-    - Path traversal regression. Even on a live stack, malicious
-      `..` in the URL must not escape the Tessera POSIX root. The
-      synthetic test covers this; we re-assert here against the
-      live root because traversal defense is the kind of bug that
-      hides in path normalization differences between the fixture
-      and the production tree.
+  - Live stack, not synthetic root. tests/scenarios_cdn_test.go
+    already covers the synthetic-fixture conformance; what's new
+    here is asserting the headers on tiles the production stack
+    actually wrote. A regression where the CDN fixture stays
+    conformant but the production-stack tile path drifts would
+    pass the synthetic test and fail Persona 2 — exactly the
+    point.
+  - Cache-Control values pinned to the exact bytes
+    cdnImmutableCacheControl / cdnMutableCacheControl. Drift in
+    either direction is a wire-format regression for downstream
+    consumers (CDN edge nodes, browser cache).
+  - CORS check is the "simple request" path. Persona 2 explicitly
+    does not test the OPTIONS preflight path: the current CDN
+    fixture is GET/HEAD-only by design, and a browser-class
+    auditor that only fetches static tiles (GET, default headers)
+    does not require preflight. A future Persona that issues
+    authenticated-fetch will need OPTIONS conformance and a
+    separate test file.
+  - Path traversal regression. Even on a live stack, malicious
+    `..` in the URL must not escape the Tessera POSIX root. The
+    synthetic test covers this; we re-assert here against the
+    live root because traversal defense is the kind of bug that
+    hides in path normalization differences between the fixture
+    and the production tree.
 
 OVERVIEW:
-    runP2CDNHeadersConformant — submit one entry, wait for the
-        tile to flush, fetch /tile/0/<encoded> + /checkpoint,
-        assert Cache-Control + Content-Type + Access-Control-
-        Allow-Origin headers match the SDK's published policy.
 
-    runP2CORSAllowsBrowserFetch — issue a "simple request" GET
-        from a fake Origin: https://auditor.example, observe
-        the * CORS allow header. Then assert HEAD also carries
-        the same header (some CDNs forget HEAD).
+	runP2CDNHeadersConformant — submit one entry, wait for the
+	    tile to flush, fetch /tile/0/<encoded> + /checkpoint,
+	    assert Cache-Control + Content-Type + Access-Control-
+	    Allow-Origin headers match the SDK's published policy.
+
+	runP2CORSAllowsBrowserFetch — issue a "simple request" GET
+	    from a fake Origin: https://auditor.example, observe
+	    the * CORS allow header. Then assert HEAD also carries
+	    the same header (some CDNs forget HEAD).
 
 KEY DEPENDENCIES:
-    - tests/scenarios_p2_minimal_auditor_test.go: TestPersona2_
-      MinimalAuditor umbrella, persona1Submit (admissible-wire
-      builder).
-    - tests/scenarios_p2_proof_verify_test.go: p2HashTilePath,
-      p2EncodeTileIndex (computed inline rather than imported).
-    - tests/scenarios_cdn_test.go: cdnImmutableCacheControl /
-      cdnMutableCacheControl constants — the bytes the CDN
-      fixture published, which a browser-class auditor must
-      observe verbatim.
+  - tests/scenarios_p2_minimal_auditor_test.go: TestPersona2_
+    MinimalAuditor umbrella, persona1Submit (admissible-wire
+    builder).
+  - tests/scenarios_p2_proof_verify_test.go: p2HashTilePath,
+    p2EncodeTileIndex (computed inline rather than imported).
+  - tests/scenarios_cdn_test.go: cdnImmutableCacheControl /
+    cdnMutableCacheControl constants — the bytes the CDN
+    fixture published, which a browser-class auditor must
+    observe verbatim.
 */
 package tests
 

@@ -1,25 +1,27 @@
 /*
 FILE PATH:
-    store/instruments.go
+
+	store/instruments.go
 
 DESCRIPTION:
-    D3 — Postgres pool acquire duration histogram + D5 metrics
-    helpers exposed for the cmd/ledger composition root.
 
-        attesta_postgres_pool_acquire_seconds
+	D3 — Postgres pool acquire duration histogram + D5 metrics
+	helpers exposed for the cmd/ledger composition root.
 
-    Records the wall time of every pool.Acquire call, going
-    through the Breaker. SREs alert on this when the pool is
-    saturated (acquire p99 spikes mean the queue is growing).
+	    attesta_postgres_pool_acquire_seconds
+
+	Records the wall time of every pool.Acquire call, going
+	through the Breaker. SREs alert on this when the pool is
+	saturated (acquire p99 spikes mean the queue is growing).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Recorded inside Breaker.Acquire so EVERY production
-      acquisition path is captured, including the sequencer +
-      shipper hot loops.
-    - No labels. The pool is a singleton in the process; per-
-      tenant or per-route breakdown belongs upstream.
-    - Buckets tuned for 100us-1s typical (warm pool sub-ms;
-      cold-start on a fresh boot tens of ms).
+  - Recorded inside Breaker.Acquire so EVERY production
+    acquisition path is captured, including the sequencer +
+    shipper hot loops.
+  - No labels. The pool is a singleton in the process; per-
+    tenant or per-route breakdown belongs upstream.
+  - Buckets tuned for 100us-1s typical (warm pool sub-ms;
+    cold-start on a fresh boot tens of ms).
 */
 package store
 

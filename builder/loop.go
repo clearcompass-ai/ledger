@@ -89,10 +89,10 @@ import (
 
 // LoopConfig configures the builder loop.
 type LoopConfig struct {
-	LogDID string
-	BatchSize int
+	LogDID       string
+	BatchSize    int
 	PollInterval time.Duration
-	DeltaWindow int
+	DeltaWindow  int
 }
 
 // DefaultLoopConfig returns production defaults.
@@ -134,28 +134,28 @@ type WitnessCosigner interface {
 
 // BuilderLoop is the continuous builder goroutine.
 type BuilderLoop struct {
-	cfg LoopConfig
-	db *pgxpool.Pool
-	tree *smt.Tree
+	cfg       LoopConfig
+	db        *pgxpool.Pool
+	tree      *smt.Tree
 	leafStore *store.PostgresLeafStore
 	nodeCache *store.PostgresNodeCache
 	// reader is the CT-native log-tailing follower that reads new
 	// sequences from entry_index and advances builder_cursor in the
 	// builder's atomic commit. See builder/cursor_reader.go.
-	reader BatchReader
-	fetcher types.EntryFetcher
-	schema sdkbuilder.SchemaResolver
-	buffer *sdkbuilder.DeltaWindowBuffer
+	reader      BatchReader
+	fetcher     types.EntryFetcher
+	schema      sdkbuilder.SchemaResolver
+	buffer      *sdkbuilder.DeltaWindowBuffer
 	bufferStore *DeltaBufferStore
-	commitPub *CommitmentPublisher
-	merkle MerkleAppender
-	witness WitnessCosigner
-	logger *slog.Logger
+	commitPub   *CommitmentPublisher
+	merkle      MerkleAppender
+	witness     WitnessCosigner
+	logger      *slog.Logger
 
 	// Observability counters (atomic, lock-free).
-	totalBatches atomic.Int64
-	totalEntries atomic.Int64
-	totalErrors atomic.Int64
+	totalBatches   atomic.Int64
+	totalEntries   atomic.Int64
+	totalErrors    atomic.Int64
 	consecutiveErr atomic.Int32
 }
 
@@ -303,8 +303,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 1: Dequeue batch ─────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	var seqs []uint64
@@ -321,8 +321,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 2: Fetch entries in sequence order ───────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	metas := make([]*types.EntryWithMetadata, 0, len(seqs))
@@ -360,8 +360,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 5: Atomic commit ─────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	err = store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {

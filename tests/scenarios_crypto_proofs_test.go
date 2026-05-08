@@ -2,61 +2,64 @@
 
 /*
 FILE PATH:
-    tests/scenarios_crypto_proofs_test.go
+
+	tests/scenarios_crypto_proofs_test.go
 
 DESCRIPTION:
-    Layer 0 — CRYPTO-INT-01/02/03: random + boundary inclusion and
-    consistency proofs verified end-to-end against the production
-    stack via transparency-dev/merkle/proof. The "internal"
-    half of the cryptographic-proof family; the "external"
-    standalone-auditor half lives in scenarios_crypto_auditor_test.go.
+
+	Layer 0 — CRYPTO-INT-01/02/03: random + boundary inclusion and
+	consistency proofs verified end-to-end against the production
+	stack via transparency-dev/merkle/proof. The "internal"
+	half of the cryptographic-proof family; the "external"
+	standalone-auditor half lives in scenarios_crypto_auditor_test.go.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One stack boot per test ID. INT-01 builds a tree of size
-      cryptoIntTreeSize, runs cryptoIntFetchSamples random fetches,
-      tears down. Sub-scenario isolation prevents the tree-state
-      from one ID's submissions leaking into another's expected
-      shapes. Boot cost is amortised across hundreds of fetches.
-    - LowDifficulty=true. Each test submits 32-128 entries; default
-      admission difficulty (16 bits) would push runtime past
-      30s/test. With LowDifficulty (8 init, 4 min, 12 max) the
-      same workload finishes in <5s per test.
-    - The 2^k boundary cases in INT-03 are explicit: tree sizes
-      1, 2, 4, 8, 16, 32, 64 cover every power-of-two transition
-      a Merkle tree exhibits within the cryptoIntTreeSize budget.
-      Inclusion + consistency proofs are checked across each
-      boundary.
-    - Verification uses the canonical SDK-aligned wrappers from
-      scenarios_crypto_helpers_test.go (transparency-dev/merkle/
-      proof). No hand-rolled verifier in this file.
-    - Random sampling uses math/rand seeded from the entry count
-      so failures are reproducible. crypto/rand would be
-      overkill — these are coverage samples, not security
-      bytes.
+  - One stack boot per test ID. INT-01 builds a tree of size
+    cryptoIntTreeSize, runs cryptoIntFetchSamples random fetches,
+    tears down. Sub-scenario isolation prevents the tree-state
+    from one ID's submissions leaking into another's expected
+    shapes. Boot cost is amortised across hundreds of fetches.
+  - LowDifficulty=true. Each test submits 32-128 entries; default
+    admission difficulty (16 bits) would push runtime past
+    30s/test. With LowDifficulty (8 init, 4 min, 12 max) the
+    same workload finishes in <5s per test.
+  - The 2^k boundary cases in INT-03 are explicit: tree sizes
+    1, 2, 4, 8, 16, 32, 64 cover every power-of-two transition
+    a Merkle tree exhibits within the cryptoIntTreeSize budget.
+    Inclusion + consistency proofs are checked across each
+    boundary.
+  - Verification uses the canonical SDK-aligned wrappers from
+    scenarios_crypto_helpers_test.go (transparency-dev/merkle/
+    proof). No hand-rolled verifier in this file.
+  - Random sampling uses math/rand seeded from the entry count
+    so failures are reproducible. crypto/rand would be
+    overkill — these are coverage samples, not security
+    bytes.
 
 OVERVIEW:
-    TestCrypto_Proofs
-      INT-01_RandomInclusionAcrossBounds
-        → submit cryptoIntTreeSize entries; sample
-          cryptoIntFetchSamples random sequences in [0, N);
-          verify each via VerifyInclusion against /v1/tree/head.
-      INT-02_ConsistencyAcrossSizes
-        → submit in 4 phases; capture (size, root) at each phase;
-          fetch and verify a consistency proof for every
-          (phase_i.size, phase_j.size) pair where i < j.
-      INT-03_BoundaryProofs
-        → submit one-at-a-time, capturing roots at sizes 1, 2,
-          4, 8, 16, 32, 64; verify inclusion at each m=1, m=N
-          and consistency between every adjacent
-          power-of-two pair.
+
+	TestCrypto_Proofs
+	  INT-01_RandomInclusionAcrossBounds
+	    → submit cryptoIntTreeSize entries; sample
+	      cryptoIntFetchSamples random sequences in [0, N);
+	      verify each via VerifyInclusion against /v1/tree/head.
+	  INT-02_ConsistencyAcrossSizes
+	    → submit in 4 phases; capture (size, root) at each phase;
+	      fetch and verify a consistency proof for every
+	      (phase_i.size, phase_j.size) pair where i < j.
+	  INT-03_BoundaryProofs
+	    → submit one-at-a-time, capturing roots at sizes 1, 2,
+	      4, 8, 16, 32, 64; verify inclusion at each m=1, m=N
+	      and consistency between every adjacent
+	      power-of-two pair.
 
 KEY DEPENDENCIES:
-    - tests/scenarios_crypto_helpers_test.go: cryptoFetchTreeHead,
-      cryptoFetchInclusion, cryptoFetchConsistency,
-      cryptoVerifyInclusion, cryptoVerifyConsistency,
-      cryptoSubmitOne, cryptoSubmitMany.
-    - tests/scenarios_stack_test.go: NewScenariosStack with
-      LowDifficulty=true.
+  - tests/scenarios_crypto_helpers_test.go: cryptoFetchTreeHead,
+    cryptoFetchInclusion, cryptoFetchConsistency,
+    cryptoVerifyInclusion, cryptoVerifyConsistency,
+    cryptoSubmitOne, cryptoSubmitMany.
+  - tests/scenarios_stack_test.go: NewScenariosStack with
+    LowDifficulty=true.
 */
 package tests
 

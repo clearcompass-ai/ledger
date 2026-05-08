@@ -1,16 +1,18 @@
 /*
 FILE PATH:
-    bytestore/fuzz_test.go
+
+	bytestore/fuzz_test.go
 
 DESCRIPTION:
-    J1 — Fuzz the GCSTiles object-key validator. Defense-in-depth
-    on top of api/'s fuzz coverage: even if the api validator
-    misses something, the bytestore layer MUST refuse hostile
-    paths before issuing a GCS round-trip.
 
-    Run via:
-        go test -run=^$ -fuzz=^FuzzGCSTilesObjectKey$ \
-            -fuzztime=30s ./bytestore/
+	J1 — Fuzz the GCSTiles object-key validator. Defense-in-depth
+	on top of api/'s fuzz coverage: even if the api validator
+	misses something, the bytestore layer MUST refuse hostile
+	paths before issuing a GCS round-trip.
+
+	Run via:
+	    go test -run=^$ -fuzz=^FuzzGCSTilesObjectKey$ \
+	        -fuzztime=30s ./bytestore/
 */
 package bytestore
 

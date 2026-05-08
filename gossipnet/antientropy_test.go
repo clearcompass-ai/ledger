@@ -10,7 +10,6 @@ package gossipnet
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -86,7 +85,7 @@ type stubAEEvent struct {
 
 func (s stubAEEvent) Kind() sdkgossip.Kind { return s.kind }
 func (s stubAEEvent) Bindings() [][32]byte { return nil }
-func (s stubAEEvent) Validate() error { return nil }
+func (s stubAEEvent) Validate() error      { return nil }
 func (s stubAEEvent) CanonicalBytes() []byte {
 	out := []byte(s.kind)
 	out = append(out, '|')
@@ -208,10 +207,4 @@ func TestAntiEntropy_HonorsContextCancel(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Run did not return on cancel")
 	}
-}
-
-// hexDecodeForTest helps inspect signature bytes when debugging.
-func hexDecodeForTest(s string) []byte {
-	out, _ := hex.DecodeString(s)
-	return out
 }

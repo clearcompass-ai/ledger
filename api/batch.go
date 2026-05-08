@@ -58,16 +58,16 @@ type BatchSubmissionResponse struct {
 }
 
 type preparedEntry struct {
-	entry *envelope.Entry
-	canonical []byte
+	entry         *envelope.Entry
+	canonical     []byte
 	canonicalHash [32]byte
-	logTime time.Time
+	logTime       time.Time
 }
 
 type preflightError struct {
 	status int
-	msg string
-	class apitypes.ErrorClass
+	msg    string
+	class  apitypes.ErrorClass
 }
 
 func (e *preflightError) Error() string { return e.msg }
@@ -249,30 +249,30 @@ func preflightEntry(ctx context.Context, rawWire []byte, deps *SubmissionDeps, f
 	canonical := rawWire
 	algoID := entry.Signatures[0].AlgoID
 	sigBytes := entry.Signatures[0].Bytes
-	if err := envelope.ValidateAlgorithmID(algoID); err != nil {
-		return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
+	if vErr := envelope.ValidateAlgorithmID(algoID); vErr != nil {
+		return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", vErr)
 	}
-	if err := entry.Validate(); err != nil {
-		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "entry validation: %s", err)
+	if vErr := entry.Validate(); vErr != nil {
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "entry validation: %s", vErr)
 	}
-	if err := admission.CheckNFC(entry); err != nil {
-		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "NFC: %s", err)
+	if vErr := admission.CheckNFC(entry); vErr != nil {
+		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "NFC: %s", vErr)
 	}
 	if entry.Header.Destination != deps.LogDID {
 		return nil, preflightFail(apitypes.ErrorClassDestinationMismatch, http.StatusForbidden, "entry destination %q does not match log %q", entry.Header.Destination, deps.LogDID)
 	}
-	if err := policy.CheckFreshness(entry, time.Now().UTC(), freshness); err != nil {
-		return nil, preflightFail(apitypes.ErrorClassFreshnessExpired, http.StatusUnprocessableEntity, "freshness: %s", err)
+	if fErr := policy.CheckFreshness(entry, time.Now().UTC(), freshness); fErr != nil {
+		return nil, preflightFail(apitypes.ErrorClassFreshnessExpired, http.StatusUnprocessableEntity, "freshness: %s", fErr)
 	}
 	if entry.Header.SignerDID == "" {
 		return nil, preflightFail(apitypes.ErrorClassEnvelopeRejected, http.StatusUnprocessableEntity, "empty signer DID")
 	}
-	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
+	if vsErr := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); vsErr != nil {
 		switch {
-		case errors.Is(err, admission.ErrSignerDIDResolution):
-			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
-		case errors.Is(err, admission.ErrSignatureInvalid):
-			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", err)
+		case errors.Is(vsErr, admission.ErrSignerDIDResolution):
+			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", vsErr)
+		case errors.Is(vsErr, admission.ErrSignatureInvalid):
+			return nil, preflightFail(apitypes.ErrorClassSignatureInvalid, http.StatusUnauthorized, "%s", vsErr)
 		default:
 			return nil, preflightFail(apitypes.ErrorClassDBQueryFailed, http.StatusInternalServerError, "signature verification path failed")
 		}

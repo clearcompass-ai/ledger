@@ -302,7 +302,7 @@ func (c *Committer) IterateInflight(ctx context.Context, fn func(PendingHash) er
 // SequencedEntry describes one StateSequenced entry — what the
 // Shipper iterates to find work.
 type SequencedEntry struct {
-	Seq uint64
+	Seq  uint64
 	Hash [32]byte
 }
 

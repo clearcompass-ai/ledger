@@ -1,35 +1,38 @@
 /*
 FILE PATH:
-    tests/chaos/inject/inject.go
+
+	tests/chaos/inject/inject.go
 
 DESCRIPTION:
-    J4 — Fault-injection primitives for the chaos test suite.
-    Each helper wraps a production primitive with a configurable
-    fault behavior so chaos tests can exercise specific failure
-    paths without modifying the production primitive itself.
+
+	J4 — Fault-injection primitives for the chaos test suite.
+	Each helper wraps a production primitive with a configurable
+	fault behavior so chaos tests can exercise specific failure
+	paths without modifying the production primitive itself.
 
 KEY ARCHITECTURAL DECISIONS:
-    - One injector per failure SHAPE, not per failure SOURCE.
-      Timeout / latency / error / disconnect / partial-write
-      are universal shapes; we apply them to PG / GCS / Tessera
-      via small adapter shims.
-    - Probabilistic AND deterministic modes. Each injector
-      accepts a Trigger that decides per-call whether to fault.
-      Use ProbN(N) for "1 in N", AfterCalls(K) for "starting at
-      call K", or Custom(func) for arbitrary patterns.
-    - State exposed via atomic counters: Calls() returns total
-      invocations; Faults() returns total fault-triggers. Tests
-      assert specific counts to confirm the chaos actually fired.
+  - One injector per failure SHAPE, not per failure SOURCE.
+    Timeout / latency / error / disconnect / partial-write
+    are universal shapes; we apply them to PG / GCS / Tessera
+    via small adapter shims.
+  - Probabilistic AND deterministic modes. Each injector
+    accepts a Trigger that decides per-call whether to fault.
+    Use ProbN(N) for "1 in N", AfterCalls(K) for "starting at
+    call K", or Custom(func) for arbitrary patterns.
+  - State exposed via atomic counters: Calls() returns total
+    invocations; Faults() returns total fault-triggers. Tests
+    assert specific counts to confirm the chaos actually fired.
 
 OVERVIEW:
-    Typical pattern in a chaos test:
 
-        latency := inject.NewLatency(50*time.Millisecond, inject.ProbN(3))
-        gcs := inject.WrapGCS(realGCS, latency, nil)
-        // ... drive the system through gcs ...
-        if latency.Faults() == 0 {
-            t.Fatal("expected at least one latency injection")
-        }
+	Typical pattern in a chaos test:
+
+	    latency := inject.NewLatency(50*time.Millisecond, inject.ProbN(3))
+	    gcs := inject.WrapGCS(realGCS, latency, nil)
+	    // ... drive the system through gcs ...
+	    if latency.Faults() == 0 {
+	        t.Fatal("expected at least one latency injection")
+	    }
 */
 package inject
 

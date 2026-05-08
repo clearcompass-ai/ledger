@@ -64,14 +64,14 @@ import (
 
 func main() {
 	var (
-		ledgerURL = flag.String("url", "http://localhost:8080", "ledger base URL")
-		logDID = flag.String("log-did", "did:attesta:ledger:001", "destination log DID (admission rejects mismatched Header.Destination)")
-		token = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
+		ledgerURL  = flag.String("url", "http://localhost:8080", "ledger base URL")
+		logDID     = flag.String("log-did", "did:attesta:ledger:001", "destination log DID (admission rejects mismatched Header.Destination)")
+		token      = flag.String("token", "", "Mode A Bearer token; empty → Mode B")
 		difficulty = flag.Int("difficulty", 0, "Mode B difficulty; 0 → query /v1/admission/difficulty")
-		epochSec = flag.Int("epoch-window", 3600, "epoch window seconds (must match LEDGER_EPOCH_WINDOW_SECONDS)")
-		payload = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
-		dryRun = flag.Bool("dry-run", false, "build and print the entry without POSTing")
-		ledgerDID = flag.String("ledger-did", "", "ledger's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
+		epochSec   = flag.Int("epoch-window", 3600, "epoch window seconds (must match LEDGER_EPOCH_WINDOW_SECONDS)")
+		payload    = flag.String("payload", "hello world", `payload bytes; "@/path" reads from a file`)
+		dryRun     = flag.Bool("dry-run", false, "build and print the entry without POSTing")
+		ledgerDID  = flag.String("ledger-did", "", "ledger's did:key:z... — when set, the SCT signature is cryptographically verified against the resolved public key. Empty → SCT is decoded but not verified.")
 	)
 	flag.Parse()
 
@@ -182,14 +182,14 @@ func printSCTResponse(body []byte, ledgerDID string) {
 // this CLI doesn't need to import the api package (avoids a
 // reverse dep from cmd to api).
 type apiSCT struct {
-	Version uint8 `json:"version"`
-	SignerDID string `json:"signer_did"`
-	SigAlgoID string `json:"sig_algo_id"`
-	LogDID string `json:"log_did"`
+	Version       uint8  `json:"version"`
+	SignerDID     string `json:"signer_did"`
+	SigAlgoID     string `json:"sig_algo_id"`
+	LogDID        string `json:"log_did"`
 	CanonicalHash string `json:"canonical_hash"`
-	LogTimeMicros int64 `json:"log_time_micros"`
-	LogTime string `json:"log_time"`
-	Signature string `json:"signature"`
+	LogTimeMicros int64  `json:"log_time_micros"`
+	LogTime       string `json:"log_time"`
+	Signature     string `json:"signature"`
 }
 
 // verifyClientSCT recomputes the canonical signing payload from
@@ -262,7 +262,7 @@ func queryDifficulty(ledgerURL string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
@@ -300,12 +300,12 @@ func buildModeAWire(
 		AlgoID:    envelope.SigAlgoECDSA,
 		Bytes:     sig,
 	}}
-	if err := entry.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate: %w", err)
+	if vErr := entry.Validate(); vErr != nil {
+		return nil, fmt.Errorf("validate: %w", vErr)
 	}
 	wire, err := envelope.Serialize(entry)
 	if err != nil {
-		return nil, fmt.Errorf("Serialize: %w", err)
+		return nil, fmt.Errorf("serialize: %w", err)
 	}
 	return wire, nil
 }
@@ -348,7 +348,7 @@ func buildModeBWire(
 		}}
 		canonical, err := envelope.Serialize(entry)
 		if err != nil {
-			return nil, fmt.Errorf("Serialize: %w", err)
+			return nil, fmt.Errorf("serialize: %w", err)
 		}
 		entryHash := sha256.Sum256(canonical)
 		apiProof := sdkadmission.ProofFromWire(header.AdmissionProof, logDID)
@@ -386,7 +386,7 @@ func postAndRead(url, token string, wire []byte) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	return body, resp.StatusCode, nil
 }

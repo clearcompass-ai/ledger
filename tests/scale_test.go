@@ -562,7 +562,7 @@ func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 	// At difficulty 16 (ledger default) this would take ~10x longer; we
 	// use 8 to keep test runtime under 5 minutes.
 	const (
-		N = 1_000
+		N          = 1_000
 		difficulty = 8
 	)
 

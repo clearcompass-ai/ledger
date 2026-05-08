@@ -89,7 +89,7 @@ var allowedCommitmentSchemas = map[string]struct{}{
 // is stable across SDK refactors of the underlying type.
 type CommitmentLookupPosition struct {
 	SequenceNumber uint64 `json:"sequence_number"`
-	LogDID string `json:"log_did"`
+	LogDID         string `json:"log_did"`
 }
 
 // CommitmentLookupEntry is one element of the entries array returned
@@ -100,9 +100,9 @@ type CommitmentLookupPosition struct {
 // are NOT included; signatures live inside CanonicalBytes and are
 // extracted via envelope.Deserialize when needed.
 type CommitmentLookupEntry struct {
-	CanonicalBytesHex string `json:"canonical_bytes_hex"`
-	LogTime string `json:"log_time"`
-	Position CommitmentLookupPosition `json:"position"`
+	CanonicalBytesHex string                   `json:"canonical_bytes_hex"`
+	LogTime           string                   `json:"log_time"`
+	Position          CommitmentLookupPosition `json:"position"`
 }
 
 // CommitmentLookupResponse is the JSON response body shape on success.
@@ -131,7 +131,7 @@ type CommitmentLookupResponse struct {
 // verifiable via go list -deps ./api/.
 type CryptographicCommitmentDeps struct {
 	Fetcher types.CommitmentFetcher
-	Logger *slog.Logger
+	Logger  *slog.Logger
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

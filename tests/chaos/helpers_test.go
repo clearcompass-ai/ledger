@@ -3,12 +3,14 @@
 
 /*
 FILE PATH:
-    tests/chaos/helpers_test.go
+
+	tests/chaos/helpers_test.go
 
 DESCRIPTION:
-    Shared helpers for the chaos suite. Lives in its own file
-    so individual scenarios can be deleted/refactored without
-    breaking siblings that share these primitives.
+
+	Shared helpers for the chaos suite. Lives in its own file
+	so individual scenarios can be deleted/refactored without
+	breaking siblings that share these primitives.
 */
 package chaos
 

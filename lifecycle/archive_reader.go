@@ -71,14 +71,14 @@ import (
 
 // ShardMeta describes an archived shard's location and range.
 type ShardMeta struct {
-	ShardDID string `json:"shard_did"`
-	SequenceStart uint64 `json:"sequence_start"`
-	SequenceEnd uint64 `json:"sequence_end"`
+	ShardDID            string `json:"shard_did"`
+	SequenceStart       uint64 `json:"sequence_start"`
+	SequenceEnd         uint64 `json:"sequence_end"`
 	TileArchiveEndpoint string `json:"tile_archive_endpoint"` // Static tile files (hash-only).
 	ByteArchiveEndpoint string `json:"byte_archive_endpoint"` // Full entry bytes.
-	FinalRootHash string `json:"final_root_hash"`
-	FinalTreeSize uint64 `json:"final_tree_size"`
-	ChainPosition int `json:"chain_position"`
+	FinalRootHash       string `json:"final_root_hash"`
+	FinalTreeSize       uint64 `json:"final_tree_size"`
+	ChainPosition       int    `json:"chain_position"`
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -88,7 +88,7 @@ type ShardMeta struct {
 // ArchiveReader fetches entries from archived shards.
 // Implements the same Fetch signature as builder.EntryFetcher.
 type ArchiveReader struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	shards map[string]ShardMeta
 	client *http.Client
 }
@@ -125,7 +125,7 @@ func LoadShardIndex(ctx context.Context, source string) ([]ShardMeta, error) {
 		if doErr != nil {
 			return nil, doErr
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		data, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	} else {
 		data, err = os.ReadFile(source)
@@ -295,7 +295,7 @@ func (r *ArchiveReader) fetchBytes(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)

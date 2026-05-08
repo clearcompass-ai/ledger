@@ -1,16 +1,18 @@
 /*
 FILE PATH:
-    wal/instruments_test.go
+
+	wal/instruments_test.go
 
 DESCRIPTION:
-    Tests for the D3 wal Submit duration histogram. Pins the
-    invariant that BOTH branches (committed + canceled) produce
-    histogram observations, with the correct outcome label.
 
-    Without this regression, a future refactor that drops the
-    cancel-branch record would silently re-introduce the
-    SRE-blind-spot bug: p99 latency would look healthy precisely
-    when WAL pressure is causing client timeouts.
+	Tests for the D3 wal Submit duration histogram. Pins the
+	invariant that BOTH branches (committed + canceled) produce
+	histogram observations, with the correct outcome label.
+
+	Without this regression, a future refactor that drops the
+	cancel-branch record would silently re-introduce the
+	SRE-blind-spot bug: p99 latency would look healthy precisely
+	when WAL pressure is causing client timeouts.
 */
 package wal
 

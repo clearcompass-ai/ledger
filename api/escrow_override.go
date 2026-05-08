@@ -57,16 +57,16 @@ import (
 
 // EscrowOverrideRequest is the JSON request body shape.
 type EscrowOverrideRequest struct {
-	EscrowID string `json:"escrow_id"`
+	EscrowID     string `json:"escrow_id"`
 	DecisionHash string `json:"decision_hash"`
-	Effective uint64 `json:"effective"`
+	Effective    uint64 `json:"effective"`
 }
 
 // EscrowOverrideResponse is the JSON success response shape.
 type EscrowOverrideResponse struct {
-	EventID string `json:"event_id"`
-	Signatures int `json:"signatures"`
-	Lamport uint64 `json:"lamport"`
+	EventID    string `json:"event_id"`
+	Signatures int    `json:"signatures"`
+	Lamport    uint64 `json:"lamport"`
 }
 
 // EscrowOverrideHandler returns an http.HandlerFunc backed by
@@ -92,21 +92,21 @@ func EscrowOverrideHandler(service EscrowOverrideProcessor, logger *slog.Logger)
 			return
 		}
 		var req EscrowOverrideRequest
-		if err := json.Unmarshal(body, &req); err != nil {
+		if uErr := json.Unmarshal(body, &req); uErr != nil {
 			writeTypedJSONError(ctx, w, apitypes.ErrorClassMalformedJSON,
-				http.StatusBadRequest, "invalid JSON: "+err.Error())
+				http.StatusBadRequest, "invalid JSON: "+uErr.Error())
 			return
 		}
 
 		var escrowID, decisionHash [32]byte
-		if err := decodeHex32(req.EscrowID, &escrowID); err != nil {
+		if dErr := decodeHex32(req.EscrowID, &escrowID); dErr != nil {
 			writeTypedJSONError(ctx, w, apitypes.ErrorClassBadHexEncoding,
-				http.StatusBadRequest, "escrow_id: "+err.Error())
+				http.StatusBadRequest, "escrow_id: "+dErr.Error())
 			return
 		}
-		if err := decodeHex32(req.DecisionHash, &decisionHash); err != nil {
+		if dErr := decodeHex32(req.DecisionHash, &decisionHash); dErr != nil {
 			writeTypedJSONError(ctx, w, apitypes.ErrorClassBadHexEncoding,
-				http.StatusBadRequest, "decision_hash: "+err.Error())
+				http.StatusBadRequest, "decision_hash: "+dErr.Error())
 			return
 		}
 		if req.Effective == 0 {

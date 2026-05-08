@@ -1,27 +1,29 @@
 /*
 FILE PATH:
-    gossipnet/instruments.go
+
+	gossipnet/instruments.go
 
 DESCRIPTION:
-    D4 — Witness-quorum + equivocation detection counters.
 
-        attesta_witness_quorum_failures_total{network_id}
-        attesta_equivocation_detected_total{kind, originator}
+	D4 — Witness-quorum + equivocation detection counters.
 
-    Both fire on transparency-log integrity events. SREs alert
-    on quorum failures (witnesses unreachable / disagreeing) and
-    equivocation events (a peer ledger forked).
+	    attesta_witness_quorum_failures_total{network_id}
+	    attesta_equivocation_detected_total{kind, originator}
+
+	Both fire on transparency-log integrity events. SREs alert
+	on quorum failures (witnesses unreachable / disagreeing) and
+	equivocation events (a peer ledger forked).
 
 KEY ARCHITECTURAL DECISIONS:
-    - Bounded label cardinality. network_id is a single value
-      per deployment (1 series). kind is the gossip Kind enum
-      (~10 values); originator is the peer DID (~75 max in the
-      principle's "75 peering networks" target). Total
-      cardinality < 1000.
-    - Two separate Install funcs so cmd/ledger can wire only
-      one if the other is structurally absent (e.g., witness-
-      free deployment skips the quorum counter).
-    - nil meter is a no-op.
+  - Bounded label cardinality. network_id is a single value
+    per deployment (1 series). kind is the gossip Kind enum
+    (~10 values); originator is the peer DID (~75 max in the
+    principle's "75 peering networks" target). Total
+    cardinality < 1000.
+  - Two separate Install funcs so cmd/ledger can wire only
+    one if the other is structurally absent (e.g., witness-
+    free deployment skips the quorum counter).
+  - nil meter is a no-op.
 */
 package gossipnet
 

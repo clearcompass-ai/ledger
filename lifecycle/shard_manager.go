@@ -9,10 +9,10 @@ DESCRIPTION:
 SDK ALIGNMENT:
   - envelope.NewEntry(header, payload, signatures)  — fully signed
   - envelope.NewUnsignedEntry(header, payload)      — sign-then-attach
-  The genesis commentary is constructed here and signed downstream
-  (the ledger that calls StartNewShard owns the institutional key
-  and signs the GenesisEntry before announcing the new shard's
-  DID), so this file uses NewUnsignedEntry.
+    The genesis commentary is constructed here and signed downstream
+    (the ledger that calls StartNewShard owns the institutional key
+    and signs the GenesisEntry before announcing the new shard's
+    DID), so this file uses NewUnsignedEntry.
   - EventTime set to frozen-at timestamp to anchor the shard rotation
     in wall-clock time (freshness policy uses this).
 
@@ -37,13 +37,13 @@ import (
 
 // NewShardConfig configures a shard rotation.
 type NewShardConfig struct {
-	LedgerDID string
-	PriorLogDID string
-	NewShardDID string
-	PriorFrozenSeq uint64
+	LedgerDID       string
+	PriorLogDID     string
+	NewShardDID     string
+	PriorFrozenSeq  uint64
 	PriorFrozenRoot [32]byte
-	FrozenAt time.Time
-	Reason string // "capacity", "governance", "recovery", etc.
+	FrozenAt        time.Time
+	Reason          string // "capacity", "governance", "recovery", etc.
 }
 
 // ShardRotationResult is the output of StartNewShard.
@@ -62,9 +62,9 @@ type NewShardConfig struct {
 // For now, GenesisCanonical is best-effort: it serializes only when
 // the entry is in a state that envelope.Serialize accepts.
 type ShardRotationResult struct {
-	NewShardDID string
-	GenesisEntry *envelope.Entry
-	GenesisCanonical []byte
+	NewShardDID       string
+	GenesisEntry      *envelope.Entry
+	GenesisCanonical  []byte
 	RotationTimestamp time.Time
 }
 

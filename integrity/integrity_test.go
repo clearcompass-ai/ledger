@@ -97,8 +97,8 @@ func (f *fakeTileReader) ReadEntryTile(ctx context.Context, index uint64) ([]byt
 
 // fakeWAL satisfies WALReader. Tests pre-populate hashAt + hwm.
 type fakeWAL struct {
-	hwm uint64
-	hashAt map[uint64][32]byte
+	hwm     uint64
+	hashAt  map[uint64][32]byte
 	hashErr map[uint64]error // optional per-seq error injection
 }
 

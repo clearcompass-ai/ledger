@@ -1,27 +1,29 @@
 /*
 FILE PATH:
-    sequencer/instruments.go
+
+	sequencer/instruments.go
 
 DESCRIPTION:
-    D5 — Sequencer drain-lag gauge.
 
-        attesta_sequencer_drain_lag_seconds
+	D5 — Sequencer drain-lag gauge.
 
-    Records the gap between "newest StatePending entry's
-    log_time" and "now". The Sequencer drains StatePending →
-    sequenced; if it falls behind, the gap grows. Drives the SRE
-    alert "sequencer is the bottleneck" before the WAL queue
-    actually backpressures admission.
+	    attesta_sequencer_drain_lag_seconds
+
+	Records the gap between "newest StatePending entry's
+	log_time" and "now". The Sequencer drains StatePending →
+	sequenced; if it falls behind, the gap grows. Drives the SRE
+	alert "sequencer is the bottleneck" before the WAL queue
+	actually backpressures admission.
 
 KEY ARCHITECTURAL DECISIONS:
-    - ObservableGauge — read-on-scrape rather than push-on-update.
-      The sequencer doesn't have a natural "update" event for the
-      drain lag; reading from currentLag (already maintained) on
-      every scrape is the cleanest fit.
-    - Single value, no labels. The sequencer is a singleton in the
-      process; per-tenant breakdown belongs upstream.
-    - nil meter → no-op. cmd/ledger wires the meter at boot;
-      tests + dev runs without metrics work unchanged.
+  - ObservableGauge — read-on-scrape rather than push-on-update.
+    The sequencer doesn't have a natural "update" event for the
+    drain lag; reading from currentLag (already maintained) on
+    every scrape is the cleanest fit.
+  - Single value, no labels. The sequencer is a singleton in the
+    process; per-tenant breakdown belongs upstream.
+  - nil meter → no-op. cmd/ledger wires the meter at boot;
+    tests + dev runs without metrics work unchanged.
 */
 package sequencer
 

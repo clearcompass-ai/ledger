@@ -35,7 +35,7 @@ import (
 // Memory stores wire bytes in memory. Thread-safe. Implements Store
 // (NOT Backend — no PublicURLer support).
 type Memory struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
 	entries map[string][]byte // key = layoutKey("memory", seq, hash)
 }
 

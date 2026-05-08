@@ -2,54 +2,57 @@
 
 /*
 FILE PATH:
-    tests/scenarios_p3_witness_helpers_test.go
+
+	tests/scenarios_p3_witness_helpers_test.go
 
 DESCRIPTION:
-    Layer 0 — Persona 3 (Witness Daemon, helpers + isolation tests).
-    Helpers used by Persona 3's K-of-N collector tests, plus the two
-    sub-scenarios that require non-default witness handler config
-    (NetworkID isolation, Purpose restriction). Split from
-    scenarios_p3_witness_test.go so each file fits the project's
-    per-file LoC budget.
+
+	Layer 0 — Persona 3 (Witness Daemon, helpers + isolation tests).
+	Helpers used by Persona 3's K-of-N collector tests, plus the two
+	sub-scenarios that require non-default witness handler config
+	(NetworkID isolation, Purpose restriction). Split from
+	scenarios_p3_witness_test.go so each file fits the project's
+	per-file LoC budget.
 
 KEY ARCHITECTURAL DECISIONS:
-    - p3BuildClients constructs []*cosign.WitnessClient from a
-      witnessSwarm. Each client gets the supplied NetworkID — which
-      may DELIBERATELY differ from the swarm's AllowedNetworks for
-      isolation tests.
-    - p3SyntheticTreeHead returns a fresh-bytes types.TreeHead so
-      every Persona 3 sub-scenario signs distinct payload bytes.
-      Tree-head cosignatures over identical (RootHash, TreeSize)
-      could otherwise be replayed across runs and mask an
-      "unauthorised reuse" bug.
-    - p3RestrictedPurposeWitness spins up ONE witness with
-      AllowedPurposes={PurposeTreeHead}, exposing a (URL,
-      PublicKey) pair the test wires into a collector. Used by
-      DisallowedPurpose_403; the rest of Persona 3 uses the
-      standard-config witnessSwarm.
-    - Network-isolation test asserts the per-endpoint Err carries
-      the RateLimited / NetworkNotConfigured shape the SDK
-      promises; we MUST NOT collapse "any error" into a single
-      failure assertion — the diagnostic surface is the test's
-      contract.
+  - p3BuildClients constructs []*cosign.WitnessClient from a
+    witnessSwarm. Each client gets the supplied NetworkID — which
+    may DELIBERATELY differ from the swarm's AllowedNetworks for
+    isolation tests.
+  - p3SyntheticTreeHead returns a fresh-bytes types.TreeHead so
+    every Persona 3 sub-scenario signs distinct payload bytes.
+    Tree-head cosignatures over identical (RootHash, TreeSize)
+    could otherwise be replayed across runs and mask an
+    "unauthorised reuse" bug.
+  - p3RestrictedPurposeWitness spins up ONE witness with
+    AllowedPurposes={PurposeTreeHead}, exposing a (URL,
+    PublicKey) pair the test wires into a collector. Used by
+    DisallowedPurpose_403; the rest of Persona 3 uses the
+    standard-config witnessSwarm.
+  - Network-isolation test asserts the per-endpoint Err carries
+    the RateLimited / NetworkNotConfigured shape the SDK
+    promises; we MUST NOT collapse "any error" into a single
+    failure assertion — the diagnostic surface is the test's
+    contract.
 
 OVERVIEW:
-    p3BuildClients(t, swarm, networkID)        → []*WitnessClient.
-    p3BuildCollector(t, clients, k)            → *WitnessCollector.
-    p3SyntheticTreeHead(t, treeSize)           → types.TreeHead.
-    p3RestrictedPurposeWitness(t, networkID,
-                               allowed)        → URL + signer + pubkey.
-    runP3WitnessSignsWrongNetworkID_Rejected   → quorum fails on
-                                                  NetworkID mismatch.
-    runP3DisallowedPurpose_403                 → quorum fails when
-                                                  Purpose not allowed.
+
+	p3BuildClients(t, swarm, networkID)        → []*WitnessClient.
+	p3BuildCollector(t, clients, k)            → *WitnessCollector.
+	p3SyntheticTreeHead(t, treeSize)           → types.TreeHead.
+	p3RestrictedPurposeWitness(t, networkID,
+	                           allowed)        → URL + signer + pubkey.
+	runP3WitnessSignsWrongNetworkID_Rejected   → quorum fails on
+	                                              NetworkID mismatch.
+	runP3DisallowedPurpose_403                 → quorum fails when
+	                                              Purpose not allowed.
 
 KEY DEPENDENCIES:
-    - github.com/clearcompass-ai/attesta/crypto/cosign:
-      NewWitnessClient, NewWitnessCollector, NewWitnessHandler,
-      NewECDSAWitnessSigner, NewTreeHeadPayload, NewRotationPayload,
-      NetworkID, Purpose.
-    - tests/scenarios_witness_test.go: witnessSwarm, scenarioKey.
+  - github.com/clearcompass-ai/attesta/crypto/cosign:
+    NewWitnessClient, NewWitnessCollector, NewWitnessHandler,
+    NewECDSAWitnessSigner, NewTreeHeadPayload, NewRotationPayload,
+    NetworkID, Purpose.
+  - tests/scenarios_witness_test.go: witnessSwarm, scenarioKey.
 */
 package tests
 

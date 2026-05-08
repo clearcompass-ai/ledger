@@ -1,66 +1,69 @@
 /*
 FILE PATH:
-    lifecycle/logsafe.go
+
+	lifecycle/logsafe.go
 
 DESCRIPTION:
-    D6 — Slog redaction policy + helpers. Establishes the
-    privacy contract for the entire ledger:
 
-        NEVER LOG:
-            - raw entry payloads (user-supplied bytes)
-            - signatures, MACs, witness keys, signer keys
-            - bearer tokens, session tokens, API keys
-            - the `secret_data` field of any envelope
+	D6 — Slog redaction policy + helpers. Establishes the
+	privacy contract for the entire ledger:
 
-        ALWAYS LOGGABLE (per ledger principles):
-            - canonical hashes (SHA-256 hex prefix)
-            - signer DIDs (public)
-            - sequence numbers
-            - log_time (admission timestamp)
-            - tree_size, root_hash hex prefix
-            - public NetworkID hex prefix
-            - error_class taxonomy values
+	    NEVER LOG:
+	        - raw entry payloads (user-supplied bytes)
+	        - signatures, MACs, witness keys, signer keys
+	        - bearer tokens, session tokens, API keys
+	        - the `secret_data` field of any envelope
+
+	    ALWAYS LOGGABLE (per ledger principles):
+	        - canonical hashes (SHA-256 hex prefix)
+	        - signer DIDs (public)
+	        - sequence numbers
+	        - log_time (admission timestamp)
+	        - tree_size, root_hash hex prefix
+	        - public NetworkID hex prefix
+	        - error_class taxonomy values
 
 KEY ARCHITECTURAL DECISIONS:
-    - Helpers are pure (no side effects, no allocation beyond
-      output strings) so they're safe to call from hot paths.
-    - HashHex returns the first 16 hex chars of SHA-256(bytes) —
-      enough entropy for log-correlation, not enough to recover
-      the source bytes. A full 64-char hex is overkill in logs.
-    - PresenceFlag returns "set" or "unset" so the administrator can
-      confirm a secret-shaped field was supplied without
-      exposing content (used by the LogInfo handler in api/info.go).
-    - These helpers are the SOLE sanctioned way for production
-      code to log byte-shaped material. A grep for "raw" or
-      "signature" or "secret" in non-test source code that ALSO
-      passes a byte slice or string of plausible secret content
-      to slog is a code-review red flag.
+  - Helpers are pure (no side effects, no allocation beyond
+    output strings) so they're safe to call from hot paths.
+  - HashHex returns the first 16 hex chars of SHA-256(bytes) —
+    enough entropy for log-correlation, not enough to recover
+    the source bytes. A full 64-char hex is overkill in logs.
+  - PresenceFlag returns "set" or "unset" so the administrator can
+    confirm a secret-shaped field was supplied without
+    exposing content (used by the LogInfo handler in api/info.go).
+  - These helpers are the SOLE sanctioned way for production
+    code to log byte-shaped material. A grep for "raw" or
+    "signature" or "secret" in non-test source code that ALSO
+    passes a byte slice or string of plausible secret content
+    to slog is a code-review red flag.
 
 OVERVIEW:
-    Use HashHex when correlating logs to a specific entry:
 
-        logger.Info("entry admitted",
-            "hash", logsafe.HashHex(canonicalHash[:]),
-            "signer_did", entry.SignerDID,
-            "seq", seq,
-        )
+	Use HashHex when correlating logs to a specific entry:
 
-    Use PresenceFlag when reporting on the existence of a
-    configured secret without exposing its content:
+	    logger.Info("entry admitted",
+	        "hash", logsafe.HashHex(canonicalHash[:]),
+	        "signer_did", entry.SignerDID,
+	        "seq", seq,
+	    )
 
-        logger.Info("postgres pool ready",
-            "database_url", logsafe.PresenceFlag(cfg.DatabaseURL),
-        )
+	Use PresenceFlag when reporting on the existence of a
+	configured secret without exposing its content:
 
-    Use NetworkIDHex for the deployment's NetworkID prefix:
+	    logger.Info("postgres pool ready",
+	        "database_url", logsafe.PresenceFlag(cfg.DatabaseURL),
+	    )
 
-        logger.Info("ledger booting",
-            "network_id_hex", logsafe.NetworkIDHex(networkID[:]),
-        )
+	Use NetworkIDHex for the deployment's NetworkID prefix:
+
+	    logger.Info("ledger booting",
+	        "network_id_hex", logsafe.NetworkIDHex(networkID[:]),
+	    )
 
 KEY DEPENDENCIES:
-    - crypto/sha256: domain-separated hashing for HashHex.
-    - encoding/hex: hex encoding (a hot-path-safe primitive).
+  - crypto/sha256: domain-separated hashing for HashHex.
+  - encoding/hex: hex encoding (a hot-path-safe primitive).
 */
 package lifecycle
 

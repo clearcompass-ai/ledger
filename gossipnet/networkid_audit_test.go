@@ -1,24 +1,26 @@
 /*
 FILE PATH:
-    gossipnet/networkid_audit_test.go
+
+	gossipnet/networkid_audit_test.go
 
 DESCRIPTION:
-    L3 — NetworkID enforcement audit. Pins that EVERY gossipnet
-    constructor rejects a zero NetworkID at boot. The ledger
-    must not bypass the SDK's domain-separation invariant: every
-    cosign payload signed or verified by this process is bound
-    to a specific NetworkID, and a fresh deployment without a
-    network bootstrap document cannot construct a publisher.
+
+	L3 — NetworkID enforcement audit. Pins that EVERY gossipnet
+	constructor rejects a zero NetworkID at boot. The ledger
+	must not bypass the SDK's domain-separation invariant: every
+	cosign payload signed or verified by this process is bound
+	to a specific NetworkID, and a fresh deployment without a
+	network bootstrap document cannot construct a publisher.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Constructor-level enforcement, not call-site enforcement.
-      The check fires ONCE at boot, not on every Sign/Verify.
-      Cheap + impossible to bypass once construction succeeds.
-    - One subtest per constructor so a failure points at the
-      specific constructor that regressed.
-    - Tests build the smallest valid Config + flip NetworkID to
-      zero. Other required fields are filled with stub values
-      (no real signer / store / sink needed for this audit).
+  - Constructor-level enforcement, not call-site enforcement.
+    The check fires ONCE at boot, not on every Sign/Verify.
+    Cheap + impossible to bypass once construction succeeds.
+  - One subtest per constructor so a failure points at the
+    specific constructor that regressed.
+  - Tests build the smallest valid Config + flip NetworkID to
+    zero. Other required fields are filled with stub values
+    (no real signer / store / sink needed for this audit).
 */
 package gossipnet
 

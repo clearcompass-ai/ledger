@@ -27,7 +27,7 @@ import (
 // which serves the cryptographic-commitment lookup endpoint.
 type DerivationCommitmentDeps struct {
 	CommitmentStore DerivationCommitmentFetcher
-	Logger *slog.Logger
+	Logger          *slog.Logger
 }
 
 // NewDerivationCommitmentQueryHandler returns the GET

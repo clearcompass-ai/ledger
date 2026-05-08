@@ -65,10 +65,10 @@ type DetectorConfig struct {
 // Detector runs the periodic Loop against a WAL and a
 // Tessera-backed Verifier. Read-only — never mutates either side.
 type Detector struct {
-	wal WALReader
+	wal      WALReader
 	verifier Verifier
-	cfg DetectorConfig
-	logger *slog.Logger
+	cfg      DetectorConfig
+	logger   *slog.Logger
 
 	rngMu sync.Mutex // guards rng — math/rand.Rand is not goroutine-safe
 

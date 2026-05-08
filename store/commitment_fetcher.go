@@ -154,9 +154,9 @@ func (f *PostgresCommitmentFetcher) FindCommitmentEntries(
 	defer rows.Close()
 
 	type rowMeta struct {
-		seq uint64
+		seq     uint64
 		logTime time.Time
-		hash [32]byte
+		hash    [32]byte
 	}
 	var rowMetas []rowMeta
 	for rows.Next() {

@@ -1,58 +1,61 @@
 /*
 FILE PATH:
-    store/breaker.go
+
+	store/breaker.go
 
 DESCRIPTION:
-    Minimal circuit breaker over the Postgres connection pool.
-    After N consecutive pool-acquisition failures the breaker
-    opens; subsequent Acquire calls fail fast with ErrDBUnavailable
-    until the cooldown elapses. After cooldown the breaker enters
-    half-open, where ONE acquisition is allowed: success closes
-    the breaker, failure re-opens it for another cooldown.
+
+	Minimal circuit breaker over the Postgres connection pool.
+	After N consecutive pool-acquisition failures the breaker
+	opens; subsequent Acquire calls fail fast with ErrDBUnavailable
+	until the cooldown elapses. After cooldown the breaker enters
+	half-open, where ONE acquisition is allowed: success closes
+	the breaker, failure re-opens it for another cooldown.
 
 KEY ARCHITECTURAL DECISIONS:
-    - Inline implementation (~80 LOC) instead of pulling
-      sony/gobreaker. KISS + zero new dependencies. The behavior
-      we need is small enough that an external library is
-      cosmetic.
-    - Trips on POOL-LEVEL failures only (Acquire). Per-query
-      failures (a missing row, a syntax error, a transient
-      Serializable retry) MUST NOT trip the breaker — those are
-      query-specific, the pool is fine. Distinguishing here
-      keeps the breaker focused on "is the DB reachable".
-    - Half-open probe is single-flight: only one goroutine gets
-      the trial acquisition. Others see ErrDBUnavailable until
-      the probe resolves.
-    - State machine is mutex-guarded; the hot path is one mutex
-      lock + one atomic compare. At 1K TPS the breaker overhead
-      is sub-microsecond, well under any pgxpool acquire latency.
-    - No metrics emitted from inside the breaker — the api/
-      writeError site classifies ErrDBUnavailable into the
-      ErrorCounter (D-shape), keeping the breaker free of OTel
-      coupling. Administrators see the breaker state via two log
-      lines: "circuit breaker opened" and "circuit breaker
-      closed", grep-able from the supervisor's slog stream.
+  - Inline implementation (~80 LOC) instead of pulling
+    sony/gobreaker. KISS + zero new dependencies. The behavior
+    we need is small enough that an external library is
+    cosmetic.
+  - Trips on POOL-LEVEL failures only (Acquire). Per-query
+    failures (a missing row, a syntax error, a transient
+    Serializable retry) MUST NOT trip the breaker — those are
+    query-specific, the pool is fine. Distinguishing here
+    keeps the breaker focused on "is the DB reachable".
+  - Half-open probe is single-flight: only one goroutine gets
+    the trial acquisition. Others see ErrDBUnavailable until
+    the probe resolves.
+  - State machine is mutex-guarded; the hot path is one mutex
+    lock + one atomic compare. At 1K TPS the breaker overhead
+    is sub-microsecond, well under any pgxpool acquire latency.
+  - No metrics emitted from inside the breaker — the api/
+    writeError site classifies ErrDBUnavailable into the
+    ErrorCounter (D-shape), keeping the breaker free of OTel
+    coupling. Administrators see the breaker state via two log
+    lines: "circuit breaker opened" and "circuit breaker
+    closed", grep-able from the supervisor's slog stream.
 
 OVERVIEW:
-    Construct ONE breaker per *pgxpool.Pool at boot. Wrap pool
-    acquisitions via:
 
-        conn, err := breaker.Acquire(ctx)
-        if errors.Is(err, ErrDBUnavailable) {
-            // 503 + Retry-After
-        }
+	Construct ONE breaker per *pgxpool.Pool at boot. Wrap pool
+	acquisitions via:
 
-    Inside store/ functions that take a *pgxpool.Pool and call
-    pool.Acquire directly, the public Store wrapper takes the
-    breaker so the call site is unchanged structurally. Functions
-    that operate on *pgx.Tx (already-acquired) do not interact
-    with the breaker at all — the transaction was acquired before
-    the breaker tripped.
+	    conn, err := breaker.Acquire(ctx)
+	    if errors.Is(err, ErrDBUnavailable) {
+	        // 503 + Retry-After
+	    }
+
+	Inside store/ functions that take a *pgxpool.Pool and call
+	pool.Acquire directly, the public Store wrapper takes the
+	breaker so the call site is unchanged structurally. Functions
+	that operate on *pgx.Tx (already-acquired) do not interact
+	with the breaker at all — the transaction was acquired before
+	the breaker tripped.
 
 KEY DEPENDENCIES:
-    - pgxpool: the pool we wrap.
-    - sync.Mutex: state-machine guard.
-    - time: cooldown timekeeping.
+  - pgxpool: the pool we wrap.
+  - sync.Mutex: state-machine guard.
+  - time: cooldown timekeeping.
 */
 package store
 

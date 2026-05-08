@@ -14,6 +14,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4
+	github.com/transparency-dev/merkle v0.0.2
 	github.com/transparency-dev/tessera v1.0.2
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
@@ -26,6 +27,7 @@ require (
 	golang.org/x/mod v0.35.0
 	golang.org/x/net v0.53.0
 	golang.org/x/text v0.36.0
+	golang.org/x/tools v0.44.0
 	google.golang.org/api v0.274.0
 	pgregory.net/rapid v1.3.0
 )
@@ -89,7 +91,6 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/transparency-dev/formats v0.0.0-20251017110053-404c0d5b696c // indirect
-	github.com/transparency-dev/merkle v0.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.40.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect

@@ -24,8 +24,6 @@ KEY ARCHITECTURAL DECISIONS:
 package tests
 
 import (
-	"testing"
-
 	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
@@ -41,56 +39,6 @@ import (
 // api.SubmissionDeps.LogDID, or every default-Destination entry will
 // fail step 3b's destination check with 403 Forbidden.
 const testLedgerDID = testLogDID
-
-// ─────────────────────────────────────────────────────────────────────
-// Entry construction helpers
-// ─────────────────────────────────────────────────────────────────────
-
-// makeUnsignedEntry constructs an unsigned Entry via
-// envelope.NewUnsignedEntry, defaulting hdr.Destination to testLogDID
-// when the caller leaves it empty.
-//
-// Use this in new tests. Existing tests using makeEntry are patched
-// in-place to inject the same default into makeEntry's body.
-//
-// Fails the test on constructor error — helpers that silently return
-// nil create observability gaps in downstream failures.
-func makeUnsignedEntry(
-	t *testing.T,
-	hdr envelope.ControlHeader,
-	payload []byte,
-) *envelope.Entry {
-	t.Helper()
-	if hdr.Destination == "" {
-		hdr.Destination = testLogDID
-	}
-	entry, err := envelope.NewUnsignedEntry(hdr, payload)
-	if err != nil {
-		t.Fatalf("NewUnsignedEntry: %v", err)
-	}
-	return entry
-}
-
-// makeForeignEntry is a convenience wrapper building an Entry bound to
-// a foreign log DID. Used by cross-destination rejection tests.
-//
-// Equivalent to makeUnsignedEntry with hdr.Destination overridden —
-// kept as a named helper so test intent (i.e., "this entry is
-// deliberately targeting the wrong log") is obvious from the call site.
-func makeForeignEntry(
-	t *testing.T,
-	hdr envelope.ControlHeader,
-	payload []byte,
-) *envelope.Entry {
-	t.Helper()
-	const foreignLogDID = "did:web:other-log.example"
-	hdr.Destination = foreignLogDID
-	entry, err := envelope.NewUnsignedEntry(hdr, payload)
-	if err != nil {
-		t.Fatalf("NewUnsignedEntry (foreign destination): %v", err)
-	}
-	return entry
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Compile-time sanity checks

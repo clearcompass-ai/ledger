@@ -3,31 +3,33 @@
 
 /*
 FILE PATH:
-    tests/chaos/wal_durability_test.go
+
+	tests/chaos/wal_durability_test.go
 
 DESCRIPTION:
-    J4 — Chaos test: WAL durability under simulated mid-Submit
-    process death. Pins Phase 1 Liability Transfer durability
-    (Ledger principle #3 SCT-as-SLA): every Submit that returned
-    202 MUST be recoverable from the WAL after restart.
 
-    Mechanism: in-process simulation that uses a real on-disk
-    Badger WAL (NOT in-memory) so the test exercises actual
-    fsync semantics. Submit N entries; close the Committer
-    abruptly (close before draining queue); reopen against the
-    same on-disk path; assert N recoverable entries.
+	J4 — Chaos test: WAL durability under simulated mid-Submit
+	process death. Pins Phase 1 Liability Transfer durability
+	(Ledger principle #3 SCT-as-SLA): every Submit that returned
+	202 MUST be recoverable from the WAL after restart.
+
+	Mechanism: in-process simulation that uses a real on-disk
+	Badger WAL (NOT in-memory) so the test exercises actual
+	fsync semantics. Submit N entries; close the Committer
+	abruptly (close before draining queue); reopen against the
+	same on-disk path; assert N recoverable entries.
 
 KEY ARCHITECTURAL DECISIONS:
-    - On-disk Badger via t.TempDir(). Real fsync; real Badger
-      replay on reopen.
-    - Sequential submits (not concurrent) so the "abrupt close"
-      semantics are deterministic. Concurrent + chaos =
-      separate test.
-    - Doesn't kill the process — Go test framework doesn't
-      survive SIGKILL on itself. Instead, simulates via
-      Committer.Close() which triggers the same flush path
-      the WAL takes on graceful shutdown. A SIGKILL chaos
-      test requires a subprocess harness (follow-up).
+  - On-disk Badger via t.TempDir(). Real fsync; real Badger
+    replay on reopen.
+  - Sequential submits (not concurrent) so the "abrupt close"
+    semantics are deterministic. Concurrent + chaos =
+    separate test.
+  - Doesn't kill the process — Go test framework doesn't
+    survive SIGKILL on itself. Instead, simulates via
+    Committer.Close() which triggers the same flush path
+    the WAL takes on graceful shutdown. A SIGKILL chaos
+    test requires a subprocess harness (follow-up).
 */
 package chaos
 

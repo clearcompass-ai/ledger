@@ -1,11 +1,13 @@
 /*
 FILE PATH:
-    lifecycle/logsafe_test.go
+
+	lifecycle/logsafe_test.go
 
 DESCRIPTION:
-    Tests for the slog redaction helpers. Pin the privacy
-    contract: HashHex one-way, PresenceFlag binary, NetworkIDHex
-    handles all-zero correctly.
+
+	Tests for the slog redaction helpers. Pin the privacy
+	contract: HashHex one-way, PresenceFlag binary, NetworkIDHex
+	handles all-zero correctly.
 */
 package lifecycle
 

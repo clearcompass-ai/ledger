@@ -3,13 +3,15 @@
 
 /*
 FILE PATH:
-    tests/chaos/inject_test.go
+
+	tests/chaos/inject_test.go
 
 DESCRIPTION:
-    J4 — Smoke tests for the inject package. The injectors are
-    the load-bearing primitives every other chaos test consumes;
-    if they don't fault when expected, the rest of the suite
-    is a false-positive vacuum.
+
+	J4 — Smoke tests for the inject package. The injectors are
+	the load-bearing primitives every other chaos test consumes;
+	if they don't fault when expected, the rest of the suite
+	is a false-positive vacuum.
 */
 package chaos
 

@@ -603,14 +603,14 @@ func TestHTTP_EndToEnd_SubmitAndQueryBack(t *testing.T) {
 	signerDID := "did:example:e2e-roundtrip-alice"
 	const N = 5
 
-	// Submit N entries, collect submission sequence numbers.
-	var submitSeqs []float64
+	// Submit N entries. The returned sequence_number is asserted
+	// in submitEntry; the post-submit assertions read entries back
+	// via the query API rather than the submit-side seqs.
 	for i := 0; i < N; i++ {
 		wire := buildWireEntry(t, envelope.ControlHeader{
 			SignerDID: signerDID,
 		}, []byte(fmt.Sprintf("e2e-payload-%d", i)))
-		result := submitEntry(t, op.BaseURL, "tok-e2e", wire)
-		submitSeqs = append(submitSeqs, result["sequence_number"].(float64))
+		_ = submitEntry(t, op.BaseURL, "tok-e2e", wire)
 	}
 
 	// Poll until builder processes all entries (no flaky sleep).

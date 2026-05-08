@@ -60,12 +60,12 @@ func NewEntryStore(db *pgxpool.Pool) *EntryStore {
 // EntryRow is the index record for insertion. No canonical_bytes, no sig_bytes.
 type EntryRow struct {
 	SequenceNumber uint64
-	CanonicalHash [32]byte
-	LogTime time.Time
-	SignerDID string
-	TargetRoot []byte // nil if null
-	CosignatureOf []byte // nil if null
-	SchemaRef []byte // nil if null
+	CanonicalHash  [32]byte
+	LogTime        time.Time
+	SignerDID      string
+	TargetRoot     []byte // nil if null
+	CosignatureOf  []byte // nil if null
+	SchemaRef      []byte // nil if null
 }
 
 // Insert persists an entry's index columns. Called within the admission transaction.

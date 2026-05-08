@@ -93,13 +93,13 @@ type EscrowOverrideServiceConfig struct {
 
 // EscrowOverrideService runs the ledger-side override flow.
 type EscrowOverrideService struct {
-	collector *sdkcosign.WitnessCollector
-	store sdkgossip.Store
-	sink sdkgossip.Sink
-	signer sdkcosign.WitnessSigner
-	networkID sdkcosign.NetworkID
+	collector  *sdkcosign.WitnessCollector
+	store      sdkgossip.Store
+	sink       sdkgossip.Sink
+	signer     sdkcosign.WitnessSigner
+	networkID  sdkcosign.NetworkID
 	originator string
-	logger *slog.Logger
+	logger     *slog.Logger
 }
 
 // NewEscrowOverrideService constructs the service. Returns an
@@ -190,24 +190,24 @@ func (s *EscrowOverrideService) ProcessOverride(
 		return ProcessOverrideResult{}, fmt.Errorf("gossipnet/escrow_override: sign event: %w", err)
 	}
 
-	if err := s.store.Append(ctx, signed); err != nil {
+	if aErr := s.store.Append(ctx, signed); aErr != nil {
 		// Idempotent re-receive returns nil per I9; other Append
 		// errors signal a state-machine bug — propagate.
-		if errors.Is(err, sdkgossip.ErrChainBreak) || errors.Is(err, sdkgossip.ErrLamportRegression) {
+		if errors.Is(aErr, sdkgossip.ErrChainBreak) || errors.Is(aErr, sdkgossip.ErrLamportRegression) {
 			return ProcessOverrideResult{}, fmt.Errorf(
-				"gossipnet/escrow_override: local Append rejected (head moved underneath): %w", err)
+				"gossipnet/escrow_override: local Append rejected (head moved underneath): %w", aErr)
 		}
 		return ProcessOverrideResult{}, fmt.Errorf(
-			"gossipnet/escrow_override: local Append: %w", err)
+			"gossipnet/escrow_override: local Append: %w", aErr)
 	}
 
 	// Fan out best-effort. The local Append is the source of
 	// truth for the ledger's chain; peers catch up via
 	// /v1/gossip/since on the next anti-entropy tick if the
 	// broadcast drops.
-	if err := s.sink.Broadcast(ctx, signed); err != nil {
+	if bErr := s.sink.Broadcast(ctx, signed); bErr != nil {
 		s.logger.Warn("escrow override: fan-out failed (peers will catch up via /since)",
-			"error", err)
+			"error", bErr)
 	}
 
 	eventID, err := sdkgossip.EventIDOf(signed)
