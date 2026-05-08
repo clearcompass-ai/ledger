@@ -1,23 +1,18 @@
 # =============================================================================
 # values-production.example.yaml
 #
-# A worked-out example overlay for a production deploy. Copy to
-# values-production.yaml, fill the <SET-AT-DEPLOY> placeholders,
-# encrypt secrets via SOPS / sealed-secrets / external-secrets,
-# and apply with:
+# Production overlay. Copy to values-production.yaml, fill the
+# <SET-AT-DEPLOY> placeholders, encrypt secrets via SOPS /
+# sealed-secrets / external-secrets, then:
 #
 #   helm upgrade --install ledger deploy/helm/ledger \
 #       -n ledger --create-namespace \
 #       -f deploy/helm/ledger/values-production.yaml
 #
-# This overlay assumes:
-#   - GKE cluster with workload identity.
-#   - Managed Postgres (Cloud SQL) reached via the cluster.
-#   - GCS bucket for entry bytes + Tessera tiles.
-#   - Signer keys pre-loaded into a Kubernetes Secret.
-#   - Prometheus Operator running in cluster (ServiceMonitor on).
-#
-# Adjust the analogous fields for AWS (RDS + S3 + EKS) or self-hosted.
+# Assumes: GKE with workload identity, Cloud SQL via external-secrets,
+# GCS for entry bytes + Tessera tiles, signer keys pre-loaded into a
+# Kubernetes Secret, Prometheus Operator running in cluster.
+# Adapt the analogous fields for AWS (RDS + S3 + EKS) or self-hosted.
 # =============================================================================
 
 image:
@@ -25,32 +20,25 @@ image:
   tag: "1.0.0"  # pin to a digest in production overlays
 
 serviceAccount:
-  create: true
   annotations:
     iam.gke.io/gcp-service-account: ledger@<GCP-PROJECT>.iam.gserviceaccount.com
 
 config:
   logDID: "did:web:ledger.example.com"
   ledgerDID: "did:web:ledger.example.com"
-
   byteStore:
     backend: gcs
     publicBaseURL: "https://storage.googleapis.com/<BUCKET>"
     gcs:
       bucket: "<BUCKET>"
-
   tile:
     backend: gcs
     bucketPrefix: "tessera/"
-
   metrics:
-    enable: true
     environment: "production"
-
   otlpTracesEndpoint: "otel-collector.observability.svc.cluster.local:4318"
   serviceVersion: "1.0.0"
 
-# Free-form long-tail env vars not surfaced as first-class values.
 extraEnv:
   LEDGER_WITNESS_QUORUM_K: "3"
   LEDGER_MMD: "24h"
@@ -59,46 +47,32 @@ extraEnv:
   LEDGER_SHIPPER_MAX_IN_FLIGHT: "64"
   LEDGER_SHIPPER_POLL_INTERVAL: "5s"
 
-# Production: external Postgres. The DSN lives in a Secret rotated by
-# external-secrets / Vault. The chart never sees the plain-text URL.
+# External managed Postgres (Cloud SQL / RDS). The DSN lives in a
+# Secret rotated by external-secrets / Vault. The chart never sees
+# the plain-text URL.
 postgresql:
   enabled: false
-database:
-  urlSecret:
-    name: "ledger-db-credentials"   # populated by external-secrets / Vault Operator
-    key: "LEDGER_DATABASE_URL"
+externalDatabase:
+  existingSecret: "ledger-db-credentials"
 
-# Stable signing identity. Keys generated off-cluster and loaded via:
-#   kubectl -n ledger create secret generic ledger-signer-keys \
-#       --from-file=signer.pem=signer.pem \
-#       --from-file=tessera-signer.pem=tessera-signer.pem
+# Stable signing identity. Keys generated off-cluster.
 signerKeys:
   enabled: true
   existingSecret: "ledger-signer-keys"
-  signerFile: "signer.pem"
-  tesseraSignerFile: "tessera-signer.pem"
-  mountPath: "/etc/ledger/keys"
 
 persistence:
   storageClassName: "premium-rwo"  # GKE; on EKS try "gp3"
-  wal:
-    size: 100Gi
-  tessera:
-    size: 500Gi
-  antispam:
-    size: 50Gi
+  wal:      {size: 100Gi}
+  tessera:  {size: 500Gi}
+  antispam: {size: 50Gi}
 
 container:
   resources:
-    requests:
-      cpu: "1"
-      memory: 1Gi
-    limits:
-      cpu: "4"
-      memory: 4Gi
+    requests: {cpu: "1", memory: 1Gi}
+    limits:   {cpu: "4", memory: 4Gi}
 
 serviceMonitor:
   enabled: true
   interval: 15s
   labels:
-    release: prometheus  # match Prometheus Operator's serviceMonitorSelector
+    release: prometheus

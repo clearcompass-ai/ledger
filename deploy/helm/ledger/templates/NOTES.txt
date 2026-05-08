@@ -19,11 +19,14 @@ NEXT STEPS
 CONFIG SUMMARY
 ==============
 {{- if .Values.postgresql.enabled }}
-- Postgres: bitnami/postgresql sub-chart (database={{ .Values.postgresql.auth.database }}, user={{ .Values.postgresql.auth.username }})
-{{- else if .Values.database.urlSecret.name }}
-- Postgres: external; URL sourced from Secret {{ .Values.database.urlSecret.name }}/{{ default "LEDGER_DATABASE_URL" .Values.database.urlSecret.key }}
+- Postgres: bitnami/postgresql sub-chart
+  database = {{ .Values.postgresql.auth.database }}
+  username = {{ .Values.postgresql.auth.username }}
+  secret   = {{ include "ledger.bitnamiSecretName" . }} (key: {{ include "ledger.bitnamiPasswordKey" . }})
+{{- else if .Values.externalDatabase.existingSecret }}
+- Postgres: external. URL sourced from Secret {{ .Values.externalDatabase.existingSecret }}/LEDGER_DATABASE_URL
 {{- else }}
-- Postgres: external; URL set inline (chart-managed Secret {{ include "ledger.fullname" . }}-db)
+- Postgres: external (inline URL). Chart-managed Secret: {{ include "ledger.fullname" . }}-db
 {{- end }}
 {{- if .Values.signerKeys.enabled }}
 - Signer keys: enabled (Secret={{ .Values.signerKeys.existingSecret }}, mount={{ .Values.signerKeys.mountPath }})
@@ -48,9 +51,9 @@ PRODUCTION CHECKLIST
     Then upgrade with --set signerKeys.enabled=true (or values overlay).
 {{- end }}
 {{- if not .Values.config.logDID }}
-[ ] Set config.logDID to the production DID (witnesses + auditors anchor on this).
+[ ] Set config.logDID to the production DID.
 {{- end }}
 {{- if .Values.postgresql.enabled }}
-[ ] Move from in-cluster bitnami Postgres to a managed instance (Cloud SQL, RDS).
-    Disable postgresql.enabled and supply database.urlSecret.name.
+[ ] Move from in-cluster bitnami Postgres to a managed instance.
+    Disable postgresql.enabled and set externalDatabase.existingSecret.
 {{- end }}

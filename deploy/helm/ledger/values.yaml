@@ -1,185 +1,103 @@
 # =============================================================================
-# values.yaml — Attesta ledger Helm chart defaults
+# values.yaml — Attesta ledger Helm chart defaults.
 #
-# OVERVIEW
-#   Every knob the ledger Deployment, Service, PVCs, ServiceAccount,
-#   PodDisruptionBudget, ConfigMap, ServiceMonitor, and the optional
-#   bitnami/postgresql dependency expose. The defaults here are
-#   production-shape but stop short of binding cloud-specific identifiers
-#   (bucket names, log DID, image tag) — those are required overrides.
-#
-#   See values-production.example.yaml for a worked-out production
-#   overlay including signer-key wiring, workload-identity binding,
-#   and ServiceMonitor.
+# Production overlay example: values-production.example.yaml.
+# Postgres parameter reference: bitnami/postgresql README.
 # =============================================================================
 
-# ------------------------------------------------------------------
-# Image
-# ------------------------------------------------------------------
 image:
   repository: ghcr.io/clearcompass-ai/ledger
-  # Empty tag falls back to .Chart.AppVersion. Set explicitly per-deploy.
+  # Empty tag falls back to .Chart.AppVersion.
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# Override the chart-derived names. Both default to "" (auto-derive from
-# .Release.Name + chart name).
 nameOverride: ""
 fullnameOverride: ""
 
-# ------------------------------------------------------------------
-# Namespace
-# ------------------------------------------------------------------
-# Helm convention is `helm install -n <ns> --create-namespace`. Setting
-# this to true is for environments that want chart-managed namespaces
-# (GitOps loops where the chart is the single source of truth).
+# Helm convention is `helm install -n <ns> --create-namespace`. Flip
+# create=true for GitOps loops where the chart owns the namespace.
 namespace:
   create: false
   name: ledger
 
-# ------------------------------------------------------------------
-# ServiceAccount
-# ------------------------------------------------------------------
 serviceAccount:
   create: true
   name: ""
-  # Workload-identity bindings live here. Examples:
-  #   GKE:  iam.gke.io/gcp-service-account: ledger@PROJECT.iam.gserviceaccount.com
-  #   EKS:  eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ledger
+  # Workload-identity bindings (GKE: iam.gke.io/gcp-service-account,
+  # EKS: eks.amazonaws.com/role-arn).
   annotations: {}
 
-# ------------------------------------------------------------------
-# Replication
-# ------------------------------------------------------------------
-# replicas MUST be 1: the Postgres advisory lock (BuilderLockID =
-# 0x4F5254484F4C4F47) enforces singleton-writer at the DB level.
-# A second replica fails fast with the rolling-update conflict
-# message. Read scaling lives in cmd/ledger-reader (separate chart).
+# Singleton-writer enforced at the DB level via Postgres advisory
+# lock (BuilderLockID = 0x4F5254484F4C4F47). Do not raise replicas;
+# do not switch strategy to RollingUpdate — the second pod would
+# crash on lock contention.
 replicas: 1
-
-# Recreate, NOT RollingUpdate. Rolling update would race the
-# advisory lock; the second pod would crash immediately.
 strategy:
   type: Recreate
 
-# ------------------------------------------------------------------
-# Pod-level scheduling
-# ------------------------------------------------------------------
-# 60s gives LEDGER_PREDRAIN_GRACE (5s) + Server.Shutdown (30s) +
-# per-component close (~15-30s for tessera + WAL) headroom.
+# 60s headroom for LEDGER_PREDRAIN_GRACE (5s) + Server.Shutdown
+# (30s) + per-component close (15-30s).
 terminationGracePeriodSeconds: 60
 
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
   prometheus.io/path: "/metrics"
-
 podLabels: {}
 podSecurityContext: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# ------------------------------------------------------------------
-# Container
-# ------------------------------------------------------------------
 container:
   ports:
     http: 8080
     pprof: 6060
-
   resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: "2"
-      memory: 2Gi
-
+    requests: {cpu: 500m, memory: 512Mi}
+    limits:   {cpu: "2",  memory: 2Gi}
   securityContext: {}
-
   livenessProbe:
-    httpGet:
-      path: /healthz
-      port: http
+    httpGet: {path: /healthz, port: http}
     initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 2
-
   readinessProbe:
-    httpGet:
-      path: /readyz
-      port: http
+    httpGet: {path: /readyz, port: http}
     initialDelaySeconds: 5
     periodSeconds: 5
     timeoutSeconds: 2
     failureThreshold: 3
 
-# ------------------------------------------------------------------
-# Service
-# ------------------------------------------------------------------
 service:
   type: ClusterIP
   ports:
-    - name: http
-      port: 80
-      targetPort: http
-    - name: metrics
-      port: 8080
-      targetPort: http
+    - {name: http,    port: 80,   targetPort: http}
+    - {name: metrics, port: 8080, targetPort: http}
   annotations: {}
 
-# ------------------------------------------------------------------
-# Pod Disruption Budget
-# ------------------------------------------------------------------
-# minAvailable: 0 — singleton writer; eviction is fine if no
-# replacement is running. Keeps node-drain cycles unblocked.
 pdb:
   enabled: true
-  minAvailable: 0
+  minAvailable: 0  # singleton writer; eviction is fine.
 
-# ------------------------------------------------------------------
-# Persistent storage
-# ------------------------------------------------------------------
-# Three distinct PVCs so corruption in one (e.g., antispam) doesn't
-# force discarding the others (WAL, Tessera). Each can be
-# individually disabled (when an external storage backend handles
-# that surface) — production typically keeps all three on.
+# Three distinct PVCs so corruption in one (e.g., antispam) does
+# not force discarding the others. Each independently disable-able.
 persistence:
   storageClassName: ""
+  wal:      {enabled: true, size: 50Gi,  accessModes: [ReadWriteOnce]}
+  tessera:  {enabled: true, size: 200Gi, accessModes: [ReadWriteOnce]}
+  antispam: {enabled: true, size: 20Gi,  accessModes: [ReadWriteOnce]}
 
-  wal:
-    enabled: true
-    size: 50Gi
-    accessModes: [ReadWriteOnce]
-
-  tessera:
-    enabled: true
-    size: 200Gi
-    accessModes: [ReadWriteOnce]
-
-  antispam:
-    enabled: true
-    size: 20Gi
-    accessModes: [ReadWriteOnce]
-
-# ------------------------------------------------------------------
-# Ledger configuration (LEDGER_* env vars rendered into a ConfigMap)
-# ------------------------------------------------------------------
-# Every key here maps 1:1 to a LEDGER_* environment variable the
-# binary reads at startup (cmd/ledger/main.go). Values are
-# strings (Kubernetes ConfigMap discipline); booleans/integers
-# render as their string form.
+# LEDGER_* env vars rendered into a ConfigMap. Each key here maps
+# 1:1 to the matching env var the binary reads at startup.
 config:
   addr: ":8080"
   pprofAddr: "127.0.0.1:6060"
 
-  # Required in production. Sets LEDGER_LOG_DID. Witnesses, auditors,
-  # and gossip peers identify this ledger via this DID.
+  # Required in production. Witnesses, auditors, gossip peers all
+  # anchor on this DID.
   logDID: ""
-
-  # Optional override of LEDGER_DID. Defaults to logDID if empty.
   ledgerDID: ""
 
   tesseraStorageDir: "/var/lib/attesta/tessera"
@@ -187,9 +105,9 @@ config:
   walPath: "/var/lib/attesta/wal"
 
   byteStore:
-    backend: "gcs"     # one of: gcs | s3 | posix
+    backend: "gcs"        # gcs | s3 | posix
     prefix: "entries"
-    publicBaseURL: ""  # the credential-free CDN URL prefix
+    publicBaseURL: ""     # credential-free CDN URL prefix
     gcs:
       bucket: ""
       endpoint: ""
@@ -198,12 +116,10 @@ config:
       bucket: ""
       endpoint: ""
       region: ""
-      accessKey: ""    # consider sourcing via extraEnvFrom secrets
-      secretKey: ""
       pathStyle: false
 
   tile:
-    backend: "gcs"
+    backend: "gcs"        # gcs | posix
     bucketPrefix: "tessera/"
     serveDisable: false
 
@@ -214,73 +130,67 @@ config:
   predrainGrace: "5s"
   pgStatementTimeout: "5s"
   pgMaxConns: 0
-  maxConcurrentConns: 0  # 0 → 8 × NumCPU
+  maxConcurrentConns: 0   # 0 → 8 × NumCPU
   otlpTracesEndpoint: ""
   serviceVersion: ""
 
-# extraEnv lets operators set any LEDGER_* env var the chart's
-# first-class config block does not surface (witness endpoints,
-# gossip peers, sequencer tunables, MMD overrides, etc.).
-# Keys are the env-var name verbatim; values are strings.
+# Free-form LEDGER_* env not surfaced under config.* (witness
+# endpoints, gossip peers, MMD, sequencer tunables). Keys are env
+# var names verbatim; values are strings.
 extraEnv: {}
 
-# extraEnvFrom: free-form secret/configMap envFrom sources. Use this
-# to inject S3 credentials from an existing Secret without putting
-# them in this values.yaml.
-# Example:
-#   extraEnvFrom:
-#     - secretRef:
-#         name: ledger-s3-credentials
+# envFrom Secret/ConfigMap refs (e.g., S3 credentials).
 extraEnvFrom: []
 
-# ------------------------------------------------------------------
-# Database
-# ------------------------------------------------------------------
-# Three modes:
-#   1. postgresql.enabled = true: chart pulls in bitnami/postgresql,
-#      synthesises LEDGER_DATABASE_URL into a chart-managed Secret.
-#      REQUIRES postgresql.auth.password to be set explicitly so the
-#      same value lands in both bitnami's auth Secret and ours.
-#   2. database.externalUrl set: chart writes externalUrl into a
-#      chart-managed Secret. Suitable for managed Postgres (Cloud
-#      SQL, RDS) when the URL is known at deploy time.
-#   3. database.urlSecret.name set: chart references a pre-existing
-#      Secret. Use this when the DSN is rotated by an external
-#      operator (Vault, External Secrets) — the chart never sees
-#      the plain-text URL.
-database:
-  externalUrl: ""
-  urlSecret:
-    name: ""
-    key: "LEDGER_DATABASE_URL"
-
-# Bitnami postgresql sub-chart values. Active only when
-# postgresql.enabled is true.
+# In-cluster Postgres via the bitnami sub-chart.
+#
+# When enabled, LEDGER_DATABASE_URL is composed at pod startup
+# from auth.username, auth.database, the sub-chart's Service, and
+# the password key from the bitnami auth Secret (whether the chart
+# generates that Secret or the operator supplies one via
+# auth.existingSecret).
+#
+# All keys mirror the bitnami chart verbatim — see its README at
+# https://github.com/bitnami/charts/tree/main/bitnami/postgresql.
 postgresql:
   enabled: false
   auth:
     database: ledger
     username: ledger_app
-    # MUST be set to a non-empty value when existingSecret is empty.
-    # The chart renders this same value into the chart-managed
-    # ledger-db Secret so both ends agree.
+    # Either set inline OR set existingSecret. Inline values are
+    # picked up by both bitnami AND this chart (so a single value
+    # binding both ends agree on the password).
     password: ""
     existingSecret: ""
+    # Bitnami's canonical key name inside the auth Secret for the
+    # custom-user password. Override only if your existingSecret
+    # uses a non-default key.
+    secretKeys:
+      userPasswordKey: password
   primary:
     persistence:
       enabled: true
       size: 100Gi
 
-# ------------------------------------------------------------------
-# Production signer keys (stable identity)
-# ------------------------------------------------------------------
-# Disabled by default — the ledger generates ephemeral signing keys
-# at boot and logs a "NOT for production" warning. Suitable for
-# laptop-K8s, CI, smoke deploys.
+# External Postgres. Used when postgresql.enabled is false.
+# Pick exactly one path:
+#   - existingSecret: production. Pre-create a Secret with key
+#     LEDGER_DATABASE_URL (rotation by external-secrets, Vault, etc.).
+#   - url: dev / CI. Chart writes a Secret with this URL inline.
+externalDatabase:
+  existingSecret: ""
+  url: ""
+
+# Production stable signing identity. Disabled by default — the
+# ledger generates ephemeral keys at boot and emits a "NOT for
+# production" warning.
 #
-# For production: pre-create a Secret with two .pem files and flip
-# this block on. The Deployment will mount the Secret at mountPath
-# and set LEDGER_SIGNER_KEY_FILE + LEDGER_TESSERA_SIGNER_KEY_FILE.
+# Generate keys off-cluster:
+#   openssl ecparam -genkey -name prime256v1 -noout -out signer.pem
+#   openssl ecparam -genkey -name prime256v1 -noout -out tessera-signer.pem
+#   kubectl -n ledger create secret generic ledger-signer-keys \
+#       --from-file=signer.pem=signer.pem \
+#       --from-file=tessera-signer.pem=tessera-signer.pem
 signerKeys:
   enabled: false
   existingSecret: "ledger-signer-keys"
@@ -288,17 +198,11 @@ signerKeys:
   tesseraSignerFile: "tessera-signer.pem"
   mountPath: "/etc/ledger/keys"
 
-# ------------------------------------------------------------------
-# Prometheus Operator ServiceMonitor (optional)
-# ------------------------------------------------------------------
-# Only applied if the Prometheus Operator CRDs are installed.
+# Prometheus Operator integration (CRDs must already be installed).
 serviceMonitor:
   enabled: false
   interval: 15s
   scrapeTimeout: 10s
-  # Extra labels Prometheus Operator selects on (e.g., release: prometheus).
   labels: {}
-  # Path the operator scrapes; the ledger publishes /metrics on the
-  # http port (8080).
   path: /metrics
   port: metrics

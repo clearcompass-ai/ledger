@@ -813,7 +813,7 @@ binary + same env contract runs on:
 |---|---|---|
 | Laptop (with Docker) | `scripts/run-local.sh` | docker-compose for Postgres + fake-gcs; ledger as a host process |
 | VM / bare-metal | `systemd` | `deploy/systemd/ledger.service`; binary at `/usr/local/bin/ledger`; env at `/etc/ledger/env` |
-| Kubernetes | k8s Deployment | `deploy/k8s/ledger.yaml`; ConfigMap + Secret + 3 PVCs + Service |
+| Kubernetes | Helm | `deploy/helm/ledger/`; modular templates with optional `bitnami/postgresql` sub-chart |
 
 ### Laptop bring-up (5 minutes — REAL GCS required)
 
@@ -918,22 +918,27 @@ journalctl -u ledger -f                  # stream logs
 
 ### Kubernetes bring-up
 
+The chart at `deploy/helm/ledger/` is the only supported Kubernetes
+deployment path. It pulls in `bitnami/postgresql` from the OCI
+registry on demand or points at an external managed Postgres.
+
 ```sh
-# 1. Edit deploy/k8s/ledger.yaml — replace every <SET-AT-DEPLOY>:
-#      - log_did
-#      - byte_store_gcs_bucket
-#      - storageClassName (× 3 PVCs)
-#      - container image
-#      - DATABASE_URL secret value (use SOPS / Vault / external-secrets)
+# 1. Pull the bitnami/postgresql dependency once.
+helm dependency build deploy/helm/ledger
 
-# 2. Apply
-kubectl apply -f deploy/k8s/ledger.yaml
+# 2. Copy + edit the production overlay (fill <SET-AT-DEPLOY> placeholders).
+cp deploy/helm/ledger/values-production.example.yaml my-values.yaml
+$EDITOR my-values.yaml
 
-# 3. After first boot, apply F2 grants
-kubectl exec -n ledger deploy/ledger -- \
+# 3. Install / upgrade.
+helm upgrade --install ledger deploy/helm/ledger \
+    -n ledger --create-namespace -f my-values.yaml
+
+# 4. After first boot, apply F2 grants.
+kubectl -n ledger exec deploy/ledger -- \
   psql "$LEDGER_DATABASE_URL_ADMIN" -f /etc/ledger/grants.sql
 
-# 4. Verify
+# 5. Verify.
 kubectl -n ledger logs deploy/ledger -f
 kubectl -n ledger port-forward svc/ledger 8080
 curl http://localhost:8080/v1/log-info

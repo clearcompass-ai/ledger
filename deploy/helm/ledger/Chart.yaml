@@ -3,14 +3,14 @@ name: ledger
 description: Attesta ledger transparency log — singleton-writer Kubernetes deployment.
 type: application
 
-# Chart version. Bump this on every chart change.
-version: 0.1.0
+# Chart version. Bump on every chart change.
+version: 0.2.0
 
-# App version is the ledger image tag this chart's defaults target.
-# Override per-deployment via .Values.image.tag.
+# Tracks the ledger image tag this chart's defaults target.
+# Override per-deploy via .Values.image.tag.
 appVersion: "1.0.0"
 
-kubeVersion: ">= 1.22.0"
+kubeVersion: ">= 1.23.0"
 
 home: https://github.com/clearcompass-ai/ledger
 sources:
@@ -19,13 +19,15 @@ sources:
 maintainers:
   - name: clearcompass-ai
 
-# Bitnami Postgres pulled in only when .Values.postgresql.enabled is true.
-# Production deployments typically point at an external managed Postgres
-# (Cloud SQL, RDS, etc.) and leave this dependency disabled.
+# bitnami/postgresql sub-chart, pulled from the OCI registry that
+# bitnami publishes to as of 2024 (see the chart README:
+# `helm install … oci://registry-1.docker.io/bitnamicharts/postgresql`).
+# Off by default — production deployments typically reach an
+# external managed Postgres (Cloud SQL, RDS) via externalDatabase.
 dependencies:
   - name: postgresql
     version: "16.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
     condition: postgresql.enabled
 
 annotations:
