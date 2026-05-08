@@ -105,7 +105,7 @@ config:
   walPath: "/var/lib/attesta/wal"
 
   byteStore:
-    backend: "gcs"        # gcs | s3 | posix
+    backend: "gcs"        # gcs | s3 (the only values cmd/ledger accepts at boot)
     prefix: "entries"
     publicBaseURL: ""     # credential-free CDN URL prefix
     gcs:
