@@ -70,7 +70,6 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"golang.org/x/mod/sumdb/note"
 
 	tposixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
@@ -130,8 +129,10 @@ type AppDeps struct {
 	TileReader      *tessera.TileReader
 	Antispam        *tposixantispam.AntispamStorage
 	GossipStore     *gossipstore.BadgerStore // nil when gossip disabled
-	BuilderLock     *store.BuilderLock
-	DBBreaker       *store.Breaker
+	// BuilderLock is owned exclusively by alloc — the closer
+	// captures the local handle directly. Not held on AppDeps
+	// because no other phase reads it.
+	DBBreaker *store.Breaker
 
 	// ── Phase A: identities + signers (no Close; cross all phases) ─
 
@@ -141,9 +142,9 @@ type AppDeps struct {
 	// composition root.
 	LedgerSignerPriv *ecdsa.PrivateKey
 	LedgerDID        string
-	// TesseraSigner is the note.Signer used by the embedded
-	// Tessera personality to sign every checkpoint.
-	TesseraSigner note.Signer
+	// TesseraSigner is consumed by tessera.NewEmbeddedAppender at
+	// construction; the appender holds the only reference. Not
+	// held on AppDeps because no other phase reads it.
 	// WitnessSignerPriv is the cosign signing key. nil when
 	// witness mode is not active.
 	WitnessSignerPriv *ecdsa.PrivateKey

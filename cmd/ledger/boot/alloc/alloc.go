@@ -277,7 +277,6 @@ func allocatePostgres(ctx context.Context, cfg Config, fatal chan error, d *deps
 	if err != nil {
 		return fmt.Errorf("builder advisory lock: %w", err)
 	}
-	d.BuilderLock = lock
 	d.AppendCloser(deps.NamedCloser{
 		Name:    "builder-advisory-lock",
 		Timeout: 5 * time.Second,
@@ -380,7 +379,6 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	if err != nil {
 		return fmt.Errorf("tessera signer: %w", err)
 	}
-	d.TesseraSigner = signer
 
 	// tessera.NewEmbeddedAppender requires a note.Signer; the loader
 	// returned a NoteSigner-shaped interface. They have the same
