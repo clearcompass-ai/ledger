@@ -1,8 +1,16 @@
 {{/*
-Deployment. Singleton-writer; replicas pinned to 1 (advisory lock
-enforces this at the DB level — see values.yaml docstring on the
-"replicas" key).
+Deployment. Singleton-writer; replicas=1 enforced at the DB level
+via the Postgres advisory lock (see values.yaml).
+
+Two database modes:
+  - postgresql.enabled: pod composes LEDGER_DATABASE_URL at boot
+    from individual env vars (host, port, user, db inline; password
+    from the bitnami auth Secret). Works with both auth.password
+    and auth.existingSecret without re-rendering.
+  - external: pod reads LEDGER_DATABASE_URL directly from the
+    external Secret (operator-supplied or chart-managed inline).
 */}}
+{{- include "ledger.validateDatabase" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,14 +33,10 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # Force pod recreation whenever non-secret env or the chart-
-        # managed DB secret rotates. Helm computes a checksum over
-        # the rendered file's content; a value change → new checksum
-        # → rollout.
+        # Force pod recreation when non-secret env or the chart-
+        # managed external-DB Secret rotates.
         checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- if not .Values.database.urlSecret.name }}
         checksum/secret-db: {{ include (print $.Template.BasePath "/secret-db.yaml") . | sha256sum }}
-        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -63,6 +67,16 @@ spec:
         - name: ledger
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.postgresql.enabled }}
+          # Compose LEDGER_DATABASE_URL from individual env vars.
+          # Works for both auth.password and auth.existingSecret —
+          # the chart never has to know the password value.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              export LEDGER_DATABASE_URL="postgres://${LEDGER_DB_USER}:${LEDGER_DB_PASSWORD}@${LEDGER_DB_HOST}:${LEDGER_DB_PORT}/${LEDGER_DB_NAME}?sslmode=disable"
+              exec /ledger
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.container.ports.http }}
@@ -79,7 +93,37 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           env:
-            {{- include "ledger.podEnv" . | nindent 12 }}
+            {{- if .Values.postgresql.enabled }}
+            - name: LEDGER_DB_HOST
+              value: {{ printf "%s-postgresql" .Release.Name | quote }}
+            - name: LEDGER_DB_PORT
+              value: "5432"
+            - name: LEDGER_DB_USER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: LEDGER_DB_NAME
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: LEDGER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ledger.bitnamiSecretName" . }}
+                  key: {{ include "ledger.bitnamiPasswordKey" . }}
+            {{- else }}
+            - name: LEDGER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ledger.externalDbSecretName" . }}
+                  key: LEDGER_DATABASE_URL
+            {{- end }}
+            {{- if .Values.signerKeys.enabled }}
+            - name: LEDGER_SIGNER_KEY_FILE
+              value: {{ printf "%s/%s" .Values.signerKeys.mountPath .Values.signerKeys.signerFile | quote }}
+            - name: LEDGER_TESSERA_SIGNER_KEY_FILE
+              value: {{ printf "%s/%s" .Values.signerKeys.mountPath .Values.signerKeys.tesseraSignerFile | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
           volumeMounts:
             {{- if .Values.persistence.wal.enabled }}
             - name: wal
@@ -124,7 +168,4 @@ spec:
         - name: signer-keys
           secret:
             secretName: {{ .Values.signerKeys.existingSecret }}
-            # optional defaults to false → admission rejects the
-            # pod if the Secret is missing. Clean fail-at-apply,
-            # not a CrashLoopBackOff at runtime.
         {{- end }}
