@@ -49,7 +49,13 @@
 //
 // USAGE:
 //
+//	# Run against the SDK currently pinned in go.mod.
 //	go run ./scripts/ctx-contract-check .
+//
+//	# Run against a different published SDK version. Uses `go get`
+//	# to bump go.mod, runs the check, then restores go.mod and
+//	# go.sum on exit (success, failure, or Ctrl-C).
+//	go run ./scripts/ctx-contract-check --sdk-version v0.2.0
 //
 // EXIT CODE:
 //
@@ -57,6 +63,7 @@
 //	   the SDK interfaces it intends to implement).
 //	1  one or more structural mismatches (the SDK has changed; Ledger
 //	   needs updating).
+//	2  tool error.
 //
 // LIMITATIONS:
 //
@@ -67,8 +74,14 @@
 //
 //   - Doesn't track call-site mismatches (Ledger calls SDK function
 //     with wrong args). Those are caught by `go build` directly —
-//     this tool's value is PRE-build interface-shape validation
-//     against an SDK whose .go files are already on disk.
+//     this tool's value is PRE-build interface-shape validation.
+//
+// SAFETY (for the --sdk-version path):
+//
+//   - go.mod and go.sum are saved before `go get` modifies them and
+//     restored on every exit path (success, error, panic, SIGINT).
+//   - No external state is touched. The Go module cache caches the
+//     downloaded SDK version like any normal `go get`.
 package main
 
 import (
@@ -77,8 +90,12 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -121,18 +138,64 @@ type ifaceReport struct {
 	almostSatisfiers []almostReport
 }
 
+// main wraps run() so deferred cleanup (the SDK overlay restore)
+// always fires — `os.Exit` does NOT run deferred functions, so the
+// only safe exit path is to return from a non-main function and let
+// main do the os.Exit at the very end.
 func main() {
+	os.Exit(run())
+}
+
+func run() (exitCode int) {
 	verbose := flag.Bool("v", false, "print packages even with no satisfiers")
 	showAll := flag.Bool("all", false,
 		"include almost-satisfiers where the Ledger lacks the method entirely "+
 			"(naming coincidence). Default: only show wrong-SIGNATURE mismatches "+
 			"— these are the real migration targets.")
+	ledgerFlag := flag.String("ledger", "",
+		"path to the Ledger checkout. May also be passed as the positional "+
+			"argument (kept for back-compat). Defaults to '.' if neither is set.")
+	sdkVersion := flag.String("sdk-version", "",
+		"optional: published attesta SDK version to test against (e.g. v0.2.0). "+
+			"The tool runs `go get github.com/clearcompass-ai/attesta@<v>` to "+
+			"update go.mod for the duration of the run, then restores go.mod "+
+			"and go.sum on exit.")
 	flag.Parse()
-	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ctx-contract-check [-v] [-all] <ledger-root>")
-		os.Exit(2)
+
+	// Resolve the ledger root with a friendly fallback chain:
+	//   --ledger <path>   (preferred — flags can go anywhere)
+	//   <positional>      (back-compat; must be the FIRST non-flag arg)
+	//   "."               (default)
+	dirRaw := *ledgerFlag
+	if dirRaw == "" {
+		if flag.NArg() >= 1 {
+			dirRaw = flag.Arg(0)
+		} else {
+			dirRaw = "."
+		}
 	}
-	dir := flag.Arg(0)
+	dir, err := filepath.Abs(dirRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ctx-contract-check: resolve ledger dir: %v\n", err)
+		return 2
+	}
+
+	// Optional SDK version pin. When --sdk-version is set, save
+	// go.mod / go.sum, run `go get attesta@<v>`, install a deferred
+	// restore. Cleanup runs on every exit path because main() defers
+	// to run() rather than calling os.Exit directly.
+	if *sdkVersion != "" {
+		pin, pErr := newSDKPin(dir, *sdkVersion, *verbose)
+		if pErr != nil {
+			fmt.Fprintf(os.Stderr, "ctx-contract-check: --sdk-version: %v\n", pErr)
+			return 2
+		}
+		defer pin.restore()
+		if applyErr := pin.apply(); applyErr != nil {
+			fmt.Fprintf(os.Stderr, "ctx-contract-check: pin apply: %v\n", applyErr)
+			return 2
+		}
+	}
 
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
@@ -143,7 +206,7 @@ func main() {
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load:", err)
-		os.Exit(2)
+		return 2
 	}
 	if errs := packages.PrintErrors(pkgs); errs > 0 {
 		fmt.Fprintf(os.Stderr, "load: %d errors (continuing with partial type info)\n", errs)
@@ -175,7 +238,7 @@ func main() {
 
 	if len(pkgs) == 0 || pkgs[0].Fset == nil {
 		fmt.Fprintln(os.Stderr, "no packages loaded")
-		os.Exit(2)
+		return 2
 	}
 	fset := pkgs[0].Fset
 
@@ -446,9 +509,126 @@ func main() {
 		fmt.Println("✗ Migration mismatches detected — Ledger satisfier method signatures")
 		fmt.Println("  diverge from the SDK interface they overlap with. Each ⚠ block above")
 		fmt.Println("  is a target. Reconcile the signature, or delete the candidate type.")
-		os.Exit(1)
+		return 1
 	}
 	fmt.Println("\n✓ No structural mismatches. Every Ledger candidate aligns with the SDK.")
+	return 0
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SDK pin (--sdk-version path)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Mechanism: save Ledger's go.mod + go.sum, run
+// `go get github.com/clearcompass-ai/attesta@<version>` to bump the
+// pin, run the contract check, restore go.mod + go.sum on exit.
+// No git, no overlay, no temp dirs — just the standard module
+// resolver. The Go module cache caches the version like any normal
+// `go get`.
+
+type sdkPin struct {
+	ledgerDir string
+	version   string
+	verbose   bool
+
+	goModBackup string
+	goSumBackup string
+
+	applied bool
+
+	sigCh      chan os.Signal
+	sigStopped bool
+}
+
+const sdkModulePath = "github.com/clearcompass-ai/attesta"
+
+func newSDKPin(ledgerDir, version string, verbose bool) (*sdkPin, error) {
+	if _, err := os.Stat(filepath.Join(ledgerDir, "go.mod")); err != nil {
+		return nil, fmt.Errorf("ledger dir %q has no go.mod", ledgerDir)
+	}
+	gm, err := os.ReadFile(filepath.Join(ledgerDir, "go.mod"))
+	if err != nil {
+		return nil, fmt.Errorf("read go.mod: %w", err)
+	}
+	gs, err := os.ReadFile(filepath.Join(ledgerDir, "go.sum"))
+	if err != nil {
+		return nil, fmt.Errorf("read go.sum: %w", err)
+	}
+
+	p := &sdkPin{
+		ledgerDir:   ledgerDir,
+		version:     version,
+		verbose:     verbose,
+		goModBackup: string(gm),
+		goSumBackup: string(gs),
+	}
+
+	// SIGINT/SIGTERM → restore. Without this, Ctrl-C during `go get`
+	// leaves go.mod / go.sum bumped to the trial version.
+	p.sigCh = make(chan os.Signal, 1)
+	signal.Notify(p.sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-p.sigCh
+		fmt.Fprintln(os.Stderr, "\nctx-contract-check: interrupt received; rolling back…")
+		p.restore()
+		os.Exit(130)
+	}()
+	return p, nil
+}
+
+func (p *sdkPin) apply() error {
+	fmt.Fprintf(os.Stderr, "→ pinning %s@%s via go get…\n", sdkModulePath, p.version)
+
+	cmd := exec.Command("go", "get", sdkModulePath+"@"+p.version)
+	cmd.Dir = p.ledgerDir
+	if p.verbose {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+	} else {
+		// Always surface go-tool errors even in non-verbose mode —
+		// "module not found", "ambiguous import", etc. are the
+		// useful failure modes.
+		cmd.Stderr = os.Stderr
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go get %s@%s: %w", sdkModulePath, p.version, err)
+	}
+	p.applied = true
+	return nil
+}
+
+// restore reverts go.mod + go.sum to the saved baseline. Idempotent
+// — safe to call multiple times.
+func (p *sdkPin) restore() {
+	if p == nil || !p.applied {
+		if p != nil && !p.sigStopped {
+			signal.Stop(p.sigCh)
+			p.sigStopped = true
+		}
+		return
+	}
+	p.applied = false // idempotent guard
+
+	fmt.Fprintln(os.Stderr, "\n→ restoring go.mod / go.sum…")
+
+	gomod := filepath.Join(p.ledgerDir, "go.mod")
+	if err := os.WriteFile(gomod, []byte(p.goModBackup), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"  ✗ could not restore go.mod: %v\n"+
+				"    rescue: write the original go.mod contents back manually\n", err)
+	} else {
+		fmt.Fprintln(os.Stderr, "  ✓ go.mod restored")
+	}
+
+	gosum := filepath.Join(p.ledgerDir, "go.sum")
+	if err := os.WriteFile(gosum, []byte(p.goSumBackup), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "  ✗ could not restore go.sum: %v\n", err)
+	} else {
+		fmt.Fprintln(os.Stderr, "  ✓ go.sum restored")
+	}
+
+	signal.Stop(p.sigCh)
+	p.sigStopped = true
 }
 
 // packageDirectlyImports reports whether p imports the package at
