@@ -118,14 +118,30 @@ func DefaultLoopConfig(logDID string) LoopConfig {
 //
 // Full entry bytes (canonical + signature envelope) stay in the ledger's
 // own storage. Tessera never sees them.
+//
+// PublishCosignedCheckpoint writes the K-of-N cosigned tree head to the
+// public publication path (CDN-fronted file). Called by the builder
+// AFTER the atomic commit and AFTER witness quorum has been collected.
+// Implementations MUST write atomically (write-tmp + rename) so partial
+// state is never visible to auditors. Empty publication path on the
+// concrete implementation is a graceful no-op so dev / test runs that
+// don't set a public path still work.
 type MerkleAppender interface {
 	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 	Head() (types.TreeHead, error)
+	PublishCosignedCheckpoint(ctx context.Context, head types.CosignedTreeHead) error
 }
 
-// WitnessCosigner requests cosignatures on tree heads.
+// WitnessCosigner requests cosignatures on tree heads. On success
+// returns the assembled CosignedTreeHead so the builder can pass
+// it to MerkleAppender.PublishCosignedCheckpoint.
+//
+// Strict STH Finality: the builder MUST NOT advance Postgres state
+// (SMT mutations, builder_cursor) until this returns nil. A non-nil
+// return aborts the batch; the next builder cycle re-fetches and
+// retries the exact same sequences.
 type WitnessCosigner interface {
-	RequestCosignatures(ctx context.Context, head types.TreeHead) error
+	RequestCosignatures(ctx context.Context, head types.TreeHead) (types.CosignedTreeHead, error)
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -360,7 +376,85 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ProcessBatch: %w", err)
 	}
 
-	// ── Step 5: Atomic commit ─────────────────────────────────────────
+	// ── Step 5 (PRE-COMMIT): Append entry identities to Tessera ───────
+	//
+	// SDK alignment: send envelope.EntryIdentity(entry) — the
+	// 32-byte SHA-256 of the entry's canonical bytes. Tessera wraps
+	// our identity hash with the RFC 6962 leaf prefix (0x00) internally.
+	//
+	// Tessera is idempotent via antispam: re-Add of the same identity
+	// returns the same sequence. So if a later step fails (cosignature,
+	// commit) and the builder retries this batch, AppendLeaf produces
+	// no duplicate state.
+	//
+	// Moved BEFORE the Postgres atomic commit so the cosignature step
+	// (Step 7) can see the new head and a witness-quorum failure aborts
+	// the batch BEFORE non-idempotent Postgres state advances.
+	var lastAppendedIdx uint64
+	appendedAtLeastOne := false
+	if bl.merkle != nil {
+		for i, ewm := range metas {
+			identity, idErr := envelope.EntryIdentity(entries[i])
+			if idErr != nil {
+				return 0, fmt.Errorf("EntryIdentity seq=%d: %w",
+					ewm.Position.Sequence, idErr)
+			}
+			idx, appendErr := bl.merkle.AppendLeaf(ctx, identity[:])
+			if appendErr != nil {
+				return 0, fmt.Errorf("tessera AppendLeaf seq=%d: %w",
+					ewm.Position.Sequence, appendErr)
+			}
+			lastAppendedIdx = idx
+			appendedAtLeastOne = true
+		}
+	}
+
+	// ── Step 6 (PRE-COMMIT): Wait for Tessera Head to reflect batch ──
+	//
+	// AppendLeaf returns once the integration future resolves with an
+	// assigned index, but the signed checkpoint reflecting that index
+	// is published asynchronously by upstream Tessera (gated by
+	// CheckpointInterval). Cosigning a head that pre-dates this batch
+	// would defeat the entire pre-commit gate. Bounded poll bridges
+	// the gap between integration and checkpoint publication.
+	var head types.TreeHead
+	if appendedAtLeastOne && bl.merkle != nil {
+		var hErr error
+		head, hErr = bl.waitForHeadAtLeast(ctx, lastAppendedIdx+1)
+		if hErr != nil {
+			return 0, fmt.Errorf("wait for head: %w", hErr)
+		}
+	}
+
+	// ── Step 7 (PRE-COMMIT): Request witness cosignatures ────────────
+	//
+	// HARD STALL: a quorum failure here aborts the batch — the SMT
+	// mutations, the buffer save, and the cursor advance are all
+	// gated on this returning nil. The builder loop's outer error
+	// handler logs + backs off; the next tick re-runs the SAME batch
+	// because the cursor hasn't moved. Tessera's antispam dedups the
+	// re-AppendLeaf calls.
+	//
+	// Principle 5 (Melt-Proof) + Principle 12 (Two Clocks): when
+	// witnesses are unreachable the builder stops advancing the
+	// cursor, the sequencer's MaxBuilderLag gate fires, the WAL
+	// saturates, and HTTP admission returns 503 Retry-After. Public
+	// API behaviour reflects the network's actual readiness.
+	var cosigned types.CosignedTreeHead
+	cosignSucceeded := false
+	if bl.merkle != nil && bl.witness != nil && head.TreeSize > 0 {
+		var cosigErr error
+		cosigned, cosigErr = bl.witness.RequestCosignatures(ctx, head)
+		if cosigErr != nil {
+			if !isContextError(cosigErr) {
+				incWitnessQuorumFailures(ctx)
+			}
+			return 0, fmt.Errorf("witness cosignature: %w", cosigErr)
+		}
+		cosignSucceeded = true
+	}
+
+	// ── Step 8: Atomic commit ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
 		return 0, cErr
 	}
@@ -394,60 +488,30 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ──────────────────────────────────────────────────────────────────
-	// POST-COMMIT: Steps 6-8 are best-effort. The atomic state is safe.
+	// POST-COMMIT: best-effort publishing. Failure here doesn't roll
+	// back the durable Postgres + Tessera + tree-head-sigs state.
 	// ──────────────────────────────────────────────────────────────────
 
-	// ── Step 6: Append to Merkle tree — ENTRY IDENTITY (post-commit) ──
+	// ── Step 9: Publish cosigned checkpoint to public CDN ─────────────
 	//
-	// SDK alignment: send envelope.EntryIdentity(entry) — the
-	// 32-byte SHA-256 of the entry's canonical bytes. This is the
-	// Tessera "Entry.Identity()" value. The signature is NOT part of
-	// entry identity — multiple valid signatures over the same entry
-	// (rare but possible with detached sig schemes) must produce the
-	// same Merkle leaf.
-	//
-	// Tessera then wraps our identity hash with the RFC 6962 leaf prefix
-	// (0x00) internally. Do NOT call envelope.EntryLeafHash here — that
-	// would double-apply the prefix.
-	//
-	// Idempotency: same entry identity → same Tessera position.
-	// Crash between commit and this append → safe to re-run on restart.
-	if bl.merkle != nil {
-		for i, ewm := range metas {
-			identity, idErr := envelope.EntryIdentity(entries[i])
-			if idErr != nil {
-				// Best-effort post-commit append: malformed entry
-				// (which would have been rejected at admission)
-				// is logged and skipped. Postgres entry_index has
-				// the durable record either way.
-				bl.logger.Error("EntryIdentity failed in Merkle append",
-					"seq", ewm.Position.Sequence, "error", idErr)
-				continue
-			}
-			if _, appendErr := bl.merkle.AppendLeaf(ctx, identity[:]); appendErr != nil {
-				bl.logger.Error("Tessera append failed",
-					"seq", ewm.Position.Sequence, "error", appendErr)
+	// Strict STH Finality: the public checkpoint file the network
+	// reads from CDNs is updated ONLY here, AFTER K-of-N witnesses
+	// have signed the head. Before this point, the CDN's cosigned
+	// checkpoint reflects the previous quorum-finalized head.
+	if cosignSucceeded && bl.merkle != nil {
+		if pubErr := bl.merkle.PublishCosignedCheckpoint(ctx, cosigned); pubErr != nil {
+			if !isContextError(pubErr) {
+				bl.logger.Warn("publish cosigned checkpoint failed",
+					"tree_size", cosigned.TreeSize, "error", pubErr)
 			}
 		}
 	}
 
-	// ── Step 7: Publish derivation commitment ─────────────────────────
+	// ── Step 10: Publish derivation commitment ────────────────────────
 	if bl.commitPub != nil && len(positions) > 0 {
 		bl.commitPub.MaybePublish(ctx, len(seqs),
 			positions[0], positions[len(positions)-1],
 			priorRoot, result)
-	}
-
-	// ── Step 8: Request witness cosignatures ──────────────────────────
-	if bl.merkle != nil && bl.witness != nil {
-		head, headErr := bl.merkle.Head()
-		if headErr == nil && head.TreeSize > 0 {
-			if cosigErr := bl.witness.RequestCosignatures(ctx, head); cosigErr != nil {
-				if !isContextError(cosigErr) {
-					bl.logger.Warn("witness cosignature request failed", "error", cosigErr)
-				}
-			}
-		}
 	}
 
 	if result.UpdatedBuffer != nil {
@@ -481,4 +545,47 @@ func (bl *BuilderLoop) Stats() (batches, entries, errs int64) {
 
 func isContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// headWaitInterval and headWaitMax bound waitForHeadAtLeast.
+// Tessera's CheckpointInterval default is 1s; we tolerate up to
+// 5s of integration-future-resolved-but-checkpoint-not-yet-published
+// before failing the batch and letting the builder retry.
+const (
+	headWaitInterval = 100 * time.Millisecond
+	headWaitMax      = 5 * time.Second
+)
+
+// waitForHeadAtLeast polls the underlying MerkleAppender's Head()
+// until TreeSize >= minSize or the bounded deadline expires. Used
+// after a batch of AppendLeaf calls to wait for Tessera's signed
+// checkpoint to catch up to the leaves we just added — the head
+// the witnesses are asked to cosign MUST cover this batch.
+//
+// Bounded: returns an error after headWaitMax so a stuck Tessera
+// publisher doesn't block the builder forever. The next builder
+// cycle retries; AppendLeaf is idempotent.
+func (bl *BuilderLoop) waitForHeadAtLeast(ctx context.Context, minSize uint64) (types.TreeHead, error) {
+	deadline := time.Now().Add(headWaitMax)
+	for {
+		head, err := bl.merkle.Head()
+		if err == nil && head.TreeSize >= minSize {
+			return head, nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return types.TreeHead{}, fmt.Errorf(
+					"head not at size >= %d after %v: %w",
+					minSize, headWaitMax, err)
+			}
+			return types.TreeHead{}, fmt.Errorf(
+				"head not at size >= %d after %v (stuck at %d)",
+				minSize, headWaitMax, head.TreeSize)
+		}
+		select {
+		case <-ctx.Done():
+			return types.TreeHead{}, ctx.Err()
+		case <-time.After(headWaitInterval):
+		}
+	}
 }

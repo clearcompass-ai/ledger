@@ -72,11 +72,39 @@ import (
 // per-entry error is logged + counted; iteration continues. Per-
 // entry work runs concurrently up to cfg.MaxInFlight, with the
 // drain blocking until every worker completes.
+//
+// BACKPRESSURE STALL: when a LagReader is wired and the observed
+// builder lag (admitted entries minus committed-by-builder
+// entries) is at-or-above cfg.MaxBuilderLag, this cycle returns
+// without consuming from the WAL. The WAL queue then saturates
+// to wal.QueueSize and admission returns 503 Service Unavailable
+// — the physical wire from a stalled builder to honest HTTP
+// backpressure. The next cycle re-checks: as soon as the builder
+// catches up below the threshold, drain resumes.
 func (s *Sequencer) drainOnce(ctx context.Context) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
 	s.metrics.drainCycles.Add(1)
+
+	if s.lagReader != nil && s.cfg.MaxBuilderLag > 0 {
+		lag, err := s.lagReader.Lag(ctx)
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return
+		case err != nil:
+			// Don't fail the cycle on a transient Postgres blip; the
+			// gate is best-effort and the next tick re-checks. Log
+			// once at warn so chronic failures surface.
+			s.logger.Warn("sequencer: lag probe failed; skipping gate",
+				"error", err)
+		case uint64(lag) >= s.cfg.MaxBuilderLag:
+			s.metrics.backpressureStalls.Add(1)
+			s.logger.Warn("sequencer: backpressure stall — builder lag at limit",
+				"lag", lag, "max_builder_lag", s.cfg.MaxBuilderLag)
+			return
+		}
+	}
 
 	// Semaphore caps in-flight processOne workers. Buffered to
 	// MaxInFlight; sending blocks the iterator when the sem is full.

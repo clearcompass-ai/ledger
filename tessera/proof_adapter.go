@@ -76,9 +76,17 @@ import (
 // invariant — proof methods don't care which appender a leaf went
 // through, they only care about the immutable tiles those
 // integrations produced.
+//
+// PublishCosignedCheckpoint writes the K-of-N CosignedTreeHead to
+// the backend's configured public path (see
+// tessera.AppenderOptions.PublicCheckpointPath). Backends MUST
+// implement this method (returning a graceful nil when no public
+// path is configured) so the builder loop can forward the call
+// uniformly across embedded and read-only adapters.
 type AppenderBackend interface {
 	AppendLeaf(ctx context.Context, data []byte) (uint64, error)
 	Head() (types.TreeHead, error)
+	PublishCosignedCheckpoint(ctx context.Context, head types.CosignedTreeHead) error
 }
 
 // TesseraAdapter implements the ledger's MerkleAppender interface
@@ -141,6 +149,15 @@ func (a *TesseraAdapter) AppendLeaf(ctx context.Context, data []byte) (uint64, e
 // depending on which AppenderBackend implementation was wired).
 func (a *TesseraAdapter) Head() (types.TreeHead, error) {
 	return a.backend.Head()
+}
+
+// PublishCosignedCheckpoint forwards the K-of-N cosigned head to
+// the underlying backend's public-checkpoint writer. Builder loop
+// uses this only after a successful witness quorum collect.
+func (a *TesseraAdapter) PublishCosignedCheckpoint(
+	ctx context.Context, head types.CosignedTreeHead,
+) error {
+	return a.backend.PublishCosignedCheckpoint(ctx, head)
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -522,6 +522,13 @@ func composeTileHandlers(cfg Config, d *deps.AppDeps) (http.HandlerFunc, http.Ha
 // composeSequencer builds the Sequencer with optional gossip-store
 // adapters (split-id index, entry-lookup projection, boot replayer)
 // when gossip is enabled.
+//
+// Backpressure Stall: the sequencer is wired with a LagReader
+// (store.SequenceCursor) so its drainOnce gates on builder lag.
+// When the builder stalls (e.g., witness quorum failure), the
+// sequencer stops draining the WAL and 503s flow to the public
+// API — Principle 5 (Melt-Proof) is mathematically secured by
+// the WAL's bounded queue.
 func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 	pool := d.PgPool.DB
 	seq := sequencer.NewSequencer(d.WALCommitter, d.TesseraEmbedded, pool, d.EntryStore, sequencer.Config{
@@ -529,6 +536,7 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 		MaxInFlight:  cfg.SequencerMaxInFlight,
 		Logger:       d.Logger,
 	})
+	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
 	if d.GossipStore != nil {
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(d.GossipStore))
