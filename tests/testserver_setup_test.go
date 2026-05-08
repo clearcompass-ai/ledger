@@ -256,7 +256,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 	cryptoCommitDeps := &api.CryptographicCommitmentDeps{
-		Fetcher: store.NewPostgresCommitmentFetcher(ctx, pool, entryBytes, testLogDID),
+		Fetcher: store.NewPostgresCommitmentFetcher(pool, entryBytes, testLogDID),
 		Logger:  logger,
 	}
 

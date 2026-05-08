@@ -91,7 +91,7 @@ func TestEquivocation_EndToEnd(t *testing.T) {
 			seqB: payloadB,
 		},
 	}
-	fetcher := store.NewPostgresCommitmentFetcher(ctx, pool, reader, testLogDID)
+	fetcher := store.NewPostgresCommitmentFetcher(pool, reader, testLogDID)
 	handler := opapi.NewCommitmentLookupHandler(&opapi.CryptographicCommitmentDeps{
 		Fetcher: fetcher,
 		Logger:  slog.Default(),
@@ -133,7 +133,7 @@ func TestEquivocation_EndToEnd(t *testing.T) {
 
 	// ── Guarantee 3: SDK CommitmentEquivocationError shape ───────
 	entries, fetchErr := fetcher.FindCommitmentEntries(
-		artifact.PREGrantCommitmentSchemaID, splitID)
+		ctx, artifact.PREGrantCommitmentSchemaID, splitID)
 	if fetchErr != nil {
 		t.Fatalf("fetcher.FindCommitmentEntries: %v", fetchErr)
 	}

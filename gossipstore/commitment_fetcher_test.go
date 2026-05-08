@@ -39,7 +39,7 @@ func TestNewBadgerCommitmentFetcher_NilStorePanics(t *testing.T) {
 func TestBadgerCommitmentFetcher_RejectsEmptySchemaID(t *testing.T) {
 	st := testStore(t)
 	f := NewBadgerCommitmentFetcher(st)
-	if _, err := f.FindCommitmentEntries("", [32]byte{0x01}); err == nil {
+	if _, err := f.FindCommitmentEntries(context.Background(), "", [32]byte{0x01}); err == nil {
 		t.Error("expected error on empty schemaID")
 	}
 }
@@ -47,7 +47,7 @@ func TestBadgerCommitmentFetcher_RejectsEmptySchemaID(t *testing.T) {
 func TestBadgerCommitmentFetcher_NoMatch_ReturnsNil(t *testing.T) {
 	st := testStore(t)
 	f := NewBadgerCommitmentFetcher(st)
-	got, err := f.FindCommitmentEntries("schema-x", [32]byte{0xff})
+	got, err := f.FindCommitmentEntries(context.Background(), "schema-x", [32]byte{0xff})
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestBadgerCommitmentFetcher_SingleRow_RoundTrips(t *testing.T) {
 	}
 
 	f := NewBadgerCommitmentFetcher(st)
-	got, err := f.FindCommitmentEntries(schema, split)
+	got, err := f.FindCommitmentEntries(ctx, schema, split)
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBadgerCommitmentFetcher_MultipleRows_SeqAscending(t *testing.T) {
 	}
 
 	f := NewBadgerCommitmentFetcher(st)
-	got, err := f.FindCommitmentEntries(schema, split)
+	got, err := f.FindCommitmentEntries(ctx, schema, split)
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestBadgerCommitmentFetcher_PerRowLogDID(t *testing.T) {
 	}
 
 	f := NewBadgerCommitmentFetcher(st)
-	got, err := f.FindCommitmentEntries(schema, split)
+	got, err := f.FindCommitmentEntries(ctx, schema, split)
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestBadgerCommitmentFetcher_CanonicalBytesAreCopies(t *testing.T) {
 	}
 
 	f := NewBadgerCommitmentFetcher(st)
-	got, err := f.FindCommitmentEntries(schema, split)
+	got, err := f.FindCommitmentEntries(ctx, schema, split)
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestBadgerCommitmentFetcher_CanonicalBytesAreCopies(t *testing.T) {
 	// fetch — the fetcher returns independent copies.
 	got[0].CanonicalBytes[0] = 0xff
 
-	got2, err := f.FindCommitmentEntries(schema, split)
+	got2, err := f.FindCommitmentEntries(ctx, schema, split)
 	if err != nil {
 		t.Fatalf("FindCommitmentEntries (2): %v", err)
 	}
