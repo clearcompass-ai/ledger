@@ -1,0 +1,56 @@
+Attesta ledger {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+NEXT STEPS
+==========
+
+1. Verify the pod is healthy:
+     kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "ledger.fullname" . }} -f
+
+2. Run the post-migration grants (one-time, after first boot):
+     kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "ledger.fullname" . }} -- \
+       psql "$LEDGER_DATABASE_URL_ADMIN" -f /etc/ledger/grants.sql
+
+3. Confirm /version + /v1/log-info via port-forward:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ledger.fullname" . }} 8080:80
+     curl http://127.0.0.1:8080/version
+     curl http://127.0.0.1:8080/v1/log-info
+
+CONFIG SUMMARY
+==============
+{{- if .Values.postgresql.enabled }}
+- Postgres: bitnami/postgresql sub-chart (database={{ .Values.postgresql.auth.database }}, user={{ .Values.postgresql.auth.username }})
+{{- else if .Values.database.urlSecret.name }}
+- Postgres: external; URL sourced from Secret {{ .Values.database.urlSecret.name }}/{{ default "LEDGER_DATABASE_URL" .Values.database.urlSecret.key }}
+{{- else }}
+- Postgres: external; URL set inline (chart-managed Secret {{ include "ledger.fullname" . }}-db)
+{{- end }}
+{{- if .Values.signerKeys.enabled }}
+- Signer keys: enabled (Secret={{ .Values.signerKeys.existingSecret }}, mount={{ .Values.signerKeys.mountPath }})
+{{- else }}
+- Signer keys: EPHEMERAL (boot generates fresh keys; logs a "NOT for production" warning)
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+- Prometheus: ServiceMonitor created (interval={{ .Values.serviceMonitor.interval }})
+{{- end }}
+- ByteStore backend: {{ .Values.config.byteStore.backend }}
+- Tile backend:      {{ .Values.config.tile.backend }}
+
+PRODUCTION CHECKLIST
+====================
+{{- if not .Values.signerKeys.enabled }}
+[ ] Generate ECDSA P-256 signer keys and create the Secret:
+      openssl ecparam -genkey -name prime256v1 -noout -out signer.pem
+      openssl ecparam -genkey -name prime256v1 -noout -out tessera-signer.pem
+      kubectl -n {{ .Release.Namespace }} create secret generic ledger-signer-keys \
+          --from-file=signer.pem=signer.pem \
+          --from-file=tessera-signer.pem=tessera-signer.pem
+    Then upgrade with --set signerKeys.enabled=true (or values overlay).
+{{- end }}
+{{- if not .Values.config.logDID }}
+[ ] Set config.logDID to the production DID (witnesses + auditors anchor on this).
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+[ ] Move from in-cluster bitnami Postgres to a managed instance (Cloud SQL, RDS).
+    Disable postgresql.enabled and supply database.urlSecret.name.
+{{- end }}

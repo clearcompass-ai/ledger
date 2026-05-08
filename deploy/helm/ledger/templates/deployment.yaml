@@ -1,0 +1,130 @@
+{{/*
+Deployment. Singleton-writer; replicas pinned to 1 (advisory lock
+enforces this at the DB level — see values.yaml docstring on the
+"replicas" key).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ledger.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: {{ .Values.strategy.type }}
+  selector:
+    matchLabels:
+      {{- include "ledger.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ledger.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Force pod recreation whenever non-secret env or the chart-
+        # managed DB secret rotates. Helm computes a checksum over
+        # the rendered file's content; a value change → new checksum
+        # → rollout.
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.database.urlSecret.name }}
+        checksum/secret-db: {{ include (print $.Template.BasePath "/secret-db.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ledger.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ledger
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.container.ports.http }}
+            - name: pprof
+              containerPort: {{ .Values.container.ports.pprof }}
+          {{- with .Values.container.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ledger.fullname" . }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            {{- include "ledger.podEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.wal.enabled }}
+            - name: wal
+              mountPath: {{ .Values.config.walPath }}
+            {{- end }}
+            {{- if .Values.persistence.tessera.enabled }}
+            - name: tessera
+              mountPath: {{ .Values.config.tesseraStorageDir }}
+            {{- end }}
+            {{- if .Values.persistence.antispam.enabled }}
+            - name: antispam
+              mountPath: {{ .Values.config.tesseraAntispamPath }}
+            {{- end }}
+            {{- if .Values.signerKeys.enabled }}
+            - name: signer-keys
+              mountPath: {{ .Values.signerKeys.mountPath }}
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.container.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.container.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.container.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.persistence.wal.enabled }}
+        - name: wal
+          persistentVolumeClaim:
+            claimName: {{ include "ledger.fullname" . }}-wal
+        {{- end }}
+        {{- if .Values.persistence.tessera.enabled }}
+        - name: tessera
+          persistentVolumeClaim:
+            claimName: {{ include "ledger.fullname" . }}-tessera
+        {{- end }}
+        {{- if .Values.persistence.antispam.enabled }}
+        - name: antispam
+          persistentVolumeClaim:
+            claimName: {{ include "ledger.fullname" . }}-antispam
+        {{- end }}
+        {{- if .Values.signerKeys.enabled }}
+        - name: signer-keys
+          secret:
+            secretName: {{ .Values.signerKeys.existingSecret }}
+            # optional defaults to false → admission rejects the
+            # pod if the Secret is missing. Clean fail-at-apply,
+            # not a CrashLoopBackOff at runtime.
+        {{- end }}

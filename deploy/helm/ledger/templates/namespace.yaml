@@ -1,0 +1,13 @@
+{{/*
+Optional Namespace resource. Off by default; the conventional path
+is `helm install -n <ns> --create-namespace`. Flip namespace.create
+to true for GitOps loops where the chart owns the namespace.
+*/}}
+{{- if .Values.namespace.create -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace.name }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+{{- end }}

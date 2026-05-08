@@ -1,0 +1,73 @@
+{{/*
+Three PVCs in one file (logical grouping; each independently
+toggleable via persistence.<volume>.enabled).
+
+Distinct PVCs because a corruption in one (e.g., antispam) must
+not force discarding the others (WAL, Tessera). storageClassName
+is shared but per-PVC overrides are easy to add if a deployment
+needs faster IOPS for WAL specifically.
+*/}}
+
+{{- $sc := .Values.persistence.storageClassName -}}
+
+{{- if .Values.persistence.wal.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ledger.fullname" . }}-wal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wal
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.wal.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.wal.size }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+---
+{{- end }}
+
+{{- if .Values.persistence.tessera.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ledger.fullname" . }}-tessera
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tessera
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.tessera.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.tessera.size }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+---
+{{- end }}
+
+{{- if .Values.persistence.antispam.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ledger.fullname" . }}-antispam
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+    app.kubernetes.io/component: antispam
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.antispam.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.antispam.size }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+{{- end }}

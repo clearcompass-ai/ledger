@@ -1,0 +1,6 @@
+# Dependency tarballs fetched by `helm dependency build`. Operators
+# run that command after cloning; the tarballs are pinned by digest
+# in Chart.lock, so committing them adds binary churn without
+# improving reproducibility.
+charts/*.tgz
+charts/*.tar.gz

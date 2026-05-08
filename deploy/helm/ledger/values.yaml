@@ -1,0 +1,304 @@
+# =============================================================================
+# values.yaml — Attesta ledger Helm chart defaults
+#
+# OVERVIEW
+#   Every knob the ledger Deployment, Service, PVCs, ServiceAccount,
+#   PodDisruptionBudget, ConfigMap, ServiceMonitor, and the optional
+#   bitnami/postgresql dependency expose. The defaults here are
+#   production-shape but stop short of binding cloud-specific identifiers
+#   (bucket names, log DID, image tag) — those are required overrides.
+#
+#   See values-production.example.yaml for a worked-out production
+#   overlay including signer-key wiring, workload-identity binding,
+#   and ServiceMonitor.
+# =============================================================================
+
+# ------------------------------------------------------------------
+# Image
+# ------------------------------------------------------------------
+image:
+  repository: ghcr.io/clearcompass-ai/ledger
+  # Empty tag falls back to .Chart.AppVersion. Set explicitly per-deploy.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Override the chart-derived names. Both default to "" (auto-derive from
+# .Release.Name + chart name).
+nameOverride: ""
+fullnameOverride: ""
+
+# ------------------------------------------------------------------
+# Namespace
+# ------------------------------------------------------------------
+# Helm convention is `helm install -n <ns> --create-namespace`. Setting
+# this to true is for environments that want chart-managed namespaces
+# (GitOps loops where the chart is the single source of truth).
+namespace:
+  create: false
+  name: ledger
+
+# ------------------------------------------------------------------
+# ServiceAccount
+# ------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  # Workload-identity bindings live here. Examples:
+  #   GKE:  iam.gke.io/gcp-service-account: ledger@PROJECT.iam.gserviceaccount.com
+  #   EKS:  eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/ledger
+  annotations: {}
+
+# ------------------------------------------------------------------
+# Replication
+# ------------------------------------------------------------------
+# replicas MUST be 1: the Postgres advisory lock (BuilderLockID =
+# 0x4F5254484F4C4F47) enforces singleton-writer at the DB level.
+# A second replica fails fast with the rolling-update conflict
+# message. Read scaling lives in cmd/ledger-reader (separate chart).
+replicas: 1
+
+# Recreate, NOT RollingUpdate. Rolling update would race the
+# advisory lock; the second pod would crash immediately.
+strategy:
+  type: Recreate
+
+# ------------------------------------------------------------------
+# Pod-level scheduling
+# ------------------------------------------------------------------
+# 60s gives LEDGER_PREDRAIN_GRACE (5s) + Server.Shutdown (30s) +
+# per-component close (~15-30s for tessera + WAL) headroom.
+terminationGracePeriodSeconds: 60
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+podSecurityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ------------------------------------------------------------------
+# Container
+# ------------------------------------------------------------------
+container:
+  ports:
+    http: 8080
+    pprof: 6060
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  securityContext: {}
+
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# ------------------------------------------------------------------
+# Service
+# ------------------------------------------------------------------
+service:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: metrics
+      port: 8080
+      targetPort: http
+  annotations: {}
+
+# ------------------------------------------------------------------
+# Pod Disruption Budget
+# ------------------------------------------------------------------
+# minAvailable: 0 — singleton writer; eviction is fine if no
+# replacement is running. Keeps node-drain cycles unblocked.
+pdb:
+  enabled: true
+  minAvailable: 0
+
+# ------------------------------------------------------------------
+# Persistent storage
+# ------------------------------------------------------------------
+# Three distinct PVCs so corruption in one (e.g., antispam) doesn't
+# force discarding the others (WAL, Tessera). Each can be
+# individually disabled (when an external storage backend handles
+# that surface) — production typically keeps all three on.
+persistence:
+  storageClassName: ""
+
+  wal:
+    enabled: true
+    size: 50Gi
+    accessModes: [ReadWriteOnce]
+
+  tessera:
+    enabled: true
+    size: 200Gi
+    accessModes: [ReadWriteOnce]
+
+  antispam:
+    enabled: true
+    size: 20Gi
+    accessModes: [ReadWriteOnce]
+
+# ------------------------------------------------------------------
+# Ledger configuration (LEDGER_* env vars rendered into a ConfigMap)
+# ------------------------------------------------------------------
+# Every key here maps 1:1 to a LEDGER_* environment variable the
+# binary reads at startup (cmd/ledger/main.go). Values are
+# strings (Kubernetes ConfigMap discipline); booleans/integers
+# render as their string form.
+config:
+  addr: ":8080"
+  pprofAddr: "127.0.0.1:6060"
+
+  # Required in production. Sets LEDGER_LOG_DID. Witnesses, auditors,
+  # and gossip peers identify this ledger via this DID.
+  logDID: ""
+
+  # Optional override of LEDGER_DID. Defaults to logDID if empty.
+  ledgerDID: ""
+
+  tesseraStorageDir: "/var/lib/attesta/tessera"
+  tesseraAntispamPath: "/var/lib/attesta/antispam"
+  walPath: "/var/lib/attesta/wal"
+
+  byteStore:
+    backend: "gcs"     # one of: gcs | s3 | posix
+    prefix: "entries"
+    publicBaseURL: ""  # the credential-free CDN URL prefix
+    gcs:
+      bucket: ""
+      endpoint: ""
+      anonymous: false
+    s3:
+      bucket: ""
+      endpoint: ""
+      region: ""
+      accessKey: ""    # consider sourcing via extraEnvFrom secrets
+      secretKey: ""
+      pathStyle: false
+
+  tile:
+    backend: "gcs"
+    bucketPrefix: "tessera/"
+    serveDisable: false
+
+  metrics:
+    enable: true
+    environment: "production"
+
+  predrainGrace: "5s"
+  pgStatementTimeout: "5s"
+  pgMaxConns: 0
+  maxConcurrentConns: 0  # 0 → 8 × NumCPU
+  otlpTracesEndpoint: ""
+  serviceVersion: ""
+
+# extraEnv lets operators set any LEDGER_* env var the chart's
+# first-class config block does not surface (witness endpoints,
+# gossip peers, sequencer tunables, MMD overrides, etc.).
+# Keys are the env-var name verbatim; values are strings.
+extraEnv: {}
+
+# extraEnvFrom: free-form secret/configMap envFrom sources. Use this
+# to inject S3 credentials from an existing Secret without putting
+# them in this values.yaml.
+# Example:
+#   extraEnvFrom:
+#     - secretRef:
+#         name: ledger-s3-credentials
+extraEnvFrom: []
+
+# ------------------------------------------------------------------
+# Database
+# ------------------------------------------------------------------
+# Three modes:
+#   1. postgresql.enabled = true: chart pulls in bitnami/postgresql,
+#      synthesises LEDGER_DATABASE_URL into a chart-managed Secret.
+#      REQUIRES postgresql.auth.password to be set explicitly so the
+#      same value lands in both bitnami's auth Secret and ours.
+#   2. database.externalUrl set: chart writes externalUrl into a
+#      chart-managed Secret. Suitable for managed Postgres (Cloud
+#      SQL, RDS) when the URL is known at deploy time.
+#   3. database.urlSecret.name set: chart references a pre-existing
+#      Secret. Use this when the DSN is rotated by an external
+#      operator (Vault, External Secrets) — the chart never sees
+#      the plain-text URL.
+database:
+  externalUrl: ""
+  urlSecret:
+    name: ""
+    key: "LEDGER_DATABASE_URL"
+
+# Bitnami postgresql sub-chart values. Active only when
+# postgresql.enabled is true.
+postgresql:
+  enabled: false
+  auth:
+    database: ledger
+    username: ledger_app
+    # MUST be set to a non-empty value when existingSecret is empty.
+    # The chart renders this same value into the chart-managed
+    # ledger-db Secret so both ends agree.
+    password: ""
+    existingSecret: ""
+  primary:
+    persistence:
+      enabled: true
+      size: 100Gi
+
+# ------------------------------------------------------------------
+# Production signer keys (stable identity)
+# ------------------------------------------------------------------
+# Disabled by default — the ledger generates ephemeral signing keys
+# at boot and logs a "NOT for production" warning. Suitable for
+# laptop-K8s, CI, smoke deploys.
+#
+# For production: pre-create a Secret with two .pem files and flip
+# this block on. The Deployment will mount the Secret at mountPath
+# and set LEDGER_SIGNER_KEY_FILE + LEDGER_TESSERA_SIGNER_KEY_FILE.
+signerKeys:
+  enabled: false
+  existingSecret: "ledger-signer-keys"
+  signerFile: "signer.pem"
+  tesseraSignerFile: "tessera-signer.pem"
+  mountPath: "/etc/ledger/keys"
+
+# ------------------------------------------------------------------
+# Prometheus Operator ServiceMonitor (optional)
+# ------------------------------------------------------------------
+# Only applied if the Prometheus Operator CRDs are installed.
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  # Extra labels Prometheus Operator selects on (e.g., release: prometheus).
+  labels: {}
+  # Path the operator scrapes; the ledger publishes /metrics on the
+  # http port (8080).
+  path: /metrics
+  port: metrics

@@ -1,0 +1,27 @@
+{{/*
+Prometheus Operator ServiceMonitor. Only emitted when
+serviceMonitor.enabled is true. The Operator's CRD
+(monitoring.coreos.com/v1) MUST be installed in the cluster
+beforehand; otherwise apply will fail with "no matches for kind".
+*/}}
+{{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ledger.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ledger.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: {{ .Values.serviceMonitor.port }}
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

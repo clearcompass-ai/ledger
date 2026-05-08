@@ -1,0 +1,71 @@
+{{/*
+Non-secret LEDGER_* environment variables. Sourced into the
+container via envFrom (see deployment.yaml). Secret values
+(LEDGER_DATABASE_URL, signer-key paths) live elsewhere.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ledger.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ledger.labels" . | nindent 4 }}
+data:
+  LEDGER_ADDR: {{ .Values.config.addr | quote }}
+  LEDGER_PPROF_ADDR: {{ .Values.config.pprofAddr | quote }}
+  {{- if .Values.config.logDID }}
+  LEDGER_LOG_DID: {{ .Values.config.logDID | quote }}
+  {{- end }}
+  {{- if .Values.config.ledgerDID }}
+  LEDGER_DID: {{ .Values.config.ledgerDID | quote }}
+  {{- end }}
+  LEDGER_TESSERA_STORAGE_DIR: {{ .Values.config.tesseraStorageDir | quote }}
+  LEDGER_TESSERA_ANTISPAM_PATH: {{ .Values.config.tesseraAntispamPath | quote }}
+  LEDGER_WAL_PATH: {{ .Values.config.walPath | quote }}
+
+  LEDGER_BYTE_STORE_BACKEND: {{ .Values.config.byteStore.backend | quote }}
+  LEDGER_BYTE_STORE_PREFIX: {{ .Values.config.byteStore.prefix | quote }}
+  {{- if .Values.config.byteStore.publicBaseURL }}
+  LEDGER_BYTE_STORE_PUBLIC_BASE_URL: {{ .Values.config.byteStore.publicBaseURL | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.gcs.bucket }}
+  LEDGER_BYTE_STORE_GCS_BUCKET: {{ .Values.config.byteStore.gcs.bucket | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.gcs.endpoint }}
+  LEDGER_BYTE_STORE_GCS_ENDPOINT: {{ .Values.config.byteStore.gcs.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.gcs.anonymous }}
+  LEDGER_BYTE_STORE_GCS_ANONYMOUS: "true"
+  {{- end }}
+  {{- if .Values.config.byteStore.s3.bucket }}
+  LEDGER_BYTE_STORE_S3_BUCKET: {{ .Values.config.byteStore.s3.bucket | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.s3.endpoint }}
+  LEDGER_BYTE_STORE_S3_ENDPOINT: {{ .Values.config.byteStore.s3.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.s3.region }}
+  LEDGER_BYTE_STORE_S3_REGION: {{ .Values.config.byteStore.s3.region | quote }}
+  {{- end }}
+  {{- if .Values.config.byteStore.s3.pathStyle }}
+  LEDGER_BYTE_STORE_S3_PATH_STYLE: "true"
+  {{- end }}
+
+  LEDGER_TILE_BACKEND: {{ .Values.config.tile.backend | quote }}
+  LEDGER_TILE_BUCKET_PREFIX: {{ .Values.config.tile.bucketPrefix | quote }}
+  {{- if .Values.config.tile.serveDisable }}
+  LEDGER_TILE_SERVE_DISABLE: "true"
+  {{- end }}
+
+  LEDGER_METRICS_ENABLE: {{ ternary "true" "false" .Values.config.metrics.enable | quote }}
+  LEDGER_METRICS_ENVIRONMENT: {{ .Values.config.metrics.environment | quote }}
+  {{- if .Values.config.serviceVersion }}
+  LEDGER_SERVICE_VERSION: {{ .Values.config.serviceVersion | quote }}
+  {{- end }}
+
+  LEDGER_PREDRAIN_GRACE: {{ .Values.config.predrainGrace | quote }}
+  LEDGER_PG_STATEMENT_TIMEOUT: {{ .Values.config.pgStatementTimeout | quote }}
+  LEDGER_PG_MAX_CONNS: {{ .Values.config.pgMaxConns | quote }}
+  LEDGER_MAX_CONCURRENT_CONNS: {{ .Values.config.maxConcurrentConns | quote }}
+  {{- if .Values.config.otlpTracesEndpoint }}
+  LEDGER_OTLP_TRACES_ENDPOINT: {{ .Values.config.otlpTracesEndpoint | quote }}
+  {{- end }}
