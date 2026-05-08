@@ -71,10 +71,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,6 +138,22 @@ type AppenderOptions struct {
 	// of admission front-ends. Defaults to
 	// uptessera.DefaultAntispamInMemorySize when zero.
 	AntispamInMemEntries uint
+
+	// PublicCheckpointPath is the absolute filesystem path the
+	// builder loop publishes the K-of-N CosignedTreeHead to after
+	// every commit cycle that successfully collects quorum. The
+	// CDN serves THIS file as the network's authoritative tree
+	// state — auditors fetch it to verify the head is finalized
+	// (i.e., a quorum of witnesses signed the same RootHash at
+	// this TreeSize). Distinct from upstream Tessera's auto-
+	// published `checkpoint` file (which carries only the origin
+	// signature and reflects only Tessera's internal integration
+	// state).
+	//
+	// Empty = no public publication; PublishCosignedCheckpoint is
+	// a no-op. Acceptable for tests and dev runs; production wiring
+	// MUST set a non-empty path.
+	PublicCheckpointPath string
 }
 
 // applyDefaults fills zero-valued fields with safe defaults so
@@ -167,6 +185,11 @@ type EmbeddedAppender struct {
 	appender *uptessera.Appender
 	reader   uptessera.LogReader
 	shutdown func(ctx context.Context) error
+
+	// publicCheckpointPath is the absolute path
+	// PublishCosignedCheckpoint writes the JSON-serialised
+	// CosignedTreeHead to. Empty = no-op.
+	publicCheckpointPath string
 
 	logger *slog.Logger
 
@@ -225,10 +248,11 @@ func NewEmbeddedAppender(
 	)
 
 	return &EmbeddedAppender{
-		appender: appender,
-		reader:   reader,
-		shutdown: shutdown,
-		logger:   logger,
+		appender:             appender,
+		reader:               reader,
+		shutdown:             shutdown,
+		publicCheckpointPath: opts.PublicCheckpointPath,
+		logger:               logger,
 	}, nil
 }
 
@@ -288,6 +312,83 @@ func (e *EmbeddedAppender) Head() (types.TreeHead, error) {
 // into the LogReader directly.
 func (e *EmbeddedAppender) Reader() uptessera.LogReader {
 	return e.reader
+}
+
+// PublishCosignedCheckpoint writes the K-of-N CosignedTreeHead to
+// the configured public-checkpoint path. The write is atomic
+// (write-tmp + rename) so auditors hitting the CDN never observe
+// a partial file. Idempotent under retry: republishing a head at
+// the same TreeSize replaces the file in place.
+//
+// Strict STH Finality: the builder loop calls this AFTER its
+// atomic Postgres commit AND AFTER witness quorum is collected.
+// The path it writes is the network's authoritative tree state —
+// distinct from upstream Tessera's `checkpoint` file (origin-sig
+// only).
+//
+// Empty publicCheckpointPath is a graceful no-op (returns nil) so
+// dev / test runs without a public path still build cleanly.
+// TreeSize == 0 returns an explicit error rather than writing an
+// empty checkpoint (production code should never call with a
+// zero-size head; defensive).
+//
+// ctx is honoured for cancellation between the write and rename
+// only by best-effort: filesystem syscalls are not ctx-cancellable
+// on POSIX. A SIGTERM mid-write may leave the temp file behind;
+// reboot startup or a periodic janitor can clean stale `.cosigned-tmp-*`
+// entries.
+func (e *EmbeddedAppender) PublishCosignedCheckpoint(
+	ctx context.Context, head types.CosignedTreeHead,
+) error {
+	if e.publicCheckpointPath == "" {
+		return nil
+	}
+	if head.TreeSize == 0 {
+		return fmt.Errorf("tessera/embedded: refusing to publish cosigned checkpoint with TreeSize=0")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	body, err := json.Marshal(head)
+	if err != nil {
+		return fmt.Errorf("tessera/embedded: marshal cosigned head: %w", err)
+	}
+	if err := atomicWriteFile(e.publicCheckpointPath, body); err != nil {
+		return fmt.Errorf("tessera/embedded: write cosigned checkpoint %s: %w",
+			e.publicCheckpointPath, err)
+	}
+	return nil
+}
+
+// atomicWriteFile writes data to path via a temp file + rename in
+// the same directory. Rename is atomic on POSIX so readers either
+// see the old contents or the new contents, never a partial write.
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".cosigned-tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
 
 // Close runs the shutdown function returned by upstream
@@ -378,6 +479,14 @@ func NewReadOnlyAppender(backend *POSIXTileBackend) *ReadOnlyAppender {
 // AppendLeaf always returns ErrReadOnly. The reader never writes.
 func (r *ReadOnlyAppender) AppendLeaf(_ context.Context, _ []byte) (uint64, error) {
 	return 0, ErrReadOnly
+}
+
+// PublishCosignedCheckpoint always returns ErrReadOnly. The
+// read-only ledger never authors checkpoints; only the writer
+// ledger's builder loop runs through the
+// admit→cosign→commit→publish pipeline.
+func (r *ReadOnlyAppender) PublishCosignedCheckpoint(_ context.Context, _ types.CosignedTreeHead) error {
+	return ErrReadOnly
 }
 
 // Head reads <rootDir>/checkpoint and parses it. Returns the

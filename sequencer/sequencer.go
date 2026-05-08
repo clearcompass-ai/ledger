@@ -107,45 +107,78 @@ type Config struct {
 	BackoffBase  time.Duration
 	BackoffMax   time.Duration
 	Logger       *slog.Logger
+
+	// MaxBuilderLag is the cursor-lag ceiling — the maximum number
+	// of admitted entries the sequencer is allowed to drain ahead
+	// of the builder. When a drain cycle observes
+	//   MAX(entry_index.sequence_number) − builder_cursor.last_processed_sequence
+	// >= MaxBuilderLag the cycle returns immediately (no WAL drain).
+	// Because the sequencer stops draining the WAL Committer, the
+	// in-memory WAL queue saturates to wal.QueueSize. wal.Submit
+	// surfaces ErrQueueFull and the HTTP admission path returns
+	// 503 Service Unavailable with a Retry-After. This is the
+	// physical wire that turns a stalled builder (e.g., witness
+	// quorum failure) into honest backpressure on the public API.
+	//
+	// 0 disables the gate (legacy behaviour). Production wiring
+	// MUST set DefaultMaxBuilderLag (4096) — the same bound as
+	// wal.QueueSize so admission backpressure and builder lag
+	// share one knob.
+	MaxBuilderLag uint64
 }
 
 // Defaults applied to a zero-valued Config.
 const (
-	DefaultPollInterval = 1 * time.Second
-	DefaultMaxInFlight  = 4
-	DefaultMaxAttempts  = 10
-	DefaultBackoffBase  = 1 * time.Second
-	DefaultBackoffMax   = 60 * time.Second
+	DefaultPollInterval  = 1 * time.Second
+	DefaultMaxInFlight   = 4
+	DefaultMaxAttempts   = 10
+	DefaultBackoffBase   = 1 * time.Second
+	DefaultBackoffMax    = 60 * time.Second
+	DefaultMaxBuilderLag = 4096
 )
+
+// LagReader returns the current builder lag (admitted minus
+// committed sequences). *store.SequenceCursor satisfies it via
+// SequenceCursor.Lag(ctx).
+//
+// When wired (via WithLagReader) and Config.MaxBuilderLag > 0,
+// the Sequencer's drainOnce gates on Lag before consuming from
+// the WAL. A nil reader disables the gate.
+type LagReader interface {
+	Lag(ctx context.Context) (int64, error)
+}
 
 // Metrics is the atomic counter snapshot the supervisor scrapes.
 // Concurrency-safe: every field is touched only via sync/atomic.
 type Metrics struct {
-	drainCycles atomic.Uint64
-	processed   atomic.Uint64
-	failures    atomic.Uint64
-	manualCount atomic.Uint64
-	currentLag  atomic.Int64 // pending entries observed at last drain
+	drainCycles        atomic.Uint64
+	processed          atomic.Uint64
+	failures           atomic.Uint64
+	manualCount        atomic.Uint64
+	currentLag         atomic.Int64 // pending entries observed at last drain
+	backpressureStalls atomic.Uint64
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
-	DrainCycles uint64
-	Processed   uint64
-	Failures    uint64
-	ManualCount uint64
-	CurrentLag  int64
+	DrainCycles        uint64
+	Processed          uint64
+	Failures           uint64
+	ManualCount        uint64
+	CurrentLag         int64
+	BackpressureStalls uint64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
-		DrainCycles: m.drainCycles.Load(),
-		Processed:   m.processed.Load(),
-		Failures:    m.failures.Load(),
-		ManualCount: m.manualCount.Load(),
-		CurrentLag:  m.currentLag.Load(),
+		DrainCycles:        m.drainCycles.Load(),
+		Processed:          m.processed.Load(),
+		Failures:           m.failures.Load(),
+		ManualCount:        m.manualCount.Load(),
+		CurrentLag:         m.currentLag.Load(),
+		BackpressureStalls: m.backpressureStalls.Load(),
 	}
 }
 
@@ -223,6 +256,7 @@ type Sequencer struct {
 	store        *store.EntryStore
 	splitIDIndex SplitIDIndexWriter
 	entryLookup  EntryLookupWriter
+	lagReader    LagReader
 	replayer     *Replayer
 	logDID       string
 	cfg          Config
@@ -263,6 +297,9 @@ func NewSequencer(
 	if cfg.BackoffMax <= 0 {
 		cfg.BackoffMax = DefaultBackoffMax
 	}
+	if cfg.MaxBuilderLag == 0 {
+		cfg.MaxBuilderLag = DefaultMaxBuilderLag
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -300,6 +337,19 @@ func (s *Sequencer) WithSplitIDIndex(w SplitIDIndexWriter) *Sequencer {
 func (s *Sequencer) WithEntryLookup(w EntryLookupWriter, logDID string) *Sequencer {
 	s.entryLookup = w
 	s.logDID = logDID
+	return s
+}
+
+// WithLagReader wires the builder-lag reader (typically a
+// *store.SequenceCursor) used by drainOnce to gate WAL drains
+// when the builder falls too far behind. Passing nil disables
+// the gate; the sequencer drains as before.
+//
+// Optional; nil receiver is a no-op (test mode + transitional
+// state). Race-free against drain cycles only when called before
+// Run starts.
+func (s *Sequencer) WithLagReader(r LagReader) *Sequencer {
+	s.lagReader = r
 	return s
 }
 

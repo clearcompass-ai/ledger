@@ -138,10 +138,23 @@ func (s *stubMerkleAppender) ConsistencyProof(oldSize, newSize uint64) (any, err
 	return map[string]any{"old_size": oldSize, "new_size": newSize}, nil
 }
 
+// PublishCosignedCheckpoint is a no-op in the in-process test stub
+// — the StubMerkleTree doesn't materialise a public-CDN file. The
+// builder loop's PublishCosignedCheckpoint call site is exercised
+// (it gets called) but the stub records nothing.
+func (s *stubMerkleAppender) PublishCosignedCheckpoint(_ context.Context, _ types.CosignedTreeHead) error {
+	return nil
+}
+
 type stubWitnessCosigner struct{}
 
-func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.TreeHead) error {
-	return nil
+// RequestCosignatures returns a zero-value CosignedTreeHead so the
+// builder loop's PublishCosignedCheckpoint guard
+// (cosigned.TreeHead.TreeSize > 0) skips the publish step in tests
+// — keeping behaviour identical to pre-Backpressure-Stall test
+// runs while satisfying the new interface contract.
+func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.TreeHead) (types.CosignedTreeHead, error) {
+	return types.CosignedTreeHead{}, nil
 }
 
 // -------------------------------------------------------------------------------------------------

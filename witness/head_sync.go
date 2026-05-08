@@ -182,26 +182,39 @@ func (hs *HeadSync) Collector() *cosign.WitnessCollector {
 
 // RequestCosignatures implements builder.WitnessCosigner.
 // Collects K-of-N cosignatures via the SDK collector and persists
-// the (head + per-witness signatures) tuple. Non-fatal: the builder
-// loop continues even on quorum failure (the next cycle re-requests
-// against a larger head).
-func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead) error {
+// the (head + per-witness signatures) tuple. Returns the assembled
+// CosignedTreeHead so the builder can pass it to
+// MerkleAppender.PublishCosignedCheckpoint after the atomic commit.
+//
+// HARD STALL semantics: a non-nil error MUST cause the builder
+// loop to abort the batch (no commit, no cursor advance). This is
+// the load-bearing wire for Strict STH Finality (Alignment 2):
+// the public CDN cosigned-checkpoint file is updated only on a
+// successful K-of-N collect.
+//
+// Idempotency: the SDK's UNIQUE constraint on
+// tree_head_sigs(tree_size, signer) makes this safe under retry.
+// A re-collect over the same head writes the same rows.
+func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead) (types.CosignedTreeHead, error) {
 	if hs == nil || hs.collector == nil {
-		return nil
+		// No collector wired (test mode, read-only ledger).
+		// Return a zero-value cosigned head so the builder skips
+		// PublishCosignedCheckpoint (head.TreeSize == 0 guard).
+		return types.CosignedTreeHead{}, nil
 	}
 
 	payload := cosign.NewTreeHeadPayload(head)
 	result, err := hs.collector.Collect(ctx, payload)
 	if err != nil {
 		hs.logQuorumFailure(err, result, head)
-		return fmt.Errorf("witness/head_sync: collect: %w", err)
+		return types.CosignedTreeHead{}, fmt.Errorf("witness/head_sync: collect: %w", err)
 	}
 
 	// Persist the head fact (idempotent) before any per-witness
 	// signature so the FK on tree_head_sigs.tree_size is satisfied.
 	const hashAlgo = uint16(1) // SHA-256 — the deployment-lifetime default.
 	if perr := hs.store.InsertHead(ctx, head.TreeSize, head.RootHash, hashAlgo); perr != nil {
-		return fmt.Errorf("witness/head_sync: persist head: %w", perr)
+		return types.CosignedTreeHead{}, fmt.Errorf("witness/head_sync: persist head: %w", perr)
 	}
 
 	// Persist each per-witness signature. The signer label is the
@@ -211,7 +224,7 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 	// we look up the originating endpoint via the per-endpoint
 	// outcome map.
 	if perr := hs.persistSignatures(ctx, head, result, hashAlgo); perr != nil {
-		return perr
+		return types.CosignedTreeHead{}, perr
 	}
 
 	hs.store.Invalidate()
@@ -222,19 +235,19 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 		"quorum_n", len(hs.endpoints),
 	)
 
+	cosignedHead := types.CosignedTreeHead{
+		TreeHead:   head,
+		Signatures: result.Signatures,
+	}
+
 	// Gossip publish (best-effort; never fails the commit path).
-	// Composing the CosignedTreeHead here from the just-collected
-	// signatures keeps the publish payload synchronized with the
-	// persisted state — both rows in tree_head_sigs and the gossip
-	// finding's body carry the same K-of-N evidence.
+	// The same CosignedTreeHead value is returned to the caller for
+	// the public-CDN PublishCosignedCheckpoint write — both
+	// transports carry identical K-of-N evidence.
 	if hs.publisher != nil {
-		cosignedHead := types.CosignedTreeHead{
-			TreeHead:   head,
-			Signatures: result.Signatures,
-		}
 		hs.publisher.PublishCosignedHead(ctx, cosignedHead)
 	}
-	return nil
+	return cosignedHead, nil
 }
 
 // persistSignatures inserts each collected signature into

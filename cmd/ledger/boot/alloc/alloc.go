@@ -383,9 +383,16 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	// tessera.NewEmbeddedAppender requires a note.Signer; the loader
 	// returned a NoteSigner-shaped interface. They have the same
 	// method set so the conversion is identity at the call boundary.
+	//
+	// PublicCheckpointPath: the builder publishes the K-of-N
+	// CosignedTreeHead to <storage_dir>/cosigned-checkpoint after
+	// every successful quorum collect. Sibling-file to upstream
+	// Tessera's auto-published checkpoint; auditors fetch THIS file
+	// for the network's Strict-STH-Finality attestation.
 	embedded, err := tessera.NewEmbeddedAppender(ctx, driver, tessera.AppenderOptions{
-		Origin: origin,
-		Signer: signer,
+		Origin:               origin,
+		Signer:               signer,
+		PublicCheckpointPath: filepath.Join(cfg.TesseraStorageDir, "cosigned-checkpoint"),
 	}, d.Logger)
 	if err != nil {
 		return fmt.Errorf("embedded appender: %w", err)
