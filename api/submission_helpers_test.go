@@ -72,12 +72,6 @@ func (s *stubSubmissionWAL) MetaState(ctx context.Context, hash [32]byte) (wal.M
 	return wal.Meta{}, nil
 }
 
-// stubSubmissionDiffController returns difficulty=1 + sha256.
-type stubSubmissionDiffController struct{}
-
-func (s *stubSubmissionDiffController) CurrentDifficulty() uint32 { return 1 }
-func (s *stubSubmissionDiffController) HashFunction() string      { return "sha256" }
-
 // stubSubmissionTessera should never be called from the unified
 // /v1 fast path — Tessera lives behind the Sequencer now.
 type stubSubmissionTessera struct{}

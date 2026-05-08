@@ -440,8 +440,8 @@ func NewQueryScanHandler(deps *QueryDeps) http.HandlerFunc {
 		}
 		count := defaultScanCount
 		if countStr != "" {
-			parsed, err := strconv.Atoi(countStr)
-			if err != nil || parsed <= 0 {
+			parsed, pErr := strconv.Atoi(countStr)
+			if pErr != nil || parsed <= 0 {
 				writeTypedError(ctx, w, apitypes.ErrorClassInvalidQueryParam,
 					http.StatusBadRequest, "invalid count parameter")
 				return

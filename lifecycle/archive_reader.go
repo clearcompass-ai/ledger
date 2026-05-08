@@ -125,7 +125,7 @@ func LoadShardIndex(ctx context.Context, source string) ([]ShardMeta, error) {
 		if doErr != nil {
 			return nil, doErr
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		data, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	} else {
 		data, err = os.ReadFile(source)
@@ -295,7 +295,7 @@ func (r *ArchiveReader) fetchBytes(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)

@@ -10,7 +10,6 @@ package gossipnet
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -208,10 +207,4 @@ func TestAntiEntropy_HonorsContextCancel(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Run did not return on cancel")
 	}
-}
-
-// hexDecodeForTest helps inspect signature bytes when debugging.
-func hexDecodeForTest(s string) []byte {
-	out, _ := hex.DecodeString(s)
-	return out
 }

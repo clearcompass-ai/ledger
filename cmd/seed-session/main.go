@@ -90,15 +90,15 @@ func main() {
 	defer pool.Close()
 
 	expiresAt := time.Now().UTC().Add(*ttl)
-	if _, err := pool.Exec(ctx,
+	if _, iErr := pool.Exec(ctx,
 		`INSERT INTO sessions (token, exchange_did, expires_at)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (token) DO UPDATE SET
 		   exchange_did = EXCLUDED.exchange_did,
 		   expires_at = EXCLUDED.expires_at`,
 		*token, exchangeDID, expiresAt,
-	); err != nil {
-		log.Fatalf("seed-session: insert session: %v", err)
+	); iErr != nil {
+		log.Fatalf("seed-session: insert session: %v", iErr)
 	}
 
 	creditStore := store.NewCreditStore(pool)

@@ -55,10 +55,10 @@ func (f *fakeBytestoreReader) ReadEntry(_ context.Context, _ uint64, hash [32]by
 	return b, nil
 }
 
-func (f *fakeBytestoreReader) ReadEntryBatch(_ context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
+func (f *fakeBytestoreReader) ReadEntryBatch(ctx context.Context, refs []bytestore.EntryRef) ([][]byte, error) {
 	out := make([][]byte, len(refs))
 	for i, r := range refs {
-		b, err := f.ReadEntry(nil, r.Seq, r.Hash)
+		b, err := f.ReadEntry(ctx, r.Seq, r.Hash)
 		if err != nil {
 			return nil, err
 		}

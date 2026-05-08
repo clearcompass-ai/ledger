@@ -101,8 +101,8 @@ func InitPool(ctx context.Context, cfg PoolConfig) (*Pool, error) {
 		stmt := fmt.Sprintf("SET statement_timeout = %d",
 			int64(cfg.StatementTimeout/time.Millisecond))
 		poolCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("store: AfterConnect SET statement_timeout: %w", err)
+			if _, eErr := conn.Exec(ctx, stmt); eErr != nil {
+				return fmt.Errorf("store: AfterConnect SET statement_timeout: %w", eErr)
 			}
 			return nil
 		}

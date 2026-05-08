@@ -149,8 +149,8 @@ func NewTracerProvider(cfg TracerProviderConfig) (trace.TracerProvider, func(ctx
 	}
 
 	var exporter sdktrace.SpanExporter
-	switch {
-	case cfg.OTLPEndpoint == "stdout":
+	switch cfg.OTLPEndpoint {
+	case "stdout":
 		exporter, err = stdouttrace.New(
 			stdouttrace.WithPrettyPrint(),
 		)

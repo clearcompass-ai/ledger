@@ -159,7 +159,7 @@ func (s *PostgresLeafStore) SetBatch(leaves []types.SMTLeaf) error {
 
 	// SendBatch executes the queued statements.
 	br := s.db.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	if _, err := br.Exec(); err != nil {
 		return fmt.Errorf("store/smt: set batch: %w", err)

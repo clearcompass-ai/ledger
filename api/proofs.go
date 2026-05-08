@@ -49,11 +49,11 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 
 		leaf, _ := deps.Tree.GetLeaf(key)
 		if leaf != nil {
-			proof, err := deps.Tree.GenerateMembershipProof(key)
-			if err != nil {
+			proof, pErr := deps.Tree.GenerateMembershipProof(key)
+			if pErr != nil {
 				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 					http.StatusInternalServerError, "proof generation failed")
-				deps.Logger.Error("membership proof", "error", err)
+				deps.Logger.Error("membership proof", "error", pErr)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -93,7 +93,7 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 		var req struct {
 			Keys []string `json:"keys"`
 		}
-		if err := json.Unmarshal(body, &req); err != nil {
+		if uErr := json.Unmarshal(body, &req); uErr != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassMalformedJSON,
 				http.StatusBadRequest, "invalid JSON")
 			return
@@ -106,8 +106,8 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 
 		keys := make([][32]byte, len(req.Keys))
 		for i, kHex := range req.Keys {
-			kb, err := hex.DecodeString(kHex)
-			if err != nil || len(kb) != 32 {
+			kb, dErr := hex.DecodeString(kHex)
+			if dErr != nil || len(kb) != 32 {
 				writeTypedError(ctx, w, apitypes.ErrorClassBadHexLength,
 					http.StatusBadRequest, "each key must be 64 hex characters")
 				return

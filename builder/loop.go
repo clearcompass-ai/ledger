@@ -303,8 +303,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 1: Dequeue batch ─────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	var seqs []uint64
@@ -321,8 +321,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 2: Fetch entries in sequence order ───────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	metas := make([]*types.EntryWithMetadata, 0, len(seqs))
@@ -360,8 +360,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 5: Atomic commit ─────────────────────────────────────────
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	if cErr := ctx.Err(); cErr != nil {
+		return 0, cErr
 	}
 
 	err = store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {

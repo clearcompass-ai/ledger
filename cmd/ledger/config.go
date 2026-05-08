@@ -8,8 +8,8 @@
 //
 //	Config struct + loadConfig + Validate + the small helpers
 //	(defaultPgMaxConns, buildLogInfo, networkIDHex,
-//	validateTesseraStorageDir, validatePgPoolSizing,
-//	toBytestoreConfig). Extracted from cmd/ledger/main.go as part of
+//	validatePgPoolSizing, toBytestoreConfig). Extracted from
+//	cmd/ledger/main.go as part of
 //	the lifecycle-phase decomposition (P3): config loading + boot
 //	allocation + topology wiring + teardown registration must each be
 //	separable surfaces. This file owns the first.
@@ -457,9 +457,9 @@ func loadConfig() (*Config, error) {
 				cfg.NetworkBootstrapFile, err)
 		}
 		var doc network.BootstrapDocument
-		if err := json.Unmarshal(raw, &doc); err != nil {
+		if uErr := json.Unmarshal(raw, &doc); uErr != nil {
 			return nil, fmt.Errorf("parse network bootstrap %s: %w",
-				cfg.NetworkBootstrapFile, err)
+				cfg.NetworkBootstrapFile, uErr)
 		}
 		ids, err := doc.IDs()
 		if err != nil {
@@ -484,20 +484,20 @@ func loadConfig() (*Config, error) {
 // Config. Every check is fail-fast: a misconfigured deployment
 // surfaces a clear, single-line error at boot instead of a
 // runtime surprise.
-func (c *Config) Validate() error {
+func (cfg *Config) Validate() error {
 	// TLS: cert + key must be both-set or both-unset. Half-
 	// configured TLS would silently fall back to plain HTTP and
 	// be an exposure surprise.
-	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
 		return fmt.Errorf("LEDGER_TLS_CERT_FILE and LEDGER_TLS_KEY_FILE must be both set or both unset (got cert=%q key=%q)",
-			c.TLSCertFile, c.TLSKeyFile)
+			cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
-	if c.TLSCertFile != "" {
-		if _, err := os.Stat(c.TLSCertFile); err != nil {
-			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", c.TLSCertFile, err)
+	if cfg.TLSCertFile != "" {
+		if _, err := os.Stat(cfg.TLSCertFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_CERT_FILE %q: %w", cfg.TLSCertFile, err)
 		}
-		if _, err := os.Stat(c.TLSKeyFile); err != nil {
-			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", c.TLSKeyFile, err)
+		if _, err := os.Stat(cfg.TLSKeyFile); err != nil {
+			return fmt.Errorf("LEDGER_TLS_KEY_FILE %q: %w", cfg.TLSKeyFile, err)
 		}
 	}
 
@@ -505,21 +505,21 @@ func (c *Config) Validate() error {
 	// length so each peer has both an identity and a base URL.
 	// Mismatched lengths point at a deployment misconfig where
 	// one env var was forgotten or has a stale value.
-	if len(c.GossipPeerDIDs) != len(c.GossipPeerEndpoints) {
+	if len(cfg.GossipPeerDIDs) != len(cfg.GossipPeerEndpoints) {
 		return fmt.Errorf("LEDGER_GOSSIP_PEER_DIDS (%d) and LEDGER_GOSSIP_PEER_ENDPOINTS (%d) must have the same length",
-			len(c.GossipPeerDIDs), len(c.GossipPeerEndpoints))
+			len(cfg.GossipPeerDIDs), len(cfg.GossipPeerEndpoints))
 	}
 
 	// Tile backend: gcs requires the byte-store backend to also
 	// be gcs (the GCSTiles handle reuses the *GCS bucket handle).
-	if c.TileBackend == "gcs" && c.ByteStoreBackend != "gcs" {
+	if cfg.TileBackend == "gcs" && cfg.ByteStoreBackend != "gcs" {
 		return fmt.Errorf("LEDGER_TILE_BACKEND=gcs requires LEDGER_BYTE_STORE_BACKEND=gcs (got %q)",
-			c.ByteStoreBackend)
+			cfg.ByteStoreBackend)
 	}
-	switch c.TileBackend {
+	switch cfg.TileBackend {
 	case "", "posix", "gcs":
 	default:
-		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", c.TileBackend)
+		return fmt.Errorf("LEDGER_TILE_BACKEND must be one of posix|gcs (got %q)", cfg.TileBackend)
 	}
 
 	// Durations: every exposed duration MUST be positive. Zero
@@ -529,9 +529,9 @@ func (c *Config) Validate() error {
 		name string
 		v    time.Duration
 	}{
-		{"LEDGER_SEQUENCER_INTERVAL", c.SequencerInterval},
-		{"LEDGER_MMD", c.MMD},
-		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", c.PgStatementTimeout},
+		{"LEDGER_SEQUENCER_INTERVAL", cfg.SequencerInterval},
+		{"LEDGER_MMD", cfg.MMD},
+		{"PgStatementTimeout (LEDGER_PG_STATEMENT_TIMEOUT)", cfg.PgStatementTimeout},
 	} {
 		if d.v < 0 {
 			return fmt.Errorf("%s must be >= 0 (got %v)", d.name, d.v)
@@ -540,13 +540,13 @@ func (c *Config) Validate() error {
 
 	// Witness quorum K must be positive when witnesses are
 	// configured (a 0-of-N quorum would never finalize a head).
-	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK <= 0 {
+	if len(cfg.WitnessEndpoints) > 0 && cfg.WitnessQuorumK <= 0 {
 		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K must be > 0 when LEDGER_WITNESS_ENDPOINTS is set (got %d)",
-			c.WitnessQuorumK)
+			cfg.WitnessQuorumK)
 	}
-	if len(c.WitnessEndpoints) > 0 && c.WitnessQuorumK > len(c.WitnessEndpoints) {
+	if len(cfg.WitnessEndpoints) > 0 && cfg.WitnessQuorumK > len(cfg.WitnessEndpoints) {
 		return fmt.Errorf("LEDGER_WITNESS_QUORUM_K (%d) cannot exceed LEDGER_WITNESS_ENDPOINTS count (%d)",
-			c.WitnessQuorumK, len(c.WitnessEndpoints))
+			cfg.WitnessQuorumK, len(cfg.WitnessEndpoints))
 	}
 
 	return nil
@@ -639,45 +639,10 @@ func networkIDHex(id cosign.NetworkID) string {
 	return fmt.Sprintf("%x", id[:8])
 }
 
-// validateTesseraStorageDir confirms the Tessera POSIX directory
-// is in a consistent state: either empty (fresh init) OR contains
-// a `checkpoint` file (resuming an existing log). A dir with
-// tile artifacts but no checkpoint indicates a half-initialized
-// volume — partial restore, aborted migration, manual file
-// shuffling — and re-initializing on top of it would corrupt
-// the log silently. Boot fails fast instead.
-func validateTesseraStorageDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("read dir: %w", err)
-	}
-	if len(entries) == 0 {
-		// Fresh init — Tessera will populate.
-		return nil
-	}
-	checkpoint := dir + string(os.PathSeparator) + "checkpoint"
-	if _, err := os.Stat(checkpoint); err == nil {
-		// Healthy: existing log with checkpoint. Tessera will
-		// resume from where it left off.
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat checkpoint: %w", err)
-	}
-	// Has files but no checkpoint — half-initialized.
-	names := make([]string, 0, len(entries))
-	for i, e := range entries {
-		if i >= 5 {
-			names = append(names, "...")
-			break
-		}
-		names = append(names, e.Name())
-	}
-	return fmt.Errorf("dir non-empty (%v) but no checkpoint file — "+
-		"refusing to re-initialize on top of partial state. "+
-		"To start fresh, empty the directory; to resume an existing log, "+
-		"restore the checkpoint file alongside the tile artifacts",
-		names)
-}
+// validateTesseraStorageDir was moved to cmd/ledger/boot/alloc as
+// part of P3.4 (alloc.allocateTessera owns the dir-sanity step). The
+// stub here is removed; the doc-comment cross-link in package docs
+// continues to reference its current home.
 
 func validatePgPoolSizing(maxConns int32, sequencerMaxInFlight int) error {
 	mif := sequencerMaxInFlight

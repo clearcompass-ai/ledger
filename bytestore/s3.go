@@ -336,7 +336,7 @@ func (s *S3) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte, 
 		}
 		return nil, fmt.Errorf("bytestore/s3: GetObject seq=%d: %w", seq, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 
 	blob, err := io.ReadAll(out.Body)
 	if err != nil {

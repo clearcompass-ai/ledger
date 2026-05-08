@@ -766,10 +766,15 @@ func TestLogTime_Monotonicity(t *testing.T) {
 }
 
 func TestLogTime_OutsideCanonicalHash(t *testing.T) {
+	// Re-serializing the same entry MUST produce byte-identical
+	// canonical bytes — log_time is tracked separately and never
+	// participates in the hash. We serialize twice and confirm
+	// the two SHA-256 digests match.
 	e := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a"}, nil)
-	c := mustSerialize(e)
-	if sha256.Sum256(c) != sha256.Sum256(c) {
-		t.Fatal("hash should be stable")
+	c1 := mustSerialize(e)
+	c2 := mustSerialize(e)
+	if sha256.Sum256(c1) != sha256.Sum256(c2) {
+		t.Fatal("hash should be stable across re-serialization")
 	}
 }
 

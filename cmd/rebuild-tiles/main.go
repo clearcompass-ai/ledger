@@ -160,8 +160,8 @@ func main() {
 	// the builder, and shuts down cleanly. AppendLeaf and Head
 	// are the only adapter methods exercised; a nil TileReader is
 	// fine because proof methods are not called during rebuild.
-	if err := os.MkdirAll(*tesseraStorageDir, 0o755); err != nil {
-		logger.Error("tessera storage dir", "error", err, "dir", *tesseraStorageDir)
+	if mErr := os.MkdirAll(*tesseraStorageDir, 0o755); mErr != nil {
+		logger.Error("tessera storage dir", "error", mErr, "dir", *tesseraStorageDir)
 		os.Exit(1)
 	}
 	tesseraDriver, err := posix.New(ctx, posix.Config{Path: *tesseraStorageDir})
@@ -187,10 +187,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := embeddedAppender.Close(shutdownCtx); err != nil {
-			logger.Warn("tessera shutdown", "error", err)
+		shutdownCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutCancel()
+		if cErr := embeddedAppender.Close(shutdownCtx); cErr != nil {
+			logger.Warn("tessera shutdown", "error", cErr)
 		}
 	}()
 	merkle := tessera.NewTesseraAdapter(ctx, embeddedAppender, nil, logger)

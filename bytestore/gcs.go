@@ -273,7 +273,7 @@ func (s *GCS) ReadEntry(ctx context.Context, seq uint64, hash [32]byte) ([]byte,
 		}
 		return nil, fmt.Errorf("bytestore/gcs: read seq=%d: %w", seq, err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	blob, err := io.ReadAll(r)
 	if err != nil {
@@ -432,7 +432,7 @@ func (t *GCSTiles) ReadTileByPath(ctx context.Context, path string) ([]byte, err
 		}
 		return nil, fmt.Errorf("bytestore/gcs: tile %q: %w", key, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	limited := &io.LimitedReader{R: rc, N: MaxTileBytes + 1}
 	data, err := io.ReadAll(limited)
 	if err != nil {

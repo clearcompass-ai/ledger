@@ -262,7 +262,7 @@ func queryDifficulty(ledgerURL string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return 0, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
@@ -300,12 +300,12 @@ func buildModeAWire(
 		AlgoID:    envelope.SigAlgoECDSA,
 		Bytes:     sig,
 	}}
-	if err := entry.Validate(); err != nil {
-		return nil, fmt.Errorf("Validate: %w", err)
+	if vErr := entry.Validate(); vErr != nil {
+		return nil, fmt.Errorf("validate: %w", vErr)
 	}
 	wire, err := envelope.Serialize(entry)
 	if err != nil {
-		return nil, fmt.Errorf("Serialize: %w", err)
+		return nil, fmt.Errorf("serialize: %w", err)
 	}
 	return wire, nil
 }
@@ -348,7 +348,7 @@ func buildModeBWire(
 		}}
 		canonical, err := envelope.Serialize(entry)
 		if err != nil {
-			return nil, fmt.Errorf("Serialize: %w", err)
+			return nil, fmt.Errorf("serialize: %w", err)
 		}
 		entryHash := sha256.Sum256(canonical)
 		apiProof := sdkadmission.ProofFromWire(header.AdmissionProof, logDID)
@@ -386,7 +386,7 @@ func postAndRead(url, token string, wire []byte) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	return body, resp.StatusCode, nil
 }

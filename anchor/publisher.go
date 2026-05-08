@@ -142,7 +142,7 @@ func (p *Publisher) publishOne(ctx context.Context, source AnchorSource) error {
 	if err != nil {
 		return fmt.Errorf("fetch tree head: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
@@ -219,7 +219,7 @@ func SubmitViaHTTP(targetURL string) func(entry *envelope.Entry) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusAccepted {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)

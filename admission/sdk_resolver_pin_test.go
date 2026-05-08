@@ -117,11 +117,11 @@ func TestSDKResolver_P256_ReturnsPublicKey(t *testing.T) {
 		t.Fatal("resolved pub has nil curve")
 	}
 	// Must match the curve embedded in the kp's public key.
-	if pub.Curve != kp.PrivateKey.PublicKey.Curve {
-		t.Errorf("curve mismatch: got %v want %v", pub.Curve, kp.PrivateKey.PublicKey.Curve)
+	if pub.Curve != kp.PrivateKey.Curve {
+		t.Errorf("curve mismatch: got %v want %v", pub.Curve, kp.PrivateKey.Curve)
 	}
-	if pub.X.Cmp(kp.PrivateKey.PublicKey.X) != 0 ||
-		pub.Y.Cmp(kp.PrivateKey.PublicKey.Y) != 0 {
+	if pub.X.Cmp(kp.PrivateKey.X) != 0 ||
+		pub.Y.Cmp(kp.PrivateKey.Y) != 0 {
 		t.Error("resolved point does not match the keypair's public key")
 	}
 	// Sanity: also satisfies the local interface.

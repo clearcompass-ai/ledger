@@ -120,51 +120,6 @@ func resetTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	}
 }
 
-// requireRealGCS returns a real-GCS-backed bytestore.Backend for
-// integration tests. The integration suite is REAL-GCS-ONLY —
-// fake-gcs-server is rejected. ADC / Workload Identity is the
-// only supported credential path.
-//
-// Resolution chain (mirrors bytestore.NewGCS production path):
-//
-//  1. ATTESTA_TEST_GCS_BUCKET — required. Skip if unset.
-//  2. ATTESTA_TEST_GCS_ENDPOINT — must be EMPTY. The integration
-//     suite refuses fake-gcs to keep production behavior pinned
-//     (presigned URLs, V4 signing, ADC chain).
-//  3. ADC chain (in priority order):
-//     a. GOOGLE_APPLICATION_CREDENTIALS — service-account key file
-//     b. gcloud application-default login (workstation)
-//     c. Workload Identity (GKE / Cloud Run / GCE metadata)
-//
-// On wiring failure, the test fails loudly — a broken CI config
-// must NEVER silently turn into a green build.
-func requireRealGCS(t *testing.T) opbytestore.Backend {
-	t.Helper()
-
-	bucket := os.Getenv("ATTESTA_TEST_GCS_BUCKET")
-	if bucket == "" {
-		t.Skip("ATTESTA_TEST_GCS_BUCKET unset; integration suite skipped")
-	}
-
-	if endpoint := os.Getenv("ATTESTA_TEST_GCS_ENDPOINT"); endpoint != "" {
-		t.Fatalf(
-			"integration suite refuses fake-gcs (ATTESTA_TEST_GCS_ENDPOINT=%q). "+
-				"Real-GCS only — point ATTESTA_TEST_GCS_BUCKET at a real bucket "+
-				"and rely on ADC / Workload Identity for credentials.", endpoint)
-	}
-
-	store, err := opbytestore.NewFromConfig(context.Background(), opbytestore.Config{
-		Backend: "gcs",
-		Bucket:  bucket,
-	})
-	if err != nil {
-		t.Fatalf("requireRealGCS: bytestore.NewFromConfig: %v "+
-			"(ADC unavailable? ensure GOOGLE_APPLICATION_CREDENTIALS, "+
-			"gcloud application-default login, or Workload Identity is configured)", err)
-	}
-	return store
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Synthetic commitment construction
 // ─────────────────────────────────────────────────────────────────────

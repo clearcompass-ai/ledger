@@ -102,15 +102,6 @@ func RequestDurationMiddleware(route string, next http.Handler) http.Handler {
 	})
 }
 
-// resetRequestDurationForTest clears the package-level
-// histogram so consecutive test runs don't observe a stale
-// instance. Test-only escape hatch.
-func resetRequestDurationForTest() {
-	requestDurationState.mu.Lock()
-	requestDurationState.histogram = nil
-	requestDurationState.mu.Unlock()
-}
-
 // statusCapturingResponseWriter wraps http.ResponseWriter to
 // capture the status code so the histogram can label by it.
 // Default status is 200 if WriteHeader is never explicitly

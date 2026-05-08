@@ -435,8 +435,12 @@ func hexEncode(b []byte) string {
 // own test helper at crypto/artifact/pre_grant_commitment_wire_test.go:22.
 func onCurvePoint(t *testing.T, k int64) [33]byte {
 	t.Helper()
-	c := secp256k1.S256()
-	x, y := c.ScalarBaseMult(big.NewInt(k).Bytes())
+	// SA1019: elliptic.Curve is deprecated upstream but still the
+	// only API that returns the secp256k1 curve. The SDK's own test
+	// helper (crypto/artifact/pre_grant_commitment_wire_test.go:22)
+	// uses the same approach for parity.
+	c := secp256k1.S256()                           //nolint:staticcheck // intentional: parity with SDK helper
+	x, y := c.ScalarBaseMult(big.NewInt(k).Bytes()) //nolint:staticcheck // intentional: parity with SDK helper
 	var out [33]byte
 	if y.Bit(0) == 0 {
 		out[0] = 0x02

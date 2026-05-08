@@ -77,7 +77,7 @@ func main() {
 	// did:key P-256 encoding: 33-byte compressed point.
 	// crypto/ecdh.PublicKey.Bytes() returns the uncompressed
 	// SEC1 form; we compress it via elliptic.MarshalCompressed.
-	pubX, pubY := priv.PublicKey.X, priv.PublicKey.Y
+	pubX, pubY := priv.X, priv.Y
 	compressed := elliptic.MarshalCompressed(elliptic.P256(), pubX, pubY)
 	witnessDID := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, compressed)
 	_ = ecdh.P256() // silence unused-import in case we later switch APIs
@@ -95,8 +95,8 @@ func main() {
 	// IDs() validates the document internally + returns the
 	// derived (NetworkID, NetworkUUID, NetworkDID) — we discard
 	// the IDs and use the validation as our gate.
-	if _, err := doc.IDs(); err != nil {
-		log.Fatalf("init-network: validate doc: %v", err)
+	if _, vErr := doc.IDs(); vErr != nil {
+		log.Fatalf("init-network: validate doc: %v", vErr)
 	}
 
 	body, err := json.MarshalIndent(doc, "", "  ")
@@ -125,9 +125,9 @@ func loadOrGenerateWitnessKey(path string) (*ecdsa.PrivateKey, bool, error) {
 		if block == nil {
 			return nil, false, fmt.Errorf("decode PEM %q: nil block", path)
 		}
-		priv, err := x509.ParseECPrivateKey(block.Bytes)
-		if err != nil {
-			return nil, false, fmt.Errorf("parse EC key %q: %w", path, err)
+		priv, pErr := x509.ParseECPrivateKey(block.Bytes)
+		if pErr != nil {
+			return nil, false, fmt.Errorf("parse EC key %q: %w", path, pErr)
 		}
 		return priv, false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
