@@ -995,6 +995,24 @@ func parseCSV(s string) []string {
 	return out
 }
 
+// parseMigrateMode resolves LEDGER_DB_MIGRATE_MODE to the typed
+// store.MigrateMode value. Empty / "apply" → MigrateApply (default;
+// preserves the legacy boot-time behaviour). "verify" → fail at boot
+// if any migration is pending. "skip" → assume an out-of-band apply
+// has already run; touch nothing.
+func parseMigrateMode(raw string) (store.MigrateMode, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "apply":
+		return store.MigrateApply, nil
+	case "verify":
+		return store.MigrateVerify, nil
+	case "skip":
+		return store.MigrateSkip, nil
+	default:
+		return 0, fmt.Errorf("LEDGER_DB_MIGRATE_MODE=%q (want apply|verify|skip)", raw)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────
@@ -1144,8 +1162,16 @@ func main() {
 		"sequencer_max_inflight", cfg.SequencerMaxInFlight,
 	)
 
-	if err := store.RunMigrations(ctx, pool); err != nil {
-		logger.Error("migrations", "error", err)
+	migrateMode, err := parseMigrateMode(os.Getenv("LEDGER_DB_MIGRATE_MODE"))
+	if err != nil {
+		logger.Error("migrate mode", "error", err)
+		os.Exit(1)
+	}
+	if err := store.RunMigrationsWithMode(ctx, pool, migrateMode); err != nil {
+		// Verify-mode pending migrations are an operator concern,
+		// not a runtime crash. Log structured + exit non-zero so an
+		// init container or readiness gate can catch the situation.
+		logger.Error("migrations", "mode", migrateMode, "error", err)
 		os.Exit(1)
 	}
 

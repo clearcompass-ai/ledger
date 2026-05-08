@@ -59,8 +59,10 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -77,6 +79,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/core/smt"
@@ -720,6 +725,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	// `psql MIN/MAX`, and `aws s3 ls` commands the operator used
 	// to run after every soak.
 	verifyEvidence(t, op, submitted.Load())
+	verifyTreeIntegrity(t, op, submitted.Load())
 
 	results := drainSubmissions(resultCh)
 	if len(results) > verifySamples {
@@ -791,11 +797,29 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			t.Errorf("verify[%d/%d] seq=%d: follow: %v", i, len(results), seq, err)
 			continue
 		}
-		_, _ = io.Copy(io.Discard, r2.Body)
+		body, readErr := io.ReadAll(r2.Body)
 		r2.Body.Close()
+		if readErr != nil {
+			t.Errorf("verify[%d/%d] seq=%d: read body: %v",
+				i, len(results), seq, readErr)
+			continue
+		}
 		if r2.StatusCode != http.StatusOK {
 			t.Errorf("verify[%d/%d] seq=%d: follow status=%d",
 				i, len(results), seq, r2.StatusCode)
+			continue
+		}
+
+		// Step 4: cryptographic round-trip. SHA-256 the bytes the
+		// bucket served and assert they hash to the canonical_hash
+		// the SCT promised. A storage corruption that returns the
+		// wrong bytes for the right key would land 200 OK above
+		// and pass the count + URL-shape checks; this is the only
+		// step that catches it.
+		got := sha256.Sum256(body)
+		if got != r.hash {
+			t.Errorf("verify[%d/%d] seq=%d: SHA-256(body)=%x != canonical=%x (%d-byte body)",
+				i, len(results), seq, got[:8], r.hash[:8], len(body))
 			continue
 		}
 		verified++
@@ -1124,6 +1148,137 @@ func verifyEvidence(t *testing.T, op *soakLedger, submitted uint64) {
 
 	// 3) Every entry must be physically present in the bytestore.
 	verifyEvidenceFetchAll(t, ctx, op, submitted)
+}
+
+// verifyTreeIntegrity asserts the cryptographic invariants the soak's
+// plumbing checks (verifyEvidence) cannot:
+//
+//  1. /v1/tree/head reports TreeSize >= submitted. Catches the case
+//     where Tessera silently stops integrating leaves while the WAL +
+//     bytestore + entry_index pipeline keeps working.
+//
+//  2. N random inclusion proofs verify against that head's root via
+//     the canonical RFC-6962 verifier (transparency-dev/merkle/proof).
+//     Catches Merkle-tree drift, tile-storage divergence, hash-only
+//     leaf-encoding regressions.
+//
+// Sample size N is ATTESTA_SOAK_TREE_PROOF_SAMPLES (default 100).
+// Sampling, not exhaustive: 1M proofs × ~5ms each = 80 minutes, which
+// is longer than most soak budgets; 100 random samples × ~5ms = ~0.5s
+// and gives ~1-in-10K false-negative odds for tree-wide corruption.
+func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
+	t.Helper()
+	if submitted == 0 {
+		t.Fatal("verifyTreeIntegrity: submitted == 0 (caller bug)")
+	}
+	ctx := context.Background()
+
+	// 1) Tree head + TreeSize check.
+	headURL := op.BaseURL + "/v1/tree/head"
+	resp, err := http.Get(headURL)
+	if err != nil {
+		t.Fatalf("verifyTreeIntegrity: GET /v1/tree/head: %v", err)
+	}
+	headBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("verifyTreeIntegrity: /v1/tree/head status=%d body=%s", resp.StatusCode, headBody)
+	}
+	var head struct {
+		TreeSize uint64 `json:"tree_size"`
+		RootHash string `json:"root_hash"`
+	}
+	if err := json.Unmarshal(headBody, &head); err != nil {
+		t.Fatalf("verifyTreeIntegrity: decode tree head: %v body=%s", err, headBody)
+	}
+	if head.TreeSize < submitted {
+		t.Fatalf("verifyTreeIntegrity: tree_size=%d < submitted=%d (Tessera not integrating)",
+			head.TreeSize, submitted)
+	}
+	root, err := hex.DecodeString(head.RootHash)
+	if err != nil || len(root) != 32 {
+		t.Fatalf("verifyTreeIntegrity: malformed root_hash=%q (decode err=%v len=%d)",
+			head.RootHash, err, len(root))
+	}
+	t.Logf("verifyTreeIntegrity: ✓ tree_size=%d root=%x… (matches submitted=%d)",
+		head.TreeSize, root[:8], submitted)
+
+	// 2) N random inclusion proofs against head.RootHash.
+	n := envInt("ATTESTA_SOAK_TREE_PROOF_SAMPLES", 100)
+	if n <= 0 {
+		t.Logf("verifyTreeIntegrity: ATTESTA_SOAK_TREE_PROOF_SAMPLES=%d → skipping proof verification", n)
+		return
+	}
+	if uint64(n) > submitted {
+		n = int(submitted)
+	}
+	rng := rand.New(rand.NewSource(int64(submitted)))
+	seen := make(map[uint64]struct{}, n)
+	verified := 0
+	for verified < n {
+		seq := uint64(rng.Int63n(int64(submitted)))
+		if _, dup := seen[seq]; dup {
+			continue
+		}
+		seen[seq] = struct{}{}
+
+		// Fetch canonical_hash for this sequence from PG.
+		var hashCol []byte
+		if err := op.Pool.QueryRow(ctx,
+			"SELECT canonical_hash FROM entry_index WHERE sequence_number = $1", seq,
+		).Scan(&hashCol); err != nil {
+			t.Fatalf("verifyTreeIntegrity: SELECT canonical_hash seq=%d: %v", seq, err)
+		}
+		if len(hashCol) != 32 {
+			t.Fatalf("verifyTreeIntegrity: seq=%d canonical_hash bytes=%d, want 32",
+				seq, len(hashCol))
+		}
+		var canonical [32]byte
+		copy(canonical[:], hashCol)
+
+		// Fetch inclusion proof.
+		inclURL := fmt.Sprintf("%s/v1/tree/inclusion/%d", op.BaseURL, seq)
+		ir, err := http.Get(inclURL)
+		if err != nil {
+			t.Fatalf("verifyTreeIntegrity: GET inclusion seq=%d: %v", seq, err)
+		}
+		inclBody, _ := io.ReadAll(ir.Body)
+		ir.Body.Close()
+		if ir.StatusCode != http.StatusOK {
+			t.Fatalf("verifyTreeIntegrity: inclusion seq=%d status=%d body=%s",
+				seq, ir.StatusCode, inclBody)
+		}
+		var prf struct {
+			LeafIndex uint64   `json:"leaf_index"`
+			TreeSize  uint64   `json:"tree_size"`
+			Hashes    []string `json:"hashes"`
+		}
+		if err := json.Unmarshal(inclBody, &prf); err != nil {
+			t.Fatalf("verifyTreeIntegrity: decode inclusion seq=%d: %v body=%s",
+				seq, err, inclBody)
+		}
+		if prf.LeafIndex != seq {
+			t.Fatalf("verifyTreeIntegrity: seq=%d returned leaf_index=%d", seq, prf.LeafIndex)
+		}
+		siblings := make([][]byte, len(prf.Hashes))
+		for i, h := range prf.Hashes {
+			b, err := hex.DecodeString(h)
+			if err != nil {
+				t.Fatalf("verifyTreeIntegrity: seq=%d sibling[%d] hex: %v", seq, i, err)
+			}
+			siblings[i] = b
+		}
+
+		// RFC-6962 leaf hash + canonical verifier.
+		leafHash := rfc6962.DefaultHasher.HashLeaf(canonical[:])
+		if err := proof.VerifyInclusion(rfc6962.DefaultHasher,
+			seq, prf.TreeSize, leafHash, siblings, root); err != nil {
+			t.Fatalf("verifyTreeIntegrity: VerifyInclusion seq=%d: %v", seq, err)
+		}
+		verified++
+	}
+	t.Logf("verifyTreeIntegrity: ✓ %d/%d random inclusion proofs verified against tree_size=%d root=%x…",
+		verified, n, head.TreeSize, root[:8])
 }
 
 // verifyEvidenceFetchAll pulls (seq, canonical_hash) for every row

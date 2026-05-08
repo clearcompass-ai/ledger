@@ -38,6 +38,9 @@
 #   ATTESTA_SOAK_ENTRIES                1000000  total entries to submit
 #   ATTESTA_SOAK_CONCURRENCY            8        submitter goroutines
 #   ATTESTA_SOAK_VERIFY_SAMPLES         100      random subset to verify via /raw
+#                                                (with SHA-256 round-trip vs canonical_hash)
+#   ATTESTA_SOAK_TREE_PROOF_SAMPLES     100      random subset of inclusion proofs to verify
+#                                                against /v1/tree/head root via merkle/proof
 #   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
 #   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel uploads — bump for
 #                                                higher-volume soaks
@@ -277,6 +280,7 @@ unset ATTESTA_TEST_GCS_ENDPOINT
 ENTRIES="${ATTESTA_SOAK_ENTRIES:-1000000}"
 CONCURRENCY="${ATTESTA_SOAK_CONCURRENCY:-8}"
 SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
+TREE_PROOF_SAMPLES="${ATTESTA_SOAK_TREE_PROOF_SAMPLES:-100}"
 P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
 SHIPPER_MAX_IN_FLIGHT="${ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT:-16}"
 DRAIN_TIMEOUT="${ATTESTA_SOAK_DRAIN_TIMEOUT:-10m}"
@@ -341,7 +345,8 @@ echo "   auth mode:         ${BS_AUTH_MODE}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
 echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
-echo "   verify:            ${SAMPLES}        (sampled HTTP /raw → 302 follow)"
+echo "   verify:            ${SAMPLES}        (HTTP /raw → 302 follow + SHA-256 round-trip)"
+echo "   tree-proof:        ${TREE_PROOF_SAMPLES}        (random inclusion proofs vs /v1/tree/head root)"
 echo "   p99 bound ms:      ${P99_BOUND_MS}"
 echo "   drain timeout:     ${DRAIN_TIMEOUT}        (in-test wait for HWM)"
 echo "   test timeout:      ${TEST_TIMEOUT}        (go test process ceiling)"
@@ -371,11 +376,12 @@ cat <<EOF
   "entries":             ${ENTRIES},
   "concurrency":         ${CONCURRENCY},
   "verify_samples":      ${SAMPLES},
+  "tree_proof_samples":  ${TREE_PROOF_SAMPLES},
   "p99_bound_ms":        ${P99_BOUND_MS},
   "wall_clock_seconds":  ${ELAPSED_S},
   "backend":             "${BS_KIND}",
   "bucket":              "${BS_BUCKET}",
-  "evidence_verified":   "PG count + contiguity + full bytestore fetch (in-test)",
+  "evidence_verified":   "PG count + contiguity + full bytestore fetch + SHA-256 round-trip + N inclusion proofs vs root (in-test)",
   "test_status":         "ok"
 }
 EOF
