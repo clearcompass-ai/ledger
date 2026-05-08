@@ -367,7 +367,7 @@ func newMockFetcher() *mockFetcher {
 	return &mockFetcher{entries: make(map[types.LogPosition]*types.EntryWithMetadata)}
 }
 
-func (f *mockFetcher) Fetch(p types.LogPosition) (*types.EntryWithMetadata, error) {
+func (f *mockFetcher) Fetch(_ context.Context, p types.LogPosition) (*types.EntryWithMetadata, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.entries[p], nil
@@ -391,8 +391,8 @@ type mockSchemaResolver struct {
 	commutative bool
 }
 
-func (r *mockSchemaResolver) Resolve(ref types.LogPosition, fetcher types.EntryFetcher) (*builder.SchemaResolution, error) {
-	return &builder.SchemaResolution{
+func (r *mockSchemaResolver) Resolve(_ context.Context, ref types.LogPosition, fetcher types.EntryFetcher) (*types.SchemaResolution, error) {
+	return &types.SchemaResolution{
 		IsCommutative:   r.commutative,
 		DeltaWindowSize: 10,
 	}, nil
@@ -427,7 +427,7 @@ func (h *testHarness) addRootEntity(t *testing.T, p types.LogPosition, signerDID
 	h.fetcher.storeEntry(p, entry)
 	key := smt.DeriveKey(p)
 	leaf := types.SMTLeaf{Key: key, OriginTip: p, AuthorityTip: p}
-	if err := h.tree.SetLeaf(key, leaf); err != nil {
+	if err := h.tree.SetLeaf(context.Background(), key, leaf); err != nil {
 		t.Fatal(err)
 	}
 	return entry
@@ -443,7 +443,7 @@ func (h *testHarness) addDelegation(t *testing.T, delegPos types.LogPosition, si
 	}, nil)
 	h.fetcher.storeEntry(delegPos, entry)
 	key := smt.DeriveKey(delegPos)
-	_ = h.tree.SetLeaf(key, types.SMTLeaf{Key: key, OriginTip: delegPos, AuthorityTip: delegPos})
+	_ = h.tree.SetLeaf(context.Background(), key, types.SMTLeaf{Key: key, OriginTip: delegPos, AuthorityTip: delegPos})
 	return entry
 }
 
@@ -457,7 +457,7 @@ func (h *testHarness) addScopeEntity(t *testing.T, p types.LogPosition, signerDI
 	}, nil)
 	h.fetcher.storeEntry(p, entry)
 	key := smt.DeriveKey(p)
-	_ = h.tree.SetLeaf(key, types.SMTLeaf{Key: key, OriginTip: p, AuthorityTip: p})
+	_ = h.tree.SetLeaf(context.Background(), key, types.SMTLeaf{Key: key, OriginTip: p, AuthorityTip: p})
 	return entry
 }
 
@@ -466,6 +466,7 @@ func (h *testHarness) process(t *testing.T, entry *envelope.Entry, p types.LogPo
 	t.Helper()
 	h.fetcher.storeEntry(p, entry)
 	result, err := builder.ProcessBatch(
+		context.Background(),
 		h.tree, []*envelope.Entry{entry}, []types.LogPosition{p},
 		h.fetcher, h.schema, testLogDID, h.buffer,
 	)
@@ -477,7 +478,7 @@ func (h *testHarness) process(t *testing.T, entry *envelope.Entry, p types.LogPo
 
 func (h *testHarness) leafOriginTip(t *testing.T, p types.LogPosition) types.LogPosition {
 	t.Helper()
-	leaf, err := h.tree.GetLeaf(smt.DeriveKey(p))
+	leaf, err := h.tree.GetLeaf(context.Background(), smt.DeriveKey(p))
 	if err != nil || leaf == nil {
 		t.Fatalf("leaf not found for %s", p)
 	}
@@ -486,7 +487,7 @@ func (h *testHarness) leafOriginTip(t *testing.T, p types.LogPosition) types.Log
 
 func (h *testHarness) leafAuthorityTip(t *testing.T, p types.LogPosition) types.LogPosition {
 	t.Helper()
-	leaf, err := h.tree.GetLeaf(smt.DeriveKey(p))
+	leaf, err := h.tree.GetLeaf(context.Background(), smt.DeriveKey(p))
 	if err != nil || leaf == nil {
 		t.Fatalf("leaf not found for %s", p)
 	}
@@ -495,13 +496,13 @@ func (h *testHarness) leafAuthorityTip(t *testing.T, p types.LogPosition) types.
 
 func (h *testHarness) leafExists(t *testing.T, p types.LogPosition) bool {
 	t.Helper()
-	leaf, err := h.tree.GetLeaf(smt.DeriveKey(p))
+	leaf, err := h.tree.GetLeaf(context.Background(), smt.DeriveKey(p))
 	return err == nil && leaf != nil
 }
 
 func (h *testHarness) root(t *testing.T) [32]byte {
 	t.Helper()
-	r, err := h.tree.Root()
+	r, err := h.tree.Root(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +544,7 @@ func runSDKBuilder(t *testing.T, entries []*envelope.Entry, positions []types.Lo
 	for i, e := range entries {
 		f.storeEntry(positions[i], e)
 	}
-	result, err := builder.ProcessBatch(tree, entries, positions, f, nil, testLogDID, builder.NewDeltaWindowBuffer(10))
+	result, err := builder.ProcessBatch(context.Background(), tree, entries, positions, f, nil, testLogDID, builder.NewDeltaWindowBuffer(10))
 	if err != nil {
 		t.Fatal(err)
 	}

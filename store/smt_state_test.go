@@ -7,15 +7,15 @@ of the SDK's smt.LeafStore interface.
 Tier 1.3 of the v0.2.0 SDK migration lifted ctx onto every method
 of smt.LeafStore. These tests pin two contracts:
 
-  1. STRUCTURAL — the SDK interface is satisfied. A compile-time
-     assertion (var _ smt.LeafStore = (*PostgresLeafStore)(nil))
-     would cover this; we also exercise each method through the
-     interface to confirm dispatch.
+ 1. STRUCTURAL — the SDK interface is satisfied. A compile-time
+    assertion (var _ smt.LeafStore = (*PostgresLeafStore)(nil))
+    would cover this; we also exercise each method through the
+    interface to confirm dispatch.
 
-  2. CTX PROPAGATION — a per-call cancelled ctx aborts the
-     in-flight pgx query rather than being silently absorbed.
-     This is the load-bearing invariant the P2 fallback used to
-     mask, and the migration's main correctness gain.
+ 2. CTX PROPAGATION — a per-call cancelled ctx aborts the
+    in-flight pgx query rather than being silently absorbed.
+    This is the load-bearing invariant the P2 fallback used to
+    mask, and the migration's main correctness gain.
 
 Both tests require ATTESTA_TEST_DSN and use the same requireDB +
 resetFixtures helpers as commitment_fetcher_test.go.

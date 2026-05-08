@@ -4,9 +4,11 @@ FILE PATH: store/smt_state.go
 Postgres-backed implementations of sdk smt.LeafStore and sdk smt.NodeCache.
 
 KEY ARCHITECTURAL DECISIONS:
+
   - PostgresLeafStore: every interface method takes ctx (Tier 1.3
     of the v0.2.0 SDK migration). SetTx remains for atomic builder
     commits.
+
   - PostgresNodeCache: write-through to both Postgres (smt_nodes) and an
     in-memory LRU. Top N levels warmed on startup. Depth tracked correctly
     per node for selective warming.
@@ -17,6 +19,7 @@ KEY ARCHITECTURAL DECISIONS:
     needs a ctx to bind shutdown cancellation to in-flight queries;
     we keep a process-lifetime ctx field on the cache (set by
     NewPostgresNodeCache) for that purpose only.
+
   - LogPosition serialization: length-prefixed DID + uint64, matching SDK
     canonical serialization.
 

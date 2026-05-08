@@ -55,6 +55,7 @@ persistently-slow peer doesn't accumulate unbounded backlog.
 package gossipnet
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -196,26 +197,26 @@ type RotationCachedVerifier struct {
 // Routes through the keyMgr so rotation overrides apply
 // before falling through to the cached resolver.
 func (v *RotationCachedVerifier) VerifyOriginator(
-	originator string, digest [32]byte, sigBytes []byte, schemeTag uint8,
+	ctx context.Context, originator string, digest [32]byte, sigBytes []byte, schemeTag uint8,
 ) error {
-	return v.keyMgr.VerifyOriginator(originator, digest, sigBytes, schemeTag)
+	return v.keyMgr.VerifyOriginator(ctx, originator, digest, sigBytes, schemeTag)
 }
 
 // ResolvePubKeyID implements sdkgossip.PubKeyResolver. The
 // keyMgr's ResolvePubKeyID either returns the rotated PubKeyID
 // or delegates to its wrapped verifier (cached) which provides
 // LRU+TTL.
-func (v *RotationCachedVerifier) ResolvePubKeyID(originator string) ([32]byte, error) {
-	return v.keyMgr.ResolvePubKeyID(originator)
+func (v *RotationCachedVerifier) ResolvePubKeyID(ctx context.Context, originator string) ([32]byte, error) {
+	return v.keyMgr.ResolvePubKeyID(ctx, originator)
 }
 
 // RotateOriginator implements sdkgossip.OriginatorKeyManager.
 // Called by the SDK Handler's applyRotation after a successful
 // KindOriginatorRotation Append.
 func (v *RotationCachedVerifier) RotateOriginator(
-	originator string, newPublicKey []byte, checkpoint [32]byte,
+	ctx context.Context, originator string, newPublicKey []byte, checkpoint [32]byte,
 ) error {
-	return v.keyMgr.RotateOriginator(originator, newPublicKey, checkpoint)
+	return v.keyMgr.RotateOriginator(ctx, originator, newPublicKey, checkpoint)
 }
 
 // Invalidate implements the cacheInvalidator interface the SDK

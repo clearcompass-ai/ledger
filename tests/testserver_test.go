@@ -131,7 +131,7 @@ func (s *stubMerkleAppender) Head() (types.TreeHead, error) {
 }
 
 func (s *stubMerkleAppender) RawInclusionProof(position, treeSize uint64) (any, error) {
-	return s.mt.InclusionProof(position, treeSize)
+	return s.mt.InclusionProof(context.Background(), position, treeSize)
 }
 
 func (s *stubMerkleAppender) ConsistencyProof(oldSize, newSize uint64) (any, error) {

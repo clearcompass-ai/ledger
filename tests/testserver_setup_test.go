@@ -155,7 +155,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(ctx, pool, entryBytes, testLogDID)
+	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
 
 	walDB, err := wal.OpenInMemory(nil)
