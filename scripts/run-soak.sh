@@ -37,10 +37,14 @@
 # ── Optional knobs (env, with defaults) ──────────────────────────────
 #   ATTESTA_SOAK_ENTRIES                1000000  total entries to submit
 #   ATTESTA_SOAK_CONCURRENCY            8        submitter goroutines
-#   ATTESTA_SOAK_VERIFY_SAMPLES         100      random subset to verify via /raw
-#                                                (with SHA-256 round-trip vs canonical_hash)
-#   ATTESTA_SOAK_TREE_PROOF_SAMPLES     100      random subset of inclusion proofs to verify
-#                                                against /v1/tree/head root via merkle/proof
+#   ATTESTA_SOAK_VERIFY_SAMPLES         100      sample to verify via /raw
+#                                                (SHA-256 round-trip vs canonical_hash).
+#                                                Accepts a count ("100") OR a percent
+#                                                of submitted ("5%", "0.5%").
+#   ATTESTA_SOAK_TREE_PROOF_SAMPLES     100      sample of inclusion proofs to verify
+#                                                against /v1/tree/head root via
+#                                                merkle/proof. Same shape as
+#                                                VERIFY_SAMPLES.
 #   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
 #   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel uploads — bump for
 #                                                higher-volume soaks
@@ -345,8 +349,8 @@ echo "   auth mode:         ${BS_AUTH_MODE}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
 echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
-echo "   verify:            ${SAMPLES}        (HTTP /raw → 302 follow + SHA-256 round-trip)"
-echo "   tree-proof:        ${TREE_PROOF_SAMPLES}        (random inclusion proofs vs /v1/tree/head root)"
+echo "   verify:            ${SAMPLES}        (HTTP /raw → 302 follow + SHA-256 round-trip; count or N%)"
+echo "   tree-proof:        ${TREE_PROOF_SAMPLES}        (random inclusion proofs vs /v1/tree/head root; count or N%)"
 echo "   p99 bound ms:      ${P99_BOUND_MS}"
 echo "   drain timeout:     ${DRAIN_TIMEOUT}        (in-test wait for HWM)"
 echo "   test timeout:      ${TEST_TIMEOUT}        (go test process ceiling)"

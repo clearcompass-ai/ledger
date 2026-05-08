@@ -38,7 +38,12 @@ CONFIG VIA ENV (with defaults):
 
 	ATTESTA_SOAK_ENTRIES               total entries to submit (default 1_000_000)
 	ATTESTA_SOAK_CONCURRENCY           concurrent submitters (default 8)
-	ATTESTA_SOAK_VERIFY_SAMPLES        random sample of entries to /raw-check at the end (default 100)
+	ATTESTA_SOAK_VERIFY_SAMPLES        sample of entries to /raw-check at the end.
+	                                   Accepts an absolute count ("100") OR a percentage
+	                                   of submitted entries ("5%", "0.5%"). Default 100.
+	ATTESTA_SOAK_TREE_PROOF_SAMPLES    sample of inclusion proofs to verify against
+	                                   /v1/tree/head root via merkle/proof. Same shape
+	                                   as VERIFY_SAMPLES. Default 100.
 	ATTESTA_SOAK_P99_BOUND_MS          HTTP admission p99 ceiling, ms (default 100)
 	ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT shipper worker pool size (default 16)
 	                                   Drain rate ≈ MaxInFlight / per-upload-latency.
@@ -489,7 +494,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 
 	total := envInt("ATTESTA_SOAK_ENTRIES", 1_000_000)
 	concurrency := envInt("ATTESTA_SOAK_CONCURRENCY", 8)
-	verifySamples := envInt("ATTESTA_SOAK_VERIFY_SAMPLES", 100)
+	verifySamples := envSampleCount("ATTESTA_SOAK_VERIFY_SAMPLES", 100, uint64(total))
 	p99BoundMs := envInt("ATTESTA_SOAK_P99_BOUND_MS", 100)
 	// Re-read here for the unified config log line; the actual values
 	// are also read where they're used (startSoakLedger for
@@ -849,6 +854,49 @@ func envInt(name string, def int) int {
 	return n
 }
 
+// envSampleCount resolves a sample-size env var. Accepts either an
+// absolute integer ("100") or a percentage of total ("5%", "0.5%",
+// "10.0%"). Returns def when the var is unset or unparseable, or
+// when the percentage parses but rounds to <1 against the supplied
+// total.
+//
+// Why both shapes:
+//   - Absolute count is intuitive for fixed-size verification budgets
+//     (e.g., "always sample 100 entries regardless of N").
+//   - Percentage scales coverage with N: at 1M entries a fixed 100
+//     samples is 0.01% (statistically poor for catching rare faults),
+//     but "1%" gives 10K samples which has ~99.9% chance of catching
+//     a 1-in-1000 corruption. Operators choose by run profile.
+//
+// Trailing % is the percentage discriminator. Whitespace trimmed.
+// Negative values fall back to def.
+func envSampleCount(name string, def int, total uint64) int {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def
+	}
+	if strings.HasSuffix(v, "%") {
+		raw := strings.TrimSpace(strings.TrimSuffix(v, "%"))
+		pct, err := strconv.ParseFloat(raw, 64)
+		if err != nil || pct <= 0 {
+			return def
+		}
+		// Round half-up. Cap at total — a percent > 100 is allowed
+		// here (it just means "verify everything"); the caller is
+		// responsible for clamping to the working set if needed.
+		n := int(float64(total)*pct/100.0 + 0.5)
+		if n < 1 {
+			return def
+		}
+		return n
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
 // envDuration returns a duration parsed from the named env var, or
 // def when the var is unset or unparseable. Accepts any value
 // time.ParseDuration accepts ("30s", "10m", "1h", "1h30m", ...).
@@ -1163,9 +1211,13 @@ func verifyEvidence(t *testing.T, op *soakLedger, submitted uint64) {
 //     leaf-encoding regressions.
 //
 // Sample size N is ATTESTA_SOAK_TREE_PROOF_SAMPLES (default 100).
-// Sampling, not exhaustive: 1M proofs × ~5ms each = 80 minutes, which
-// is longer than most soak budgets; 100 random samples × ~5ms = ~0.5s
-// and gives ~1-in-10K false-negative odds for tree-wide corruption.
+// Accepts either an absolute count ("100") or a percentage of
+// submitted entries ("5%", "0.5%"). Sampling, not exhaustive: 1M
+// proofs × ~5ms each = 80 minutes, which is longer than most soak
+// budgets; 100 random samples × ~5ms = ~0.5s and gives ~1-in-10K
+// false-negative odds for tree-wide corruption. At 1M+ scale,
+// "1%" (10K samples) is a better default for catching sparse
+// faults; the operator chooses by run profile.
 func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
 	t.Helper()
 	if submitted == 0 {
@@ -1204,7 +1256,7 @@ func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
 		head.TreeSize, root[:8], submitted)
 
 	// 2) N random inclusion proofs against head.RootHash.
-	n := envInt("ATTESTA_SOAK_TREE_PROOF_SAMPLES", 100)
+	n := envSampleCount("ATTESTA_SOAK_TREE_PROOF_SAMPLES", 100, submitted)
 	if n <= 0 {
 		t.Logf("verifyTreeIntegrity: ATTESTA_SOAK_TREE_PROOF_SAMPLES=%d → skipping proof verification", n)
 		return
