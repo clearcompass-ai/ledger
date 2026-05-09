@@ -167,10 +167,10 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		t.Fatalf("wal open: %v", err)
 	}
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
-	t.Cleanup(func() {
-		_ = walc.Close()
-		_ = walDB.Close()
-	})
+	// walc + walDB cleanup is handled by the single shutdownChain
+	// registered at the end of this function; do NOT register another
+	// t.Cleanup here. LIFO ordering across multiple Cleanups was the
+	// source of the AppendLeaf-future goroutine leak we just fixed.
 
 	// Composite byte reader: WAL first, then in-memory bytestore.
 	// In production the Shipper writes WAL→bytestore; the test harness
@@ -241,7 +241,11 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		PollInterval: 10 * time.Millisecond,
 		Logger:       logger,
 	})
-	go func() { _ = seq.Run(ctx) }()
+	seqDone := make(chan struct{})
+	go func() {
+		_ = seq.Run(ctx)
+		close(seqDone)
+	}()
 
 	// Shipper (WAL Sequenced → bytestore WriteEntry → WAL Shipped).
 	// Production has a shipper that migrates wire bytes from the WAL
@@ -253,7 +257,11 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		MaxInFlight:  4,
 		Logger:       logger,
 	})
-	go func() { _ = ship.Run(ctx) }()
+	shipDone := make(chan struct{})
+	go func() {
+		_ = ship.Run(ctx)
+		close(shipDone)
+	}()
 
 	diffCfg := middleware.DefaultDifficultyConfig()
 	if opts.LowDifficulty {
@@ -339,26 +347,21 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		RealTileReader: ts.tileReader,
 	}
 
-	// Cleanup ordering matters when ts.embedded is non-nil:
-	//   1. cancel() signals the builder loop to stop.
-	//   2. wait loopDone so the loop's last AppendLeaf completes.
-	//   3. ts.closer drains pending Tessera integrations.
-	//   4. server.Shutdown drains in-flight HTTP.
-	//   5. cleanTables + pool.Close.
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-loopDone:
-		case <-time.After(5 * time.Second):
-			t.Logf("builder loop did not exit in 5s after cancel; proceeding")
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = ts.closer(shutdownCtx)
-		_ = server.Shutdown(shutdownCtx)
-		cleanTables(t, pool)
-		pool.Close()
-	})
+	// Single ordered teardown — see tests/shutdownchain_test.go for
+	// the spec-order rationale. Do NOT add other t.Cleanup calls in
+	// this function: LIFO ordering across multiple Cleanups is what
+	// caused the AppendLeaf-future goroutine leak.
+	t.Cleanup(shutdownChain{
+		Logger:        logger,
+		Server:        server,
+		Tessera:       ts.embedded,
+		Cancel:        cancel,
+		GoroutineDone: []<-chan struct{}{loopDone, seqDone, shipDone},
+		WALC:          walc,
+		WALDB:         walDB,
+		Pool:          pool,
+		CleanTables:   func() { cleanTables(t, pool) },
+	}.Run)
 
 	for i := 0; i < 50; i++ {
 		resp, err := http.Get(baseURL + "/healthz")

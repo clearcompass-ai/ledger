@@ -122,7 +122,10 @@ func newWitnessedTestHarnessN(
 	_ = uptessera.Driver(driver)
 
 	publicCheckpointPath := filepath.Join(tileRoot, "cosigned-checkpoint")
-	embedded, err := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
+	// CTX LIFETIME: see tests/shutdownchain_test.go — Tessera's
+	// background ctx is decoupled from the test ctx so embedded.Close
+	// is the canonical termination, not ctx-cancel propagation.
+	embedded, err := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               signer,
 		CheckpointInterval:   100 * time.Millisecond,

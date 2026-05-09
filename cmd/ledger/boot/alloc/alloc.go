@@ -385,7 +385,18 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	// every successful quorum collect. Sibling-file to upstream
 	// Tessera's auto-published checkpoint; auditors fetch THIS file
 	// for the network's Strict-STH-Finality attestation.
-	embedded, err := tessera.NewEmbeddedAppender(ctx, driver, tessera.AppenderOptions{
+	//
+	// CTX LIFETIME: pass context.WithoutCancel(ctx) so Tessera's
+	// background integration goroutines are bounded by the explicit
+	// embedded.Close() call (registered as a NamedCloser below) and
+	// NOT by SIGTERM ctx-cancel propagation. Without this, a SIGTERM
+	// would cancel ctx, kill Tessera's integration loop, and strand
+	// any in-flight AppendLeaf futures (sync.WaitGroup.Wait inside
+	// future.Get is uninterruptible — see tessera/internal/future).
+	// The shutdown chain runs Close in spec order BEFORE the process
+	// exits; Close's Shutdown polls the checkpoint until pending
+	// futures resolve.
+	embedded, err := tessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, tessera.AppenderOptions{
 		Origin:               origin,
 		Signer:               signer,
 		PublicCheckpointPath: filepath.Join(cfg.TesseraStorageDir, "cosigned-checkpoint"),

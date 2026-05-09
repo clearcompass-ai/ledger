@@ -240,7 +240,12 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		cancel()
 		t.Fatalf("posix.New: %v", derr)
 	}
-	merkle, merr := optessera.NewEmbeddedAppender(ctx, tesseraDriver, optessera.AppenderOptions{
+	// CTX LIFETIME: see tests/shutdownchain_test.go and
+	// cmd/ledger/boot/alloc/alloc.go — Tessera's background ctx is
+	// decoupled from the test ctx so tessera.Close (in shutdownChain
+	// step 2) drains pending futures while the integration loop is
+	// still alive.
+	merkle, merr := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), tesseraDriver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               tesseraSigner,
 		CheckpointInterval:   100 * time.Millisecond,
@@ -255,11 +260,10 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		cancel()
 		t.Fatalf("tessera embedded: %v", merr)
 	}
-	t.Cleanup(func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = merkle.Close(shutdownCtx)
-	})
+	// merkle.Close is handled by the single shutdownChain registered
+	// at the end of this function; do NOT register a separate
+	// t.Cleanup here. LIFO ordering across multiple Cleanups is what
+	// caused the AppendLeaf-future goroutine leak we just fixed.
 
 	// ── Difficulty controller ───────────────────────────────────────
 	diffController := middleware.NewDifficultyController(
@@ -358,8 +362,16 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 	})
 
 	go func() { _ = server.Serve(ln) }()
-	go func() { _ = seq.Run(ctx) }()
-	go func() { _ = ship.Run(ctx) }()
+	seqDone := make(chan struct{})
+	go func() {
+		_ = seq.Run(ctx)
+		close(seqDone)
+	}()
+	shipDone := make(chan struct{})
+	go func() {
+		_ = ship.Run(ctx)
+		close(shipDone)
+	}()
 
 	op := &e2eLedger{
 		BaseURL:          baseURL,
@@ -373,14 +385,18 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		cancel:           cancel,
 	}
 
-	t.Cleanup(func() {
-		cancel()
-		_ = server.Shutdown(context.Background())
-		_ = walc.Close()
-		_ = walDB.Close()
-		cleanTables(t, pool)
-		pool.Close()
-	})
+	// Single ordered teardown — see tests/shutdownchain_test.go.
+	t.Cleanup(shutdownChain{
+		Logger:        logger,
+		Server:        server,
+		Tessera:       merkle,
+		Cancel:        cancel,
+		GoroutineDone: []<-chan struct{}{seqDone, shipDone},
+		WALC:          walc,
+		WALDB:         walDB,
+		Pool:          pool,
+		CleanTables:   func() { cleanTables(t, pool) },
+	}.Run)
 
 	// Readiness probe.
 	for i := 0; i < 50; i++ {

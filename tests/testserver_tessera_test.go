@@ -148,7 +148,16 @@ func buildRealTesseraSlots(
 	}
 	_ = uptessera.Driver(driver) // compile-time conformance.
 
-	embedded, err := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
+	// CTX LIFETIME: pass context.WithoutCancel(ctx) so Tessera's
+	// background integration goroutines are bounded by the explicit
+	// embedded.Close() call in t.Cleanup, not by the test ctx's
+	// cancel(). Without this, t.Cleanup's cancel() kills the
+	// integration loop and strands AppendLeaf futures
+	// (sync.WaitGroup.Wait in future.Get is uninterruptible). Close
+	// runs in t.Cleanup and drains pending futures via the upstream
+	// Shutdown function — that's the canonical termination path per
+	// Tessera's API contract. Mirrors cmd/ledger/boot/alloc/alloc.go.
+	embedded, err := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
 		Origin:             origin,
 		CheckpointInterval: checkpointInterval,
 		BatchSize:          batchSize,
