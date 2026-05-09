@@ -64,11 +64,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +82,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	smithy "github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 )
@@ -95,6 +102,7 @@ func TestS3Preflight(t *testing.T) {
 	t.Run("04_s3_client_construction", testS3Preflight_ClientConstruction)
 	t.Run("05_list_buckets", testS3Preflight_ListBuckets)
 	t.Run("06_put_head_get_delete", testS3Preflight_PutHeadGetDelete)
+	t.Run("07_concurrent_burst", testS3Preflight_ConcurrentBurst)
 }
 
 // 01 — dump every env var the soak will read so we can confirm the
@@ -359,6 +367,267 @@ func testS3Preflight_PutHeadGetDelete(t *testing.T) {
 		return
 	}
 	t.Logf("DeleteObject OK in %s", time.Since(t0))
+}
+
+// 07 — concurrent burst that mirrors the shipper's exact load
+// pattern. Steps 01-06 confirmed the path WORKS in isolation, so
+// the soak's 500-InternalError cascade must be triggered by what
+// the shipper does differently: sustained concurrent writes against
+// a single SeaweedFS volume server with the full wire-byte payload.
+//
+// Pattern matched to soak_test.go:359-374 + bytestore.S3.WriteEntry:
+//
+//   - Workers       = 16              (default MaxInFlight; overridable
+//                                       via ATTESTA_TEST_S3_BURST_WORKERS)
+//   - Payload       = 500 bytes       (typical wire-byte envelope size;
+//                                       actual integration tests show
+//                                       ~190-1000 bytes per entry)
+//   - Total ops     = 5000            (10s × 500/s sustained shipper rate;
+//                                       overridable via ATTESTA_TEST_S3_BURST_OPS)
+//   - Key shape     = entries/<seq16>/<hash64>  (matches layoutKey
+//                                       in bytestore/bytestore.go:139)
+//   - ContentType   = application/octet-stream  (matches WriteEntry)
+//   - SDK config    = identical (buildS3ClientForPreflight mirrors NewS3)
+//
+// What it surfaces:
+//
+//   - Error classification by HTTP status + smithy ErrorCode +
+//     plain-text classification (timeout, conn-reset, ctx-cancel)
+//   - Latency histogram (p50/p90/p99/max)
+//   - Throughput achieved (ops/s)
+//   - First N error samples verbatim (so the EXACT shape of the
+//     500 cascade is in the test output, not just counts)
+//
+// If 07 reproduces 500-InternalError under burst, we have a tight
+// repro that doesn't need the soak. If 07 passes too, the issue is
+// even more shipper-specific (ctx lifecycle, retry interaction,
+// transport reuse across goroutines, etc.) — the next probe lives
+// in the shipper itself.
+func testS3Preflight_ConcurrentBurst(t *testing.T) {
+	bucket := os.Getenv("ATTESTA_TEST_S3_BUCKET")
+	workers := envIntOr("ATTESTA_TEST_S3_BURST_WORKERS", 16)
+	totalOps := envIntOr("ATTESTA_TEST_S3_BURST_OPS", 5000)
+	payloadBytes := envIntOr("ATTESTA_TEST_S3_BURST_PAYLOAD_BYTES", 500)
+
+	t.Logf("burst config: workers=%d total_ops=%d payload_bytes=%d", workers, totalOps, payloadBytes)
+	t.Logf("matches: shipper.MaxInFlight=16 (default), shipper.ContentType=application/octet-stream,")
+	t.Logf("         shipper key shape entries/<seq16>/<hash64>, payload sized like a wire envelope")
+
+	client := buildS3ClientForPreflight(t)
+
+	// Pre-seed all payloads so the timing measures Put latency, not
+	// payload generation. Each payload is unique so SeaweedFS dedup
+	// (if any) doesn't mask real write amplification.
+	type job struct {
+		key  string
+		body []byte
+	}
+	jobs := make([]job, totalOps)
+	burstID := make([]byte, 8)
+	_, _ = rand.Read(burstID)
+	burstHex := hex.EncodeToString(burstID)
+	for i := 0; i < totalOps; i++ {
+		body := make([]byte, payloadBytes)
+		_, _ = rand.Read(body)
+		hash := sha256.Sum256(body)
+		// burst-prefixed under entries/ so the soak's normal layout
+		// is unaffected and burst keys are easy to clean up after.
+		key := fmt.Sprintf("entries/burst-%s/%016x/%s", burstHex, uint64(i), hex.EncodeToString(hash[:]))
+		jobs[i] = job{key: key, body: body}
+	}
+
+	// Worker pool. Each worker pulls indices off a shared atomic
+	// counter — no channel back-pressure, just a tight loop matching
+	// the shipper's "as-fast-as-possible bounded by MaxInFlight"
+	// pattern.
+	var nextIdx atomic.Int64
+	var (
+		okCount       atomic.Int64
+		errCount      atomic.Int64
+		latNs         []int64
+		latMu         sync.Mutex
+		errSamples    []burstError
+		errSamplesMu  sync.Mutex
+		errClassCount sync.Map // string → *atomic.Int64
+	)
+	const maxErrSamples = 5
+
+	classify := func(err error) (status int, code, msgClass string) {
+		if err == nil {
+			return 0, "", ""
+		}
+		// Walk smithy error chain.
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			code = apiErr.ErrorCode()
+		}
+		var httpErr *smithyhttp.ResponseError
+		if errors.As(err, &httpErr) {
+			if httpErr.HTTPStatusCode() != 0 {
+				status = httpErr.HTTPStatusCode()
+			}
+		}
+		// Plain-text classification for non-HTTP failures.
+		s := err.Error()
+		switch {
+		case strings.Contains(s, "context canceled"), strings.Contains(s, "context deadline exceeded"):
+			msgClass = "ctx"
+		case strings.Contains(s, "connection reset"):
+			msgClass = "conn-reset"
+		case strings.Contains(s, "EOF"):
+			msgClass = "eof"
+		case strings.Contains(s, "no route to host"), strings.Contains(s, "connection refused"):
+			msgClass = "net-down"
+		case strings.Contains(s, "timeout"):
+			msgClass = "timeout"
+		default:
+			msgClass = "other"
+		}
+		return status, code, msgClass
+	}
+
+	bumpErrClass := func(class string) {
+		v, ok := errClassCount.Load(class)
+		if !ok {
+			v, _ = errClassCount.LoadOrStore(class, &atomic.Int64{})
+		}
+		v.(*atomic.Int64).Add(1)
+	}
+
+	// Bound the whole burst to 60s — at 16 workers × 30s/PutObject
+	// timeout the worst case is bounded, but if everything 500s the
+	// SDK's 3-attempt retry + backoff makes each call 5-15s, so a
+	// 5000-op burst could take 5000/16 × 15s ≈ 78m without a budget.
+	burstCtx, burstCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer burstCancel()
+
+	t0 := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				if burstCtx.Err() != nil {
+					return
+				}
+				idx := nextIdx.Add(1) - 1
+				if idx >= int64(totalOps) {
+					return
+				}
+				j := jobs[idx]
+				start := time.Now()
+				_, err := client.PutObject(burstCtx, &s3.PutObjectInput{
+					Bucket:      aws.String(bucket),
+					Key:         aws.String(j.key),
+					Body:        bytes.NewReader(j.body),
+					ContentType: aws.String("application/octet-stream"),
+				})
+				lat := time.Since(start).Nanoseconds()
+				latMu.Lock()
+				latNs = append(latNs, lat)
+				latMu.Unlock()
+
+				if err != nil {
+					errCount.Add(1)
+					status, code, class := classify(err)
+					classKey := fmt.Sprintf("status=%d code=%q class=%s", status, code, class)
+					bumpErrClass(classKey)
+					errSamplesMu.Lock()
+					if len(errSamples) < maxErrSamples {
+						errSamples = append(errSamples, burstError{
+							idx:     int(idx),
+							key:     j.key,
+							lat:     lat,
+							status:  status,
+							code:    code,
+							class:   class,
+							message: err.Error(),
+						})
+					}
+					errSamplesMu.Unlock()
+					continue
+				}
+				okCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(t0)
+
+	// Best-effort cleanup of burst-prefixed keys we just wrote.
+	defer func() {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanCancel()
+		for i := 0; i < totalOps; i++ {
+			_, _ = client.DeleteObject(cleanCtx, &s3.DeleteObjectInput{
+				Bucket: aws.String(bucket),
+				Key:    aws.String(jobs[i].key),
+			})
+		}
+	}()
+
+	ok := okCount.Load()
+	failed := errCount.Load()
+	t.Logf("burst result: ok=%d failed=%d total=%d elapsed=%s throughput=%.1f ops/s",
+		ok, failed, ok+failed, elapsed, float64(ok+failed)/elapsed.Seconds())
+
+	// Latency histogram.
+	if len(latNs) > 0 {
+		latMu.Lock()
+		sort.Slice(latNs, func(i, j int) bool { return latNs[i] < latNs[j] })
+		p := func(q float64) time.Duration {
+			i := int(float64(len(latNs)-1) * q)
+			return time.Duration(latNs[i])
+		}
+		t.Logf("latency: p50=%s p90=%s p99=%s max=%s",
+			p(0.50), p(0.90), p(0.99), time.Duration(latNs[len(latNs)-1]))
+		latMu.Unlock()
+	}
+
+	// Error classification.
+	if failed > 0 {
+		t.Logf("error classification (status / smithy code / msg-class → count):")
+		errClassCount.Range(func(k, v any) bool {
+			t.Logf("  %s → %d", k.(string), v.(*atomic.Int64).Load())
+			return true
+		})
+		t.Logf("first %d error sample(s) verbatim:", min(int(failed), maxErrSamples))
+		for i, e := range errSamples {
+			t.Logf("  [%d] idx=%d key=%s lat=%s", i, e.idx, e.key, time.Duration(e.lat))
+			t.Logf("       status=%d code=%q class=%s", e.status, e.code, e.class)
+			t.Logf("       %s", e.message)
+		}
+		// We don't t.Errorf — the preflight's job is diagnostic
+		// reporting, not pass/fail. The user reads the output to
+		// decide whether the burst pattern reproduces the soak's
+		// 500-cascade.
+		t.Logf("NOTE: failures observed. If status=500 and code=\"InternalError\" dominates, this is the same shape as the soak shipper's failures — the burst pattern is the trigger, not the request shape.")
+	} else {
+		t.Logf("no failures observed under burst — soak failure is NOT a concurrency / load issue at the SeaweedFS S3 layer.")
+	}
+}
+
+type burstError struct {
+	idx     int
+	key     string
+	lat     int64
+	status  int
+	code    string
+	class   string
+	message string
+}
+
+func envIntOr(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 // ────────────────────────────────────────────────────────────────
