@@ -46,6 +46,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/clearcompass-ai/attesta/crypto/artifact"
 
 	opapi "github.com/clearcompass-ai/ledger/api"
@@ -191,28 +193,16 @@ func mutateCommitmentPayload(t *testing.T, payloadA []byte) []byte {
 // countSplitIDRows returns how many rows commitment_split_id has
 // for the supplied (schema_id, split_id) tuple.
 func countSplitIDRows(
-	t *testing.T, ctx context.Context, pool any,
+	t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	schemaID string, splitID [32]byte,
 ) int {
 	t.Helper()
-	type pgxPoolish interface {
-		QueryRow(ctx context.Context, sql string, args ...any) pgxRow
+	var n int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM commitment_split_id
+		WHERE schema_id = $1 AND split_id = $2`,
+		schemaID, splitID[:]).Scan(&n); err != nil {
+		t.Fatalf("count split_id: %v", err)
 	}
-	if p, ok := pool.(pgxPoolish); ok {
-		var n int
-		if err := p.QueryRow(ctx, `
-			SELECT COUNT(*) FROM commitment_split_id
-			WHERE schema_id = $1 AND split_id = $2`,
-			schemaID, splitID[:]).Scan(&n); err != nil {
-			t.Fatalf("count split_id: %v", err)
-		}
-		return n
-	}
-	t.Fatal("pool type does not match expected pgxpool shape")
-	return -1
-}
-
-// pgxRow abstracts pgx.Row's Scan method without importing pgx.
-type pgxRow interface {
-	Scan(dest ...any) error
+	return n
 }

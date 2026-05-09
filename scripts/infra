@@ -91,9 +91,14 @@ emit_env_lines() {
         # bytestore/s3_test.go reads the ATTESTA_TEST_S3_* family.
         echo "export ATTESTA_TEST_S3_ENDPOINT=\"${S3_ENDPOINT}\""
         echo "export ATTESTA_TEST_S3_BUCKET=\"${S3_BUCKET}\""
+        echo "export ATTESTA_TEST_S3_REGION=\"us-east-1\""
         echo "export ATTESTA_TEST_S3_ACCESS_KEY=\"${S3_ACCESS_KEY}\""
         echo "export ATTESTA_TEST_S3_SECRET_KEY=\"${S3_SECRET_KEY}\""
         echo "export ATTESTA_TEST_S3_PATH_STYLE=\"true\""
+        # Soak reads this to choose the bytestore backend (gcs|s3).
+        # Defaulting to s3 directs soak at the SeaweedFS we just
+        # provisioned; the gcs path needs ADC + a real bucket.
+        echo "export ATTESTA_SOAK_BYTESTORE_BACKEND=\"s3\""
     fi
 }
 
