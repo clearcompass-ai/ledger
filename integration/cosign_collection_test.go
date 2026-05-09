@@ -12,15 +12,15 @@
 //
 // PHYSICS UNDER TEST:
 //
-//   real httptest cosign servers      (SDK NewWitnessHandler)
-//                ↓
-//   witnessclient.HeadSync.Collect    (K-of-N over real HTTP)
-//                ↓
-//   store.TreeHeadStore               (real Postgres rows)
-//                ↓
-//   tessera.EmbeddedAppender          (real POSIX dir)
-//                ↓
-//   atomic write of cosigned head     (<tempdir>/cosigned-checkpoint)
+//	real httptest cosign servers      (SDK NewWitnessHandler)
+//	             ↓
+//	witnessclient.HeadSync.Collect    (K-of-N over real HTTP)
+//	             ↓
+//	store.TreeHeadStore               (real Postgres rows)
+//	             ↓
+//	tessera.EmbeddedAppender          (real POSIX dir)
+//	             ↓
+//	atomic write of cosigned head     (<tempdir>/cosigned-checkpoint)
 //
 // The assertions:
 //   - the file at the expected path EXISTS;
