@@ -55,9 +55,6 @@ func (stubSigners) LoadLedgerSigner(_ string, _ *slog.Logger) (*ecdsa.PrivateKey
 func (stubSigners) LoadTesseraSigner(_, _, _ string, _ *slog.Logger) (NoteSigner, string, error) {
 	return nil, "", errors.New("stubSigners: not used in this test")
 }
-func (stubSigners) LoadWitnessSigner(_ string, _ *slog.Logger) (*ecdsa.PrivateKey, error) {
-	return nil, errors.New("stubSigners: not used in this test")
-}
 
 func TestAllocate_FailsOnUnreachablePostgres_UnwindsTelemetry(t *testing.T) {
 	// Logger captures the alloc-unwind diagnostic.

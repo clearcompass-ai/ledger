@@ -49,7 +49,7 @@ import (
 	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/store"
-	"github.com/clearcompass-ai/ledger/witness"
+	"github.com/clearcompass-ai/ledger/witnessclient"
 )
 
 // p4WitnessNetID returns a deterministic non-zero NetworkID
@@ -160,7 +160,7 @@ func runMatrixCell(
 			t.Fatalf("clear tree_head: %v", err)
 		}
 
-		hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
+		hs, err := witnessclient.NewHeadSync(witnessclient.HeadSyncConfig{
 			WitnessEndpoints:  endpoints,
 			QuorumK:           quorumK,
 			PerWitnessTimeout: 2 * time.Second,
@@ -261,7 +261,7 @@ func TestP4_WitnessMatrix_SignaturesUnderQuorum(t *testing.T) {
 		t.Fatalf("clear head: %v", err)
 	}
 
-	hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
+	hs, err := witnessclient.NewHeadSync(witnessclient.HeadSyncConfig{
 		WitnessEndpoints:  endpoints,
 		QuorumK:           quorumK,
 		PerWitnessTimeout: 2 * time.Second,

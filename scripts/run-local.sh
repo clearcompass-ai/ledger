@@ -1,69 +1,54 @@
 #!/bin/bash
 # scripts/run-local.sh
 #
-# Local-dev orchestrator. Brings up Postgres (Docker), wires
-# REAL Google Cloud Storage (developer-owned bucket via ADC),
-# sets every env var the ledger needs, and runs the ledger
-# binary against them.
+# Local-dev orchestrator. Brings up Postgres (Docker), generates
+# witness keys + network bootstrap, starts N standalone-witness
+# processes, then starts the Ledger pointing at them. K=N quorum.
 #
 # REAL GCS is REQUIRED — not fake-gcs-server. Local dev must
 # exercise the same ADC + auth + retry + GCS-quirks code path
-# that production uses. "Works on fake-gcs but breaks on GCS"
-# is precisely the surprise we eliminate by always using the
-# real backend.
+# that production uses.
+#
+# ARCHITECTURAL BOUNDARY:
+#
+#   The Ledger and the Witness are physically separate Go modules
+#   (cmd/standalone-witness/ has its own go.mod). The Ledger never
+#   imports witness-daemon code; the witness daemon never imports
+#   ledger code. This script orchestrates them as separate
+#   processes — each `go run` resolves through its own module.
 #
 # Prerequisites (one-time setup):
 #
 #   1. gcloud auth application-default login
-#   2. Create a bucket:  gcloud storage buckets create gs://<your-bucket>
-#   3. Export it before invoking this script:
-#        export LEDGER_BYTE_STORE_GCS_BUCKET=<your-bucket>
+#   2. gcloud storage buckets create gs://<your-bucket>
+#   3. export LEDGER_BYTE_STORE_GCS_BUCKET=<your-bucket>
 #
 # Usage:
 #
-#   ./scripts/run-local.sh                   # 1 instance, K=1 self-loop
-#   ./scripts/run-local.sh clean             # wipe .run/ then run
-#   ./scripts/run-local.sh down              # tear down Docker + spawned witnesses
-#   ./scripts/run-local.sh integration       # boot integration topology + run integration tests
-#   ./scripts/run-local.sh --witnesses N     # writer + N standalone witnesses (K=N quorum)
-#   ./scripts/run-local.sh --witnesses 2 clean   # combined: clean + multi-witness
+#   ./scripts/run-local.sh                    # 1 witness + 1 ledger (K=1 quorum)
+#   ./scripts/run-local.sh --witnesses N      # N witnesses + 1 ledger (K=N quorum)
+#   ./scripts/run-local.sh clean              # wipe .run/ then run
+#   ./scripts/run-local.sh down               # tear down everything
+#   ./scripts/run-local.sh integration        # run integration tests
 #
-# Multi-witness mode (--witnesses N):
+# Multi-witness mode:
 #
-#   - Writer ledger on :8080 (LEDGER_ADDR), K=N quorum.
-#   - N standalone-witness processes on :8081, :8082, ..., :808N.
-#   - All N witnesses share Postgres (writer's DB only — witnesses
-#     are stateless cosign HTTP servers and don't persist anything).
-#   - Bootstrap doc lists writer DID + N witness DIDs.
-#   - Tear down with `./scripts/run-local.sh down` (kills witnesses
-#     by PID + downs Docker stack).
+#   - 1 ledger writer on :8080 (LEDGER_ADDR).
+#   - N witness daemons on :8081, :8082, ..., :808N.
+#   - K-of-N quorum collected on every cosignature request.
+#   - Witness key files in .run/witnesses/witness-{1..N}.pem.
+#   - Bootstrap doc lists ALL N witness DIDs in genesis_witness_set.
+#   - Tear down with `./scripts/run-local.sh down`.
 #
-# Integration mode (`integration` subcommand):
+# Integration mode:
 #
 #   - Brings up scripts/local/docker-compose.integration.yml
 #     (2 ledger nodes, fake-gcs-server, dual Postgres DBs).
-#   - Waits for both nodes' /healthz to report ok.
 #   - Runs `go test -count=1 ./integration/`.
-#   - Leaves the topology UP on success (use `make integration-down`
-#     to tear down). On failure, also leaves it up so logs are
-#     reachable via `make integration-logs`.
 #
 # Submit an entry from a second terminal:
 #
 #   go run ./cmd/submit-stamp -log-did "$LEDGER_LOG_DID"
-#
-# What this script wires (default + multi-witness mode):
-#
-#   * Postgres via scripts/local/docker-compose.testharness.yml
-#     (only the postgres service — fake-gcs is NOT used).
-#   * REAL GCS via the developer's bucket + ADC credentials.
-#   * .run/{wal,tessera,antispam} as ephemeral on-disk volumes
-#     (gitignored). `clean` wipes them; default re-runs preserve
-#     state.
-#   * Self-witness K=1 loopback (default) OR
-#     writer + N standalone-witness processes (--witnesses N).
-#   * Ephemeral signing keys (ledger entry signer, witness
-#     signer, Tessera checkpoint signer) — local-dev only.
 
 set -euo pipefail
 
@@ -74,15 +59,15 @@ RUN_DIR="${REPO_ROOT}/.run"
 WITNESS_PIDS_FILE="${RUN_DIR}/witness-pids"
 
 # ── Parse flags ────────────────────────────────────────────────────
-WITNESS_COUNT=0
+WITNESS_COUNT=1
 SUBCMD="run"
 CLEAN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --witnesses)
             WITNESS_COUNT="${2:-}"
-            if ! [[ "${WITNESS_COUNT}" =~ ^[0-9]+$ ]]; then
-                echo "FATAL: --witnesses requires a non-negative integer (got: ${WITNESS_COUNT})" >&2
+            if ! [[ "${WITNESS_COUNT}" =~ ^[0-9]+$ ]] || [ "${WITNESS_COUNT}" -lt 1 ]; then
+                echo "FATAL: --witnesses requires a positive integer (got: ${WITNESS_COUNT})" >&2
                 exit 2
             fi
             shift 2
@@ -100,7 +85,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            sed -n '1,/^set -euo pipefail/p' "$0" | sed 's/^# \{0,1\}//' | head -n 50
+            sed -n '1,/^set -euo pipefail/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -113,7 +98,7 @@ done
 # ── Tear-down: kill witnesses + down Docker ────────────────────────
 if [ "${SUBCMD}" = "down" ]; then
     if [ -f "${WITNESS_PIDS_FILE}" ]; then
-        echo "== stopping spawned standalone-witness processes =="
+        echo "== stopping spawned witness daemons =="
         while read -r pid; do
             [ -z "${pid}" ] && continue
             if kill -0 "${pid}" 2>/dev/null; then
@@ -169,21 +154,18 @@ if [ "${SUBCMD}" = "integration" ]; then
         echo "   topology still UP. Tear down with: ./scripts/run-local.sh down"
     else
         echo "== integration tests FAILED (exit=${TEST_RC}) =="
-        echo "   topology left UP for log inspection:"
-        echo "     docker compose -f scripts/local/docker-compose.integration.yml logs ledger-node-a"
-        echo "     docker compose -f scripts/local/docker-compose.integration.yml logs ledger-node-b"
+        echo "   topology left UP for log inspection."
     fi
     exit ${TEST_RC}
 fi
 
-# ── Default + multi-witness modes share the rest of the script ─────
+# ── Default + multi-witness modes share the rest ───────────────────
 if [ "${CLEAN}" = "1" ]; then
     echo "== wiping ${RUN_DIR} =="
     rm -rf "${RUN_DIR}"
 fi
 
 # ── Real-GCS preflight ────────────────────────────────────────────
-# Fail fast if the developer hasn't done the one-time GCS setup.
 if [ -z "${LEDGER_BYTE_STORE_GCS_BUCKET:-}" ]; then
     cat <<'ERR' >&2
 
@@ -220,7 +202,6 @@ Run one of:
     (writes ~/.config/gcloud/application_default_credentials.json)
 
   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-    (service-account key file path)
 
 Then re-run ./scripts/run-local.sh.
 
@@ -242,120 +223,93 @@ for i in $(seq 1 30); do
 done
 
 # ── Local volumes ─────────────────────────────────────────────────
-mkdir -p "${RUN_DIR}/wal" "${RUN_DIR}/tessera" "${RUN_DIR}/antispam"
+mkdir -p "${RUN_DIR}/wal" "${RUN_DIR}/tessera" "${RUN_DIR}/antispam" "${RUN_DIR}/logs"
 
-# ── Witness key + bootstrap doc ───────────────────────────────────
-# The bootstrap doc defines the NETWORK's witness fleet (separate
-# concept from the ledger writer):
-#
-# Default mode (WITNESS_COUNT=0):
-#   - Network's witness set = [writer] (1 entry).
-#   - Writer also serves /v1/cosign locally (K=1 self-loop).
-#   - One key file at .run/witness.pem.
-#
-# Multi-witness mode (WITNESS_COUNT>0):
-#   - Network's witness set = [N standalone-witness DIDs].
-#   - Writer is NOT in the network's witness set; it's purely a
-#     writer that talks to the N witnesses via /v1/cosign over HTTP.
-#   - Writer's own witness key file is still generated below for
-#     ledger-side code-path parity (every ledger config block
-#     declares a witness key) but the writer's DID does NOT appear
-#     in genesis_witness_set.
-#   - N witness key files at .run/witnesses/witness-{1..N}.pem.
-WITNESS_KEY_FILE="${RUN_DIR}/witness.pem"
+# ── Generate witness keys + network bootstrap ─────────────────────
 NETWORK_BOOTSTRAP_FILE="${RUN_DIR}/network-bootstrap.json"
-echo "== generating witness key + network bootstrap (extras=${WITNESS_COUNT}) =="
+echo "== generating ${WITNESS_COUNT} witness key(s) + network bootstrap =="
 go run ./cmd/init-network \
-    -out-witness-key="${WITNESS_KEY_FILE}" \
+    -out-dir="${RUN_DIR}" \
     -out-bootstrap="${NETWORK_BOOTSTRAP_FILE}" \
     -log-did="${LEDGER_LOG_DID:-did:attesta:ledger:local}" \
     -network-name="local-dev" \
-    -extra-witnesses="${WITNESS_COUNT}"
+    -witnesses="${WITNESS_COUNT}"
 
-# ── Spawn standalone witnesses (multi-witness mode only) ──────────
+# ── Spawn standalone witness daemons ──────────────────────────────
+# Each daemon is a SEPARATE go module (cmd/standalone-witness/go.mod).
+# The `go run` resolves through that module's pinned attesta version,
+# fully isolated from the Ledger module's dependency graph.
 : > "${WITNESS_PIDS_FILE}"
-WITNESS_ENDPOINTS_DEFAULT="http://localhost:8080"
-QUORUM_K_DEFAULT=1
-if [ "${WITNESS_COUNT}" -gt 0 ]; then
-    echo "== spawning ${WITNESS_COUNT} standalone-witness processes =="
-    LOG_DIR="${RUN_DIR}/logs"
-    mkdir -p "${LOG_DIR}"
+ENDPOINTS=""
+echo "== spawning ${WITNESS_COUNT} witness daemon(s) =="
+for i in $(seq 1 "${WITNESS_COUNT}"); do
+    port=$((8080 + i))
+    wkey="${RUN_DIR}/witnesses/witness-${i}.pem"
+    wlog="${RUN_DIR}/logs/witness-${i}.log"
+    if [ ! -f "${wkey}" ]; then
+        echo "FATAL: missing ${wkey} (init-network should have produced it)" >&2
+        exit 1
+    fi
+    echo "  starting witness-${i} on :${port}  (log=${wlog})"
+    ( cd "${REPO_ROOT}/cmd/standalone-witness" && \
+      go run . \
+          -addr=":${port}" \
+          -key-file="${wkey}" \
+          -bootstrap="${NETWORK_BOOTSTRAP_FILE}" \
+          > "${wlog}" 2>&1 ) &
+    wpid=$!
+    echo "${wpid}" >> "${WITNESS_PIDS_FILE}"
+    if [ -n "${ENDPOINTS}" ]; then
+        ENDPOINTS="${ENDPOINTS},http://localhost:${port}"
+    else
+        ENDPOINTS="http://localhost:${port}"
+    fi
+done
 
-    ENDPOINTS=""
-    for i in $(seq 1 "${WITNESS_COUNT}"); do
-        port=$((8080 + i))
-        wkey="${RUN_DIR}/witnesses/witness-${i}.pem"
-        wlog="${LOG_DIR}/witness-${i}.log"
-        if [ ! -f "${wkey}" ]; then
-            echo "FATAL: expected ${wkey} (init-network should have produced it)" >&2
-            exit 1
+# Wait for each witness to report ready before starting the Ledger.
+for i in $(seq 1 "${WITNESS_COUNT}"); do
+    port=$((8080 + i))
+    READY=0
+    for attempt in $(seq 1 50); do
+        if curl -fsS "http://localhost:${port}/healthz" >/dev/null 2>&1; then
+            echo "  witness-${i} ready"
+            READY=1
+            break
         fi
-        echo "  starting witness-${i} on :${port}  (log=${wlog})"
-        go run ./cmd/standalone-witness \
-            -addr=":${port}" \
-            -key-file="${wkey}" \
-            -bootstrap="${NETWORK_BOOTSTRAP_FILE}" \
-            > "${wlog}" 2>&1 &
-        wpid=$!
-        echo "${wpid}" >> "${WITNESS_PIDS_FILE}"
-        if [ -n "${ENDPOINTS}" ]; then
-            ENDPOINTS="${ENDPOINTS},http://localhost:${port}"
-        else
-            ENDPOINTS="http://localhost:${port}"
-        fi
+        sleep 0.2
     done
+    if [ "${READY}" -ne 1 ]; then
+        echo "FATAL: witness-${i} did not report healthy. Log: ${RUN_DIR}/logs/witness-${i}.log" >&2
+        exit 1
+    fi
+done
 
-    # Wait briefly for every witness's /healthz before starting the
-    # writer. Each get up to ~5s; total bound = WITNESS_COUNT * ~5s.
-    for i in $(seq 1 "${WITNESS_COUNT}"); do
-        port=$((8080 + i))
-        for attempt in $(seq 1 25); do
-            if curl -fsS "http://localhost:${port}/healthz" >/dev/null 2>&1; then
-                echo "  witness-${i} ready"
-                break
-            fi
-            sleep 0.2
-        done
-    done
-
-    WITNESS_ENDPOINTS_DEFAULT="${ENDPOINTS}"
-    QUORUM_K_DEFAULT="${WITNESS_COUNT}"
-
-    # Trap so Ctrl-C tears down spawned witnesses too.
-    trap 'echo "== stopping spawned witnesses =="; \
-          while read -r pid; do [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true; done < "'"${WITNESS_PIDS_FILE}"'"; \
-          rm -f "'"${WITNESS_PIDS_FILE}"'"' EXIT INT TERM
-fi
+# Trap so Ctrl-C / signal exits tear the witnesses down too.
+trap 'echo "== stopping spawned witnesses =="; \
+      while read -r pid; do [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true; done < "'"${WITNESS_PIDS_FILE}"'"; \
+      rm -f "'"${WITNESS_PIDS_FILE}"'"' EXIT INT TERM
 
 # ── Ledger env ────────────────────────────────────────────────────
-# Postgres
 export LEDGER_DATABASE_URL="${LEDGER_DATABASE_URL:-postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable}"
-
-# Identity
 export LEDGER_LOG_DID="${LEDGER_LOG_DID:-did:attesta:ledger:local}"
-
-# Storage volumes
 export LEDGER_WAL_PATH="${LEDGER_WAL_PATH:-${RUN_DIR}/wal}"
 export LEDGER_TESSERA_STORAGE_DIR="${LEDGER_TESSERA_STORAGE_DIR:-${RUN_DIR}/tessera}"
 export LEDGER_TESSERA_ANTISPAM_PATH="${LEDGER_TESSERA_ANTISPAM_PATH:-${RUN_DIR}/antispam}"
 
-# Bytestore — REAL GCS. ADC handles auth.
 export LEDGER_BYTE_STORE_BACKEND="gcs"
 export LEDGER_BYTE_STORE_GCS_BUCKET
 unset LEDGER_BYTE_STORE_GCS_ENDPOINT
 unset LEDGER_BYTE_STORE_GCS_ANONYMOUS
 
-# HTTP listen.
 export LEDGER_ADDR="${LEDGER_ADDR:-:8080}"
 
-# Witness wiring — flips from K=1 self-loop to K=N external when
-# --witnesses N was passed.
-export LEDGER_WITNESS_ENDPOINTS="${LEDGER_WITNESS_ENDPOINTS:-${WITNESS_ENDPOINTS_DEFAULT}}"
-export LEDGER_WITNESS_QUORUM_K="${LEDGER_WITNESS_QUORUM_K:-${QUORUM_K_DEFAULT}}"
-export LEDGER_WITNESS_KEY_FILE="${LEDGER_WITNESS_KEY_FILE:-${WITNESS_KEY_FILE}}"
+# Witness wiring — Ledger acts purely as cosign CLIENT.
+# The Ledger never holds a witness signing key; it never serves
+# /v1/cosign. It only POSTs to the witness daemon URLs.
+export LEDGER_WITNESS_ENDPOINTS="${LEDGER_WITNESS_ENDPOINTS:-${ENDPOINTS}}"
+export LEDGER_WITNESS_QUORUM_K="${LEDGER_WITNESS_QUORUM_K:-${WITNESS_COUNT}}"
 export LEDGER_NETWORK_BOOTSTRAP_FILE="${LEDGER_NETWORK_BOOTSTRAP_FILE:-${NETWORK_BOOTSTRAP_FILE}}"
 
-# ── Observability (D1-D7) ─────────────────────────────────────────
 export LEDGER_METRICS_ENABLE="${LEDGER_METRICS_ENABLE:-true}"
 export LEDGER_METRICS_ENVIRONMENT="${LEDGER_METRICS_ENVIRONMENT:-laptop-dev}"
 export LEDGER_OTLP_TRACES_ENDPOINT="${LEDGER_OTLP_TRACES_ENDPOINT:-stdout}"
@@ -366,18 +320,11 @@ echo "  LEDGER_DATABASE_URL=${LEDGER_DATABASE_URL}"
 echo "  LEDGER_LOG_DID=${LEDGER_LOG_DID}"
 echo "  LEDGER_ADDR=${LEDGER_ADDR}"
 echo "  LEDGER_BYTE_STORE_BACKEND=${LEDGER_BYTE_STORE_BACKEND} (bucket=${LEDGER_BYTE_STORE_GCS_BUCKET})"
-echo "  LEDGER_WAL_PATH=${LEDGER_WAL_PATH}"
 echo "  LEDGER_WITNESS_ENDPOINTS=${LEDGER_WITNESS_ENDPOINTS} (quorum_k=${LEDGER_WITNESS_QUORUM_K})"
-echo "  LEDGER_WITNESS_KEY_FILE=${LEDGER_WITNESS_KEY_FILE}"
 echo "  LEDGER_NETWORK_BOOTSTRAP_FILE=${LEDGER_NETWORK_BOOTSTRAP_FILE}"
-echo "  LEDGER_METRICS_ENABLE=${LEDGER_METRICS_ENABLE}"
-echo "  LEDGER_OTLP_TRACES_ENDPOINT=${LEDGER_OTLP_TRACES_ENDPOINT}"
-echo "  LEDGER_PPROF_ADDR=${LEDGER_PPROF_ADDR}"
-if [ "${WITNESS_COUNT}" -gt 0 ]; then
-    echo "  spawned witnesses: ${WITNESS_COUNT} (logs in ${RUN_DIR}/logs/)"
-fi
+echo "  witness daemons: ${WITNESS_COUNT} (logs in ${RUN_DIR}/logs/)"
 echo
 
-# ── Run ───────────────────────────────────────────────────────────
+# ── Run Ledger ────────────────────────────────────────────────────
 echo "== starting ledger =="
 exec go run ./cmd/ledger

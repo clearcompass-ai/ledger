@@ -183,9 +183,6 @@ type Handlers struct {
 	Difficulty http.HandlerFunc // GET /v1/admission/difficulty
 	MMD        http.HandlerFunc // GET /v1/admission/mmd
 
-	// ── Witness cosign (optional) ───────────────────────────────────
-	WitnessCosign http.Handler
-
 	// ── Gossip (optional) ───────────────────────────────────────────
 	GossipPost http.Handler
 	GossipFeed http.Handler
@@ -347,12 +344,6 @@ func NewServer(
 
 	if handlers.Difficulty != nil {
 		mux.HandleFunc("GET /v1/admission/difficulty", handlers.Difficulty)
-	}
-
-	// ── Witness cosign endpoint ────────────────────────────────────────
-	if handlers.WitnessCosign != nil {
-		mux.Handle("POST /v1/cosign",
-			middleware.SizeLimit(MaxCosignRequestBytes+1024, handlers.WitnessCosign))
 	}
 
 	// ── Gossip endpoints (optional) ────────────────────────────────────

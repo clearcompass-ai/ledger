@@ -115,9 +115,6 @@ type Config struct {
 	// Signers
 	LedgerSignerKeyFile string
 
-	// Witness (optional)
-	WitnessKeyFile string
-
 	// Gossip (optional)
 	GossipDisable bool
 	NetworkID     cosign.NetworkID
@@ -136,7 +133,6 @@ type Config struct {
 type SignerLoader interface {
 	LoadLedgerSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, string, error)
 	LoadTesseraSigner(keyFile, origin, logDID string, logger *slog.Logger) (NoteSigner, string, error)
-	LoadWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, error)
 }
 
 // NoteSigner mirrors the upstream golang.org/x/mod/sumdb/note.Signer
@@ -432,14 +428,6 @@ func allocateSigners(cfg Config, signers SignerLoader, d *deps.AppDeps) error {
 	}
 	d.LedgerSignerPriv = priv
 	d.LedgerDID = did
-
-	if cfg.WitnessKeyFile != "" {
-		wp, werr := signers.LoadWitnessSigner(cfg.WitnessKeyFile, d.Logger)
-		if werr != nil {
-			return fmt.Errorf("witness signer: %w", werr)
-		}
-		d.WitnessSignerPriv = wp
-	}
 	return nil
 }
 

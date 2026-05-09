@@ -66,7 +66,7 @@ import (
 
 	"github.com/clearcompass-ai/attesta/network"
 
-	"github.com/clearcompass-ai/ledger/witness"
+	"github.com/clearcompass-ai/standalone-witness/internal/serve"
 )
 
 func main() {
@@ -103,7 +103,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler, err := witness.BuildCosignHandler(witness.ServeConfig{
+	handler, err := serve.Build(serve.Config{
 		WitnessKey: priv,
 		NetworkID:  identity.NetworkID,
 		Logger:     logger,

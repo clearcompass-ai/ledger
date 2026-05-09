@@ -1,5 +1,5 @@
 /*
-FILE PATH: witness/rotation_handler.go
+FILE PATH: witnessclient/rotation_handler.go
 
 Witness set rotation handling. Accepts rotation messages signed by the
 current K-of-N quorum. Supports dual-sign for scheme transition.
@@ -10,7 +10,7 @@ KEY ARCHITECTURAL DECISIONS:
   - Full rotation history preserved (auditable chain).
   - Genesis set loaded from witness_sets table on startup.
 */
-package witness
+package witnessclient
 
 import (
 	"context"

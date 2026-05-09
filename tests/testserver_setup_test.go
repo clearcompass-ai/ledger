@@ -353,7 +353,6 @@ func buildTestHandlers(
 		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		WitnessCosign:   nil,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),

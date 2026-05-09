@@ -74,7 +74,6 @@ import (
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/tessera"
-	"github.com/clearcompass-ai/ledger/witness"
 )
 
 // Config is the projection of cmd/ledger.Config relevant to Phase B
@@ -111,7 +110,6 @@ type Config struct {
 	GossipPeerDIDs      []string
 	WitnessEndpoints    []string
 	WitnessQuorumK      int
-	WitnessKeyFile      string
 	GenesisWitnessSet   []string
 
 	// HTTP
@@ -414,24 +412,6 @@ func composeHandlers(
 			})
 	}
 
-	// Witness cosign endpoint (only when key file or endpoints configured).
-	var witnessHandler http.Handler
-	if (cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0) && d.WitnessSignerPriv != nil {
-		var err error
-		witnessHandler, err = witness.BuildCosignHandler(witness.ServeConfig{
-			WitnessKey: d.WitnessSignerPriv,
-			NetworkID:  cfg.NetworkID,
-			AllowedPurposes: map[cosign.Purpose]struct{}{
-				cosign.PurposeTreeHead: {},
-			},
-			Logger: d.Logger,
-		})
-		if err != nil {
-			return api.Handlers{}, fmt.Errorf("witness cosign handler: %w", err)
-		}
-		d.Logger.Info("witness cosign endpoint mounted at POST /v1/cosign")
-	}
-
 	// Static-CT tile serving.
 	checkpointHandler, tileHandler, err := composeTileHandlers(cfg, d)
 	if err != nil {
@@ -465,7 +445,6 @@ func composeHandlers(
 		Difficulty:       api.NewDifficultyHandler(queryDeps),
 		MMD:              mmdHandler,
 		EntryByHash:      api.NewHashLookupHandler(queryDeps),
-		WitnessCosign:    witnessHandler,
 		GossipPost:       gossipPostH,
 		GossipFeed:       gossipFeedH,
 		EscrowOverride:   escrowOverrideHandler,
