@@ -273,7 +273,8 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	}
 	smtDeps := &api.SMTDeps{Tree: tree, LeafStore: leafStore, Logger: logger}
 	queryDeps := &api.QueryDeps{
-		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
+		EntryStore: entryStore, QueryAPI: queryAPI, DiffController: diffController,
+		WAL: walc, Logger: logger,
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI,
@@ -386,6 +387,7 @@ func buildTestHandlers(
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
+		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 		SMTLeaf:         api.NewSMTLeafHandler(smtDeps),

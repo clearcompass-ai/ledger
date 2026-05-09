@@ -265,6 +265,74 @@ func (c *Committer) AdvanceHWM(ctx context.Context, newHWM uint64) error {
 	})
 }
 
+// ReconcileHWM advances the high-water mark through any contiguous
+// run of StateShipped entries starting at HWM+1. Called by the
+// Shipper at boot to recover from a crash in which entries finished
+// shipping (state transitioned to StateShipped on disk) but the
+// shipper's in-memory completion-advancer never observed them — so
+// AdvanceHWM was never called for those seqs.
+//
+// Without this reconciliation, an entry that ships but whose
+// completion event is lost across a process restart leaves HWM
+// permanently behind: subsequent IterateSequenced calls skip the
+// already-Shipped entry, and the completion-advancer never receives
+// a signal for its seq.
+//
+// Safe to call repeatedly; idempotent and bounded by the size of the
+// contiguous Shipped run above HWM. Returns the new HWM value.
+func (c *Committer) ReconcileHWM(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	hwm, err := c.HWM(ctx)
+	if err != nil {
+		return 0, err
+	}
+	newHWM := hwm
+	err = c.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte{prefixSeqIndex}
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		startKey := seqIndexKey(hwm + 1)
+		for it.Seek(startKey); it.Valid(); it.Next() {
+			seq := seqFromIndexKey(it.Item().KeyCopy(nil))
+			if seq != newHWM+1 {
+				return nil // gap — stop reconciliation here
+			}
+			var hash [32]byte
+			vErr := it.Item().Value(func(val []byte) error {
+				if len(val) != 32 {
+					return fmt.Errorf("wal/reader: bad seq_index value len=%d", len(val))
+				}
+				copy(hash[:], val)
+				return nil
+			})
+			if vErr != nil {
+				return vErr
+			}
+			var meta Meta
+			if mErr := readMeta(txn, hash, &meta); mErr != nil {
+				return mErr
+			}
+			if meta.State != StateShipped {
+				return nil // not shipped — stop
+			}
+			newHWM = seq
+		}
+		return nil
+	})
+	if err != nil {
+		return hwm, err
+	}
+	if newHWM > hwm {
+		if aErr := c.AdvanceHWM(ctx, newHWM); aErr != nil {
+			return hwm, aErr
+		}
+	}
+	return newHWM, nil
+}
+
 // PendingHash describes one inflight entry — the breadcrumb reconciler
 // scans on boot.
 type PendingHash struct {
