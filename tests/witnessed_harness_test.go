@@ -122,10 +122,14 @@ func newWitnessedTestHarnessN(
 	_ = uptessera.Driver(driver)
 
 	publicCheckpointPath := filepath.Join(tileRoot, "cosigned-checkpoint")
-	// CTX LIFETIME: see tests/shutdownchain_test.go — Tessera's
-	// background ctx is decoupled from the test ctx so embedded.Close
-	// is the canonical termination, not ctx-cancel propagation.
-	embedded, err := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
+	// CTX LIFETIME: Tessera's background goroutines listen to ctx
+	// for termination. The t.Cleanup below calls embedded.Close
+	// BEFORE the test ctx fires (the close uses a fresh shutdownCtx
+	// with its own timeout), so Shutdown can poll the checkpoint
+	// while the integration loop is still alive. Do NOT wrap with
+	// context.WithoutCancel — that leaks the integration goroutine
+	// forever (Close doesn't stop it; only ctx cancellation does).
+	embedded, err := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               signer,
 		CheckpointInterval:   100 * time.Millisecond,

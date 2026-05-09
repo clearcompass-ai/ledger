@@ -160,11 +160,11 @@ func buildEmbeddedAppender(t *testing.T, ctx context.Context, logger *slog.Logge
 	}
 	_ = uptessera.Driver(driver)
 
-	// CTX LIFETIME: see tests/shutdownchain_test.go and
-	// cmd/ledger/boot/alloc/alloc.go — Tessera's background ctx is
-	// decoupled from the test ctx so embedded.Close drains pending
-	// futures while the integration loop is still alive.
-	embedded, err := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
+	// CTX LIFETIME: Tessera's background goroutines listen to ctx
+	// for termination. The t.Cleanup below calls embedded.Close
+	// BEFORE the test ctx fires, so Shutdown can poll the
+	// checkpoint while the integration loop is still alive.
+	embedded, err := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
 		Origin:               cosignTestLogDID,
 		Signer:               signer,
 		CheckpointInterval:   100 * time.Millisecond,
