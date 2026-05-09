@@ -88,6 +88,7 @@ type shutdownHarness struct {
 	TileRoot string // pass to a second startShutdownLedger call for restart fidelity
 	Server   *api.Server
 	Shipper  *shipper.Shipper
+	merkle   *optessera.EmbeddedAppender // for stop() to call Close in the correct order
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
@@ -159,7 +160,12 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		cancel()
 		t.Fatalf("tessera posix.New: %v", dErr)
 	}
-	merkle, mErr := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
+	// CTX LIFETIME: see tests/shutdownchain_test.go and
+	// cmd/ledger/boot/alloc/alloc.go — Tessera's background ctx is
+	// decoupled from the test ctx so tessera.Close (in shutdownChain
+	// step 2) drains pending futures while the integration loop is
+	// still alive.
+	merkle, mErr := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               signer,
 		CheckpointInterval:   100 * time.Millisecond,
@@ -174,10 +180,15 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		cancel()
 		t.Fatalf("tessera embedded: %v", mErr)
 	}
+	// merkle.Close is called by h.stop() in the spec-correct order
+	// (see tests/shutdownchain_test.go). The defensive cleanup below
+	// only fires if the test forgets to call h.stop() — covers
+	// panic / early-return paths so we still drain pending Tessera
+	// futures before the test process exits.
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = merkle.Close(ctx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = merkle.Close(closeCtx)
 	})
 
 	composite := store.NewCompositeByteReader(walc, backend, logger)
@@ -267,6 +278,7 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 	h := &shutdownHarness{
 		BaseURL: baseURL, Pool: pool, WAL: walc, walDB: walDB,
 		Backend: backend, TileRoot: tileRoot, Server: server, Shipper: ship,
+		merkle: merkle,
 		cancel: cancel, done: done,
 	}
 
@@ -285,26 +297,58 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 	return nil
 }
 
-// stop cancels ctx, waits for the server + shipper goroutines to
-// return, shuts the HTTP server, then closes the WAL committer + DB
-// + Postgres pool. Tables are NOT cleaned — the next harness
-// instance picks up where this one left off.
+// stop simulates graceful shutdown of this harness instance, in the
+// spec-correct order (see tests/shutdownchain_test.go):
+//
+//  1. Server.Shutdown          → refuse new HTTP requests
+//  2. merkle.Close             → drain Tessera pending futures —
+//                                this also unblocks any in-flight
+//                                sequencer AppendLeaf call (its
+//                                future resolves with the appender-
+//                                shutdown error)
+//  3. cancel()                 → signal sequencer / shipper to exit
+//  4. wait for goroutines      → in-flight calls already returned
+//                                in step 2, so they drain quickly
+//  5. WAL / walDB / pool       → release resources
+//
+// Tables are NOT cleaned — the next harness instance picks up where
+// this one left off (that's the whole point of the restart-fidelity
+// scenarios this harness exists to test).
 func (h *shutdownHarness) stop(t *testing.T) {
 	t.Helper()
-	h.cancel()
-	// Wait for both background goroutines (server + shipper).
-	timeout := time.NewTimer(10 * time.Second)
-	defer timeout.Stop()
-	for i := 0; i < 2; i++ {
-		select {
-		case <-h.done:
-		case <-timeout.C:
-			t.Fatalf("shutdown harness goroutine %d/2 did not return in 10s", i+1)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// 1. HTTP layer first — refuse new submissions before draining.
+	if err := h.Server.Shutdown(shutdownCtx); err != nil {
+		t.Logf("stop: server.Shutdown: %v", err)
+	}
+
+	// 2. Drain Tessera futures. Load-bearing: with WithoutCancel'd
+	// background ctx, this is the ONLY thing that resolves pending
+	// IndexFuture's.
+	if h.merkle != nil {
+		if err := h.merkle.Close(shutdownCtx); err != nil {
+			t.Logf("stop: merkle.Close: %v", err)
 		}
 	}
-	if err := h.Server.Shutdown(context.Background()); err != nil {
-		t.Logf("server.Shutdown: %v", err)
+
+	// 3. Signal sequencer / shipper / server-Serve goroutines.
+	h.cancel()
+
+	// 4. Wait for the three background goroutines (server.Serve,
+	// seq.Run, ship.Run). Their in-flight Tessera calls already
+	// returned in step 2, so wg.Wait drains promptly.
+	for i := 0; i < cap(h.done); i++ {
+		select {
+		case <-h.done:
+		case <-shutdownCtx.Done():
+			t.Fatalf("shutdown harness goroutine %d/%d did not return in budget",
+				i+1, cap(h.done))
+		}
 	}
+
+	// 5. Release resources.
 	_ = h.WAL.Close()
 	_ = h.walDB.Close()
 	h.Pool.Close()

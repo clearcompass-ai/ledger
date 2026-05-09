@@ -374,33 +374,45 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	})
 
 	go func() { _ = server.Serve(ln) }()
-	go func() { _ = seq.Run(ctx) }()
-	go func() { _ = ship.Run(ctx) }()
+	seqDone := make(chan struct{})
+	go func() {
+		_ = seq.Run(ctx)
+		close(seqDone)
+	}()
+	shipDone := make(chan struct{})
+	go func() {
+		_ = ship.Run(ctx)
+		close(shipDone)
+	}()
 
 	op := &soakLedger{
 		BaseURL: baseURL, Pool: pool, WAL: walc,
 		Backend: backend, Sequencer: seq, Shipper: ship, cancel: cancel,
 	}
 
-	t.Cleanup(func() {
-		cancel()
-		_ = server.Shutdown(context.Background())
-		_ = walc.Close()
-		_ = walDB.Close()
-		// ATTESTA_SOAK_KEEP_DATA=1 preserves the populated entry_index
-		// + bytestore objects after the test exits, so the operator
-		// can inspect them with their own SQL / S3 tooling. Default
-		// (unset) cleans tables on teardown — same behavior soaks
-		// have always had — so back-to-back runs start clean.
+	// Single ordered teardown — see tests/shutdownchain_test.go.
+	// ATTESTA_SOAK_KEEP_DATA=1 preserves the populated entry_index
+	// + bytestore objects after the test exits.
+	cleanFn := func() {
 		if os.Getenv("ATTESTA_SOAK_KEEP_DATA") != "" {
 			t.Logf("ATTESTA_SOAK_KEEP_DATA set — skipping cleanTables. " +
 				"entry_index + bytestore objects preserved for manual inspection. " +
 				"Run `./scripts/run-soak.sh down` when done.")
-		} else {
-			cleanTables(t, pool)
+			return
 		}
-		pool.Close()
-	})
+		cleanTables(t, pool)
+	}
+	t.Cleanup(shutdownChain{
+		Logger:        logger,
+		Server:        server,
+		Tessera:       merkle,
+		Cancel:        cancel,
+		GoroutineDone: []<-chan struct{}{seqDone, shipDone},
+		WALC:          walc,
+		WALDB:         walDB,
+		Pool:          pool,
+		CleanTables:   cleanFn,
+	}.Run)
 
 	for i := 0; i < 50; i++ {
 		resp, err := http.Get(baseURL + "/healthz")

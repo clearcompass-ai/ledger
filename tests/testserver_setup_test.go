@@ -60,6 +60,7 @@ import (
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/wal"
@@ -157,7 +158,6 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
 
 	walDB, err := wal.OpenInMemory(nil)
@@ -167,10 +167,19 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		t.Fatalf("wal open: %v", err)
 	}
 	walc := wal.NewCommitter(walDB, wal.CommitterConfig{DisableSync: true})
-	t.Cleanup(func() {
-		_ = walc.Close()
-		_ = walDB.Close()
-	})
+	// walc + walDB cleanup is handled by the single shutdownChain
+	// registered at the end of this function; do NOT register another
+	// t.Cleanup here. LIFO ordering across multiple Cleanups was the
+	// source of the AppendLeaf-future goroutine leak we just fixed.
+
+	// Composite byte reader: WAL first, then in-memory bytestore.
+	// In production the Shipper writes WAL→bytestore; the test harness
+	// has no shipper, so a bare bytestore.Reader returns "not found"
+	// for every hydrate call. The composite mirrors the e2e harness
+	// (e2e_shipper_redirect_test.go:216) and lets read-path tests
+	// hydrate from WAL even when nothing has shipped yet.
+	composite := store.NewCompositeByteReader(walc, entryBytes, logger)
+	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
 
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
 	deltaBuffer, _ := bufferStore.Load(ctx)
@@ -232,7 +241,27 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		PollInterval: 10 * time.Millisecond,
 		Logger:       logger,
 	})
-	go func() { _ = seq.Run(ctx) }()
+	seqDone := make(chan struct{})
+	go func() {
+		_ = seq.Run(ctx)
+		close(seqDone)
+	}()
+
+	// Shipper (WAL Sequenced → bytestore WriteEntry → WAL Shipped).
+	// Production has a shipper that migrates wire bytes from the WAL
+	// into the durable bytestore. TestRule_EndToEnd_BytesNeverTouchPostgres
+	// asserts entryBytes contains the bytes after submission — without
+	// a shipper that's never true.
+	ship := shipper.NewShipper(walc, entryBytes, shipper.Config{
+		PollInterval: 50 * time.Millisecond,
+		MaxInFlight:  4,
+		Logger:       logger,
+	})
+	shipDone := make(chan struct{})
+	go func() {
+		_ = ship.Run(ctx)
+		close(shipDone)
+	}()
 
 	diffCfg := middleware.DefaultDifficultyConfig()
 	if opts.LowDifficulty {
@@ -243,7 +272,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	diffController := middleware.NewDifficultyController(
 		sequenceCursor, diffCfg, logger,
 	)
-	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, entryBytes, testLogDID)
+	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
 	opSignerPriv, err := signatures.GenerateKey()
 	if err != nil {
@@ -289,7 +318,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 	cryptoCommitDeps := &api.CryptographicCommitmentDeps{
-		Fetcher: store.NewPostgresCommitmentFetcher(pool, entryBytes, testLogDID),
+		Fetcher: store.NewPostgresCommitmentFetcher(pool, composite, testLogDID),
 		Logger:  logger,
 	}
 
@@ -318,26 +347,21 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		RealTileReader: ts.tileReader,
 	}
 
-	// Cleanup ordering matters when ts.embedded is non-nil:
-	//   1. cancel() signals the builder loop to stop.
-	//   2. wait loopDone so the loop's last AppendLeaf completes.
-	//   3. ts.closer drains pending Tessera integrations.
-	//   4. server.Shutdown drains in-flight HTTP.
-	//   5. cleanTables + pool.Close.
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-loopDone:
-		case <-time.After(5 * time.Second):
-			t.Logf("builder loop did not exit in 5s after cancel; proceeding")
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = ts.closer(shutdownCtx)
-		_ = server.Shutdown(shutdownCtx)
-		cleanTables(t, pool)
-		pool.Close()
-	})
+	// Single ordered teardown — see tests/shutdownchain_test.go for
+	// the spec-order rationale. Do NOT add other t.Cleanup calls in
+	// this function: LIFO ordering across multiple Cleanups is what
+	// caused the AppendLeaf-future goroutine leak.
+	t.Cleanup(shutdownChain{
+		Logger:        logger,
+		Server:        server,
+		Tessera:       ts.embedded,
+		Cancel:        cancel,
+		GoroutineDone: []<-chan struct{}{loopDone, seqDone, shipDone},
+		WALC:          walc,
+		WALDB:         walDB,
+		Pool:          pool,
+		CleanTables:   func() { cleanTables(t, pool) },
+	}.Run)
 
 	for i := 0; i < 50; i++ {
 		resp, err := http.Get(baseURL + "/healthz")
