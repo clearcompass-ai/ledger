@@ -127,15 +127,23 @@ services:
     # `server -s3` runs master + volume + filer + s3 in one
     # process. -s3.allowEmptyFolder permits CreateBucket without
     # pre-existing folders. Default S3 port is 8333.
-    command: ["server", "-s3", "-s3.port=8333", "-s3.allowEmptyFolder=true"]
+    #
+    # -ip.bind=0.0.0.0 is LOAD-BEARING: without it SeaweedFS auto-
+    # detects the container's external interface (e.g. 172.18.0.2)
+    # and binds ONLY there. Healthchecks running INSIDE the
+    # container against localhost:8333 then fail with "Connection
+    # refused" because nothing is listening on 127.0.0.1. Forcing
+    # 0.0.0.0 makes the listener accept on every interface,
+    # including loopback.
+    command: ["server", "-s3", "-s3.port=8333", "-s3.allowEmptyFolder=true", "-ip.bind=0.0.0.0"]
     ports:
       - "127.0.0.1:8333:8333"   # S3 endpoint
       - "127.0.0.1:9333:9333"   # master (used by init container)
     healthcheck:
-      # SeaweedFS S3 returns 403 on GET / without auth; that's
-      # enough to prove the listener is up. wget -q exits non-
-      # zero on 4xx, so we accept either 200 or 403 by inverting.
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:8333/ 2>&1 || true; nc -z localhost 8333 || exit 1"]
+      # Probe the master's /cluster/status endpoint — it returns
+      # 200 when the cluster has elected a leader and is ready
+      # to accept S3 traffic. wget is in the BusyBox-Alpine base.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9333/cluster/status || exit 1"]
       interval: 2s
       timeout: 2s
       retries: 30
