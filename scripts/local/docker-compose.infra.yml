@@ -1,50 +1,41 @@
 # scripts/local/docker-compose.infra.yml
 #
 # Unified local-test infrastructure compose file. Drives the
-# `scripts/infra` orchestrator. Replaces the ad-hoc compose
-# files (testharness.yml, e2e.yml) for the everyday "spin up
-# postgres + a witness + run any test suite" workflow.
+# `scripts/infra` orchestrator. The DEFAULT topology is the one
+# every test suite should run against:
 #
-# SERVICES (gated by compose --profile flags):
+#   postgres   — Ledger metadata + index store
+#   witness-1  — first network witness (port 8081)
+#   witness-2  — second network witness (port 8082)
+#   seaweedfs  — S3-compatible object store (port 8333)
+#   seaweedfs-init — one-shot bucket creator (exits after success)
 #
-#   postgres   — ALWAYS up. Required by every DSN-gated test.
-#                Bound to 127.0.0.1:5544.
-#
-#   witness    — opt-in via --profile witness. Standalone-witness
-#                daemon container, built from cmd/standalone-
-#                witness/ (its own go.mod). Bound to
-#                127.0.0.1:8081.
-#
-#   fake-gcs   — opt-in via --profile fake-gcs. fsouza/fake-gcs-
-#                server for tests that need a GCS-shaped object
-#                store without real credentials. Bound to
-#                127.0.0.1:4443.
+# The witnesses share one network bootstrap (genesis_witness_set
+# contains BOTH DIDs). The Ledger talks to both endpoints with
+# K=2 quorum — exactly the production-shape topology.
 #
 # USAGE (via the orchestrator script):
 #
-#   ./scripts/infra up                        # postgres only
-#   ./scripts/infra up --with witness         # + witness daemon
-#   ./scripts/infra up --with fake-gcs        # + fake-gcs
-#   ./scripts/infra up --all                  # everything
+#   ./scripts/infra up      # bring everything up
+#   ./scripts/infra env     # emit env vars
+#   ./scripts/infra down    # tear down
 #
-# DIRECT (without the orchestrator):
+# DIRECT (without orchestrator):
 #
-#   docker compose -f scripts/local/docker-compose.infra.yml up -d postgres
-#   docker compose -f scripts/local/docker-compose.infra.yml \
-#       --profile witness up -d
+#   INFRA_KEYS_DIR=$(pwd)/.run/infra \
+#   docker compose -f scripts/local/docker-compose.infra.yml up -d
 #
 # KEY GENERATION:
 #
-#   The witness service requires a PEM key + bootstrap doc on
+#   The witness containers require PEM keys + bootstrap doc on
 #   disk. The orchestrator generates these to .run/infra/ via
-#   cmd/init-network and bind-mounts the directory into the
-#   container. INFRA_KEYS_DIR is the env var consumed below.
+#   `cmd/init-network -witnesses=2` and bind-mounts the directory
+#   into both witness containers. INFRA_KEYS_DIR is the env var
+#   consumed below.
 
 services:
   # ─────────────────────────────────────────────────────────────────
-  # Postgres — always up. Same shape / port as the legacy
-  # testharness file so existing scripts that hardcode
-  # 127.0.0.1:5544 continue to work.
+  # Postgres — Ledger's metadata + index store
   # ─────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -63,16 +54,14 @@ services:
       retries: 30
 
   # ─────────────────────────────────────────────────────────────────
-  # standalone-witness — opt-in via --profile witness.
-  # Mounts ${INFRA_KEYS_DIR} (set by scripts/infra) read-only.
+  # witness-1 — first network witness (default port 8081)
   # ─────────────────────────────────────────────────────────────────
-  witness:
-    profiles: ["witness", "all"]
+  witness-1:
     build:
       context: ../../
       dockerfile: scripts/local/Dockerfile.witness
     image: standalone-witness:infra
-    container_name: attesta_infra_witness
+    container_name: attesta_infra_witness_1
     command:
       - "-addr=:8081"
       - "-key-file=/keys/witnesses/witness-1.pem"
@@ -92,21 +81,78 @@ services:
       start_period: 5s
 
   # ─────────────────────────────────────────────────────────────────
-  # fake-gcs — opt-in via --profile fake-gcs.
-  # Anonymous mode; no bucket ACLs. Sufficient for byte-store
-  # integration tests that don't exercise real GCS auth.
+  # witness-2 — second network witness (default port 8082)
   # ─────────────────────────────────────────────────────────────────
-  fake-gcs:
-    profiles: ["fake-gcs", "all"]
-    image: fsouza/fake-gcs-server:1.50.2
-    container_name: attesta_infra_gcs
-    command: ["-scheme", "http", "-port", "4443", "-public-host", "localhost:4443"]
+  witness-2:
+    image: standalone-witness:infra
+    container_name: attesta_infra_witness_2
+    command:
+      - "-addr=:8081"
+      - "-key-file=/keys/witnesses/witness-2.pem"
+      - "-bootstrap=/keys/network-bootstrap.json"
     ports:
-      - "127.0.0.1:4443:4443"
+      - "127.0.0.1:8082:8081"
+    volumes:
+      - "${INFRA_KEYS_DIR:-../../.run/infra}:/keys:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      witness-1:
+        condition: service_started # share image; wait for build via witness-1
     healthcheck:
-      test:
-        - CMD-SHELL
-        - "wget -q -O- http://localhost:4443/storage/v1/b 2>&1 | grep -q '^{' || exit 1"
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8081/healthz | grep -q '^ok$$' || exit 1"]
       interval: 2s
       timeout: 2s
       retries: 30
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # SeaweedFS — S3-compatible object store. Replaces fake-gcs as
+  # the default byte-store backend because:
+  #   - Production-shape: SeaweedFS exposes the same S3 API as
+  #     AWS S3 / RustFS / R2; bytestore/s3.go talks the same
+  #     wire protocol regardless.
+  #   - No GCS auth quirks — fake-gcs's anonymous mode masks ADC
+  #     surprises that bite in production.
+  # ─────────────────────────────────────────────────────────────────
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.71
+    container_name: attesta_infra_seaweedfs
+    # `server -s3` runs master + volume + filer + s3 in one
+    # process. -s3.allowEmptyFolder permits CreateBucket without
+    # pre-existing folders. Default S3 port is 8333.
+    command: ["server", "-s3", "-s3.port=8333", "-s3.allowEmptyFolder=true"]
+    ports:
+      - "127.0.0.1:8333:8333"   # S3 endpoint
+      - "127.0.0.1:9333:9333"   # master (used by init container)
+    healthcheck:
+      # SeaweedFS S3 returns 403 on GET / without auth; that's
+      # enough to prove the listener is up. wget -q exits non-
+      # zero on 4xx, so we accept either 200 or 403 by inverting.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8333/ 2>&1 || true; nc -z localhost 8333 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # seaweedfs-init — one-shot bucket creator. Exits 0 on success.
+  # bytestore/s3.go expects the bucket to exist; this guarantees
+  # it before any test runs.
+  # ─────────────────────────────────────────────────────────────────
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:3.71
+    container_name: attesta_infra_seaweedfs_init
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # The weed shell talks to the master over gRPC. A short
+        # sleep gives the s3 subsystem time to register so the
+        # bucket-create goes through cleanly.
+        sleep 2
+        echo "s3.bucket.create -name attesta-bytes" | weed shell -master seaweedfs:9333
+        echo "bucket attesta-bytes ready"
