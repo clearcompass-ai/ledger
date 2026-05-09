@@ -84,6 +84,14 @@ services:
   # witness-2 — second network witness (default port 8082)
   # ─────────────────────────────────────────────────────────────────
   witness-2:
+    # Same build context as witness-1. Compose dedupes and builds
+    # the image once when both services point at the same tag —
+    # without this `build:`, witness-2 would try to PULL
+    # standalone-witness:infra from a registry (and fail) before
+    # depends_on:witness-1 ordering kicks in.
+    build:
+      context: ../../
+      dockerfile: scripts/local/Dockerfile.witness
     image: standalone-witness:infra
     container_name: attesta_infra_witness_2
     command:
@@ -97,8 +105,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      witness-1:
-        condition: service_started # share image; wait for build via witness-1
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8081/healthz | grep -q '^ok$$' || exit 1"]
       interval: 2s
