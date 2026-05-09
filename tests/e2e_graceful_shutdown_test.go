@@ -510,9 +510,10 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	defer h2.stop(t)
 
 	// Wait for the shipper's HWM to converge to n. With Memory backend
-	// and small entry count, this should be sub-second; allow 10s for
-	// CI variability.
-	deadline = time.Now().Add(10 * time.Second)
+	// and small entry count, this should be sub-second; allow 30s for
+	// CI variability + sequencer retry budgets on entries that were
+	// in-flight when h1 cancelled.
+	deadline = time.Now().Add(30 * time.Second)
 	var finalHWM uint64
 	for time.Now().Before(deadline) {
 		hwm, err := h2.WAL.HWM(context.Background())
@@ -526,22 +527,26 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if finalHWM < uint64(n) {
-		t.Fatalf("phase 2: HWM=%d did not converge to %d in 10s", finalHWM, n)
+		// Don't Fatalf — surface per-hash state below so we can see
+		// which entry leaked and in what state.
+		t.Errorf("phase 2: HWM=%d did not converge to %d in 30s", finalHWM, n)
 	}
 
 	// Every entry must end StateShipped after the second harness drains.
 	ctx := context.Background()
+	stateCounts := map[wal.EntryState]int{}
 	for i, h := range hashes {
 		meta, err := h2.WAL.MetaState(ctx, h)
 		if err != nil {
 			t.Errorf("hash[%d]: meta state: %v", i, err)
 			continue
 		}
+		stateCounts[meta.State]++
 		if meta.State != wal.StateShipped {
-			t.Errorf("hash[%d] state=%s, want Shipped", i, meta.State)
+			t.Errorf("hash[%d]=%x state=%s, want Shipped", i, h[:4], meta.State)
 		}
 	}
-	t.Logf("phase 2: drained to HWM=%d", finalHWM)
+	t.Logf("phase 2: HWM=%d state breakdown=%v", finalHWM, stateCounts)
 }
 
 // shutdownSignerPriv generates an ephemeral ECDSA key for the
