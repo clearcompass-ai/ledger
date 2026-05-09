@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/clearcompass-ai/ledger/store"
 )
@@ -196,24 +197,44 @@ func TestP4_ReplicaFailover_ConcurrentAcquireOnlyOneAdvances(t *testing.T) {
 		advanceOK bool
 		err       error
 	}
+	// Pattern: every goroutine HOLDS the lock until the test
+	// function exits. Without the hold, fast acquire+release
+	// (~5ms) lets all goroutines acquire sequentially — that
+	// proves nothing about single-writer semantics. By holding,
+	// only the first goroutine wins; the others' bounded ctx
+	// (2s) expires while waiting.
 	out := make(chan result, N)
 	var wg sync.WaitGroup
 	wg.Add(N)
+	holdRelease := make(chan struct{})
+	defer close(holdRelease)
+
+	heldPools := make([]*pgxpool.Pool, 0, N)
+	heldLocks := make([]*store.BuilderLock, 0, N)
+	var heldMu sync.Mutex
+
 	for i := 0; i < N; i++ {
 		go func(i int) {
 			defer wg.Done()
 			pool := freshPool(t)
-			defer pool.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			fatal := make(chan error, 1)
 			lock, err := store.AcquireBuilderLock(ctx, pool, fatal, logger)
 			if err != nil {
+				_ = pool.Close
+				pool.Close()
 				out <- result{idx: i, err: err}
 				return
 			}
-			defer lock.Release()
+			// Acquired. Hand pool+lock to the test for cleanup,
+			// hold the lock until the test signals release, then
+			// advance the cursor.
+			heldMu.Lock()
+			heldPools = append(heldPools, pool)
+			heldLocks = append(heldLocks, lock)
+			heldMu.Unlock()
 
 			cursor := store.NewSequenceCursor(pool)
 			advanceErr := store.WithSerializableTx(context.Background(), pool,
@@ -221,10 +242,22 @@ func TestP4_ReplicaFailover_ConcurrentAcquireOnlyOneAdvances(t *testing.T) {
 					return cursor.AdvanceTx(ctx, tx, uint64(100+i))
 				})
 			out <- result{idx: i, acquired: true, advanceOK: advanceErr == nil, err: advanceErr}
+
+			<-holdRelease // hold until the test ends
 		}(i)
 	}
 	wg.Wait()
 	close(out)
+
+	// Cleanup: release locks + close pools after assertions.
+	defer func() {
+		for _, l := range heldLocks {
+			l.Release()
+		}
+		for _, p := range heldPools {
+			p.Close()
+		}
+	}()
 
 	winners := 0
 	for r := range out {

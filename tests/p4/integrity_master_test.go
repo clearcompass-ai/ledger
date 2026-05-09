@@ -96,26 +96,25 @@ func TestP4_Integrity_SMT_RoundTrip(t *testing.T) {
 // leaves at distinct keys produces two distinct roots. A root
 // that doesn't move after a write would mean the SMT is not
 // committing to the new leaf — silent equivocation surface.
+//
+// Uses smt.InMemoryLeafStore — the SDK's tree.Root() only
+// computes roots from InMemoryLeafStore or OverlayLeafStore
+// snapshots. For Postgres-backed stores the production path
+// goes through ProcessBatch + OverlayLeafStore (see soak); a
+// raw tree.Root() on a PostgresLeafStore returns the empty-
+// tree hash by design.
 func TestP4_Integrity_SMT_RootChangesOnDistinctSet(t *testing.T) {
 	pool := requirePostgres(t)
 	defer pool.Close()
 	ctx := context.Background()
 
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 1024)
+	leafStore := smt.NewInMemoryLeafStore()
+	nodeCache := smt.NewInMemoryNodeCache()
 	tree := smt.NewTree(leafStore, nodeCache)
-
-	if _, err := pool.Exec(ctx, `DELETE FROM smt_leaves`); err != nil {
-		t.Fatalf("clear smt_leaves: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM smt_nodes`); err != nil {
-		t.Fatalf("clear smt_nodes: %v", err)
-	}
 
 	key1 := [32]byte{0x11}
 	key2 := [32]byte{0x22}
 
-	// Capture the empty-tree root.
 	rootEmpty, err := tree.Root(ctx)
 	if err != nil {
 		t.Fatalf("Root (empty): %v", err)
@@ -157,21 +156,18 @@ func TestP4_Integrity_SMT_RootChangesOnDistinctSet(t *testing.T) {
 // a freshly-generated proof against the live root. This is the
 // cross-API audit contract — auditors fetch /v1/smt/root + the
 // per-key proof and verify entirely on their own CPU.
+//
+// InMemoryLeafStore for the same reason as RootChangesOnDistinctSet
+// — tree.Root() / GenerateMembershipProof only compute against
+// in-memory or overlay snapshots.
 func TestP4_Integrity_SMT_MembershipProofVerifies(t *testing.T) {
 	pool := requirePostgres(t)
 	defer pool.Close()
 	ctx := context.Background()
 
-	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 1024)
+	leafStore := smt.NewInMemoryLeafStore()
+	nodeCache := smt.NewInMemoryNodeCache()
 	tree := smt.NewTree(leafStore, nodeCache)
-
-	if _, err := pool.Exec(ctx, `DELETE FROM smt_leaves`); err != nil {
-		t.Fatalf("clear smt_leaves: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM smt_nodes`); err != nil {
-		t.Fatalf("clear smt_nodes: %v", err)
-	}
 
 	keys := [][32]byte{
 		{0xA1}, {0xA2}, {0xA3}, {0xA4}, {0xA5},
@@ -239,7 +235,7 @@ func TestP4_Integrity_DetectEquivocation_FlagsFork(t *testing.T) {
 		}
 		s := cosign.NewECDSAWitnessSigner(priv)
 		signers[i] = s
-		pubBytes := append(priv.X.Bytes(), priv.Y.Bytes()...)
+		pubBytes := signatures.PubKeyBytes(&priv.PublicKey)
 		pubKeys[i] = types.WitnessPublicKey{
 			ID:        s.PubKeyID(),
 			PublicKey: pubBytes,
@@ -316,7 +312,7 @@ func TestP4_Integrity_DetectEquivocation_AcceptsBenignDuplicate(t *testing.T) {
 		}
 		s := cosign.NewECDSAWitnessSigner(priv)
 		signers[i] = s
-		pubBytes := append(priv.X.Bytes(), priv.Y.Bytes()...)
+		pubBytes := signatures.PubKeyBytes(&priv.PublicKey)
 		pubKeys[i] = types.WitnessPublicKey{
 			ID:        s.PubKeyID(),
 			PublicKey: pubBytes,
