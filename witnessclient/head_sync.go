@@ -1,5 +1,5 @@
 /*
-FILE PATH: witness/head_sync.go
+FILE PATH: witnessclient/head_sync.go
 
 K-of-N cosignature collection over the SDK's universal cosign wire
 surface. Implements builder.WitnessCosigner.
@@ -43,7 +43,7 @@ before the cosign client sees them. The 429-rate-limit and
 5xx-witness-failure paths above run only after the transport
 retries are exhausted.
 */
-package witness
+package witnessclient
 
 import (
 	"context"

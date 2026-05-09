@@ -145,12 +145,9 @@ type AppDeps struct {
 	// TesseraSigner is consumed by tessera.NewEmbeddedAppender at
 	// construction; the appender holds the only reference. Not
 	// held on AppDeps because no other phase reads it.
-	// WitnessSignerPriv is the cosign signing key. nil when
-	// witness mode is not active.
-	WitnessSignerPriv *ecdsa.PrivateKey
 
 	// NetworkID echoes cfg.NetworkID for downstream consumers
-	// (gossip wiring, witness handler) without re-reading config.
+	// (gossip wiring, cosign client) without re-reading config.
 	NetworkID cosign.NetworkID
 
 	// ── Phase A: telemetry handles ────────────────────────────────

@@ -43,8 +43,6 @@ import (
 	uptessera "github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 
-	"github.com/clearcompass-ai/attesta/core/smt"
-
 	"github.com/clearcompass-ai/ledger/api"
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
@@ -79,9 +77,15 @@ type tesseraSlots struct {
 // 2) buildTesseraForTests — the single decision point
 // -------------------------------------------------------------------------------------------------
 
-// buildTesseraForTests fills tesseraSlots based on opts.UseRealTessera.
-// This is the only function in the test suite that branches on the
-// flag; every other caller reads from the returned slot map.
+// buildTesseraForTests fills tesseraSlots with a real
+// tessera.EmbeddedAppender backed by t.TempDir(). The previous
+// stub branch is gone; per architectural review tests must
+// exercise the production-shape Tessera stack so the cosigned-
+// checkpoint file write is part of every test's contract.
+//
+// The bool opts.UseRealTessera is retained for backward source
+// compatibility with existing callers but is now ignored — every
+// call returns the production-shape slots.
 func buildTesseraForTests(
 	t *testing.T,
 	ctx context.Context,
@@ -89,17 +93,6 @@ func buildTesseraForTests(
 	logger *slog.Logger,
 ) *tesseraSlots {
 	t.Helper()
-
-	if !opts.UseRealTessera {
-		stub := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
-		return &tesseraSlots{
-			admission:   stub,
-			builder:     stub,
-			inclusion:   stub,
-			consistency: stub,
-			closer:      func(_ context.Context) error { return nil },
-		}
-	}
 	return buildRealTesseraSlots(t, ctx, opts, logger)
 }
 

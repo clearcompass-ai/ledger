@@ -97,10 +97,6 @@ func (signerLoader) LoadTesseraSigner(keyFile, origin, logDID string, logger *sl
 	return signer, vkey, nil
 }
 
-func (signerLoader) LoadWitnessSigner(keyFile string, logger *slog.Logger) (*ecdsa.PrivateKey, error) {
-	return loadOrGenerateWitnessSigner(keyFile, logger)
-}
-
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -284,7 +280,6 @@ func allocConfigFromCfg(cfg *Config, migrateMode store.MigrateMode) alloc.Config
 		LogDID:               cfg.LogDID,
 		TileCacheSize:        cfg.TileCacheSize,
 		LedgerSignerKeyFile:  cfg.LedgerSignerKeyFile,
-		WitnessKeyFile:       cfg.WitnessKeyFile,
 		GossipDisable:        cfg.GossipDisable,
 		NetworkID:            cfg.NetworkID,
 		MetricsEnable:        cfg.MetricsEnable,
@@ -319,7 +314,6 @@ func wireConfigFromCfg(cfg *Config) wire.Config {
 		GossipPeerDIDs:         cfg.GossipPeerDIDs,
 		WitnessEndpoints:       cfg.WitnessEndpoints,
 		WitnessQuorumK:         cfg.WitnessQuorumK,
-		WitnessKeyFile:         cfg.WitnessKeyFile,
 		GenesisWitnessSet:      cfg.GenesisWitnessSet,
 		ServerAddr:             cfg.ServerAddr,
 		TLSCertFile:            cfg.TLSCertFile,

@@ -59,34 +59,58 @@ import (
 )
 
 func main() {
-	outWitnessKey := flag.String("out-witness-key", ".run/witness.pem",
-		"path to write (or load) the witness EC private key in PEM form")
-	outBootstrap := flag.String("out-bootstrap", ".run/network-bootstrap.json",
-		"path to write the network BootstrapDocument JSON")
+	outDir := flag.String("out-dir", ".run",
+		"directory to write witness keys + bootstrap doc into")
+	outBootstrap := flag.String("out-bootstrap", "",
+		"path to write the network BootstrapDocument JSON "+
+			"(default: <out-dir>/network-bootstrap.json)")
 	logDID := flag.String("log-did", "did:attesta:ledger:local",
 		"LogDID — used as exchange_did stand-in for local dev")
 	networkName := flag.String("network-name", "local-dev",
 		"network_name field of the BootstrapDocument")
+	witnessCount := flag.Int("witnesses", 1,
+		"number of witness keys to generate. Each key is written to "+
+			"<out-dir>/witnesses/witness-<i>.pem and its DID is added "+
+			"to GenesisWitnessSet. The Ledger writer is NEVER in the "+
+			"witness set — that's a network role, not a Ledger role.")
 	flag.Parse()
 
-	priv, generated, err := loadOrGenerateWitnessKey(*outWitnessKey)
-	if err != nil {
-		log.Fatalf("init-network: witness key: %v", err)
+	if *witnessCount < 1 {
+		log.Fatalf("init-network: -witnesses must be >= 1 (a network without witnesses cannot finalise heads)")
 	}
 
-	// did:key P-256 encoding: 33-byte compressed point.
-	// crypto/ecdh.PublicKey.Bytes() returns the uncompressed
-	// SEC1 form; we compress it via elliptic.MarshalCompressed.
-	pubX, pubY := priv.X, priv.Y
-	compressed := elliptic.MarshalCompressed(elliptic.P256(), pubX, pubY)
-	witnessDID := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, compressed)
+	bootstrapPath := *outBootstrap
+	if bootstrapPath == "" {
+		bootstrapPath = *outDir + "/network-bootstrap.json"
+	}
+
+	// Generate N witness keys and collect their DIDs. Every key is
+	// genuinely network witness material: a standalone-witness daemon
+	// will load the PEM file and serve /v1/cosign for the
+	// corresponding DID. The Ledger writer holds NONE of these keys.
 	_ = ecdh.P256() // silence unused-import in case we later switch APIs
+	genesisDIDs := make([]string, 0, *witnessCount)
+	keyPaths := make([]string, 0, *witnessCount)
+	for i := 1; i <= *witnessCount; i++ {
+		path := fmt.Sprintf("%s/witnesses/witness-%d.pem", *outDir, i)
+		priv, generated, kerr := loadOrGenerateWitnessKey(path)
+		if kerr != nil {
+			log.Fatalf("init-network: witness #%d (%s): %v", i, path, kerr)
+		}
+		compressed := elliptic.MarshalCompressed(
+			elliptic.P256(), priv.X, priv.Y)
+		did := sdkdid.EncodeDIDKey(sdkdid.MulticodecP256, compressed)
+		genesisDIDs = append(genesisDIDs, did)
+		keyPaths = append(keyPaths, path)
+		fmt.Printf("init-network: witness #%d %s = %s -> %s\n",
+			i, ifGenerated(generated), path, did)
+	}
 
 	doc := network.BootstrapDocument{
 		ProtocolVersion:   "v1",
 		ExchangeDID:       *logDID,
 		NetworkName:       *networkName,
-		GenesisWitnessSet: []string{witnessDID},
+		GenesisWitnessSet: genesisDIDs,
 		GenesisTreeHead: network.GenesisTreeHead{
 			RootHash: "0000000000000000000000000000000000000000000000000000000000000000",
 			TreeSize: 0,
@@ -103,17 +127,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("init-network: marshal: %v", err)
 	}
-	if err := os.WriteFile(*outBootstrap, append(body, '\n'), 0o644); err != nil {
+	if err := os.MkdirAll(dirOf(bootstrapPath), 0o755); err != nil {
+		log.Fatalf("init-network: mkdir bootstrap dir: %v", err)
+	}
+	if err := os.WriteFile(bootstrapPath, append(body, '\n'), 0o644); err != nil {
 		log.Fatalf("init-network: write bootstrap: %v", err)
 	}
 
-	keyAction := "loaded"
-	if generated {
-		keyAction = "generated"
+	fmt.Printf("init-network: witnesses     = %d (key paths: %v)\n",
+		*witnessCount, keyPaths)
+	fmt.Printf("init-network: bootstrap     = %s\n", bootstrapPath)
+}
+
+// dirOf returns the directory portion of path. For
+// ".run/witness.pem" it returns ".run".
+func dirOf(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[:i]
+		}
 	}
-	fmt.Printf("init-network: witness key %s (%s)\n", keyAction, *outWitnessKey)
-	fmt.Printf("init-network: witness did  = %s\n", witnessDID)
-	fmt.Printf("init-network: bootstrap    = %s\n", *outBootstrap)
+	return "."
+}
+
+// ifGenerated returns "generated" or "loaded" — used in human
+// log lines to make first-vs-subsequent runs distinguishable.
+func ifGenerated(generated bool) string {
+	if generated {
+		return "generated"
+	}
+	return "loaded"
 }
 
 // loadOrGenerateWitnessKey loads a PEM-encoded EC private key
@@ -149,6 +192,9 @@ func loadOrGenerateWitnessKey(path string) (*ecdsa.PrivateKey, bool, error) {
 		Type:  "EC PRIVATE KEY",
 		Bytes: der,
 	})
+	if err := os.MkdirAll(dirOf(path), 0o755); err != nil {
+		return nil, false, fmt.Errorf("mkdir %q: %w", dirOf(path), err)
+	}
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		return nil, false, fmt.Errorf("write %q: %w", path, err)
 	}

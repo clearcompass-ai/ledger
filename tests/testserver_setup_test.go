@@ -62,6 +62,7 @@ import (
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/wal"
+	"github.com/clearcompass-ai/ledger/witnessclient"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -177,7 +178,26 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	}
 
 	ts := buildTesseraForTests(t, ctx, opts, logger)
-	witnessCosigner := &stubWitnessCosigner{}
+
+	// Real witness fixture — K=1 by default. Replaces the deleted
+	// stubWitnessCosigner. The Ledger's HeadSync POSTs to the
+	// fixture's httptest cosign server over real HTTP and persists
+	// signatures in treeHeadStore. Tests asserting on the cosigned-
+	// checkpoint file inspect ts.tileRoot/cosigned-checkpoint after
+	// the builder loop has completed at least one cycle.
+	witnessNetID := nonZeroTestNetworkID()
+	witnessFx := newWitnessFixture(t, witnessNetID, 1)
+	witnessCosigner, err := witnessclient.NewHeadSync(witnessclient.HeadSyncConfig{
+		WitnessEndpoints:  witnessFx.URLs(),
+		QuorumK:           1,
+		PerWitnessTimeout: 2 * time.Second,
+		NetworkID:         witnessNetID,
+	}, treeHeadStore, logger)
+	if err != nil {
+		cancel()
+		pool.Close()
+		t.Fatalf("real witness HeadSync: %v", err)
+	}
 
 	commitPub := opbuilder.NewCommitmentPublisher(
 		testLogDID,
@@ -353,7 +373,6 @@ func buildTestHandlers(
 		SchemaRef:       api.NewQuerySchemaRefHandler(queryDeps),
 		Scan:            api.NewQueryScanHandler(queryDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
-		WitnessCosign:   nil,
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryBatch:      api.NewEntryBatchHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),

@@ -79,6 +79,14 @@ linters:
             context.TODO() is forbidden outside tests. Bind the
             process-lifetime ctx at struct construction (see Phase 2
             pattern in store/smt_state.go, store/entries.go, etc.).
+        #
+        # cmd/standalone-witness/ has its OWN go.mod. The compile-
+        # time boundary (separate module + internal/) makes a stray
+        # `import "github.com/clearcompass-ai/ledger/..."` from the
+        # witness daemon a hard build error — surfaced earlier and
+        # more loudly than any lint rule could. No additional
+        # forbidigo entry needed; CI runs `GOWORK=off go build
+        # ./cmd/standalone-witness/...` to prove the isolation.
 
   exclusions:
     # Tests can use over-allocations + shadowed err vars freely.

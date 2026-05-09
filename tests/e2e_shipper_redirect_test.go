@@ -51,10 +51,12 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/transparency-dev/tessera/storage/posix"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
-	"github.com/clearcompass-ai/attesta/core/smt"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
 
 	"github.com/clearcompass-ai/ledger/api"
@@ -64,6 +66,7 @@ import (
 	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
@@ -219,8 +222,44 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
 	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
-	// ── Stub Tessera (sequence assignment) ──────────────────────────
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+	// ── Real Tessera (sequence assignment via on-disk antispam) ────
+	tileRoot := t.TempDir()
+	tesseraSigner, _, terr := optessera.GenerateEphemeralSigner("test-shipper-redirect")
+	if terr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tessera signer: %v", terr)
+	}
+	tesseraDriver, derr := posix.New(ctx, posix.Config{Path: tileRoot})
+	if derr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("posix.New: %v", derr)
+	}
+	merkle, merr := optessera.NewEmbeddedAppender(ctx, tesseraDriver, optessera.AppenderOptions{
+		Origin:               testLogDID,
+		Signer:               tesseraSigner,
+		CheckpointInterval:   100 * time.Millisecond,
+		BatchSize:            4,
+		BatchMaxAge:          50 * time.Millisecond,
+		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
+	}, logger)
+	if merr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tessera embedded: %v", merr)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = merkle.Close(shutdownCtx)
+	})
 
 	// ── Difficulty controller ───────────────────────────────────────
 	diffController := middleware.NewDifficultyController(

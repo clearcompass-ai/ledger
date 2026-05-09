@@ -39,9 +39,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/clearcompass-ai/attesta/core/smt"
-	"github.com/clearcompass-ai/attesta/types"
-
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
@@ -108,54 +105,19 @@ func (op *testLedger) seedSession(t *testing.T, token, exchangeDID string, credi
 	}
 }
 
-// -------------------------------------------------------------------------------------------------
-// Stubs
-// -------------------------------------------------------------------------------------------------
-
-// stubMerkleAppender implements MerkleAppender for tests.
+// stubMerkleAppender + stubWitnessCosigner WERE defined here.
+// Both deleted — tests now exercise the production-shape Tessera
+// + httptest cosign fixture via newWitnessedTestHarness (see
+// tests/witnessed_harness_test.go) and the canonical
+// startTestLedgerWithOpts wiring (see tests/testserver_setup_test.go).
 //
-// Hash-only architecture: AppendLeaf receives 32-byte SHA-256 hashes from
-// builder/loop.go step 6. The stub passes the hash directly to the
-// StubMerkleTree (which further hashes it for the Merkle leaf as
-// H(0x00 || data), matching RFC 6962).
-type stubMerkleAppender struct {
-	mt *smt.StubMerkleTree
-}
-
-func (s *stubMerkleAppender) AppendLeaf(_ context.Context, data []byte) (uint64, error) {
-	return s.mt.AppendLeaf(data)
-}
-
-func (s *stubMerkleAppender) Head() (types.TreeHead, error) {
-	return s.mt.Head()
-}
-
-func (s *stubMerkleAppender) RawInclusionProof(position, treeSize uint64) (any, error) {
-	return s.mt.InclusionProof(context.Background(), position, treeSize)
-}
-
-func (s *stubMerkleAppender) ConsistencyProof(oldSize, newSize uint64) (any, error) {
-	return map[string]any{"old_size": oldSize, "new_size": newSize}, nil
-}
-
-// PublishCosignedCheckpoint is a no-op in the in-process test stub
-// — the StubMerkleTree doesn't materialise a public-CDN file. The
-// builder loop's PublishCosignedCheckpoint call site is exercised
-// (it gets called) but the stub records nothing.
-func (s *stubMerkleAppender) PublishCosignedCheckpoint(_ context.Context, _ types.CosignedTreeHead) error {
-	return nil
-}
-
-type stubWitnessCosigner struct{}
-
-// RequestCosignatures returns a zero-value CosignedTreeHead so the
-// builder loop's PublishCosignedCheckpoint guard
-// (cosigned.TreeHead.TreeSize > 0) skips the publish step in tests
-// — keeping behaviour identical to pre-Backpressure-Stall test
-// runs while satisfying the new interface contract.
-func (s *stubWitnessCosigner) RequestCosignatures(_ context.Context, _ types.TreeHead) (types.CosignedTreeHead, error) {
-	return types.CosignedTreeHead{}, nil
-}
+// Physics, not mocks: every test boots a real
+// tessera.EmbeddedAppender backed by t.TempDir() and a real
+// witnessclient.HeadSync against an httptest.Server running
+// the SDK's cosign.NewWitnessHandler. After a builder cycle,
+// the cosigned-checkpoint file lands on disk at
+// <tempdir>/cosigned-checkpoint and tests assert against its
+// existence + contents.
 
 // -------------------------------------------------------------------------------------------------
 // Lightweight test-server adapter for destination_binding_test.go

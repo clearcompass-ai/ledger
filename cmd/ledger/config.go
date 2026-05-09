@@ -237,32 +237,21 @@ type Config struct {
 	WitnessEndpoints []string
 	WitnessQuorumK   int
 
-	// WitnessKeyFile is the path to a PEM-encoded secp256k1
-	// ECDSA private key the witness cosign endpoint
-	// (POST /v1/cosign) signs tree heads with. When set, the
-	// endpoint is mounted; when empty, the endpoint is absent
-	// from the route table (this ledger does not act as a
-	// witness for anyone). Distinct from
-	// LEDGER_SIGNER_KEY_FILE — that key signs the ledger's
-	// own admitted entries; this key signs cosign responses.
-	WitnessKeyFile string
-
 	// NetworkBootstrapFile is the path to a JSON file containing
 	// the network's bootstrap document (network.BootstrapDocument).
-	// Required when witness mode is active (WitnessKeyFile or
-	// WitnessEndpoints set) — the cosign canonical-message preamble
-	// rejects a zero NetworkID, so a witness signing or verifying
-	// without one fails at runtime. The same document MUST be
-	// loaded by every component participating in the network
-	// (other ledgers, JN composer, peer witnesses); cross-
-	// component signature verification depends on byte-identical
-	// bootstrap inputs.
+	// Required when witness mode is active (WitnessEndpoints set)
+	// — the cosign canonical-message preamble rejects a zero
+	// NetworkID, so a verifier without one fails at runtime.
+	// The same document MUST be loaded by every component
+	// participating in the network (other ledgers, JN composer,
+	// peer witnesses); cross-component signature verification
+	// depends on byte-identical bootstrap inputs.
 	NetworkBootstrapFile string
 
 	// NetworkID is derived from the bootstrap document at config
-	// load and threaded through to witness.NewCosignHandler and
-	// any other primitive that calls cosign.Sign/Verify. Zero
-	// (and unused) when witness mode is inactive.
+	// load and threaded through to the cosign client + verifier
+	// (any primitive that calls cosign.Sign/Verify). Zero (and
+	// unused) when witness mode is inactive.
 	NetworkID cosign.NetworkID
 
 	// GenesisWitnessSet is the slice of witness DIDs extracted
@@ -364,7 +353,6 @@ func loadConfig() (*Config, error) {
 		DeltaWindow:            10,
 		WitnessEndpoints:       parseCSV(os.Getenv("LEDGER_WITNESS_ENDPOINTS")),
 		WitnessQuorumK:         envIntOr("LEDGER_WITNESS_QUORUM_K", 1),
-		WitnessKeyFile:         os.Getenv("LEDGER_WITNESS_KEY_FILE"),
 		NetworkBootstrapFile:   os.Getenv("LEDGER_NETWORK_BOOTSTRAP_FILE"),
 		GossipPeerEndpoints:    parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_ENDPOINTS")),
 		GossipPeerDIDs:         parseCSV(os.Getenv("LEDGER_GOSSIP_PEER_DIDS")),
@@ -440,16 +428,15 @@ func loadConfig() (*Config, error) {
 	}
 
 	// Witness mode requires a network bootstrap document. The cosign
-	// canonical-message preamble rejects a zero NetworkID; a witness
-	// signing or verifying without one fails at runtime. Load + derive
-	// at config-load so any error surfaces with a clear cause before
-	// the ledger advances any further.
-	witnessActive := cfg.WitnessKeyFile != "" || len(cfg.WitnessEndpoints) > 0
+	// canonical-message preamble rejects a zero NetworkID; a verifier
+	// without one fails at runtime. Load + derive at config-load so
+	// any error surfaces with a clear cause before the ledger
+	// advances any further.
+	witnessActive := len(cfg.WitnessEndpoints) > 0
 	if witnessActive {
 		if cfg.NetworkBootstrapFile == "" {
 			return nil, fmt.Errorf(
-				"LEDGER_NETWORK_BOOTSTRAP_FILE required when witness mode is active " +
-					"(LEDGER_WITNESS_KEY_FILE or LEDGER_WITNESS_ENDPOINTS set)")
+				"LEDGER_NETWORK_BOOTSTRAP_FILE required when LEDGER_WITNESS_ENDPOINTS is set")
 		}
 		raw, err := os.ReadFile(cfg.NetworkBootstrapFile)
 		if err != nil {

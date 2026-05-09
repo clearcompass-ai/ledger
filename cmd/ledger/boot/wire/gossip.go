@@ -32,7 +32,7 @@ import (
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/deps"
 	"github.com/clearcompass-ai/ledger/gossipnet"
 	"github.com/clearcompass-ai/ledger/lifecycle"
-	"github.com/clearcompass-ai/ledger/witness"
+	"github.com/clearcompass-ai/ledger/witnessclient"
 )
 
 // wireGossip builds the gossipnet.Bundle, STH publisher, and starts
@@ -255,18 +255,18 @@ func startEquivocationScanner(
 
 // wireWitnessCosigner builds the HeadSync requester (witness cosigner)
 // when LEDGER_WITNESS_ENDPOINTS is set; nil otherwise. The returned
-// *witness.HeadSync satisfies builder.WitnessCosigner and is fed into
+// *witnessclient.HeadSync satisfies builder.WitnessCosigner and is fed into
 // the BuilderLoop.
-func wireWitnessCosigner(cfg Config, d *deps.AppDeps) (*witness.HeadSync, error) {
+func wireWitnessCosigner(cfg Config, d *deps.AppDeps) (*witnessclient.HeadSync, error) {
 	if len(cfg.WitnessEndpoints) == 0 {
 		d.Logger.Info("witness cosigner: disabled (LEDGER_WITNESS_ENDPOINTS unset)")
 		return nil, nil
 	}
-	var pub witness.CosignedHeadPublisher
+	var pub witnessclient.CosignedHeadPublisher
 	if d.GossipPublisher != nil {
 		pub = d.GossipPublisher
 	}
-	hs, err := witness.NewHeadSync(witness.HeadSyncConfig{
+	hs, err := witnessclient.NewHeadSync(witnessclient.HeadSyncConfig{
 		WitnessEndpoints:  cfg.WitnessEndpoints,
 		QuorumK:           cfg.WitnessQuorumK,
 		PerWitnessTimeout: 30 * time.Second,
@@ -286,7 +286,7 @@ func wireWitnessCosigner(cfg Config, d *deps.AppDeps) (*witness.HeadSync, error)
 
 // wireEscrowOverride builds the /v1/escrow-override handler when both
 // the witness cosigner and gossip bundle are wired. nil otherwise.
-func wireEscrowOverride(cfg Config, cosigner *witness.HeadSync, d *deps.AppDeps) http.HandlerFunc {
+func wireEscrowOverride(cfg Config, cosigner *witnessclient.HeadSync, d *deps.AppDeps) http.HandlerFunc {
 	if cosigner == nil || d.GossipBundle == nil || d.GossipPublisher == nil {
 		return nil
 	}

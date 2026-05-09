@@ -37,7 +37,7 @@ import (
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
-	"github.com/clearcompass-ai/ledger/witness"
+	"github.com/clearcompass-ai/ledger/witnessclient"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -666,14 +666,14 @@ func TestTreeHead_Assembly(t *testing.T) {
 }
 
 func TestTreeHead_QuorumK(t *testing.T) {
-	cfg := witness.HeadSyncConfig{WitnessEndpoints: []string{"a", "b", "c"}, QuorumK: 2, PerWitnessTimeout: 30 * time.Second}
+	cfg := witnessclient.HeadSyncConfig{WitnessEndpoints: []string{"a", "b", "c"}, QuorumK: 2, PerWitnessTimeout: 30 * time.Second}
 	if len(cfg.WitnessEndpoints) < cfg.QuorumK {
 		t.Fatal("insufficient")
 	}
 }
 
 func TestTreeHead_QuorumInsufficient(t *testing.T) {
-	cfg := witness.HeadSyncConfig{WitnessEndpoints: []string{"a"}, QuorumK: 2}
+	cfg := witnessclient.HeadSyncConfig{WitnessEndpoints: []string{"a"}, QuorumK: 2}
 	if len(cfg.WitnessEndpoints) >= cfg.QuorumK {
 		t.Fatal("should be insufficient")
 	}

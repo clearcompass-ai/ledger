@@ -39,9 +39,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/transparency-dev/tessera/storage/posix"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
-	"github.com/clearcompass-ai/attesta/core/smt"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -49,6 +49,7 @@ import (
 	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
@@ -72,21 +73,21 @@ import (
 type shutdownHarnessOpts struct {
 	walPath    string
 	backend    *localPublicURLBackend
-	merkle     *stubMerkleAppender
+	tileRoot   string // shared Tessera POSIX dir across restarts; empty → t.TempDir
 	cleanFirst bool
 }
 
 type shutdownHarness struct {
-	BaseURL string
-	Pool    *pgxpool.Pool
-	WAL     *wal.Committer
-	walDB   walDBCloser
-	Backend *localPublicURLBackend
-	Merkle  *stubMerkleAppender
-	Server  *api.Server
-	Shipper *shipper.Shipper
-	cancel  context.CancelFunc
-	done    chan struct{}
+	BaseURL  string
+	Pool     *pgxpool.Pool
+	WAL      *wal.Committer
+	walDB    walDBCloser
+	Backend  *localPublicURLBackend
+	TileRoot string // pass to a second startShutdownLedger call for restart fidelity
+	Server   *api.Server
+	Shipper  *shipper.Shipper
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
 // walDBCloser is a tiny shim — the wal.Open return type lives in
@@ -132,10 +133,50 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 	if backend == nil {
 		backend = newLocalPublicURLBackend(t)
 	}
-	merkle := opts.merkle
-	if merkle == nil {
-		merkle = &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+	// Real Tessera over a shared POSIX dir. Reusing the dir
+	// across restarts is exactly the production restart path:
+	// the antispam dedup volume + tile state survive on disk,
+	// the new EmbeddedAppender re-opens them on boot.
+	tileRoot := opts.tileRoot
+	if tileRoot == "" {
+		tileRoot = t.TempDir()
 	}
+	signer, _, sErr := optessera.GenerateEphemeralSigner("test-shutdown")
+	if sErr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tessera signer: %v", sErr)
+	}
+	driver, dErr := posix.New(ctx, posix.Config{Path: tileRoot})
+	if dErr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tessera posix.New: %v", dErr)
+	}
+	merkle, mErr := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
+		Origin:               testLogDID,
+		Signer:               signer,
+		CheckpointInterval:   100 * time.Millisecond,
+		BatchSize:            4,
+		BatchMaxAge:          50 * time.Millisecond,
+		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
+	}, logger)
+	if mErr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tessera embedded: %v", mErr)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = merkle.Close(ctx)
+	})
 
 	composite := store.NewCompositeByteReader(walc, backend, logger)
 	entryStore := store.NewEntryStore(pool)
@@ -219,7 +260,7 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 
 	h := &shutdownHarness{
 		BaseURL: baseURL, Pool: pool, WAL: walc, walDB: walDB,
-		Backend: backend, Merkle: merkle, Server: server, Shipper: ship,
+		Backend: backend, TileRoot: tileRoot, Server: server, Shipper: ship,
 		cancel: cancel, done: done,
 	}
 
@@ -291,13 +332,11 @@ func TestE2E_ShutdownDuringShipping_Drains(t *testing.T) {
 
 	walDir := filepath.Join(t.TempDir(), "wal")
 	backend := newLocalPublicURLBackend(t)
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
 
 	// ── Step 1: submit n entries, let some ship, cancel ────────────
 	h1 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
-		merkle:     merkle,
 		cleanFirst: true,
 	})
 	h1.seedSession(t, "tok-shutdown", "did:example:shutdown-exchange", 1000)
@@ -414,13 +453,17 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 
 	walDir := filepath.Join(t.TempDir(), "wal")
 	backend := newLocalPublicURLBackend(t)
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+
+	// Shared Tessera POSIX dir across both invocations so the
+	// second harness re-opens the same on-disk antispam volume +
+	// tile state — exactly the production restart path.
+	sharedTileRoot := t.TempDir()
 
 	// ── Step 1: submit n, cancel mid-flight ─────────────────────────
 	h1 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
-		merkle:     merkle,
+		tileRoot:   sharedTileRoot,
 		cleanFirst: true,
 	})
 	h1.seedSession(t, "tok-restart", "did:example:restart-exchange", 1000)
@@ -451,11 +494,11 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	t.Logf("phase 1: cancelling with HWM=%d / submitted=%d", hwmAtCancel, n)
 	h1.stop(t)
 
-	// ── Step 2: fresh harness with the same WAL + backend + merkle ─
+	// ── Step 2: fresh harness with the same WAL + backend + tessera dir ─
 	h2 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
-		merkle:     merkle,
+		tileRoot:   sharedTileRoot,
 		cleanFirst: false, // keep entry_index rows
 	})
 	defer h2.stop(t)

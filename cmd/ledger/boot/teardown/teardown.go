@@ -121,9 +121,6 @@ func Register(chain *lifecycle.ShutdownChain, d *deps.AppDeps) *lifecycle.Shutdo
 		if d.LedgerSignerPriv != nil && d.LedgerSignerPriv.D != nil {
 			d.LedgerSignerPriv.D.SetInt64(0)
 		}
-		if d.WitnessSignerPriv != nil && d.WitnessSignerPriv.D != nil {
-			d.WitnessSignerPriv.D.SetInt64(0)
-		}
 		return nil
 	})
 
