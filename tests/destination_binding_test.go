@@ -342,13 +342,16 @@ func TestHTTP_SubmitAcceptsOwnDestination(t *testing.T) {
 			resp.StatusCode, body)
 	}
 
-	// Sanity: body should mention sequence_number and a hash that decodes
-	// to the same value envelope.EntryIdentity produced client-side.
-	if !containsAny(body, "sequence_number") {
-		t.Errorf("expected 202 body to contain sequence_number; got %q", body)
-	}
+	// Sanity: the response is an SCT (Signed Certificate Timestamp)
+	// per Ledger Principle 3 — fsync issues an SCT BEFORE the
+	// sequencer assigns a sequence_number. The SCT carries
+	// canonical_hash + signature; sequence_number lives on the
+	// later /v1/entries-hash/{hash} lookup.
 	if !containsAny(body, "canonical_hash") {
-		t.Errorf("expected 202 body to contain canonical_hash; got %q", body)
+		t.Errorf("expected 202 SCT body to contain canonical_hash; got %q", body)
+	}
+	if !containsAny(body, "signature") {
+		t.Errorf("expected 202 SCT body to contain signature; got %q", body)
 	}
 	// We don't hex-decode and strictly compare here because that requires a
 	// JSON parser and drags in more test infrastructure than the invariant

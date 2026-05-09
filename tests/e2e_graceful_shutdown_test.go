@@ -219,6 +219,7 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		Submission:      api.NewSubmissionHandler(submissionDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
+		EntryByHash:     api.NewHashLookupHandler(queryDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
 	}
 
