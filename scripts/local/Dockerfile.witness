@@ -1,0 +1,55 @@
+# scripts/local/Dockerfile.witness
+#
+# Multi-stage build for the standalone-witness daemon.
+#
+# CONTEXT MUST BE THE REPO ROOT — we build inside the
+# cmd/standalone-witness/ subdirectory which has its OWN go.mod
+# (the boundary the architecture enforces). The build does NOT
+# pull in any github.com/clearcompass-ai/ledger packages; the
+# compile-time isolation is the point.
+#
+# Build:
+#   docker build -f scripts/local/Dockerfile.witness -t standalone-witness:local .
+#
+# Run:
+#   docker run --rm -v $(pwd)/.run:/keys -p 8081:8081 \
+#     standalone-witness:local \
+#     -addr=:8081 \
+#     -key-file=/keys/witnesses/witness-1.pem \
+#     -bootstrap=/keys/network-bootstrap.json
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# Copy ONLY the standalone-witness module. The Ledger module is
+# physically excluded by virtue of being a separate go.mod —
+# even if we copied the whole repo, the build would resolve
+# attesta from cmd/standalone-witness/go.mod independently.
+COPY cmd/standalone-witness/go.mod cmd/standalone-witness/go.sum ./
+RUN go mod download
+
+COPY cmd/standalone-witness/ ./
+
+# Static binary. CGO disabled so the alpine runtime image needs
+# no glibc shim.
+RUN CGO_ENABLED=0 GOOS=linux go build -o /witness .
+
+# ── Runtime ────────────────────────────────────────────────────
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates wget tzdata
+
+WORKDIR /
+
+COPY --from=builder /witness /witness
+
+EXPOSE 8081
+
+# Healthcheck hits /healthz — the daemon's built-in liveness
+# endpoint. Returns "ok" with 200 when the cosign handler is
+# wired and listening.
+HEALTHCHECK --interval=2s --timeout=2s --retries=10 --start-period=2s \
+    CMD wget -q -O- http://localhost:8081/healthz | grep -q '^ok$' || exit 1
+
+ENTRYPOINT ["/witness"]
