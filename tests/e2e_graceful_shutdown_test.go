@@ -208,7 +208,8 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		Logger:           logger,
 	}
 	queryDeps := &api.QueryDeps{
-		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
+		EntryStore: entryStore, QueryAPI: queryAPI, DiffController: diffController,
+		WAL: walc, Logger: logger,
 	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher: fetcher, QueryAPI: queryAPI, EntryStore: entryStore,
