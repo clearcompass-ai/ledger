@@ -97,6 +97,13 @@ func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []
 	if header.Destination == "" {
 		header.Destination = logDID
 	}
+	// Freshness: admission policy rejects entries with EventTime older
+	// than 5m. A zero EventTime is interpreted as Unix epoch (~56 years
+	// stale on a 2026 clock), so the entry is 422'd before the stamp is
+	// even checked.
+	if header.EventTime == 0 {
+		header.EventTime = time.Now().UTC().UnixMicro()
+	}
 
 	// Use the test epoch so the ledger (which computes the same epoch
 	// via currentTestEpoch math) accepts our stamp. If we used time.Now
@@ -863,6 +870,7 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 	header := envelope.ControlHeader{
 		SignerDID:   "did:example:stale-epoch",
 		Destination: testLogDID,
+		EventTime:   time.Now().UTC().UnixMicro(),
 	}
 	header.AdmissionProof = &envelope.AdmissionProofBody{
 		Mode:       types.WireByteModeB,

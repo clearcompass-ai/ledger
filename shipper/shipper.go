@@ -183,6 +183,22 @@ func (s *Shipper) Run(ctx context.Context) error {
 		return errors.New("shipper: WAL and Bytestore both required")
 	}
 
+	// Boot reconciliation: a previous shipper may have transitioned
+	// entries to StateShipped on disk but crashed before the in-memory
+	// completion-advancer called AdvanceHWM. Without this catch-up,
+	// IterateSequenced (which filters to StateSequenced) silently skips
+	// those entries forever and HWM stays behind the actual shipped
+	// data. Bounded by the contiguous Shipped run above HWM+1.
+	if reconciler, ok := s.wal.(interface {
+		ReconcileHWM(context.Context) (uint64, error)
+	}); ok {
+		if newHWM, err := reconciler.ReconcileHWM(ctx); err != nil {
+			s.logger.Warn("shipper: HWM reconcile failed (continuing)", "err", err)
+		} else {
+			s.logger.Debug("shipper: HWM reconciled at boot", "hwm", newHWM)
+		}
+	}
+
 	workCh := make(chan wal.SequencedEntry, s.cfg.MaxInFlight*2)
 	var workersWG sync.WaitGroup
 	for i := 0; i < s.cfg.MaxInFlight; i++ {
