@@ -28,6 +28,7 @@ package tests
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -42,6 +43,7 @@ import (
 	"github.com/transparency-dev/tessera/storage/posix"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/crypto/signatures"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -198,10 +200,12 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 			EpochWindowSeconds:    testEpochWindowSeconds,
 			EpochAcceptanceWindow: testEpochAcceptanceWindow,
 		},
-		Identity:     api.IdentityDeps{Credits: creditStore},
-		LogDID:       testLogDID,
-		MaxEntrySize: 1 << 20,
-		Logger:       logger,
+		Identity:         api.IdentityDeps{Credits: creditStore},
+		LogDID:           testLogDID,
+		LedgerDID:        testLedgerDID,
+		LedgerSignerPriv: shutdownSignerPriv(t),
+		MaxEntrySize:     1 << 20,
+		Logger:           logger,
 	}
 	queryDeps := &api.QueryDeps{
 		QueryAPI: queryAPI, DiffController: diffController, Logger: logger,
@@ -536,4 +540,18 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 		}
 	}
 	t.Logf("phase 2: drained to HWM=%d", finalHWM)
+}
+
+// shutdownSignerPriv generates an ephemeral ECDSA key for the
+// shutdown harness's SCT signer. SubmissionDeps.LedgerSignerPriv
+// is required (api.NewSubmissionHandler panics on nil); the key
+// is per-test ephemeral because no test asserts on the SCT
+// signature identity.
+func shutdownSignerPriv(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	priv, err := signatures.GenerateKey()
+	if err != nil {
+		t.Fatalf("shutdownSignerPriv: %v", err)
+	}
+	return priv
 }

@@ -139,8 +139,19 @@ func signedWireBytes(
 // and returns the HTTP response.
 func postEntry(t *testing.T, serverURL string, wire []byte) *http.Response {
 	t.Helper()
-	resp, err := http.Post(serverURL+"/v1/entries", "application/octet-stream",
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/v1/entries",
 		bytes.NewReader(wire))
+	if err != nil {
+		t.Fatalf("build POST /v1/entries: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	// newTestServer auto-seeds defaultTestSessionToken; attach it
+	// here so admission's IsAuthenticated check passes. Without
+	// this, admission requires a compute stamp the test envelopes
+	// don't carry. Tests that exercise the unauthenticated path
+	// (compute-stamp gate) construct their request directly.
+	req.Header.Set("Authorization", "Bearer "+defaultTestSessionToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/entries: %v", err)
 	}
