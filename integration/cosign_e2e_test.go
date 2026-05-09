@@ -137,8 +137,14 @@ func TestE2E_HeadSyncCollectsFromContainer(t *testing.T) {
 		t.Fatalf("NewHeadSync: %v", err)
 	}
 
+	// time.Now().UnixNano() so every test run picks a tree_size
+	// strictly greater than any value the witness daemon has
+	// previously signed. The monotonicity guard inside the
+	// daemon is per-process state and persists across test runs
+	// while the container is alive — using a fixed value would
+	// fail the second run (current run's value < lastSignedSize).
 	head := types.TreeHead{
-		TreeSize: 1234,
+		TreeSize: uint64(time.Now().UnixNano()),
 		RootHash: [32]byte{0xE2, 0xE2, 0x01},
 	}
 
@@ -219,21 +225,26 @@ func TestE2E_RollbackRejectedAt409(t *testing.T) {
 		return resp
 	}
 
-	// Choose tree_size HIGHER than any prior test in this run to
-	// avoid the guard's persisted-state biting us. Tests within
-	// one container lifetime accumulate state; pick a fresh
-	// strictly-monotonic value.
-	r1 := post(50_000)
+	// Pick tree_size HIGHER than any prior test in this run AND
+	// any prior `go test` run while the witness container has
+	// been alive. The monotonicity guard inside the daemon is in-
+	// memory + persists across test runs; only nuking the
+	// container resets it. time.Now().UnixNano() guarantees
+	// strict monotonicity across runs without coordination.
+	priming := uint64(time.Now().UnixNano())
+	rollback := priming - 100_000 // < priming, but still big
+
+	r1 := post(priming)
 	r1.Body.Close()
 	if r1.StatusCode != http.StatusOK {
-		t.Fatalf("priming POST size=50000: status=%d, want 200", r1.StatusCode)
+		t.Fatalf("priming POST size=%d: status=%d, want 200", priming, r1.StatusCode)
 	}
 
-	r2 := post(100)
+	r2 := post(rollback)
 	defer r2.Body.Close()
 	if r2.StatusCode != http.StatusConflict {
-		t.Errorf("rollback POST size=100 after 50000: status=%d, want 409 Conflict",
-			r2.StatusCode)
+		t.Errorf("rollback POST size=%d after %d: status=%d, want 409 Conflict",
+			rollback, priming, r2.StatusCode)
 	}
 
 	// Belt-and-braces: the response body should be a WireError.
