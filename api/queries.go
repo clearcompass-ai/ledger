@@ -475,9 +475,11 @@ func NewDifficultyHandler(deps *QueryDeps) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=5")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"difficulty":    deps.DiffController.CurrentDifficulty(),
 			"hash_function": deps.DiffController.HashFunction(),
+			"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
 		})
 	}
 }

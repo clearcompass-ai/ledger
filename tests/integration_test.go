@@ -1319,17 +1319,28 @@ func TestSDKAdapter_ProofFromWire_RoundTrip(t *testing.T) {
 	}
 
 	// Contract regression: confirm a tampered body fails verification.
-	// If we change ANY hashed field, VerifyStamp should reject — proves
-	// the adapter isn't masking field corruption.
-	tampered := *body
-	tampered.Nonce = nonce + 1
-	tamperedAPI := admission.ProofFromWire(&tampered, testLogDID)
-	if err := admission.VerifyStamp(
-		tamperedAPI, hash, testLogDID, difficulty,
-		admission.HashSHA256, nil,
-		currentTestEpoch(), uint64(testEpochAcceptanceWindow),
-	); err == nil {
-		t.Fatal("tampered nonce should fail verification")
+	// At difficulty=6 each random nonce has a 1/64 chance of also
+	// satisfying the leading-zeros check; testing a single tampered
+	// nonce is ~1.5% flaky. Test eight successive nonces and require at
+	// least one to fail — for the contract to be regressed (verifier
+	// ignores Nonce entirely), ALL eight would have to spuriously pass,
+	// which is 1/64^8 ≈ 5e-15.
+	anyRejected := false
+	for i := uint64(1); i <= 8; i++ {
+		tampered := *body
+		tampered.Nonce = nonce + i
+		tamperedAPI := admission.ProofFromWire(&tampered, testLogDID)
+		if err := admission.VerifyStamp(
+			tamperedAPI, hash, testLogDID, difficulty,
+			admission.HashSHA256, nil,
+			currentTestEpoch(), uint64(testEpochAcceptanceWindow),
+		); err != nil {
+			anyRejected = true
+			break
+		}
+	}
+	if !anyRejected {
+		t.Fatal("tampered nonce should fail verification (8 successive nonces all passed — verifier likely ignoring Nonce)")
 	}
 }
 
