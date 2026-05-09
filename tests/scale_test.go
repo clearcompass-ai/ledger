@@ -326,8 +326,11 @@ func TestScale_BuilderThroughput(t *testing.T) {
 	reader := opbuilder.NewCursorReader(sequenceCursor)
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
 	deltaBuffer := sdkbuilder.NewDeltaWindowBuffer(10)
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
-	witness := &stubWitnessCosigner{}
+	// Real Tessera + real K=1 witness fixture. The TPS this test
+	// measures is the number gated by the actual cosign HTTP fan-out
+	// + checkpoint write — the production-shape pipeline, not a
+	// vanity stub-bypass number.
+	harness := newWitnessedTestHarness(t, ctx, pool, logger)
 	commitPub := opbuilder.NewCommitmentPublisher(
 		testLogDID,
 		testLogDID,
@@ -343,7 +346,7 @@ func TestScale_BuilderThroughput(t *testing.T) {
 	bl := opbuilder.NewBuilderLoop(
 		loopCfg, pool, tree, leafStore, nodeCache,
 		reader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
-		merkle, witness, logger,
+		harness.Adapter, harness.Cosigner, logger,
 	)
 
 	t.Logf("starting builder (batch_size=%d)...", loopCfg.BatchSize)

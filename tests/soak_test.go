@@ -274,7 +274,12 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
 	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
-	merkle := &stubMerkleAppender{mt: smt.NewStubMerkleTree()}
+	// Real Tessera in t.TempDir(). Soak test has no builder loop —
+	// it exercises admission + sequencer + shipper. We hold the
+	// harness for its Adapter/Embedded handles; cosigner is unused
+	// here but the fixture is cheap.
+	soakHarness := newWitnessedTestHarness(t, ctx, pool, logger)
+	merkle := soakHarness.Embedded
 	diffController := middleware.NewDifficultyController(
 		sequenceCursor, middleware.DefaultDifficultyConfig(), logger,
 	)
