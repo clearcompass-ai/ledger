@@ -92,6 +92,12 @@ func buildWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte)
 func buildModeBWireEntry(t *testing.T, header envelope.ControlHeader, payload []byte, logDID string, difficulty uint32) []byte {
 	t.Helper()
 
+	// Destination binding: NewUnsignedEntry rejects an empty Destination
+	// once muEnableDestinationBound is on (attesta v1.0.0+).
+	if header.Destination == "" {
+		header.Destination = logDID
+	}
+
 	// Use the test epoch so the ledger (which computes the same epoch
 	// via currentTestEpoch math) accepts our stamp. If we used time.Now
 	// directly, a tick across the hour boundary could cause flaky failures.
@@ -855,7 +861,8 @@ func TestHTTP_Submission_ModeB_StaleEpoch_403(t *testing.T) {
 	staleEpoch := currentTestEpoch() - 100
 
 	header := envelope.ControlHeader{
-		SignerDID: "did:example:stale-epoch",
+		SignerDID:   "did:example:stale-epoch",
+		Destination: testLogDID,
 	}
 	header.AdmissionProof = &envelope.AdmissionProofBody{
 		Mode:       types.WireByteModeB,
