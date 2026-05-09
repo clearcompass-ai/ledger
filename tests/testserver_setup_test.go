@@ -60,6 +60,7 @@ import (
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/sequencer"
+	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/wal"
@@ -157,7 +158,6 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
-	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	commitmentStore := store.NewCommitmentStore(pool)
 
 	walDB, err := wal.OpenInMemory(nil)
@@ -171,6 +171,15 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		_ = walc.Close()
 		_ = walDB.Close()
 	})
+
+	// Composite byte reader: WAL first, then in-memory bytestore.
+	// In production the Shipper writes WAL→bytestore; the test harness
+	// has no shipper, so a bare bytestore.Reader returns "not found"
+	// for every hydrate call. The composite mirrors the e2e harness
+	// (e2e_shipper_redirect_test.go:216) and lets read-path tests
+	// hydrate from WAL even when nothing has shipped yet.
+	composite := store.NewCompositeByteReader(walc, entryBytes, logger)
+	fetcher := store.NewPostgresEntryFetcher(pool, composite, testLogDID)
 
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
 	deltaBuffer, _ := bufferStore.Load(ctx)
@@ -234,6 +243,18 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	})
 	go func() { _ = seq.Run(ctx) }()
 
+	// Shipper (WAL Sequenced → bytestore WriteEntry → WAL Shipped).
+	// Production has a shipper that migrates wire bytes from the WAL
+	// into the durable bytestore. TestRule_EndToEnd_BytesNeverTouchPostgres
+	// asserts entryBytes contains the bytes after submission — without
+	// a shipper that's never true.
+	ship := shipper.NewShipper(walc, entryBytes, shipper.Config{
+		PollInterval: 50 * time.Millisecond,
+		MaxInFlight:  4,
+		Logger:       logger,
+	})
+	go func() { _ = ship.Run(ctx) }()
+
 	diffCfg := middleware.DefaultDifficultyConfig()
 	if opts.LowDifficulty {
 		diffCfg.InitialDifficulty = 8
@@ -243,7 +264,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	diffController := middleware.NewDifficultyController(
 		sequenceCursor, diffCfg, logger,
 	)
-	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, entryBytes, testLogDID)
+	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
 	opSignerPriv, err := signatures.GenerateKey()
 	if err != nil {
@@ -289,7 +310,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		CommitmentStore: commitmentStore, Logger: logger,
 	}
 	cryptoCommitDeps := &api.CryptographicCommitmentDeps{
-		Fetcher: store.NewPostgresCommitmentFetcher(pool, entryBytes, testLogDID),
+		Fetcher: store.NewPostgresCommitmentFetcher(pool, composite, testLogDID),
 		Logger:  logger,
 	}
 
