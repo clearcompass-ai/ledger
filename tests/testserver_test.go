@@ -154,16 +154,30 @@ type testServer struct {
 // `defer srv.Close()` idiom used by destination_binding_test.go.
 func (s *testServer) Close() {}
 
+// defaultTestSessionToken is auto-seeded by newTestServer so any
+// test using newTestServer + postEntry can submit authenticated
+// requests without per-test session bookkeeping. The Authorization
+// header is set on every postEntry; tests that exercise
+// unauthenticated paths post directly via http.Post.
+const (
+	defaultTestSessionToken    = "default-test-session-token"
+	defaultTestSessionExchange = "did:test:default-exchange"
+)
+
 // newTestServer returns a lightweight test-server handle for tests that
-// only need a running HTTP endpoint bound to testLogDID — no credit
-// seeding, no session tokens, no queue introspection. Currently used
-// by destination_binding_test.go's five security invariants.
+// only need a running HTTP endpoint bound to testLogDID. Auto-seeds a
+// default session token + 1M credits so destination/admission tests
+// can post well-formed entries without each test seeding its own
+// session. The default token is what postEntry attaches via the
+// Authorization header.
 //
-// For tests that need richer access (seedSession, direct Pool queries,
-// CreditStore inspection), use startTestLedger directly.
+// For tests that need richer access (seedSession with custom tokens,
+// direct Pool queries, CreditStore inspection), use startTestLedger
+// directly.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	op := startTestLedger(t)
+	op.seedSession(t, defaultTestSessionToken, defaultTestSessionExchange, 1_000_000)
 	return &testServer{URL: op.BaseURL, op: op}
 }
 
