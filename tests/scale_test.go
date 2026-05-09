@@ -1,3 +1,6 @@
+//go:build scale
+// +build scale
+
 /*
 FILE PATH: tests/scale_test.go
 
