@@ -160,12 +160,13 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		cancel()
 		t.Fatalf("tessera posix.New: %v", dErr)
 	}
-	// CTX LIFETIME: see tests/shutdownchain_test.go and
-	// cmd/ledger/boot/alloc/alloc.go — Tessera's background ctx is
-	// decoupled from the test ctx so tessera.Close (in shutdownChain
-	// step 2) drains pending futures while the integration loop is
-	// still alive.
-	merkle, mErr := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
+	// CTX LIFETIME: Tessera's background goroutines listen to ctx
+	// for termination. h.stop() (and the defensive t.Cleanup below)
+	// call merkle.Close BEFORE cancelling ctx so Shutdown can poll
+	// the checkpoint while the integration loop is still alive.
+	// Do NOT wrap with context.WithoutCancel — that leaks the
+	// integration goroutine forever (Close doesn't stop it).
+	merkle, mErr := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               signer,
 		CheckpointInterval:   100 * time.Millisecond,
@@ -324,9 +325,11 @@ func (h *shutdownHarness) stop(t *testing.T) {
 		t.Logf("stop: server.Shutdown: %v", err)
 	}
 
-	// 2. Drain Tessera futures. Load-bearing: with WithoutCancel'd
-	// background ctx, this is the ONLY thing that resolves pending
-	// IndexFuture's.
+	// 2. Drain Tessera futures. Load-bearing: Close calls upstream
+	// Shutdown which polls the checkpoint until it covers the
+	// largest issued index. Must run BEFORE step 3's cancel() so
+	// the integration goroutine is still alive to publish the
+	// checkpoint.
 	if h.merkle != nil {
 		if err := h.merkle.Close(shutdownCtx); err != nil {
 			t.Logf("stop: merkle.Close: %v", err)

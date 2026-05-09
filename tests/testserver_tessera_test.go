@@ -148,16 +148,18 @@ func buildRealTesseraSlots(
 	}
 	_ = uptessera.Driver(driver) // compile-time conformance.
 
-	// CTX LIFETIME: pass context.WithoutCancel(ctx) so Tessera's
-	// background integration goroutines are bounded by the explicit
-	// embedded.Close() call in t.Cleanup, not by the test ctx's
-	// cancel(). Without this, t.Cleanup's cancel() kills the
-	// integration loop and strands AppendLeaf futures
-	// (sync.WaitGroup.Wait in future.Get is uninterruptible). Close
-	// runs in t.Cleanup and drains pending futures via the upstream
-	// Shutdown function — that's the canonical termination path per
-	// Tessera's API contract. Mirrors cmd/ledger/boot/alloc/alloc.go.
-	embedded, err := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), driver, optessera.AppenderOptions{
+	// CTX LIFETIME: Tessera's background tasks (integration loop,
+	// follower-stats, updateStats) listen to THIS ctx for termination.
+	// shutdownChain.Run (registered as a single t.Cleanup by the
+	// caller) calls embedded.Close BEFORE cancelling ctx, so the
+	// integration loop is still alive while Shutdown polls the
+	// checkpoint. That ordering is what guarantees pending
+	// IndexFutures resolve before ctx fires.
+	//
+	// DO NOT wrap this with context.WithoutCancel — that prevents
+	// the goroutines from ever stopping (they don't observe Close;
+	// Close only refuses new Adds and polls the checkpoint).
+	embedded, err := optessera.NewEmbeddedAppender(ctx, driver, optessera.AppenderOptions{
 		Origin:             origin,
 		CheckpointInterval: checkpointInterval,
 		BatchSize:          batchSize,

@@ -16,21 +16,28 @@ WHY:
 	t.Cleanup runs LIFO. Splitting teardown across multiple Cleanups
 	makes the order an accident of registration history, which is
 	fragile to refactor. Worse, if the order is wrong, Tessera's
-	background integration goroutines exit before tessera.Close
-	drains pending futures, stranding sync.WaitGroup-backed futures
-	(see tessera/internal/future/future.go:52 — Get blocks on
-	WaitGroup.Wait with no ctx parameter, intentionally for memory
-	efficiency). The stranded futures leave sequencer goroutines
-	pinned in AppendLeaf for the rest of the test process lifetime.
+	background integration goroutine exits (in response to ctx.Done)
+	BEFORE tessera.Close has a chance to publish a checkpoint that
+	covers all already-issued indices. Any IndexFuture for an entry
+	that was issued an index but not yet integrated is then stranded
+	— future.Get blocks on a sync.WaitGroup.Wait with no ctx
+	parameter (see tessera/internal/future/future.go:52, intentional
+	for memory efficiency), so the calling goroutine is pinned for
+	the rest of the test process lifetime.
 
-	The fix is two-piece:
-	  (a) construct Tessera with context.WithoutCancel(ctx) so its
-	      background tasks survive ctx cancellation, and
-	  (b) call tessera.Close BEFORE cancelling ctx so the upstream
-	      Shutdown function drains pending futures while the
-	      integration loop is still alive.
+	The fix is the spec-correct ordering: tessera.Close must run
+	BEFORE cancel(). tessera.Close calls upstream Shutdown, which
+	polls the checkpoint until it commits to the largest already-
+	issued index. The integration goroutine MUST be alive during
+	this poll (so it can publish the checkpoint), which is why
+	cancel() comes after Close, not before.
 
-	(b) is what shutdownChain enforces.
+	NOTE: do NOT try to "fix" this by wrapping ctx with
+	context.WithoutCancel at NewEmbeddedAppender — that prevents
+	the integration goroutine from EVER stopping (Tessera.Shutdown
+	does not terminate the goroutine; it only refuses new Adds and
+	polls the checkpoint). The goroutine listens to ctx for
+	termination; that contract is documented at upstream NewAppender.
 
 ORDER (matches the spec the production teardown chain enforces in
 cmd/ledger/boot/teardown/teardown.go):
@@ -152,10 +159,12 @@ func (s shutdownChain) Run() {
 		}
 	}
 
-	// Step 2 — load-bearing. With Tessera constructed via
-	// context.WithoutCancel(ctx), this Close is the ONLY thing that
-	// terminates the integration goroutines. Skipping it = guaranteed
-	// goroutine leak.
+	// Step 2 — load-bearing. Close calls upstream Shutdown, which
+	// polls the checkpoint until it covers all already-issued
+	// indices. Must run BEFORE step 3's cancel() so the integration
+	// goroutine is still alive to publish the checkpoint. Skipping
+	// or reordering this strands pending IndexFutures — future.Get
+	// blocks uninterruptibly on sync.WaitGroup.Wait.
 	if s.Tessera != nil {
 		if err := s.Tessera.Close(shutdownCtx); err != nil {
 			logger.Warn("shutdownchain: tessera.Close", "err", err)

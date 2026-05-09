@@ -240,12 +240,13 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		cancel()
 		t.Fatalf("posix.New: %v", derr)
 	}
-	// CTX LIFETIME: see tests/shutdownchain_test.go and
-	// cmd/ledger/boot/alloc/alloc.go — Tessera's background ctx is
-	// decoupled from the test ctx so tessera.Close (in shutdownChain
-	// step 2) drains pending futures while the integration loop is
-	// still alive.
-	merkle, merr := optessera.NewEmbeddedAppender(context.WithoutCancel(ctx), tesseraDriver, optessera.AppenderOptions{
+	// CTX LIFETIME: Tessera's background goroutines listen to ctx
+	// for termination. shutdownChain.Run calls merkle.Close BEFORE
+	// cancelling ctx (see tests/shutdownchain_test.go) so Shutdown
+	// can poll the checkpoint while the integration loop is still
+	// alive. Do NOT wrap with context.WithoutCancel — that leaks
+	// the integration goroutine forever (Close doesn't stop it).
+	merkle, merr := optessera.NewEmbeddedAppender(ctx, tesseraDriver, optessera.AppenderOptions{
 		Origin:               testLogDID,
 		Signer:               tesseraSigner,
 		CheckpointInterval:   100 * time.Millisecond,
