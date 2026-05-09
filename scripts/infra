@@ -1,0 +1,227 @@
+#!/bin/bash
+# scripts/infra
+#
+# Unified local-infrastructure orchestrator. ONE script for
+# provisioning the test infra (postgres + optional witness +
+# optional fake-gcs) and discovering the env vars every test
+# suite needs.
+#
+# THE WORKFLOW:
+#
+#   ./scripts/infra up                  # postgres only (lightest)
+#   ./scripts/infra up --with witness   # + standalone-witness daemon
+#   ./scripts/infra up --with fake-gcs  # + fake-gcs-server
+#   ./scripts/infra up --all            # everything
+#
+#   eval "$(./scripts/infra env)"       # export env vars for tests
+#
+#   go test -short ./...                # unit tests (no env needed)
+#   go test -tags=p4 ./tests/p4/        # P4 (needs ATTESTA_TEST_DSN)
+#   go test -tags=integration ./integration/   # integration + e2e
+#
+#   ./scripts/infra status              # see what's running
+#   ./scripts/infra logs witness        # tail container logs
+#   ./scripts/infra down                # tear everything down
+#
+# WHY THIS EXISTS:
+#
+#   Before: every test target had its own provisioning script
+#   (run-p4.sh, run-integration.sh, run-e2e.sh) that brought up
+#   postgres independently. Switching between test suites meant
+#   tearing down + bringing up the same postgres container.
+#
+#   Now: provision once via `infra up`, eval the env vars, run
+#   any test suite as many times as you want.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMPOSE_FILE="${REPO_ROOT}/scripts/local/docker-compose.infra.yml"
+KEYS_DIR="${REPO_ROOT}/.run/infra"
+
+# Canonical bindings — single source of truth for env-var
+# emission. If a port changes in the compose file, change here too.
+PG_DSN="postgres://attesta:attesta@localhost:5544/attesta_test?sslmode=disable"
+WITNESS_URL="http://localhost:8081"
+GCS_ENDPOINT="http://localhost:4443"
+
+# emit_env_lines prints `export VAR=value` lines for whichever
+# infra services are currently up. Silent on what's down.
+emit_env_lines() {
+    if docker inspect attesta_infra_postgres >/dev/null 2>&1; then
+        echo "export ATTESTA_TEST_DSN=\"${PG_DSN}\""
+    fi
+    if docker inspect attesta_infra_witness >/dev/null 2>&1; then
+        echo "export WITNESS_URL=\"${WITNESS_URL}\""
+        echo "export E2E_BOOTSTRAP=\"${KEYS_DIR}/network-bootstrap.json\""
+    fi
+    if docker inspect attesta_infra_gcs >/dev/null 2>&1; then
+        echo "export LEDGER_BYTE_STORE_BACKEND=\"gcs\""
+        echo "export LEDGER_BYTE_STORE_GCS_ENDPOINT=\"${GCS_ENDPOINT}\""
+        echo "export LEDGER_BYTE_STORE_GCS_ANONYMOUS=\"true\""
+    fi
+}
+
+usage() {
+    sed -n '1,/^set -euo pipefail/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ── Subcommand dispatch ─────────────────────────────────────────
+SUBCMD="${1:-help}"
+shift || true
+
+case "${SUBCMD}" in
+    up|down|env|status|logs|help|-h|--help) ;;
+    *)
+        echo "FATAL: unknown subcommand: ${SUBCMD}" >&2
+        echo "       try: ./scripts/infra help" >&2
+        exit 2
+        ;;
+esac
+
+if [ "${SUBCMD}" = "help" ] || [ "${SUBCMD}" = "-h" ] || [ "${SUBCMD}" = "--help" ]; then
+    usage
+    exit 0
+fi
+
+# ── Parse `up` flags ────────────────────────────────────────────
+WITH_WITNESS=0
+WITH_FAKE_GCS=0
+WITH_ALL=0
+if [ "${SUBCMD}" = "up" ]; then
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --with)
+                case "${2:-}" in
+                    witness)  WITH_WITNESS=1 ;;
+                    fake-gcs) WITH_FAKE_GCS=1 ;;
+                    all)      WITH_ALL=1 ;;
+                    *)
+                        echo "FATAL: --with requires one of: witness, fake-gcs, all" >&2
+                        exit 2
+                        ;;
+                esac
+                shift 2
+                ;;
+            --all)
+                WITH_ALL=1
+                shift
+                ;;
+            *)
+                echo "FATAL: unknown flag for up: $1" >&2
+                exit 2
+                ;;
+        esac
+    done
+    if [ "${WITH_ALL}" = "1" ]; then
+        WITH_WITNESS=1
+        WITH_FAKE_GCS=1
+    fi
+fi
+
+PROFILE_ARGS=()
+if [ "${WITH_WITNESS}" = "1" ]; then
+    PROFILE_ARGS+=(--profile witness)
+fi
+if [ "${WITH_FAKE_GCS}" = "1" ]; then
+    PROFILE_ARGS+=(--profile fake-gcs)
+fi
+
+cd "${REPO_ROOT}"
+
+case "${SUBCMD}" in
+
+    up)
+        if ! command -v docker >/dev/null 2>&1; then
+            echo "FATAL: docker CLI not found on PATH" >&2
+            exit 1
+        fi
+
+        # Witness needs PEM key + bootstrap on host before container starts.
+        if [ "${WITH_WITNESS}" = "1" ]; then
+            echo "== generating witness key + network bootstrap (.run/infra/) =="
+            mkdir -p "${KEYS_DIR}"
+            go run ./cmd/init-network \
+                -out-dir="${KEYS_DIR}" \
+                -out-bootstrap="${KEYS_DIR}/network-bootstrap.json" \
+                -log-did="did:attesta:ledger:infra" \
+                -network-name="infra-local" \
+                -witnesses=1
+            export INFRA_KEYS_DIR="${KEYS_DIR}"
+        fi
+
+        echo
+        echo "== bringing up infra =="
+        docker compose -f "${COMPOSE_FILE}" "${PROFILE_ARGS[@]}" up -d --build
+
+        # Wait for healthy.
+        WANT=("attesta_infra_postgres")
+        [ "${WITH_WITNESS}" = "1" ]  && WANT+=("attesta_infra_witness")
+        [ "${WITH_FAKE_GCS}" = "1" ] && WANT+=("attesta_infra_gcs")
+
+        echo
+        echo "== waiting for readiness =="
+        for c in "${WANT[@]}"; do
+            for i in $(seq 1 60); do
+                state=$(docker inspect --format='{{.State.Health.Status}}' "${c}" 2>/dev/null || echo "")
+                if [ "${state}" = "healthy" ]; then
+                    echo "  ${c}: healthy (attempt ${i})"
+                    break
+                fi
+                if [ "${i}" -eq 60 ]; then
+                    echo "FATAL: ${c} did not report healthy in 60s" >&2
+                    echo "       docker logs ${c}" >&2
+                    exit 1
+                fi
+                sleep 1
+            done
+        done
+
+        echo
+        echo "== infra ready =="
+        echo
+        echo "Set env vars for tests with:"
+        echo
+        echo "  eval \"\$(./scripts/infra env)\""
+        echo
+        echo "Or copy-paste:"
+        echo
+        emit_env_lines | sed 's/^/  /'
+        echo
+        echo "Then run any test suite, e.g.:"
+        echo "  go test -short ./...                              # unit (no env needed)"
+        echo "  go test -tags=p4 -count=1 ./tests/p4/             # P4 (DSN required)"
+        echo "  go test -tags=integration -count=1 ./integration/ # integration + e2e"
+        echo
+        echo "Tear down: ./scripts/infra down"
+        ;;
+
+    env)
+        emit_env_lines
+        ;;
+
+    status)
+        echo "== infra containers =="
+        if ! docker compose -f "${COMPOSE_FILE}" \
+                --profile witness --profile fake-gcs ps 2>/dev/null; then
+            echo "(none — run: ./scripts/infra up)"
+        fi
+        ;;
+
+    logs)
+        if [ $# -lt 1 ]; then
+            echo "Usage: ./scripts/infra logs <service>" >&2
+            echo "Services: postgres | witness | fake-gcs" >&2
+            exit 2
+        fi
+        docker compose -f "${COMPOSE_FILE}" \
+            --profile witness --profile fake-gcs logs -f "$@"
+        ;;
+
+    down)
+        echo "== tearing down infra =="
+        docker compose -f "${COMPOSE_FILE}" \
+            --profile witness --profile fake-gcs down -v
+        ;;
+
+esac
