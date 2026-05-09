@@ -59,6 +59,7 @@ import (
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
+	"github.com/clearcompass-ai/ledger/sequencer"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
 	"github.com/clearcompass-ai/ledger/wal"
@@ -221,6 +222,17 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		builderLoop.Run(ctx)
 		close(loopDone)
 	}()
+
+	// Sequencer (WAL Admitted → Tessera AppendLeaf → entry_index INSERT
+	// → WAL Sequenced). Without this goroutine, submissions land in WAL
+	// but never reach entry_index, so /v1/entries-hash/{hash} stays a
+	// 404 and submitEntry's polling loop times out. Mirrors the e2e
+	// harness wiring at e2e_shipper_redirect_test.go:348-361.
+	seq := sequencer.NewSequencer(walc, ts.admission, pool, entryStore, sequencer.Config{
+		PollInterval: 10 * time.Millisecond,
+		Logger:       logger,
+	})
+	go func() { _ = seq.Run(ctx) }()
 
 	diffCfg := middleware.DefaultDifficultyConfig()
 	if opts.LowDifficulty {
