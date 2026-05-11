@@ -54,7 +54,7 @@ func TestP4_ReplicaFailover_CursorContinuity(t *testing.T) {
 	// Reset to a known state. UPDATE not INSERT — the migration
 	// creates the singleton row.
 	if _, err := poolA.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`); err != nil {
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`); err != nil {
 		t.Fatalf("reset cursor: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestP4_ReplicaFailover_LockReleaseAllowsResume(t *testing.T) {
 	logger := silentLogger()
 
 	if _, err := poolA.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`); err != nil {
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`); err != nil {
 		t.Fatalf("reset cursor: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestP4_ReplicaFailover_ConcurrentAcquireOnlyOneAdvances(t *testing.T) {
 	poolBootstrap := requirePostgres(t)
 	defer poolBootstrap.Close()
 	if _, err := poolBootstrap.Exec(context.Background(),
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`); err != nil {
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`); err != nil {
 		t.Fatalf("reset cursor: %v", err)
 	}
 

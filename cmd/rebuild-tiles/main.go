@@ -47,7 +47,7 @@ USAGE:
 
 	# 4. Reset cursor + tree state so every admitted entry replays.
 	psql attesta <<SQL
-	    UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1;
+	    UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1;
 	    DELETE FROM derivation_commitments WHERE true;
 	    DELETE FROM smt_leaves WHERE true;
 	    DELETE FROM jellyfish_nodes WHERE true;
