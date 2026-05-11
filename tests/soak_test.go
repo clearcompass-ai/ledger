@@ -1605,6 +1605,31 @@ func verifySMTConsistency(t *testing.T, op *soakLedger, submitted uint64) {
 			lastSMTStatus, smtRootBudget, lastSMTBody)
 	}
 	if rootResp.LeafCount < submitted {
+		// EVIDENCE-FIRST DIAGNOSTICS. Before we conclude "the builder
+		// is broken", produce the unambiguous set of facts about
+		// WHICH sequences made it where. This is observability that
+		// turns a hypothesis ("cursor skip", "race", "lost batch")
+		// into a verdict.
+		//
+		// We dump four counts from PG and one set-difference:
+		//   - entry_index row count + min/max seq
+		//   - smt_leaves row count + min/max key-derived seq is not
+		//     trivially queryable (the key is a hash), so we count
+		//     rows and inspect the cursor instead
+		//   - builder_cursor.last_processed_sequence
+		//   - smt_root_state row (root + committed_through_seq)
+		//   - the specific seq numbers in entry_index that have NO
+		//     corresponding leaf-key (= seq passed through the
+		//     sequencer but never made it through the builder).
+		//
+		// The smt_leaves.leaf_key is derived from LogPosition via
+		// smt.DeriveKey. We can't reverse-derive seq from key in PG.
+		// So instead we identify "missing" sequences by joining
+		// entry_index to smt_leaves through expected_key BYTEA
+		// (computed in Go below) and dumping the diff.
+
+		dumpSMTDiagnostics(t, op, submitted)
+
 		t.Fatalf("verifySMTConsistency: leaf_count=%d < submitted=%d after %s budget "+
 			"(builder loop not integrating)",
 			rootResp.LeafCount, submitted, smtRootBudget)
@@ -1785,4 +1810,164 @@ func verifyEvidenceFetchAll(t *testing.T, ctx context.Context, op *soakLedger, s
 				refs[0].seq, pu)
 		}
 	}
+}
+
+// dumpSMTDiagnostics prints unambiguous evidence about which entries
+// reached entry_index but never made it through the builder loop to
+// smt_leaves. Called only when verifySMTConsistency has already
+// determined leaf_count < submitted — i.e., we know SOMETHING is
+// wrong; the diagnostic produces facts, not theories.
+//
+// What it shows, one block per row:
+//
+//	A) entry_index row count + min/max seq    (sequencer output)
+//	B) smt_leaves row count                   (builder output count)
+//	C) builder_cursor.last_processed_sequence (where the builder thinks it is)
+//	D) smt_root_state.{current_root, committed_through_seq}
+//	E) the first ≤20 sequences that exist in entry_index but whose
+//	   smt.DeriveKey(LogPosition) is absent from smt_leaves — i.e.,
+//	   the precise list of "should have been processed but wasn't".
+//
+// (E) is the load-bearing line. If it lists [0], the cursor's > vs
+// >= boundary on seq=0 is the bug. If it lists the tail [N-k..N-1],
+// the last batch never committed (race / timeout). If it lists a
+// scattered set, something else is going on.
+func dumpSMTDiagnostics(t *testing.T, op *soakLedger, submitted uint64) {
+	t.Helper()
+	ctx := context.Background()
+	logDID := envOr("LEDGER_LOG_DID", testLogDID)
+
+	t.Logf("─── SMT DIAGNOSTIC (leaf_count < submitted=%d) ───", submitted)
+
+	// (A) entry_index
+	var eiCount uint64
+	var eiMin, eiMax sql.NullInt64
+	if err := op.Pool.QueryRow(ctx,
+		"SELECT COUNT(*), MIN(sequence_number), MAX(sequence_number) FROM entry_index",
+	).Scan(&eiCount, &eiMin, &eiMax); err != nil {
+		t.Logf("  (A) entry_index: query error: %v", err)
+	} else {
+		t.Logf("  (A) entry_index: rows=%d min_seq=%v max_seq=%v",
+			eiCount, eiMin.Int64, eiMax.Int64)
+	}
+
+	// (B) smt_leaves
+	var leafCount uint64
+	if err := op.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM smt_leaves").Scan(&leafCount); err != nil {
+		t.Logf("  (B) smt_leaves: query error: %v", err)
+	} else {
+		t.Logf("  (B) smt_leaves: rows=%d   (= leaf_count from /v1/smt/root)", leafCount)
+	}
+
+	// (C) builder_cursor
+	var cursorVal int64
+	if err := op.Pool.QueryRow(ctx,
+		"SELECT last_processed_sequence FROM builder_cursor WHERE id = 1",
+	).Scan(&cursorVal); err != nil {
+		t.Logf("  (C) builder_cursor: query error: %v", err)
+	} else {
+		t.Logf("  (C) builder_cursor.last_processed_sequence = %d   (sequencer SQL: WHERE sequence_number > %d)",
+			cursorVal, cursorVal)
+	}
+
+	// (D) smt_root_state
+	var rootBytes []byte
+	var committedSeq int64
+	if err := op.Pool.QueryRow(ctx,
+		"SELECT current_root, committed_through_seq FROM smt_root_state WHERE id = 1",
+	).Scan(&rootBytes, &committedSeq); err != nil {
+		t.Logf("  (D) smt_root_state: query error: %v", err)
+	} else {
+		t.Logf("  (D) smt_root_state: root=%x… committed_through_seq=%d",
+			rootBytes[:min(8, len(rootBytes))], committedSeq)
+	}
+
+	// (E) the diff — which seqs in entry_index have no smt_leaves row?
+	//
+	// smt_leaves.leaf_key is derived via smt.DeriveKey(LogPosition).
+	// We compute the expected key per seq in Go, then ask PG which
+	// of those expected keys are MISSING from smt_leaves. PG's set
+	// difference does the heavy lifting.
+	missing := computeMissingSeqs(t, ctx, op, logDID, submitted)
+	if len(missing) == 0 {
+		t.Logf("  (E) missing seqs in smt_leaves: none — leaf_count mismatch may be a race, "+
+			"not a missed seq. Investigate timing.")
+	} else {
+		shown := missing
+		if len(shown) > 20 {
+			shown = shown[:20]
+		}
+		t.Logf("  (E) missing seqs in smt_leaves: count=%d  first=%v",
+			len(missing), shown)
+		t.Logf("      DIAGNOSIS HINT:")
+		t.Logf("        • missing=[0]        → cursor `>` skips seq=0 (init=0; SQL needs `>=` "+
+			"or cursor needs -1 sentinel).")
+		t.Logf("        • missing=tail-only  → last batch never committed (race or timeout).")
+		t.Logf("        • missing=scattered  → atomic-commit failure or rate-limited writes.")
+	}
+
+	t.Log("─── END SMT DIAGNOSTIC ───")
+}
+
+// computeMissingSeqs returns the sorted list of sequence numbers in
+// [0, submitted) whose smt.DeriveKey(LogPosition{LogDID, seq}) does
+// NOT appear as a row in smt_leaves. Empty if nothing is missing.
+//
+// Implementation: batches the expected keys into a single PG query
+// using unnest($1::bytea[]) and a LEFT JOIN. For submitted up to ~10K
+// this is a single sub-second round trip; for larger soaks we cap at
+// 10 000 expected keys (the diagnostic's job is to print the first
+// few violators, not enumerate the entire diff at 10⁹ scale).
+func computeMissingSeqs(t *testing.T, ctx context.Context, op *soakLedger, logDID string, submitted uint64) []uint64 {
+	t.Helper()
+	const cap = 10_000
+	n := submitted
+	if n > cap {
+		n = cap
+	}
+
+	expectedKeys := make([][]byte, 0, n)
+	keyToSeq := make(map[[32]byte]uint64, n)
+	for seq := uint64(0); seq < n; seq++ {
+		k := smt.DeriveKey(types.LogPosition{LogDID: logDID, Sequence: seq})
+		expectedKeys = append(expectedKeys, append([]byte(nil), k[:]...))
+		keyToSeq[k] = seq
+	}
+
+	// PG: which expected keys are NOT present in smt_leaves?
+	rows, err := op.Pool.Query(ctx, `
+		SELECT k
+		FROM unnest($1::bytea[]) AS k
+		LEFT JOIN smt_leaves ON smt_leaves.leaf_key = k
+		WHERE smt_leaves.leaf_key IS NULL`,
+		expectedKeys,
+	)
+	if err != nil {
+		t.Logf("  (E) missing-seq query error: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var missing []uint64
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			t.Logf("  (E) scan error: %v", err)
+			continue
+		}
+		var k [32]byte
+		copy(k[:], b)
+		if seq, ok := keyToSeq[k]; ok {
+			missing = append(missing, seq)
+		}
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+	return missing
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
