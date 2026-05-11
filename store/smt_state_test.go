@@ -185,5 +185,318 @@ func TestPostgresLeafStore_ContextCancelled(t *testing.T) {
 	}
 }
 
+// TestPostgresLeafStore_SetBatchTx_RoundTrip pins the structural
+// contract of the N+1-fix write path: SetBatchTx writes N leaves
+// inside a single tx with a single PG round-trip (unnest-based
+// multi-row INSERT), and each leaf is readable by key afterwards
+// with byte-identical OriginTip / AuthorityTip values.
+//
+// If the unnest array encoding regresses (e.g., pgx changes how it
+// frames bytea[]) this test surfaces the break immediately. If
+// someone reverts SetBatchTx to a per-row loop, this test still
+// passes — semantics aren't broken; only the throughput would be.
+// The throughput contract is enforced via the soak's `commit`
+// telemetry, not here; this is the correctness pin.
+func TestPostgresLeafStore_SetBatchTx_RoundTrip(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ls := NewPostgresLeafStore(pool)
+
+	// Build N distinct leaves with deterministic keys.
+	const N = 16
+	leaves := make([]types.SMTLeaf, N)
+	for i := 0; i < N; i++ {
+		var key [32]byte
+		key[0] = byte(i)
+		key[1] = 0xAB
+		leaves[i] = types.SMTLeaf{
+			Key:          key,
+			OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: uint64(1000 + i)},
+			AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: uint64(2000 + i)},
+		}
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := ls.SetBatchTx(ctx, tx, leaves); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	n, err := ls.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != N {
+		t.Fatalf("Count after SetBatchTx = %d, want %d", n, N)
+	}
+
+	for i, want := range leaves {
+		got, err := ls.Get(ctx, want.Key)
+		if err != nil {
+			t.Fatalf("Get leaf %d: %v", i, err)
+		}
+		if got == nil {
+			t.Fatalf("Get leaf %d: nil (not persisted)", i)
+		}
+		if got.OriginTip != want.OriginTip {
+			t.Errorf("leaf %d: OriginTip got %+v, want %+v", i, got.OriginTip, want.OriginTip)
+		}
+		if got.AuthorityTip != want.AuthorityTip {
+			t.Errorf("leaf %d: AuthorityTip got %+v, want %+v", i, got.AuthorityTip, want.AuthorityTip)
+		}
+	}
+}
+
+// TestPostgresLeafStore_SetBatchTx_Idempotent pins ON CONFLICT DO
+// UPDATE behaviour: rerunning a batch with the same keys but DIFFERENT
+// values overwrites the row content (last-write-wins on the tip
+// fields, leaf_key is the PK). This is the property the builder's
+// retry semantics rely on — a re-committed batch must produce the
+// same persisted state, not double-counted rows.
+func TestPostgresLeafStore_SetBatchTx_Idempotent(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ls := NewPostgresLeafStore(pool)
+
+	key := [32]byte{0x55, 0x55}
+	first := []types.SMTLeaf{{
+		Key:          key,
+		OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 10},
+		AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: 20},
+	}}
+	second := []types.SMTLeaf{{
+		Key:          key,
+		OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 30},
+		AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: 40},
+	}}
+
+	for i, batch := range [][]types.SMTLeaf{first, second} {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin %d: %v", i, err)
+		}
+		if err := ls.SetBatchTx(ctx, tx, batch); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("SetBatchTx %d: %v", i, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+
+	n, err := ls.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("after two SetBatchTx calls with same key: Count = %d, want 1 (DO UPDATE must dedupe by PK)", n)
+	}
+
+	got, err := ls.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OriginTip.Sequence != 30 || got.AuthorityTip.Sequence != 40 {
+		t.Errorf("DO UPDATE did not overwrite: got %+v, want OriginTip=30, AuthorityTip=40", got)
+	}
+}
+
+// TestPostgresLeafStore_SetBatchTx_Empty pins the "n=0 is a no-op"
+// contract — the builder calls SetBatchTx unconditionally and the
+// store must tolerate empty batches without erroring or issuing a
+// PG round-trip.
+func TestPostgresLeafStore_SetBatchTx_Empty(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ls := NewPostgresLeafStore(pool)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := ls.SetBatchTx(ctx, tx, nil); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx(nil): %v", err)
+	}
+	if err := ls.SetBatchTx(ctx, tx, []types.SMTLeaf{}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx(empty): %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// TestPostgresNodeStore_PutBatchTx_RoundTrip pins the same contract
+// for the node-store batched write: N nodes in, N Get()s out, each
+// returning a byte-identical reconstruction. This includes leaves
+// AND branches mixed in one batch (the overlay produces both shapes
+// per ProcessBatch).
+func TestPostgresNodeStore_PutBatchTx_RoundTrip(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ns := NewPostgresNodeStore(ctx, pool, 1024)
+
+	// Build a mixed set: 8 leaves + 4 branches.
+	nodes := make([]smt.Node, 0, 12)
+	for i := 0; i < 8; i++ {
+		var key [32]byte
+		key[0] = byte(i)
+		nodes = append(nodes, &smt.LeafNode{
+			Value: types.SMTLeaf{
+				Key:          key,
+				OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: uint64(i)},
+				AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: uint64(i)},
+			},
+		})
+	}
+	for i := 0; i < 4; i++ {
+		var prefix, left, right [32]byte
+		prefix[0] = 0xC0
+		left[0] = byte(i)
+		right[31] = byte(i)
+		nodes = append(nodes, &smt.BranchNode{
+			BranchDepth: uint16(i + 1),
+			Prefix:      prefix,
+			LeftHash:    left,
+			RightHash:   right,
+		})
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := ns.PutBatchTx(ctx, tx, nodes); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("PutBatchTx: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Round-trip via Get on each hash. Skip the LRU by constructing
+	// a SECOND NodeStore over the same pool — the new instance has a
+	// cold cache, so Get hits Postgres for each lookup.
+	cold := NewPostgresNodeStore(ctx, pool, 1024)
+	for i, node := range nodes {
+		hash := smt.HashNode(node)
+		got, err := cold.Get(hash)
+		if err != nil {
+			t.Fatalf("Get node %d (hash=%x): %v", i, hash[:8], err)
+		}
+		if got == nil {
+			t.Fatalf("Get node %d (hash=%x): nil (not persisted)", i, hash[:8])
+		}
+		gotHash := smt.HashNode(got)
+		if gotHash != hash {
+			t.Errorf("node %d: round-trip hash mismatch — wrote %x, got %x", i, hash, gotHash)
+		}
+	}
+}
+
+// TestPostgresNodeStore_PutBatchTx_CachePromotion pins the cache-fill
+// invariant: after a batched Put, the LRU contains every node so
+// subsequent Get()s on the SAME store instance never hit Postgres.
+//
+// Why this matters: ProcessBatch's overlay reads a freshly-written
+// node during the SAME batch's root computation in some path-update
+// scenarios (rare but possible — the SDK's order-invariance
+// guarantee requires reads of a just-written-but-not-yet-committed
+// node to succeed). Cache promotion in PutBatchTx makes that
+// guarantee hold without requiring read-your-write semantics from
+// PG within the same tx.
+func TestPostgresNodeStore_PutBatchTx_CachePromotion(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ns := NewPostgresNodeStore(ctx, pool, 1024)
+	if ns.Len() != 0 {
+		t.Fatalf("fresh node store should be empty, got Len=%d", ns.Len())
+	}
+
+	nodes := []smt.Node{
+		&smt.LeafNode{Value: types.SMTLeaf{
+			Key:          [32]byte{0x01},
+			OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 1},
+			AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: 1},
+		}},
+		&smt.LeafNode{Value: types.SMTLeaf{
+			Key:          [32]byte{0x02},
+			OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 2},
+			AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: 2},
+		}},
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := ns.PutBatchTx(ctx, tx, nodes); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("PutBatchTx: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if ns.Len() != len(nodes) {
+		t.Errorf("after PutBatchTx, LRU Len=%d, want %d (cache promotion missed)",
+			ns.Len(), len(nodes))
+	}
+}
+
+// TestPostgresNodeStore_PutBatchTx_NilNode pins the input-validation
+// contract: a nil entry in the batch surfaces as an error instead
+// of being silently dropped or causing a panic on Serialize. The
+// builder never produces nil nodes, but defensive validation here
+// makes the error path explicit.
+func TestPostgresNodeStore_PutBatchTx_NilNode(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+	resetFixtures(t, ctx, pool)
+
+	ns := NewPostgresNodeStore(ctx, pool, 1024)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	err = ns.PutBatchTx(ctx, tx, []smt.Node{
+		&smt.LeafNode{Value: types.SMTLeaf{
+			Key:          [32]byte{0xAA},
+			OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 1},
+			AuthorityTip: types.LogPosition{LogDID: testLogDID, Sequence: 1},
+		}},
+		nil, // intentionally invalid
+	})
+	if err == nil {
+		t.Fatal("PutBatchTx with nil entry: expected error, got nil")
+	}
+}
+
 // testLogDID is defined in commitment_fetcher_test.go (same
 // package) and reused here for fixture parity.
