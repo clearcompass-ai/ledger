@@ -203,7 +203,7 @@ path within an explicit RTO budget.
 - **Plan:** Scaffold A or C extension. 1M-entry soak first, then
   10M. Track LSM-tree size, tile cache size, in-memory caches.
 
-### C2 — Postgres-as-projection envelope ⬜
+### C2 — Postgres-as-projection envelope 🟡
 - **PG is NOT authoritative.** Every table below is a projection
   with a defined rebuild path:
 
@@ -227,6 +227,18 @@ path within an explicit RTO budget.
 - **Plan:** `cmd/rebuild-projection` binary that walks the tile
   store, replays the gossip feed, and reconstructs every table.
   Tested against a known-good snapshot.
+- **Phase 1 evidence (this branch):** `cmd/rebuild-projection/`
+  (rebuild.go + main.go + rebuild_test.go) rebuilds entry_index,
+  smt_leaves, smt_root_state, builder_cursor from the POSIX tile
+  store. Integration test
+  `TestRebuild_DeterministicProjectionFromTiles` (gated on
+  ATTESTA_TEST_DSN) appends 50 entries through upstream Tessera,
+  runs Rebuild twice against the same tile dir, and asserts the
+  two PG snapshots are bit-exact equal across all four projection
+  tables.
+- **Phase 2 work pending:** gossip-replay rebuild for tree_heads,
+  tree_head_sigs, witness_sets; RTO budget benchmarks at 1M / 10M /
+  100M entries; sharded/streamed rebuild for 10⁹+ scale.
 
 ### C3 — Sharded / paginated SMT for 10⁹+ scale ⬜
 - **Today:** SMT root is maintained via materialize-once-per-batch
