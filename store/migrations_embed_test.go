@@ -39,10 +39,31 @@ func TestLoadMigrations_EmbedsAtLeastInitialSchema(t *testing.T) {
 	if len(migs[0].sql) < 1024 {
 		t.Errorf("first migration SQL length = %d bytes, want > 1024 (file looks truncated)", len(migs[0].sql))
 	}
-	for _, table := range []string{"schema_migrations", "entry_index", "smt_leaves", "smt_nodes"} {
+	// Migration 0001 creates the load-bearing initial schema. We
+	// only assert tables that PERSIST through later migrations —
+	// jellyfish_nodes is added in 0003, not 0001, so it is checked
+	// separately below.
+	for _, table := range []string{"schema_migrations", "entry_index", "smt_leaves"} {
 		if !strings.Contains(migs[0].sql, table) {
 			t.Errorf("first migration missing reference to table %q", table)
 		}
+	}
+	// Migration 0003 (Jellyfish SMT) must be embedded and create the
+	// content-addressed jellyfish_nodes table. Walking the embed
+	// guards against the file being dropped from the //go:embed
+	// directive on a future restructure.
+	found0003 := false
+	for _, m := range migs {
+		if m.version == 3 {
+			found0003 = true
+			if !strings.Contains(m.sql, "jellyfish_nodes") {
+				t.Errorf("migration 0003 missing CREATE TABLE jellyfish_nodes")
+			}
+			break
+		}
+	}
+	if !found0003 {
+		t.Errorf("migration 0003 (Jellyfish SMT) missing from embedded migration set")
 	}
 }
 

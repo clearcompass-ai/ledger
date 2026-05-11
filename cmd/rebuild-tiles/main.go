@@ -50,7 +50,7 @@ USAGE:
 	    UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1;
 	    DELETE FROM derivation_commitments WHERE true;
 	    DELETE FROM smt_leaves WHERE true;
-	    DELETE FROM smt_nodes WHERE true;
+	    DELETE FROM jellyfish_nodes WHERE true;
 	    DELETE FROM delta_window_buffers WHERE true;
 	SQL
 

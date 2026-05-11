@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -598,7 +599,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	tables := []string{
-		"tree_head_sigs", "entry_index", "smt_leaves", "smt_nodes",
+		"tree_head_sigs", "entry_index", "smt_leaves", "jellyfish_nodes",
 		"credits", "tree_heads", "delta_window_buffers",
 		"witness_sets", "equivocation_proofs", "sessions",
 	}
@@ -622,16 +623,20 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, "UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1")
 	// smt_root_state is also a singleton — reset to the SDK's
 	// empty-tree root so the builder's incremental root computation
-	// starts from a clean baseline matching an empty smt_leaves table.
-	// The hex value below is sha256-256-fold of zero (= defaultHashes
-	// [TreeDepth] in attesta/core/smt/tree.go). Tests that don't run
-	// the builder skip this row entirely; the UPDATE is a no-op when
-	// the row is already at the default value.
-	_, _ = pool.Exec(ctx, `
+	// starts from a clean baseline matching an empty smt_leaves +
+	// jellyfish_nodes pair. The hex is derived dynamically from
+	// smt.EmptyHash so it tracks the SDK across version bumps; in
+	// v0.3.0 this is sha256("") = e3b0c4…b855 (the Jellyfish
+	// empty-tree root). A previous bug hard-coded the v0.2.0
+	// depth-256 constant here, which caused every builder atomic
+	// commit to fail with "missing node" after migration 0003
+	// installed the v0.3.0 constant — leaf_count stayed at 0.
+	emptyRootHex := hex.EncodeToString(smt.EmptyHash[:])
+	_, _ = pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE smt_root_state
-		SET current_root = decode('876422b7697ae7c337e2ee7727feb3db474adf7be1cf04b6b5857d82d610e88a', 'hex'),
+		SET current_root = decode('%s', 'hex'),
 		    committed_through_seq = 0
-		WHERE id = 1`)
+		WHERE id = 1`, emptyRootHex))
 
 	// Reset sequence.
 	// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first
