@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +213,24 @@ func TestCursorReader_CommitBatch_RollbackKeepsCursor(t *testing.T) {
 	if got != 0 {
 		t.Errorf("expected cursor unchanged at 0 after rollback, got %d", got)
 	}
+
+	// CRITICAL — the next BeginBatch MUST return the SAME seqs the
+	// rolled-back batch saw. The previous implementation cached the
+	// advanced cursor in memory inside CommitBatch and skipped seqs
+	// 1..3 here, silently dropping work whenever the atomic commit
+	// rolled back. That bug surfaced as leaf_count=3 in the 1K soak.
+	//
+	// The structural fix: BeginBatch reads the cursor from Postgres
+	// every call, so a rollback automatically restores the visible
+	// cursor to its pre-tx state.
+	retry, err := r.BeginBatch(ctx, nil, 100)
+	if err != nil {
+		t.Fatalf("BeginBatch after rollback: %v", err)
+	}
+	if !equalSlice(retry, []uint64{1, 2, 3}) {
+		t.Errorf("after rollback, expected seqs to be re-returned [1,2,3]; got %v "+
+			"— the cursor reader is silently skipping rolled-back work", retry)
+	}
 }
 
 func TestCursorReader_CommitBatch_EmptyBatchIsNoOp(t *testing.T) {
@@ -233,32 +250,49 @@ func TestCursorReader_CommitBatch_EmptyBatchIsNoOp(t *testing.T) {
 	}
 }
 
-func TestCursorReader_CommitBatch_RegressionGuardRejectsStaleMax(t *testing.T) {
+func TestCursorReader_BeginBatch_ReadsPGEveryCall(t *testing.T) {
+	// Pins the structural invariant introduced when the in-memory
+	// cursor cache was removed: every BeginBatch reads the cursor
+	// from Postgres, so an out-of-band cursor change (a manual SQL
+	// rewind, a successful concurrent commit, a rollback) is
+	// observed on the very next call — no stale in-memory snapshot.
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	resetState(t, ctx, pool)
-	seedSeqs(t, ctx, pool, 1, 2, 3)
+	seedSeqs(t, ctx, pool, 1, 2, 3, 4, 5)
 
-	r := NewCursorReader(store.NewSequenceCursor(pool))
+	cur := store.NewSequenceCursor(pool)
+	r := NewCursorReader(cur)
 
-	// First commit advances to 3.
-	if err := store.WithReadCommittedTx(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return r.CommitBatch(ctx, tx, []uint64{1, 2, 3})
-	}); err != nil {
-		t.Fatalf("first CommitBatch: %v", err)
+	// First call: cursor=0, returns 1..5.
+	first, err := r.BeginBatch(ctx, nil, 100)
+	if err != nil {
+		t.Fatalf("BeginBatch first: %v", err)
+	}
+	if !equalSlice(first, []uint64{1, 2, 3, 4, 5}) {
+		t.Fatalf("first BeginBatch: got %v, want [1..5]", first)
 	}
 
-	// Second commit with max=2 (stale) MUST error.
-	gotErr := store.WithReadCommittedTx(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return r.CommitBatch(ctx, tx, []uint64{2})
-	})
-	if gotErr == nil {
-		t.Fatal("expected regression error on stale CommitBatch")
+	// Out-of-band: someone (e.g., cmd/rebuild-tiles, or a successful
+	// concurrent commit) advances the cursor in Postgres directly,
+	// WITHOUT going through CommitBatch.
+	if _, err := pool.Exec(ctx,
+		`UPDATE builder_cursor SET last_processed_sequence = 3 WHERE id = 1`,
+	); err != nil {
+		t.Fatalf("out-of-band advance: %v", err)
 	}
-	if !strings.Contains(gotErr.Error(), "regression") {
-		t.Errorf("unexpected error: %v", gotErr)
+
+	// Next BeginBatch must reflect the out-of-band advance — returns
+	// only 4..5, not the cached 1..5 from before.
+	second, err := r.BeginBatch(ctx, nil, 100)
+	if err != nil {
+		t.Fatalf("BeginBatch second: %v", err)
+	}
+	if !equalSlice(second, []uint64{4, 5}) {
+		t.Errorf("after out-of-band cursor advance, expected [4,5], got %v "+
+			"— the reader is serving a stale in-memory snapshot", second)
 	}
 }
 
