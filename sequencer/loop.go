@@ -111,13 +111,29 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 	sem := make(chan struct{}, s.cfg.MaxInFlight)
 	var wg sync.WaitGroup
 
-	var pending int64
+	// Per-cycle work budget. After dispatching MaxEntriesPerCycle
+	// entries the iterator returns errCycleBudget; drainOnce waits
+	// for in-flight workers and exits. The ticker re-enters
+	// drainOnce on its next firing for the next batch.
+	//
+	// Why: without a per-cycle bound a single drainOnce iterates the
+	// whole inflight queue (could be 60K+ entries under load) and
+	// wg.Wait blocks until ALL of them finish — a "cycle" lasting
+	// minutes. The drainCycles metric becomes useless as a liveness
+	// signal, shutdown is unbounded, and memory pressure scales with
+	// queue depth instead of concurrency.
+	var dispatched int
 	err := s.wal.IterateInflight(ctx, func(p wal.PendingHash) error {
 		if err := ctx.Err(); err != nil {
 			// Iterator's stop signal; not a per-entry failure.
 			return err
 		}
-		pending++
+		if s.cfg.MaxEntriesPerCycle > 0 && dispatched >= s.cfg.MaxEntriesPerCycle {
+			// Stop iteration cleanly; the budget-exhausted error is
+			// expected and not logged as failure below.
+			return errCycleBudget
+		}
+		dispatched++
 
 		// Acquire a slot — respect ctx cancellation while waiting.
 		select {
@@ -149,11 +165,25 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 	// state after this drain, not mid-flight.
 	wg.Wait()
 
-	s.metrics.currentLag.Store(pending)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	// currentLag = dispatched is a per-cycle proxy: how many entries
+	// the iterator OBSERVED this cycle. When the iteration stops on
+	// the budget, dispatched == MaxEntriesPerCycle. When the queue
+	// drains below the budget, dispatched < budget. Either way it's
+	// a real signal of work this cycle.
+	s.metrics.currentLag.Store(int64(dispatched))
+	if err != nil &&
+		!errors.Is(err, errCycleBudget) &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) {
 		s.logger.Error("sequencer: drain iterate", "error", err)
 	}
 }
+
+// errCycleBudget is returned by the IterateInflight callback when
+// the per-cycle work budget (MaxEntriesPerCycle) is exhausted. It
+// is an intentional stop signal, not a failure — drainOnce filters
+// it out of the error log.
+var errCycleBudget = errors.New("sequencer: per-cycle work budget exhausted")
 
 // processOne runs the per-entry pipeline. Error paths log,
 // increment counters, and trigger MarkRetry / MarkManual; they
