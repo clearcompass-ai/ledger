@@ -607,6 +607,20 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 		// error rather than failing the test setup.
 		_, _ = pool.Exec(ctx, "DELETE FROM "+table)
 	}
+	// builder_cursor is a singleton (id=1, see migrations/0001_initial.sql)
+	// that the migration INSERTs at last_processed_sequence=0. We can't
+	// DELETE the row — the CHECK(id=1) singleton constraint plus its
+	// presence assumed by the cursor reader's Read make the table a
+	// fixed-shape state holder, not a queue. Reset its value instead.
+	//
+	// Without this reset, a previous test that successfully advanced
+	// builder_cursor leaks state into the next run: the builder reads
+	// the leftover cursor, calls Next(cursor, batchSize) which finds
+	// zero entries past it (entry_index was DELETED), and produces zero
+	// SMT mutations — so verifySMTConsistency reports leaf_count=0 and
+	// every membership-proof assertion fails with non_membership.
+	_, _ = pool.Exec(ctx, "UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1")
+
 	// Reset sequence.
 	// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first
 	// admission; Tessera owns sequence allocation now). Tests that

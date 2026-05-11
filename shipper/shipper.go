@@ -414,7 +414,13 @@ func (s *Shipper) shipOne(ctx context.Context, e wal.SequencedEntry) {
 }
 
 // recordFailure increments the retry counter or transitions the
-// entry to StateManual after MaxAttempts.
+// entry to StateManual after MaxAttempts. When transitioning to
+// StateManual, signals the HWM advancer so it can advance past the
+// terminal entry — otherwise the entry would stall HWM forever and
+// the `above` set in hwmAdvancer would grow unbounded as subsequent
+// completions pile up. This redefines HWM as "highest contiguous
+// finished-processing seq" (StateShipped ∪ StateManual), not just
+// "highest contiguous shipped seq" — see HWM-semantics note above.
 func (s *Shipper) recordFailure(ctx context.Context, e wal.SequencedEntry) {
 	meta, err := s.wal.MetaState(ctx, e.Hash)
 	if err != nil {
@@ -430,6 +436,17 @@ func (s *Shipper) recordFailure(ctx context.Context, e wal.SequencedEntry) {
 			"seq", e.Seq,
 			"attempts", meta.Attempts+1)
 		s.metrics.manual.Add(1)
+
+		// Signal the HWM advancer that this seq is DONE (terminal
+		// state). Without this, HWM would stall at e.Seq-1 forever
+		// and the `above` set would grow unbounded as subsequent
+		// completions for seqs > e.Seq accumulate. At 12M entries/day
+		// a single permanent failure becomes a ~500MB/day memory
+		// leak that ends in OOMKill within days.
+		select {
+		case s.completion <- e.Seq:
+		case <-ctx.Done():
+		}
 		return
 	}
 	if err := s.wal.MarkRetry(ctx, e.Hash); err != nil {
@@ -475,15 +492,37 @@ func (s *Shipper) hwmAdvancer(ctx context.Context) {
 	}
 }
 
+// aboveSetSizeFactor multiplies MaxInFlight to bound the
+// hwmAdvancer's out-of-order-completion holding set. Out-of-order
+// completion is normal up to roughly MaxInFlight×PollInterval/latency
+// items at any moment; 1024× provides ~10000× headroom over typical
+// jitter while still firing the circuit breaker WELL BEFORE the
+// process OOMs at production-scale entry throughput.
+//
+// At MaxInFlight=32 (default) the breaker trips at 32768 stranded
+// entries. At ~32 bytes per map entry that's ~1MB of process memory
+// — small enough to be a hard error rather than a slow degradation.
+const aboveSetSizeFactor = 1024
+
 // processCompletion handles a single completion signal: advances
 // HWM through the contiguous run starting at HWM+1, holding any
 // out-of-order completions in `above` until their predecessor lands.
+//
+// CIRCUIT BREAKER: if `above` exceeds aboveSetSizeFactor × MaxInFlight,
+// the pipeline has a structural stall (a permanently-failing entry
+// whose terminal-state signal was lost, a worker leak, or a Badger
+// AdvanceHWM that errored persistently). Panic to surface to the
+// process supervisor — silent unbounded growth is the alternative
+// and that ends in OOMKill with all observability lost. State is
+// recoverable on next process start because the WAL is durable and
+// ReconcileHWM bootstraps from disk.
 func (s *Shipper) processCompletion(ctx context.Context, seq uint64, above map[uint64]struct{}) {
 	hwm, err := s.wal.HWM(ctx)
 	if err != nil {
 		s.logger.Error("shipper/hwm: read HWM", "err", err)
 		// Stash the seq above so we don't drop it.
 		above[seq] = struct{}{}
+		s.checkAboveSetBounded(above, hwm)
 		return
 	}
 	if seq <= hwm {
@@ -493,6 +532,7 @@ func (s *Shipper) processCompletion(ctx context.Context, seq uint64, above map[u
 	if seq > hwm+1 {
 		// Out-of-order: hold until predecessor lands.
 		above[seq] = struct{}{}
+		s.checkAboveSetBounded(above, hwm)
 		return
 	}
 	// seq == hwm+1: this is the next contiguous one. Advance through
@@ -530,4 +570,37 @@ func (s *Shipper) String() string {
 	snap := s.Metrics()
 	return fmt.Sprintf("shipper{shipped=%d retries=%d manual=%d hwm=%d}",
 		snap.Shipped, snap.Retries, snap.Manual, snap.HWM)
+}
+
+// checkAboveSetBounded enforces the circuit-breaker invariant on
+// the hwmAdvancer's out-of-order-completion holding set. See the
+// comment on aboveSetSizeFactor + processCompletion for why panic
+// is the chosen failure mode.
+func (s *Shipper) checkAboveSetBounded(above map[uint64]struct{}, currentHWM uint64) {
+	if s.cfg.MaxInFlight <= 0 {
+		return // shouldn't happen — defaults are applied in NewShipper
+	}
+	limit := s.cfg.MaxInFlight * aboveSetSizeFactor
+	if len(above) <= limit {
+		return
+	}
+	// Compute the min seq held above so the panic message tells ops
+	// exactly which seq is stalling the pipeline.
+	var minSeq, maxSeq uint64 = ^uint64(0), 0
+	for s := range above {
+		if s < minSeq {
+			minSeq = s
+		}
+		if s > maxSeq {
+			maxSeq = s
+		}
+	}
+	panic(fmt.Sprintf(
+		"shipper/hwm: catastrophic stall — out-of-order completion set has %d entries "+
+			"(limit=%d × MaxInFlight=%d), spans seq %d..%d above currentHWM=%d. "+
+			"Likely cause: a terminal-state transition (StateManual) failed to signal completion, "+
+			"OR a worker is permanently blocked, OR AdvanceHWM is persistently failing. "+
+			"Process integrity is unrecoverable in-flight; restarting to bootstrap from durable WAL state.",
+		len(above), limit, s.cfg.MaxInFlight, minSeq, maxSeq, currentHWM,
+	))
 }

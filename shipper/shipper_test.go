@@ -390,10 +390,12 @@ func TestShipper_RetryOnFailure_EventualSuccess(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 4) Retry exhaustion: MarkManual after MaxAttempts; HWM blocked
+// 4) Retry exhaustion: MarkManual after MaxAttempts; HWM ADVANCES past
+//    the StateManual entry (terminal-state-counts-as-finished-processing
+//    semantics — see Shipper.recordFailure for the rationale).
 // ─────────────────────────────────────────────────────────────────────
 
-func TestShipper_RetryExhaustion_MarksManual_HWMBlocked(t *testing.T) {
+func TestShipper_RetryExhaustion_MarksManual_HWMAdvances(t *testing.T) {
 	w := newFakeWAL()
 	bs := newFakeBytestore()
 	w.seed(1, hashFor(1), wireFor(1))
@@ -412,9 +414,26 @@ func TestShipper_RetryExhaustion_MarksManual_HWMBlocked(t *testing.T) {
 		return meta1.State == wal.StateManual && meta2.State == wal.StateShipped
 	})
 
-	// HWM must NOT have advanced — seq=1 is the contiguous-run gate.
-	if hwm, _ := w.HWM(context.Background()); hwm != 0 {
-		t.Errorf("HWM: got %d, want 0 (seq=1 was never shipped)", hwm)
+	// HWM advances past the StateManual entry: seq=1 transitioned
+	// to a TERMINAL state (no further retries), so the hwmAdvancer
+	// treats it as "finished processing" for the purpose of the
+	// contiguous-run invariant. Without this, a single permanent
+	// failure stalls HWM forever AND the hwmAdvancer's `above`
+	// holding set grows unbounded as subsequent completions
+	// accumulate — at production throughput this OOMs the process
+	// within days.
+	deadline := time.Now().Add(2 * time.Second)
+	var finalHWM uint64
+	for time.Now().Before(deadline) {
+		finalHWM, _ = w.HWM(context.Background())
+		if finalHWM >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if finalHWM != 2 {
+		t.Errorf("HWM: got %d, want 2 (seq=1 MarkManual'd, seq=2 shipped — HWM advances past both)",
+			finalHWM)
 	}
 
 	snap := s.Metrics()
@@ -681,6 +700,69 @@ func TestShipper_InflightDedupe_PreventsConcurrentDispatch(t *testing.T) {
 			"(guard never fired — test setup is wrong, OR the guard is " +
 			"missing from scanAndDispatch)")
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 11) Circuit breaker: the hwmAdvancer's `above` set is bounded
+// ─────────────────────────────────────────────────────────────────────
+
+// TestShipper_AboveSet_CircuitBreakerFires drives the hwmAdvancer
+// past its `above`-set size limit by feeding completions for seqs
+// far above the current HWM (no gap-filler arrives), then asserts
+// the process PANICS with the expected diagnostic. Without this
+// breaker, a stuck-HWM scenario at production throughput grows the
+// holding set unboundedly and ends in a silent OOMKill.
+//
+// Configured with MaxInFlight=2 so the breaker trips at 2 × 1024 =
+// 2048 entries — small enough to surface fast, large enough that
+// normal jitter never hits it.
+func TestShipper_AboveSet_CircuitBreakerFires(t *testing.T) {
+	w := newFakeWAL()
+	bs := newFakeBytestore()
+	cfg := fastConfig()
+	cfg.MaxInFlight = 2
+	s := NewShipper(w, bs, cfg)
+
+	// HWM starts at 0; never advance it. Feed processCompletion
+	// directly with seqs 2..N (skipping the gap-filler seq=1) until
+	// the `above` set crosses 2048 entries.
+	above := make(map[uint64]struct{})
+
+	limit := cfg.MaxInFlight * aboveSetSizeFactor // 2 * 1024 = 2048
+	overshoot := limit + 100
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected panic when above set exceeds %d; got no panic", limit)
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value is not a string: %T %v", r, r)
+		}
+		if !contains(msg, "catastrophic stall") {
+			t.Errorf("panic message should mention 'catastrophic stall', got: %s", msg)
+		}
+	}()
+
+	for i := 2; i <= overshoot+1; i++ {
+		// seq is always above hwm+1=1 (since hwm=0 and we skip seq=1),
+		// so each call stashes into `above`. The breaker fires when
+		// len(above) > limit.
+		s.processCompletion(context.Background(), uint64(i), above)
+	}
+
+	t.Fatalf("processCompletion ran %d iterations without panicking; len(above)=%d, limit=%d",
+		overshoot, len(above), limit)
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // ─────────────────────────────────────────────────────────────────────
