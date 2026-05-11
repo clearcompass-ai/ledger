@@ -103,30 +103,49 @@ func NewCursorReader(cursor *store.SequenceCursor) *CursorReader {
 // ignored — the cursor reader does not need transactional
 // locking; the ledger's advisory-lock-enforced singleton
 // builder makes per-row locking redundant.
+//
+// Reads the cursor from Postgres on every call. The previous
+// implementation cached the cursor in memory and updated it inside
+// CommitBatch (i.e., inside the atomic tx, BEFORE the outer commit
+// fired). If the outer tx rolled back — for any reason — the
+// in-memory cursor was left advanced past committed Postgres state,
+// and the next BeginBatch silently skipped the un-committed seqs.
+// That race was the proximate cause of the leaf_count=3 regression
+// we hit during the SMT-incremental work; the structural fix is to
+// treat Postgres as the sole source of truth.
+//
+// Cost: one extra single-row indexed SELECT per batch (~sub-ms on
+// a singleton id=1 lookup against an idle Postgres). At
+// PollInterval=100ms that's 10 reads/sec — negligible.
 func (r *CursorReader) BeginBatch(ctx context.Context, _ pgx.Tx, batchSize int) ([]uint64, error) {
 	r.mu.Lock()
-	if !r.initFromDB {
-		seq, err := r.cursor.Read(ctx)
-		if err != nil {
-			r.mu.Unlock()
-			return nil, fmt.Errorf("builder/cursor: bootstrap read: %w", err)
-		}
-		r.current = seq
-		r.initFromDB = true
+	defer r.mu.Unlock()
+	seq, err := r.cursor.Read(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("builder/cursor: read: %w", err)
 	}
-	cursor := r.current
-	r.mu.Unlock()
-
-	return r.cursor.Next(ctx, cursor, batchSize)
+	r.current = seq
+	r.initFromDB = true
+	return r.cursor.Next(ctx, seq, batchSize)
 }
 
 // CommitBatch advances the cursor to the highest sequence in
 // seqs. Must be called inside the builder's atomic commit
 // transaction so cursor advance is grouped with the SMT mutations.
 //
-// If seqs is empty, CommitBatch is a no-op. The builder loop
-// shouldn't call CommitBatch with an empty batch — but if it
-// ever does, this guard prevents a regressing in-memory cursor.
+// If seqs is empty, CommitBatch is a no-op.
+//
+// Does NOT update any in-memory cache. The cursor value the next
+// BeginBatch returns comes from Postgres directly; if THIS tx
+// rolls back, the next BeginBatch correctly sees the prior cursor
+// value and the same seqs get re-processed. ProcessBatch is
+// idempotent (smt_leaves UPSERT; smt_root_state UPSERT; bytestore
+// content-addressed), so re-processing is safe.
+//
+// The regression check that previously lived here (`maxSeq <=
+// r.current`) is removed: with no in-memory cursor it has nothing
+// to compare against, and BeginBatch's PG read guarantees seqs are
+// strictly above the persisted cursor.
 func (r *CursorReader) CommitBatch(ctx context.Context, tx pgx.Tx, seqs []uint64) error {
 	if len(seqs) == 0 {
 		return nil
@@ -137,26 +156,7 @@ func (r *CursorReader) CommitBatch(ctx context.Context, tx pgx.Tx, seqs []uint64
 			maxSeq = s
 		}
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if maxSeq <= r.current {
-		// Defensive — we should never be asked to commit a batch
-		// whose max is at-or-below the current cursor. If we are,
-		// it means BeginBatch returned a stale snapshot; flag
-		// loudly rather than silently regress.
-		return fmt.Errorf("builder/cursor: commit regression: maxSeq=%d <= current=%d", maxSeq, r.current)
-	}
-	if err := r.cursor.AdvanceTx(ctx, tx, maxSeq); err != nil {
-		return err
-	}
-	// In-memory advance happens AFTER the tx Exec succeeds. If the
-	// tx later rolls back, the in-memory cursor is ahead of the
-	// database — which is fine because BeginBatch always re-reads
-	// the database on bootstrap (and we set initFromDB=false on
-	// a forced reset path; not exposed today).
-	r.current = maxSeq
-	return nil
+	return r.cursor.AdvanceTx(ctx, tx, maxSeq)
 }
 
 // RecoverOnStartup is a no-op for the cursor reader. Crash
