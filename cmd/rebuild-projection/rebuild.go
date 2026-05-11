@@ -78,6 +78,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"time"
@@ -90,6 +91,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/smt"
 	"github.com/clearcompass-ai/attesta/types"
 
+	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
 
@@ -99,12 +101,31 @@ import (
 // RebuildDeps captures everything Rebuild needs to walk tiles and
 // repopulate Postgres. Construct from the CLI's main; tests pass an
 // in-process instance.
+//
+// SOURCE-OF-TRUTH NOTE (load-bearing for the architecture):
+//
+//	The ledger's AppendLeaf path is HASH-ONLY — Tessera receives
+//	only the 32-byte SHA-256(canonical_bytes) and stores it in
+//	tile/entries/{N}. The FULL canonical envelope bytes live in
+//	the bytestore (S3/GCS/CDN) keyed by (seq, hash). So neither
+//	the tile store NOR the bytestore is the source of truth on
+//	its own — BOTH are. The rebuild walks tile/entries to learn
+//	the (seq → hash) mapping, then reads canonical bytes from
+//	the bytestore at the same coordinates the live shipper
+//	writes them to.
 type RebuildDeps struct {
 	// TileDir is the filesystem path to the Tessera POSIX tile
 	// store (the directory that holds checkpoint, tile/entries/...,
 	// and tile/{L}/...). Same directory the writer's POSIX driver
 	// was configured with.
 	TileDir string
+
+	// Bytestore is the canonical-byte store. The shipper writes
+	// `entries/<seq16>/<hash64>` blobs here as it advances; the
+	// rebuild reads them back to reconstruct the envelope.Entry
+	// each tile/entries hash refers to. Any bytestore.Reader
+	// (Memory for tests, S3/GCS for production) satisfies this.
+	Bytestore bytestore.Reader
 
 	// Pool is the Postgres pool the rebuild writes to. The caller
 	// is responsible for ensuring migrations have run (RunMigrations)
@@ -146,6 +167,9 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
+	if deps.Bytestore == nil {
+		return Stats{}, fmt.Errorf("rebuild: Bytestore is required (tile/entries holds 32-byte hashes only; canonical envelope bytes live in the bytestore)")
+	}
 
 	// ── Step 1: Open the tile store + read the published checkpoint
 	//
@@ -183,9 +207,10 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 	// yet). deltaBuffer + ProcessBatch produce the canonical
 	// mutations the live builder also produced.
 	fetcher := &tileFetcher{
-		reader:   tileReader,
-		logDID:   deps.LogDID,
-		treeSize: treeSize,
+		reader:    tileReader,
+		bytestore: deps.Bytestore,
+		logDID:    deps.LogDID,
+		treeSize:  treeSize,
 	}
 	entryStore := store.NewEntryStore(deps.Pool)
 	leafStore := store.NewPostgresLeafStore(deps.Pool)
@@ -361,14 +386,28 @@ func entryRowFor(seq uint64, hash [32]byte, entry *envelope.Entry) store.EntryRo
 	}
 }
 
-// tileFetcher satisfies types.EntryFetcher by reading entry bundles
-// from the POSIX tile store. Used by the SDK's ProcessBatch to
-// resolve cross-batch references (PathA/B/C entries that reference
-// earlier seqs).
+// tileFetcher satisfies types.EntryFetcher by combining two
+// authoritative read paths:
+//
+//  1. tile/entries/{N} (via *optessera.TileReader) — yields the
+//     32-byte SHA-256(canonical_bytes) for each seq. This is what
+//     Tessera's AppendLeaf stored. It is NOT the canonical
+//     envelope bytes — the ledger uses a "hash-only" leaf policy
+//     so the tile store never sees full entry payloads.
+//
+//  2. bytestore at key entries/<seq16>/<hash64> — yields the
+//     canonical envelope bytes. The shipper writes these as each
+//     entry transitions WAL Sequenced → Shipped; for steady-state
+//     reads they're served from S3/GCS + CDN.
+//
+// Both reads are content-addressed (the bytestore key includes
+// the hash discovered from the tile), so the fetcher fails closed
+// if the two sources disagree.
 type tileFetcher struct {
-	reader   *optessera.TileReader
-	logDID   string
-	treeSize uint64
+	reader    *optessera.TileReader
+	bytestore bytestore.Reader
+	logDID    string
+	treeSize  uint64
 }
 
 func (f *tileFetcher) Fetch(ctx context.Context, pos types.LogPosition) (*types.EntryWithMetadata, error) {
@@ -381,6 +420,8 @@ func (f *tileFetcher) Fetch(ctx context.Context, pos types.LogPosition) (*types.
 	if pos.Sequence >= f.treeSize {
 		return nil, fmt.Errorf("rebuild/tileFetcher: seq %d >= treeSize %d", pos.Sequence, f.treeSize)
 	}
+
+	// Step 1: read the 32-byte hash from tile/entries.
 	const entriesPerBundle = uint64(layout.EntryBundleWidth) // 256
 	bundleIdx := pos.Sequence / entriesPerBundle
 	offset := pos.Sequence % entriesPerBundle
@@ -389,14 +430,48 @@ func (f *tileFetcher) Fetch(ctx context.Context, pos types.LogPosition) (*types.
 	if err != nil {
 		return nil, fmt.Errorf("fetch entry bundle %d: %w", bundleIdx, err)
 	}
-	entryBytes, err := optessera.ParseEntryBundle(bundleBytes, offset)
+	hashBytes, err := optessera.ParseEntryBundle(bundleBytes, offset)
 	if err != nil {
 		return nil, fmt.Errorf("parse entry bundle %d offset %d: %w", bundleIdx, offset, err)
 	}
-	out := make([]byte, len(entryBytes))
-	copy(out, entryBytes)
+	if len(hashBytes) != 32 {
+		return nil, fmt.Errorf("rebuild/tileFetcher: tile/entries seq=%d returned %d bytes, want 32 (hash-only Tessera contract violated)",
+			pos.Sequence, len(hashBytes))
+	}
+	var hash [32]byte
+	copy(hash[:], hashBytes)
+
+	// Step 2: read canonical bytes from the bytestore at the
+	// (seq, hash) coordinates the live shipper writes to.
+	canonical, err := f.bytestore.ReadEntry(ctx, pos.Sequence, hash)
+	if err != nil {
+		return nil, fmt.Errorf("rebuild/tileFetcher: bytestore.ReadEntry seq=%d hash=%x: %w",
+			pos.Sequence, hash[:8], err)
+	}
+
+	// Step 3: defense in depth — verify the bytestore blob hashes
+	// back to the tile's claim. A mismatch means either a corrupt
+	// bytestore blob OR a tile/entries entry that was rewritten.
+	// Either is a load-bearing integrity failure; surface it.
+	recomputed := envelopeIdentityHash(canonical)
+	if recomputed != hash {
+		return nil, fmt.Errorf("rebuild/tileFetcher: seq=%d hash mismatch — "+
+			"tile says %x, bytestore SHA-256(canonical)=%x — corruption detected",
+			pos.Sequence, hash[:8], recomputed[:8])
+	}
+
+	out := make([]byte, len(canonical))
+	copy(out, canonical)
 	return &types.EntryWithMetadata{
 		Position:       pos,
 		CanonicalBytes: out,
 	}, nil
+}
+
+// envelopeIdentityHash matches envelope.EntryIdentity without
+// re-deserializing: per envelope/tessera_compat.go, identity is
+// SHA-256(Serialize(entry)) — equivalently, SHA-256 over the raw
+// canonical bytes the bytestore stores.
+func envelopeIdentityHash(canonical []byte) [32]byte {
+	return sha256.Sum256(canonical)
 }

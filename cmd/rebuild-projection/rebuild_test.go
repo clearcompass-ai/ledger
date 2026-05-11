@@ -54,6 +54,7 @@ import (
 
 	"github.com/transparency-dev/tessera/storage/posix"
 
+	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
 )
@@ -107,6 +108,13 @@ func TestRebuild_DeterministicProjectionFromTiles(t *testing.T) {
 		_ = embedded.Close(shutCtx)
 	})
 
+	// ── Bytestore: holds the canonical envelope bytes the rebuild
+	// reads back at (seq, hash). In-memory in tests; production
+	// uses S3/GCS. This mirrors the production architecture:
+	// tile/entries gives us a hash, bytestore gives us the
+	// canonical bytes for that hash.
+	bs := bytestore.NewMemory()
+
 	// ── Produce N entries.
 	//
 	// Each entry has AuthorityPath=&AuthoritySameSigner +
@@ -125,13 +133,19 @@ func TestRebuild_DeterministicProjectionFromTiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("entry %d identity: %v", i, err)
 		}
-		_ = canonical
+		// Hash-only AppendLeaf: Tessera stores 32 bytes per leaf,
+		// matching the ledger's production AppendLeaf contract.
 		seq, err := embedded.AppendLeaf(ctx, identity[:])
 		if err != nil {
 			t.Fatalf("entry %d AppendLeaf: %v", i, err)
 		}
 		if seq != uint64(i) {
 			t.Fatalf("entry %d AppendLeaf returned seq=%d, want %d", i, seq, i)
+		}
+		// Canonical bytes go to the bytestore at the same (seq,
+		// hash) the live shipper writes them to.
+		if err := bs.WriteEntry(ctx, seq, identity, canonical); err != nil {
+			t.Fatalf("entry %d bytestore WriteEntry: %v", i, err)
 		}
 	}
 
@@ -143,6 +157,7 @@ func TestRebuild_DeterministicProjectionFromTiles(t *testing.T) {
 	// ── First Rebuild → populates PG fully.
 	stats1, err := Rebuild(ctx, RebuildDeps{
 		TileDir:   tileDir,
+		Bytestore: bs,
 		Pool:      pool,
 		LogDID:    testRebuildLogDID,
 		BatchSize: 16,

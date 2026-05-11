@@ -36,15 +36,28 @@ schema validation, signature verification, SMT derivation, and
 quorum policy. Items below MUST NOT propose adding domain rules to
 the Ledger.
 
-### B. Tiles + Static CT are the source of truth — Postgres is a projection
+### B. Tiles + bytestore + gossip are the source of truth — Postgres is a projection
 *Ledger principle §10 — Trust principle §6, §15.*
-The authoritative storage is the immutable Static-CT bytestore
-(`.p` hash tiles + entry bundles in S3/GCS) combined with the
-signed events on the gossip network. **Every Postgres table is a
-projection that can be rebuilt by walking tiles + replaying
-gossip** (see §C below for the explicit rebuild path per table).
-Items below MUST treat PG as ephemeral cache, not authoritative
-state.
+The authoritative storage is the **pair** of (a) the immutable
+Static-CT hash tile store (`tile/{L}/N` + `tile/entries/N`,
+filesystem or S3-backed) which holds 32-byte content-addressed
+hashes — the ledger's `AppendLeaf` is **hash-only**; tiles never
+see full entry payloads — and (b) the canonical-byte bytestore
+(`entries/<seq16>/<hash64>`) which holds the actual envelope
+bytes the shipper wrote. Combined with the signed events on the
+gossip network, this triple is the architecture's physical source
+of truth.
+
+**Every Postgres table is a projection that can be rebuilt by
+walking tiles → looking up canonical bytes in the bytestore →
+replaying gossip** (see §C below for the explicit rebuild path
+per table). Items below MUST treat PG as ephemeral cache, not
+authoritative state.
+
+**Common mistake (caught during §C2 work):** treating tile/entries
+as if it held full envelope bytes. It does not; it holds 32-byte
+identity hashes. Rebuild needs the bytestore too. This is the
+hash-only AppendLeaf invariant.
 
 ### C. CQRS, melt-proof, two-clocks
 *Ledger principle §5, §7, §8, §12.*
@@ -209,8 +222,8 @@ path within an explicit RTO budget.
 
   | Table | Projection of | Rebuild path |
   |-------|---------------|--------------|
-  | `entry_index` | tile/entries bundles | walk `tile/entries/{N}` bundles; SDK parses each entry; re-INSERT rows |
-  | `smt_leaves` | log entries + SDK derivation | for each integrated entry, run `sdkbuilder.ProcessBatch`; capture `result.Mutations`; UPSERT leaves |
+  | `entry_index` | tile/entries (hashes) + bytestore (canonical bytes) | walk `tile/entries/{N}` → hash per seq; `bytestore.ReadEntry(seq, hash)` → canonical bytes; `envelope.Deserialize`; INSERT row |
+  | `smt_leaves` | log entries + SDK derivation | for each rebuilt entry, run `sdkbuilder.ProcessBatch`; capture `result.Mutations`; UPSERT leaves |
   | `smt_nodes` | smt_leaves + SDK tree math | walk tree top-down (or bottom-up) over the rebuilt leaves; persist intermediate nodes |
   | `builder_cursor` | the highest seq in `entry_index` (or tile state) | single SELECT MAX after rebuild |
   | `tree_heads` | gossiped `KindCosignedTreeHead` events | replay the gossip feed; one row per published head |
@@ -240,11 +253,19 @@ path within an explicit RTO budget.
   tree_head_sigs, witness_sets; RTO budget benchmarks at 1M / 10M /
   100M entries; sharded/streamed rebuild for 10⁹+ scale.
 
-### C3 — Sharded / paginated SMT for 10⁹+ scale ⬜
+### C3 — Sharded / paginated SMT for 10⁹+ scale 🟡 (urgent)
 - **Today:** SMT root is maintained via materialize-once-per-batch
   (`builder/loop.go`, commit `0ea1328`). O(N) per batch where N =
   total live leaves. At 10⁷ leaves this is ~100ms/batch; at 10⁹
   it's >10s/batch — unworkable.
+- **EVIDENCE (100K soak, 2026-05-11):** after the dense-log path
+  drained (`verifyTreeIntegrity ✓ tree_size=100000 root=49ce4fb…
+  + 100/100 inclusion proofs verified`), the SMT builder loop was
+  STILL CATCHING UP: `verifySMTConsistency: leaf_count=51856 <
+  submitted=100000 after 10s budget`. The 10s poll budget would
+  need to be tens of minutes to allow materialize-once-per-batch
+  to catch up at 100K scale. At 10⁹ it's infeasible. **§C3 is
+  now load-bearing for any soak above ~10K entries.**
 - **Plan (load-bearing for 10B scale):**
   1. Persist intermediate node hashes from `ComputeDirtyRoot` into
      `smt_nodes` (already write-through), via a warm

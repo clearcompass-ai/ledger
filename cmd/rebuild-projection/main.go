@@ -40,23 +40,50 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clearcompass-ai/ledger/bytestore"
 )
 
 func main() {
 	var (
-		tileDir   = flag.String("tile-dir", "", "filesystem path to the Tessera POSIX tile store (REQUIRED)")
-		pgDSN     = flag.String("pg-dsn", "", "Postgres DSN (e.g. postgres://attesta:attesta@host:5432/attesta_test?sslmode=disable) (REQUIRED)")
-		logDID    = flag.String("log-did", "", "the log's DID — must match the Origin in the checkpoint (REQUIRED)")
-		batchSize = flag.Int("batch-size", 500, "entries processed per atomic commit; bounds memory + lock-hold time")
-		verbose   = flag.Bool("verbose", false, "log every batch commit at INFO level (default: warn-only)")
+		tileDir       = flag.String("tile-dir", "", "filesystem path to the Tessera POSIX tile store (REQUIRED)")
+		pgDSN         = flag.String("pg-dsn", "", "Postgres DSN (REQUIRED)")
+		logDID        = flag.String("log-did", "", "the log's DID — must match the Origin in the checkpoint (REQUIRED)")
+		bsBackend     = flag.String("bytestore-backend", "", "bytestore backend: s3|gcs (REQUIRED — tile/entries holds hashes only; canonical bytes live in the bytestore)")
+		bsBucket      = flag.String("bytestore-bucket", "", "bytestore bucket name (REQUIRED)")
+		bsPrefix      = flag.String("bytestore-prefix", "", "bytestore key prefix (matches what the live shipper writes to)")
+		bsEndpoint    = flag.String("bytestore-endpoint", "", "S3 endpoint URL (for S3-compatible backends; ignored for native GCS)")
+		bsRegion      = flag.String("bytestore-region", "us-east-1", "S3 region")
+		bsAccessKey   = flag.String("bytestore-access-key", "", "S3 access key (or use AWS_ACCESS_KEY_ID env)")
+		bsSecretKey   = flag.String("bytestore-secret-key", "", "S3 secret key (or use AWS_SECRET_ACCESS_KEY env)")
+		bsPathStyle   = flag.Bool("bytestore-path-style", false, "S3 path-style addressing (true for SeaweedFS/MinIO; false for AWS S3)")
+		batchSize     = flag.Int("batch-size", 500, "entries processed per atomic commit; bounds memory + lock-hold time")
+		verbose       = flag.Bool("verbose", false, "log every batch commit at INFO level (default: warn-only)")
 	)
 	flag.Parse()
-	if *tileDir == "" || *pgDSN == "" || *logDID == "" {
-		fmt.Fprintln(os.Stderr, "rebuild-projection: --tile-dir, --pg-dsn, and --log-did are all required")
+	missing := []string{}
+	if *tileDir == "" {
+		missing = append(missing, "--tile-dir")
+	}
+	if *pgDSN == "" {
+		missing = append(missing, "--pg-dsn")
+	}
+	if *logDID == "" {
+		missing = append(missing, "--log-did")
+	}
+	if *bsBackend == "" {
+		missing = append(missing, "--bytestore-backend")
+	}
+	if *bsBucket == "" {
+		missing = append(missing, "--bytestore-bucket")
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "rebuild-projection: missing required flag(s): %s\n", strings.Join(missing, ", "))
 		flag.PrintDefaults()
 		os.Exit(2)
 	}
@@ -80,15 +107,35 @@ func main() {
 	}
 	defer pool.Close()
 
+	bsCfg := bytestore.Config{
+		Backend:     *bsBackend,
+		Bucket:      *bsBucket,
+		Prefix:      *bsPrefix,
+		S3Endpoint:  *bsEndpoint,
+		S3Region:    *bsRegion,
+		S3AccessKey: *bsAccessKey,
+		S3SecretKey: *bsSecretKey,
+		S3PathStyle: *bsPathStyle,
+	}
+	bs, err := bytestore.NewFromConfig(ctx, bsCfg)
+	if err != nil {
+		logger.Error("open bytestore", "backend", *bsBackend, "bucket", *bsBucket, "err", err)
+		os.Exit(1)
+	}
+
 	logger.Info("rebuild-projection: starting",
 		"tile_dir", *tileDir,
 		"log_did", *logDID,
+		"bytestore_backend", *bsBackend,
+		"bytestore_bucket", *bsBucket,
+		"bytestore_prefix", *bsPrefix,
 		"batch_size", *batchSize,
 	)
 
 	start := time.Now()
 	stats, err := Rebuild(ctx, RebuildDeps{
 		TileDir:   *tileDir,
+		Bytestore: bs,
 		Pool:      pool,
 		LogDID:    *logDID,
 		BatchSize: *batchSize,
