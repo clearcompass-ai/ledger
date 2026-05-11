@@ -1,32 +1,47 @@
 /*
 FILE PATH: store/smt_state.go
 
-Postgres-backed implementations of sdk smt.LeafStore and sdk smt.NodeCache.
+Postgres-backed implementations of the v0.3.0 SDK's smt.LeafStore and
+smt.NodeStore interfaces.
 
-KEY ARCHITECTURAL DECISIONS:
+# KEY ARCHITECTURAL DECISIONS
 
-  - PostgresLeafStore: every interface method takes ctx (Tier 1.3
-    of the v0.2.0 SDK migration). SetTx remains for atomic builder
-    commits.
+  - PostgresLeafStore: every interface method takes ctx (Tier 1.3 of
+    the v0.2.0 SDK migration, preserved in v0.3.0). SetTx remains for
+    atomic builder commits.
 
-  - PostgresNodeCache: write-through to both Postgres (smt_nodes) and an
-    in-memory LRU. Top N levels warmed on startup. Depth tracked correctly
-    per node for selective warming.
+  - PostgresNodeStore: content-addressed persistence for Jellyfish
+    nodes. The SDK's smt.NodeStore interface is ctx-free by design
+    (proof replay must never block on a remote cache lookup — per
+    the upstream comment). Postgres reads inside Get still need a
+    context for shutdown cancellation; we keep a process-lifetime
+    ctx field on the store, set at construction.
 
-    The SDK's smt.NodeCache interface is intentionally ctx-free
-    (per the upstream comment: "proof replay must never block on a
-    remote cache lookup"). The cache's Postgres write-through still
-    needs a ctx to bind shutdown cancellation to in-flight queries;
-    we keep a process-lifetime ctx field on the cache (set by
-    NewPostgresNodeCache) for that purpose only.
+  - Generously-sized in-memory LRU on top of Postgres. The LRU is
+    load-bearing for the N+1-query read path, not optional: tree
+    traversal heavily skews to the top nodes, and a hot LRU absorbs
+    those reads so the connection pool is not saturated. Default
+    capacity is 1M nodes (~50 MB at ~50 B / node).
 
-  - LogPosition serialization: length-prefixed DID + uint64, matching SDK
-    canonical serialization.
+  - LogPosition serialization: length-prefixed DID + uint64, matching
+    the SDK's canonical serialization.
 
-INVARIANTS:
-  - After builder atomic commit, smt_leaves and smt_nodes are consistent.
-  - WarmCache only loads nodes at depth <= topLevels (not all nodes).
-  - LRU eviction preserves recently accessed nodes, not random eviction.
+# INVARIANTS
+
+  - After builder atomic commit, smt_leaves and jellyfish_nodes are
+    consistent: every node referenced by smt_root_state.current_root
+    is present in jellyfish_nodes; every leaf reachable from the root
+    is present in smt_leaves.
+
+  - LRU eviction is true LRU (oldest-accessed first), not random.
+
+# GC
+
+  jellyfish_nodes is content-addressed and structurally immortal. No
+  time-based eviction; the table has no created_at column. If pruning
+  is ever needed it MUST be a mark-and-sweep walk rooted at the live
+  tree heads, never a time predicate. See migrations/0003 for the
+  rationale.
 */
 package store
 
@@ -35,6 +50,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -49,7 +65,7 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 // PostgresLeafStore persists SMT leaves in Postgres.
-// Supports transactional writes for atomic builder commits via SetTx/DeleteTx.
+// Supports transactional writes for atomic builder commits via SetTx.
 type PostgresLeafStore struct {
 	db *pgxpool.Pool
 }
@@ -130,9 +146,6 @@ func (s *PostgresLeafStore) SetTx(ctx context.Context, tx pgx.Tx, key [32]byte, 
 
 // SetBatch writes multiple leaves using Postgres batching.
 // This satisfies the sdk smt.LeafStore interface.
-// Note: The builder loop uses SetTx within its own atomic transaction block
-// to commit mutations, but this method is required for interface compliance
-// and non-transactional bulk operations.
 func (s *PostgresLeafStore) SetBatch(ctx context.Context, leaves []types.SMTLeaf) error {
 	if len(leaves) == 0 {
 		return nil
@@ -155,14 +168,12 @@ func (s *PostgresLeafStore) SetBatch(ctx context.Context, leaves []types.SMTLeaf
 		)
 	}
 
-	// SendBatch executes the queued statements.
 	br := s.db.SendBatch(ctx, batch)
 	defer func() { _ = br.Close() }()
 
 	if _, err := br.Exec(); err != nil {
 		return fmt.Errorf("store/smt: set batch: %w", err)
 	}
-
 	return nil
 }
 
@@ -185,269 +196,264 @@ func (s *PostgresLeafStore) Count(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// All returns every leaf in the store as a (key → leaf) map. Used by
-// MaterializeToInMemory below to bridge PostgresLeafStore into the
-// SDK's SMT root/proof code path, which only enumerates the concrete
-// *smt.InMemoryLeafStore and *smt.OverlayLeafStore types (see
-// attesta/core/smt/tree.go:collectLeafHashes).
-//
-// O(N) cost — full table scan. Acceptable for moderate-scale soaks
-// and integration tests; production deployments with millions+ of
-// leaves should serve /v1/smt/root from a persisted root maintained
-// incrementally by the builder (see Item 11 in
-// docs/production_readiness.md).
-func (s *PostgresLeafStore) All(ctx context.Context) (map[[32]byte]types.SMTLeaf, error) {
-	rows, err := s.db.Query(ctx,
-		"SELECT leaf_key, origin_tip, authority_tip FROM smt_leaves")
-	if err != nil {
-		return nil, fmt.Errorf("store/smt: all leaves: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[[32]byte]types.SMTLeaf)
-	for rows.Next() {
-		var keyBytes, originBytes, authBytes []byte
-		if err := rows.Scan(&keyBytes, &originBytes, &authBytes); err != nil {
-			return nil, fmt.Errorf("store/smt: scan all leaves: %w", err)
-		}
-		if len(keyBytes) != 32 {
-			return nil, fmt.Errorf("store/smt: bad leaf_key length %d (want 32)", len(keyBytes))
-		}
-		originTip, err := DeserializeLogPosition(originBytes)
-		if err != nil {
-			return nil, fmt.Errorf("store/smt: decode origin_tip: %w", err)
-		}
-		authTip, err := DeserializeLogPosition(authBytes)
-		if err != nil {
-			return nil, fmt.Errorf("store/smt: decode authority_tip: %w", err)
-		}
-		var key [32]byte
-		copy(key[:], keyBytes)
-		out[key] = types.SMTLeaf{Key: key, OriginTip: originTip, AuthorityTip: authTip}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store/smt: rows all leaves: %w", err)
-	}
-	return out, nil
-}
-
-// MaterializeToInMemory pulls every leaf from PG into a fresh
-// *smt.InMemoryLeafStore. The returned store satisfies the SDK's
-// collectLeafHashes type switch (case *smt.InMemoryLeafStore), so
-// Tree.Root and Tree.GenerateMembershipProof produce mathematically
-// correct results.
-//
-// O(N) memory + O(N) PG read per call — caller is responsible for
-// bounding call frequency. Tests + soak harness use this directly;
-// the production /v1/smt/root path should NOT call this on every
-// request (see Item 11 — incremental root maintenance).
-func (s *PostgresLeafStore) MaterializeToInMemory(ctx context.Context) (*smt.InMemoryLeafStore, error) {
-	all, err := s.All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	mem := smt.NewInMemoryLeafStore()
-	for key, leaf := range all {
-		if setErr := mem.Set(ctx, key, leaf); setErr != nil {
-			return nil, fmt.Errorf("store/smt: materialize set leaf: %w", setErr)
-		}
-	}
-	return mem, nil
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// 2) PostgresNodeCache — write-through Postgres + in-memory LRU
+// 2) PostgresNodeStore — implements sdk smt.NodeStore
 // ─────────────────────────────────────────────────────────────────────────────
 
-// PostgresNodeCache implements sdk smt.NodeCache with write-through persistence.
-// Uses a simple map with access tracking for LRU eviction.
+// PostgresNodeStoreDefaultLRUSize is the default in-memory LRU
+// capacity used when the caller doesn't supply one. 1 048 576 entries
+// at ~50 B/node ≈ 50 MB of resident set.
 //
-// The SDK's smt.NodeCache interface (Get/Set) is intentionally
-// ctx-free — proof replay must never block on a remote cache
-// lookup (per upstream comment). Postgres write-through inside Set
-// still needs a context for shutdown cancellation; we hold a
-// process-lifetime ctx on the cache, set at construction.
-type PostgresNodeCache struct {
-	db      *pgxpool.Pool
+// Tree traversal heavily skews to the top nodes, so a hot LRU of this
+// size absorbs effectively all read traffic for the top 20 levels
+// (2^20 ≈ 1M nodes), dropping per-request PG queries from ~depth to
+// the handful of deep-node misses. The LRU is the physical circuit
+// breaker for the connection pool — sizing it generously is
+// load-bearing, not an optimisation.
+const PostgresNodeStoreDefaultLRUSize = 1_048_576
+
+// PostgresNodeStore implements the v0.3.0 SDK's smt.NodeStore over
+// Postgres + an in-memory LRU. The store is content-addressed: Put
+// inserts by hash (INSERT ON CONFLICT DO NOTHING — no UPSERTs, no
+// write amplification beyond the single row), Get reads by hash.
+//
+// The SDK's smt.NodeStore interface is intentionally ctx-free: proof
+// replay must never block on a remote cache lookup. The store still
+// needs a context for Postgres I/O on a cache miss; we hold a
+// process-lifetime ctx field set at construction. SIGTERM cancels
+// in-flight queries.
+type PostgresNodeStore struct {
+	db *pgxpool.Pool
+
 	mu      sync.RWMutex
-	cache   map[[32]byte]cacheEntry
-	access  map[[32]byte]int64 // access counter for LRU
+	cache   map[[32]byte]smt.Node
+	access  map[[32]byte]int64
 	counter int64
 	maxSize int
 
-	// ctx is bound at construction. The SDK's smt.NodeCache interface
-	// is intentionally ctx-free (Tier 1.3); the only consumer of
-	// this field is the Postgres write-through inside Set, which
-	// the cache owns end-to-end. SIGTERM cancellation cancels
-	// in-flight write-through queries.
+	// ctx is bound at construction. The smt.NodeStore interface
+	// methods are ctx-free; the only consumer of this field is the
+	// Postgres read inside Get on cache miss.
 	ctx context.Context
 }
 
-type cacheEntry struct {
-	hash  []byte
-	depth int
-}
-
-// NewPostgresNodeCache creates a node cache with the given LRU capacity.
-// ctx is the process-lifetime context — its lifetime governs the
-// internal Postgres write-through queries inside Set (the SDK's
-// smt.NodeCache interface methods are ctx-free by design).
-func NewPostgresNodeCache(ctx context.Context, db *pgxpool.Pool, maxSize int) *PostgresNodeCache {
-	if maxSize < 1024 {
-		maxSize = 100000
+// NewPostgresNodeStore creates a content-addressed node store with the
+// given LRU capacity. If maxSize <= 0 the default (1M entries) is
+// used. ctx is the process-lifetime context for in-flight Postgres
+// reads on cache miss.
+func NewPostgresNodeStore(ctx context.Context, db *pgxpool.Pool, maxSize int) *PostgresNodeStore {
+	if maxSize <= 0 {
+		maxSize = PostgresNodeStoreDefaultLRUSize
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &PostgresNodeCache{
+	return &PostgresNodeStore{
 		db:      db,
-		cache:   make(map[[32]byte]cacheEntry, maxSize),
-		access:  make(map[[32]byte]int64, maxSize),
+		cache:   make(map[[32]byte]smt.Node, 1024),
+		access:  make(map[[32]byte]int64, 1024),
 		maxSize: maxSize,
 		ctx:     ctx,
 	}
 }
 
-// Get reads a node hash from cache, falling back to Postgres.
-func (c *PostgresNodeCache) Get(key [32]byte) ([]byte, bool) {
-	c.mu.RLock()
-	entry, ok := c.cache[key]
-	c.mu.RUnlock()
+// Get returns the node at hash, or (nil, nil) for misses and for the
+// canonical EmptyHash. Reads consult the LRU first; on miss, a
+// Postgres SELECT loads the payload and the LRU is populated for
+// future hits.
+//
+// The returned smt.Node is the stored instance — callers must not
+// mutate fields. The Jellyfish nodes returned by DecodeNode are
+// already immutable from the SDK's perspective (cryptographically
+// content-addressed), but defensive coders should treat them as
+// read-only regardless.
+func (s *PostgresNodeStore) Get(hash [32]byte) (smt.Node, error) {
+	if hash == smt.EmptyHash {
+		return nil, nil
+	}
+
+	// Fast path: LRU hit.
+	s.mu.RLock()
+	cached, ok := s.cache[hash]
+	s.mu.RUnlock()
 	if ok {
-		c.mu.Lock()
-		c.counter++
-		c.access[key] = c.counter
-		c.mu.Unlock()
-		return entry.hash, true
+		s.mu.Lock()
+		s.counter++
+		s.access[hash] = s.counter
+		s.mu.Unlock()
+		return cached, nil
 	}
 
-	// Cache miss — fetch from Postgres using the cache's bound ctx.
-	// The SDK's NodeCache.Get is ctx-free; binding the ctx at
-	// construction is the only way to make Postgres reads
-	// shutdown-cancellable.
-	var hash []byte
-	err := c.db.QueryRow(c.ctx,
-		"SELECT hash FROM smt_nodes WHERE path_key = $1", key[:],
-	).Scan(&hash)
+	// Slow path: Postgres read.
+	var payload []byte
+	err := s.db.QueryRow(s.ctx,
+		"SELECT payload FROM jellyfish_nodes WHERE node_hash = $1",
+		hash[:],
+	).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("store/smt: get node %x: %w", hash[:8], err)
 	}
 
-	c.mu.Lock()
-	c.counter++
-	c.cache[key] = cacheEntry{hash: hash, depth: 0}
-	c.access[key] = c.counter
-	c.mu.Unlock()
-	return hash, true
-}
-
-// Set writes a node to cache and Postgres (write-through).
-func (c *PostgresNodeCache) Set(key [32]byte, value []byte) {
-	c.SetWithDepth(key, value, 0)
-}
-
-// SetWithDepth writes a node with its tree depth for selective warming.
-func (c *PostgresNodeCache) SetWithDepth(key [32]byte, value []byte, depth int) {
-	c.mu.Lock()
-	if len(c.cache) >= c.maxSize {
-		c.evictLRU()
+	node, err := smt.DecodeNode(payload)
+	if err != nil {
+		return nil, fmt.Errorf("store/smt: decode node %x: %w", hash[:8], err)
 	}
-	c.counter++
-	c.cache[key] = cacheEntry{hash: value, depth: depth}
-	c.access[key] = c.counter
-	c.mu.Unlock()
 
-	// Write-through to Postgres.
-	_, _ = c.db.Exec(c.ctx, `
-		INSERT INTO smt_nodes (path_key, hash, depth, updated_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (path_key) DO UPDATE SET
-			hash = EXCLUDED.hash,
-			depth = EXCLUDED.depth,
-			updated_at = NOW()`,
-		key[:], value, depth,
+	s.mu.Lock()
+	s.cachePutLocked(hash, node)
+	s.mu.Unlock()
+	return node, nil
+}
+
+// Put stores a node. The hash is computed from the node's content
+// (smt.HashNode); duplicate Puts (same hash) are no-ops — exactly
+// what content-addressing requires.
+//
+// Put writes through to Postgres via INSERT ON CONFLICT DO NOTHING.
+// Use PutTx inside the builder's atomic commit; this non-transactional
+// Put is for non-critical paths (e.g., ledger-reader warmup).
+func (s *PostgresNodeStore) Put(node smt.Node) ([32]byte, error) {
+	if node == nil {
+		return [32]byte{}, errors.New("store/smt: cannot store nil node")
+	}
+	hash := smt.HashNode(node)
+
+	// Promote to LRU regardless of whether PG already had it.
+	s.mu.Lock()
+	s.cachePutLocked(hash, node)
+	s.mu.Unlock()
+
+	_, err := s.db.Exec(s.ctx, `
+		INSERT INTO jellyfish_nodes (node_hash, payload)
+		VALUES ($1, $2)
+		ON CONFLICT (node_hash) DO NOTHING`,
+		hash[:], node.Serialize(),
 	)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("store/smt: put node %x: %w", hash[:8], err)
+	}
+	return hash, nil
 }
 
-// SetWithDepthTx writes a node within a transaction (for atomic builder commit).
-func (c *PostgresNodeCache) SetWithDepthTx(ctx context.Context, tx pgx.Tx, key [32]byte, value []byte, depth int) error {
-	c.mu.Lock()
-	if len(c.cache) >= c.maxSize {
-		c.evictLRU()
+// PutTx stores a node inside the supplied transaction. The builder
+// loop uses this to atomically commit all dirty nodes from a batch
+// alongside the leaves, the cursor, and the SMT root.
+//
+// Returns the canonical hash so the caller can reference the node
+// from a parent without re-hashing.
+func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node) ([32]byte, error) {
+	if node == nil {
+		return [32]byte{}, errors.New("store/smt: cannot store nil node")
 	}
-	c.counter++
-	c.cache[key] = cacheEntry{hash: value, depth: depth}
-	c.access[key] = c.counter
-	c.mu.Unlock()
+	hash := smt.HashNode(node)
+
+	s.mu.Lock()
+	s.cachePutLocked(hash, node)
+	s.mu.Unlock()
 
 	_, err := tx.Exec(ctx, `
-		INSERT INTO smt_nodes (path_key, hash, depth, updated_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (path_key) DO UPDATE SET
-			hash = EXCLUDED.hash,
-			depth = EXCLUDED.depth,
-			updated_at = NOW()`,
-		key[:], value, depth,
+		INSERT INTO jellyfish_nodes (node_hash, payload)
+		VALUES ($1, $2)
+		ON CONFLICT (node_hash) DO NOTHING`,
+		hash[:], node.Serialize(),
 	)
-	return err
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("store/smt: put node tx %x: %w", hash[:8], err)
+	}
+	return hash, nil
 }
 
-// evictLRU removes the least recently accessed 25% of entries. Caller holds mu.
-func (c *PostgresNodeCache) evictLRU() {
-	target := c.maxSize * 3 / 4
-	if len(c.cache) <= target {
+// cachePutLocked inserts/updates the LRU. Caller MUST hold s.mu.
+func (s *PostgresNodeStore) cachePutLocked(hash [32]byte, node smt.Node) {
+	if _, present := s.cache[hash]; !present && len(s.cache) >= s.maxSize {
+		s.evictLRULocked()
+	}
+	s.counter++
+	s.cache[hash] = node
+	s.access[hash] = s.counter
+}
+
+// evictLRULocked drops the least-recently-accessed 25% of entries
+// when the cache hits its capacity. Caller MUST hold s.mu.
+//
+// The eviction sweep is O(N log N) due to the sort, but only happens
+// when the cache is full; amortised over (maxSize/4) Puts the cost
+// is sub-microsecond per Put even at maxSize = 1M.
+func (s *PostgresNodeStore) evictLRULocked() {
+	target := s.maxSize * 3 / 4
+	if len(s.cache) <= target {
 		return
 	}
-	// Find the access threshold: remove entries with lowest access counters.
-	// Simple approach: remove entries until below target.
 	type kv struct {
 		key    [32]byte
 		access int64
 	}
-	entries := make([]kv, 0, len(c.cache))
-	for k := range c.cache {
-		entries = append(entries, kv{key: k, access: c.access[k]})
+	entries := make([]kv, 0, len(s.cache))
+	for k := range s.cache {
+		entries = append(entries, kv{key: k, access: s.access[k]})
 	}
-	// Sort by access time ascending (oldest first).
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].access < entries[i].access {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
-		}
-	}
-	toRemove := len(c.cache) - target
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].access < entries[j].access
+	})
+	toRemove := len(s.cache) - target
 	for i := 0; i < toRemove && i < len(entries); i++ {
-		delete(c.cache, entries[i].key)
-		delete(c.access, entries[i].key)
+		delete(s.cache, entries[i].key)
+		delete(s.access, entries[i].key)
 	}
 }
 
-// WarmCache preloads top N levels of SMT nodes into the LRU.
-func (c *PostgresNodeCache) WarmCache(ctx context.Context, topLevels int) error {
-	rows, err := c.db.Query(ctx,
-		"SELECT path_key, hash, depth FROM smt_nodes WHERE depth <= $1", topLevels,
+// Len returns the current LRU occupancy. Diagnostic/test use only.
+func (s *PostgresNodeStore) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.cache)
+}
+
+// WarmFromRecent preloads the LRU with up to N recently-inserted
+// nodes from the table. Called on builder startup so the first batch
+// after restart doesn't pay a full cold-cache penalty on every Get.
+//
+// "Recent" is approximated by inserting order in the absence of a
+// created_at column (a deliberate omission — see migrations/0003 on
+// why time-based metadata cannot live on jellyfish_nodes). The query
+// reads the first N rows by ctid (physical row order), which is a
+// reasonable approximation of recency on an append-mostly table.
+//
+// This is best-effort: failures are logged by the caller; the SDK's
+// NodeStore.Get path always falls back to a Postgres miss read.
+func (s *PostgresNodeStore) WarmFromRecent(ctx context.Context, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	rows, err := s.db.Query(ctx,
+		"SELECT node_hash, payload FROM jellyfish_nodes ORDER BY ctid DESC LIMIT $1",
+		limit,
 	)
 	if err != nil {
 		return fmt.Errorf("store/smt: warm cache: %w", err)
 	}
 	defer rows.Close()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for rows.Next() {
-		var keyBytes, hash []byte
-		var depth int
-		if err := rows.Scan(&keyBytes, &hash, &depth); err != nil {
+		var keyBytes, payload []byte
+		if err := rows.Scan(&keyBytes, &payload); err != nil {
 			return fmt.Errorf("store/smt: warm cache scan: %w", err)
 		}
-		if len(keyBytes) == 32 {
-			var key [32]byte
-			copy(key[:], keyBytes)
-			c.counter++
-			c.cache[key] = cacheEntry{hash: hash, depth: depth}
-			c.access[key] = c.counter
+		if len(keyBytes) != 32 {
+			continue
 		}
+		node, err := smt.DecodeNode(payload)
+		if err != nil {
+			continue
+		}
+		var hash [32]byte
+		copy(hash[:], keyBytes)
+		s.cachePutLocked(hash, node)
 	}
 	return rows.Err()
 }
