@@ -706,7 +706,15 @@ func buildS3ClientForPreflight(t *testing.T) *s3.Client {
 	if err != nil {
 		t.Fatalf("LoadDefaultConfig: %v", err)
 	}
-	clientOpts := []func(*s3.Options){}
+	clientOpts := []func(*s3.Options){
+		// Must mirror bytestore/s3.go NewS3 exactly — see comment
+		// there. WhenRequired suppresses the per-Get WARN that
+		// SeaweedFS / MinIO / RustFS / R2 trigger by not emitting
+		// x-amz-checksum-* response headers.
+		func(o *s3.Options) {
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		},
+	}
 	if endpoint != "" {
 		ep := endpoint
 		clientOpts = append(clientOpts, func(o *s3.Options) {
