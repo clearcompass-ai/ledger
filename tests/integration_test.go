@@ -387,7 +387,7 @@ func TestDeterminism_CommutativeSchemas(t *testing.T) {
 
 func TestDeterminism_EmptyBatch(t *testing.T) {
 	ctx := context.Background()
-	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeCache())
+	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	rootBefore, _ := tree.Root(ctx)
 	result, _ := builder.ProcessBatch(ctx, tree, nil, nil, newMockFetcher(), nil, testLogDID, builder.NewDeltaWindowBuffer(10))
 	if result.NewRoot != rootBefore {

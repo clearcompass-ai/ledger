@@ -149,12 +149,27 @@ type WitnessCosigner interface {
 // -------------------------------------------------------------------------------------------------
 
 // BuilderLoop is the continuous builder goroutine.
+//
+// V0.3.0 ARCHITECTURE
+//
+// Each cycle wraps the persistent leafStore + nodeStore in overlays
+// (smt.OverlayLeafStore + smt.OverlayNodeStore), runs the SDK's
+// ProcessBatch against an overlay-backed Tree seeded with priorRoot,
+// then commits the overlay's leaf + node mutations transactionally
+// alongside the cursor advance and the new SMT root. Failure at any
+// pre-commit step discards the overlays — the persistent state is
+// untouched.
+//
+// The persistent `tree` field is the read-side handle shared with
+// API handlers. After a successful commit the builder calls
+// `tree.SetRoot(newRoot)` so handlers observe the new root without
+// going through Postgres for every request.
 type BuilderLoop struct {
 	cfg       LoopConfig
 	db        *pgxpool.Pool
 	tree      *smt.Tree
 	leafStore *store.PostgresLeafStore
-	nodeCache *store.PostgresNodeCache
+	nodeStore *store.PostgresNodeStore
 	// reader is the CT-native log-tailing follower that reads new
 	// sequences from entry_index and advances builder_cursor in the
 	// builder's atomic commit. See builder/cursor_reader.go.
@@ -168,18 +183,12 @@ type BuilderLoop struct {
 	witness     WitnessCosigner
 	logger      *slog.Logger
 
-	// rootStore is OPTIONAL. When non-nil, the builder reads the
-	// current SMT root from it at the start of each batch, computes
-	// the new root incrementally via Tree.ComputeDirtyRoot, and
-	// persists it in the atomic commit. /v1/smt/root then reads
-	// the cached value (O(1)) instead of materializing all leaves
-	// (O(N)).
-	//
-	// nil → builder skips the incremental-root path. The handler-
-	// side materialization in api/proofs.go still produces correct
-	// roots and proofs; the system is correct but read-side cost
-	// is O(N). Production wiring (cmd/ledger/boot/wire/wire.go)
-	// MUST call WithRootStore.
+	// rootStore is OPTIONAL but production-required. It holds the
+	// authoritative smt_root_state.current_root that the builder
+	// advances each batch. /v1/smt/root reads it in O(1). When nil,
+	// the builder still runs but advances only the in-memory
+	// tree.rootHash — useful for tests that don't bootstrap the
+	// singleton row.
 	rootStore *store.SMTRootStateStore
 
 	// Observability counters (atomic, lock-free).
@@ -195,7 +204,7 @@ func NewBuilderLoop(
 	db *pgxpool.Pool,
 	tree *smt.Tree,
 	leafStore *store.PostgresLeafStore,
-	nodeCache *store.PostgresNodeCache,
+	nodeStore *store.PostgresNodeStore,
 	reader BatchReader,
 	fetcher types.EntryFetcher,
 	schema sdkbuilder.SchemaResolver,
@@ -211,7 +220,7 @@ func NewBuilderLoop(
 		db:          db,
 		tree:        tree,
 		leafStore:   leafStore,
-		nodeCache:   nodeCache,
+		nodeStore:   nodeStore,
 		reader:      reader,
 		fetcher:     fetcher,
 		schema:      schema,
@@ -342,20 +351,16 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 
 func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	var priorRoot [32]byte
-	var priorRootSeq uint64
 	if bl.rootStore != nil {
 		// Authoritative path: read priorRoot from smt_root_state.
-		// bl.tree.Root would short-circuit to the empty-tree default
-		// for any PostgresLeafStore-backed tree (SDK collectLeafHashes
-		// limitation — see store/smt_root_state.go for the bug
-		// reference) so the persisted value is the only correct
-		// source of truth.
+		// The persisted root is the source of truth across builder
+		// restarts; the in-memory tree.rootHash mirrors it after each
+		// successful commit.
 		st, err := bl.rootStore.Read(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("read smt root state: %w", err)
 		}
 		priorRoot = st.CurrentRoot
-		priorRootSeq = st.CommittedThroughSeq
 	} else {
 		var err error
 		priorRoot, err = bl.tree.Root(ctx)
@@ -363,7 +368,6 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("prior root: %w", err)
 		}
 	}
-	_ = priorRootSeq // reserved for crash-recovery sanity checks; not used in the current flow
 
 	// ── Step 1: Dequeue batch ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
@@ -410,9 +414,16 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		positions[i] = ewm.Position
 	}
 
-	// ── Step 4: SDK ProcessBatch ──────────────────────────────────────
-	overlayStore := smt.NewOverlayLeafStore(bl.leafStore)
-	overlayTree := smt.NewTree(overlayStore, bl.nodeCache)
+	// ── Step 4: SDK ProcessBatch (overlay-backed) ────────────────────
+	//
+	// Both stores are wrapped in overlays so pre-commit failures (Tessera
+	// AppendLeaf, witness cosignature, downstream PG error) leave the
+	// persistent leafStore + nodeStore untouched. On commit success the
+	// overlay mutations are extracted and persisted atomically below.
+	overlayLeaves := smt.NewOverlayLeafStore(bl.leafStore)
+	overlayNodes := smt.NewOverlayNodeStore(bl.nodeStore)
+	overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
+	overlayTree.SetRoot(priorRoot)
 
 	result, err := sdkbuilder.ProcessBatch(
 		ctx,
@@ -501,69 +512,31 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		cosignSucceeded = true
 	}
 
-	// ── Step 8a: Compute new SMT root (when rootStore is wired) ──────
+	// ── Step 8a: New SMT root (v0.3.0 — produced by ProcessBatch) ────
 	//
-	// We persist the SMT root in smt_root_state so /v1/smt/root reads
-	// in O(1) rather than O(N) materialization per request. The
-	// builder is the sole writer of the row.
+	// In v0.3.0, ProcessBatch advances the overlay tree's rootHash
+	// incrementally via SDK Tree.SetLeaves → jellyfishInsert (O(log N)
+	// node writes per leaf, exactly 2N-1 nodes total for N live leaves).
+	// result.NewRoot is therefore the committed-after-this-batch root
+	// already — no materialisation, no extra walk.
 	//
-	// IMPLEMENTATION CHOICE — materialize-once-per-batch:
-	//
-	//   The SDK's tree.ComputeDirtyRoot walks the dirty paths (O(M
-	//   log N) per batch) but requires a node cache warm with respect
-	//   to priorRoot. With PostgresNodeCache on a cold or sparse
-	//   smt_nodes table, every clean-sibling lookup is a PG roundtrip
-	//   — at ~256 lookups per dirty leaf × 100µs each, a 500-leaf
-	//   batch takes >10s before it can commit. The soak's 6-second
-	//   drain window saw only 3 leaves land before timeout.
-	//
-	//   Materializing the live leaf set (PostgresLeafStore.All +
-	//   in-memory tree.Root) is O(N) where N = total live leaves.
-	//   For the moderate-scale targets that drive this branch
-	//   (≤ 10⁷ leaves) it's strictly faster than the warm-cache walk
-	//   AND doesn't depend on cache warmth surviving across batches.
-	//   Above 10⁷ leaves the cost crosses a few hundred ms per batch;
-	//   Item 11 in docs/production_readiness.md tracks the sharded /
-	//   partitioned SMT design needed beyond that.
-	//
-	//   Net result: /v1/smt/root is O(1) (this is the production win);
-	//   the per-batch builder cost moves from O(N) handler-side to
-	//   O(N) builder-side, where it's amortized over far fewer events
-	//   (batch commits) than HTTP requests.
-	var newRoot [32]byte
+	// The overlay's PostgresNodeStore captured every dirty node along
+	// the insert paths; we extract those below and persist them in the
+	// same atomic transaction as the leaves, the root, and the cursor.
+	newRoot := result.NewRoot
 	var maxBatchSeq uint64
-	if bl.rootStore != nil {
-		// Snapshot the live leaf set, then overlay this batch's
-		// mutations. Computing root on top of this combined view
-		// produces the post-commit root.
-		liveLeaves, err := bl.leafStore.MaterializeToInMemory(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("materialize for root: %w", err)
-		}
-		for _, mut := range result.Mutations {
-			leaf := types.SMTLeaf{
-				Key:          mut.LeafKey,
-				OriginTip:    mut.NewOriginTip,
-				AuthorityTip: mut.NewAuthorityTip,
-			}
-			if setErr := liveLeaves.Set(ctx, mut.LeafKey, leaf); setErr != nil {
-				return 0, fmt.Errorf("overlay mutation for root: %w", setErr)
-			}
-		}
-		rootTree := smt.NewTree(liveLeaves, smt.NewInMemoryNodeCache())
-		newRoot, err = rootTree.Root(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("compute root via materialization: %w", err)
-		}
-
-		// Track the highest seq this batch reflects for the root's
-		// committed_through_seq column.
-		for _, s := range seqs {
-			if s > maxBatchSeq {
-				maxBatchSeq = s
-			}
+	for _, s := range seqs {
+		if s > maxBatchSeq {
+			maxBatchSeq = s
 		}
 	}
+
+	// Snapshot the overlay's node mutations BEFORE entering the
+	// atomic transaction. Iterating overlay.Mutations() returns a
+	// copy keyed by node hash — every entry must be PutTx'd or the
+	// committed root will reference a node that doesn't exist on
+	// disk, breaking every subsequent proof.
+	dirtyNodes := overlayNodes.Mutations()
 
 	// ── Step 8: Atomic commit ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
@@ -571,6 +544,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
+		// Leaves first — every mutation produced by ProcessBatch
+		// becomes a row in smt_leaves under the tx.
 		for _, mut := range result.Mutations {
 			leaf := types.SMTLeaf{
 				Key:          mut.LeafKey,
@@ -582,11 +557,20 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			}
 		}
 
-		// Persist the new SMT root in the same atomic transaction as
-		// the leaves so readers never see a {root, leaves} mismatch.
-		// nodeCacheMutations / SetWithDepthTx are intentionally NOT
-		// used here — see Step 8a's comment for why materialize-once
-		// replaces the incremental ComputeDirtyRoot walk.
+		// Nodes second — every dirty Jellyfish node captured by the
+		// overlay during ProcessBatch is INSERT ON CONFLICT DO NOTHING
+		// into jellyfish_nodes. Content-addressed storage means
+		// duplicates (same hash, same payload) are no-ops; the
+		// transaction is bounded by the number of unique new nodes
+		// (~33 per leaf at N=10^10, well within PG's per-tx budget).
+		for _, node := range dirtyNodes {
+			if _, putErr := bl.nodeStore.PutTx(ctx, tx, node); putErr != nil {
+				return fmt.Errorf("put node: %w", putErr)
+			}
+		}
+
+		// New root atomic with leaves + nodes so readers never see a
+		// {root, store} mismatch.
 		if bl.rootStore != nil {
 			if rErr := bl.rootStore.SetTx(ctx, tx, newRoot, maxBatchSeq); rErr != nil {
 				return fmt.Errorf("set smt root state: %w", rErr)
@@ -608,6 +592,12 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	if commitErr != nil {
 		return 0, fmt.Errorf("atomic commit: %w", commitErr)
 	}
+
+	// Advance the read-side tree's rootHash to match the persisted
+	// state. API handlers reading from bl.tree now observe the new
+	// root. (The handler's Tree shares the same PostgresNodeStore and
+	// PostgresLeafStore; SetRoot is the in-memory cursor.)
+	bl.tree.SetRoot(newRoot)
 
 	// ──────────────────────────────────────────────────────────────────
 	// POST-COMMIT: best-effort publishing. Failure here doesn't roll

@@ -156,7 +156,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	reader := opbuilder.NewCursorReader(sequenceCursor)
 	treeHeadStore := store.NewTreeHeadStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
+	nodeCache := store.NewPostgresNodeStore(ctx, pool, 10000)
 	tree := smt.NewTree(leafStore, nodeCache)
 	commitmentStore := store.NewCommitmentStore(pool)
 

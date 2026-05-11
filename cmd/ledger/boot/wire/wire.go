@@ -227,7 +227,7 @@ func composeStores(ctx context.Context, cfg Config, d *deps.AppDeps) *tessera.Te
 	if cacheSize <= 0 {
 		cacheSize = 4096
 	}
-	d.NodeCache = store.NewPostgresNodeCache(ctx, pool, cacheSize)
+	d.NodeStore = store.NewPostgresNodeStore(ctx, pool, cacheSize)
 	d.TreeHeadStore = store.NewTreeHeadStore(pool)
 
 	return tessera.NewTesseraAdapter(ctx, d.TesseraEmbedded, d.TileReader, d.Logger)
@@ -252,7 +252,7 @@ func composeBuilderLoop(
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, d.Logger)
 	sequenceCursor := store.NewSequenceCursor(pool)
 	reader := builder.NewCursorReader(sequenceCursor)
-	tree := smt.NewTree(d.LeafStore, d.NodeCache)
+	tree := smt.NewTree(d.LeafStore, d.NodeStore)
 
 	buffer, loadErr := bufferStore.Load(ctx)
 	if loadErr != nil {
@@ -284,7 +284,7 @@ func composeBuilderLoop(
 	loopCfg.DeltaWindow = cfg.DeltaWindow
 
 	bl := builder.NewBuilderLoop(
-		loopCfg, pool, tree, d.LeafStore, d.NodeCache,
+		loopCfg, pool, tree, d.LeafStore, d.NodeStore,
 		reader, fetcher,
 		nil, // schema resolver — nil tolerated by SDK builder.
 		buffer, bufferStore,
@@ -371,7 +371,7 @@ func composeHandlers(
 		BLSQuorumVerifier:  blsQuorumVerifier,
 	}
 
-	tree := smt.NewTree(d.LeafStore, d.NodeCache)
+	tree := smt.NewTree(d.LeafStore, d.NodeStore)
 	queryDeps := &api.QueryDeps{
 		EntryStore:     d.EntryStore,
 		QueryAPI:       queryAPI,

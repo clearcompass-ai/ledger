@@ -411,7 +411,7 @@ type testHarness struct {
 
 func newHarness() *testHarness {
 	return &testHarness{
-		tree:    smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeCache()),
+		tree:    smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore()),
 		fetcher: newMockFetcher(),
 		buffer:  builder.NewDeltaWindowBuffer(10),
 	}
@@ -539,7 +539,7 @@ func generateEntries(t *testing.T, n int) ([]*envelope.Entry, []types.LogPositio
 // runSDKBuilder runs ProcessBatch against a fresh in-memory tree.
 func runSDKBuilder(t *testing.T, entries []*envelope.Entry, positions []types.LogPosition) *builder.BatchResult {
 	t.Helper()
-	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeCache())
+	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	f := newMockFetcher()
 	for i, e := range entries {
 		f.storeEntry(positions[i], e)

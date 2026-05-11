@@ -142,11 +142,26 @@ func run(logger *slog.Logger) error {
 	)
 
 	// ── SMT (read-only) ────────────────────────────────────────────────
+	//
+	// V0.3.0: PostgresNodeStore replaces the old PostgresNodeCache.
+	// The store is content-addressed; the LRU is the load-bearing
+	// circuit breaker for the read path. Seed the tree's rootHash
+	// from smt_root_state so handlers don't observe EmptyHash before
+	// the first batch lands.
 	leafStore := store.NewPostgresLeafStore(pool.DB)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool.DB, cfg.SMTCacheSize)
-	tree := smt.NewTree(leafStore, nodeCache)
-	if err := nodeCache.WarmCache(ctx, cfg.WarmTopLevels); err != nil {
-		logger.Warn("cache warm failed (non-fatal)", "error", err)
+	nodeStore := store.NewPostgresNodeStore(ctx, pool.DB, cfg.SMTCacheSize)
+	tree := smt.NewTree(leafStore, nodeStore)
+	rootStateStore := store.NewSMTRootStateStore(pool.DB)
+	if rs, rsErr := rootStateStore.Read(ctx); rsErr == nil {
+		tree.SetRoot(rs.CurrentRoot)
+	} else {
+		logger.Warn("smt_root_state read failed; tree starts at EmptyHash", "error", rsErr)
+	}
+	// Pre-load the LRU with the most-recent jellyfish_nodes rows so
+	// the first wave of HTTP /v1/smt/proof requests doesn't pay a
+	// full cold-cache penalty per ancestor lookup.
+	if err := nodeStore.WarmFromRecent(ctx, cfg.SMTCacheSize/2); err != nil {
+		logger.Warn("node store warm failed (non-fatal)", "error", err)
 	}
 
 	// ── Stores ─────────────────────────────────────────────────────────

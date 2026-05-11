@@ -58,7 +58,7 @@ func TestP4_Integrity_SMT_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 1024)
+	nodeCache := store.NewPostgresNodeStore(ctx, pool, 1024)
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	if _, err := pool.Exec(ctx, `DELETE FROM smt_leaves`); err != nil {
@@ -109,7 +109,7 @@ func TestP4_Integrity_SMT_RootChangesOnDistinctSet(t *testing.T) {
 	ctx := context.Background()
 
 	leafStore := smt.NewInMemoryLeafStore()
-	nodeCache := smt.NewInMemoryNodeCache()
+	nodeCache := smt.NewInMemoryNodeStore()
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	key1 := [32]byte{0x11}
@@ -166,7 +166,7 @@ func TestP4_Integrity_SMT_MembershipProofVerifies(t *testing.T) {
 	ctx := context.Background()
 
 	leafStore := smt.NewInMemoryLeafStore()
-	nodeCache := smt.NewInMemoryNodeCache()
+	nodeCache := smt.NewInMemoryNodeStore()
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	keys := [][32]byte{

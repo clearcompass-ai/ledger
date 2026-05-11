@@ -412,7 +412,7 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	// reader, computes mutations via SDK ProcessBatch, applies them
 	// to the SMT, and commits in a single PG transaction.
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
+	nodeCache := store.NewPostgresNodeStore(ctx, pool, 10000)
 	smtTree := smt.NewTree(leafStore, nodeCache)
 	cursorReader := opbuilder.NewCursorReader(sequenceCursor)
 	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)

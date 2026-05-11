@@ -214,9 +214,18 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 	}
 	entryStore := store.NewEntryStore(deps.Pool)
 	leafStore := store.NewPostgresLeafStore(deps.Pool)
+	nodeStore := store.NewPostgresNodeStore(ctx, deps.Pool, 0) // 0 → default 1M-entry LRU
 	rootStore := store.NewSMTRootStateStore(deps.Pool)
 	cursorStore := store.NewSequenceCursor(deps.Pool)
 	deltaBuffer := sdkbuilder.NewDeltaWindowBuffer(10)
+
+	// Persistent rebuild-time tree. Per-batch overlays wrap this so
+	// pre-commit failures don't leak. After each batch's atomic
+	// commit we advance the persistent tree's rootHash via SetRoot
+	// so the next batch builds on the committed state.
+	mainTree := smt.NewTree(leafStore, nodeStore)
+	currentRoot := smt.EmptyHash
+	mainTree.SetRoot(currentRoot)
 
 	// ── Step 3: Walk seqs 0..treeSize-1 in batches; ProcessBatch
 	//            per chunk; persist atomically; advance cursor.
@@ -235,23 +244,28 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 			return Stats{}, fmt.Errorf("rebuild: read batch [%d, %d): %w", batchStart, batchEnd, err)
 		}
 
-		// Process the batch through the SDK using an in-memory
-		// SMT tree backed by an OverlayLeafStore over the (so
-		// far) rebuilt PostgresLeafStore. The overlay lets the
-		// SDK see this batch's mutations + the prior batches'
-		// committed leaves, so cross-batch PathA/B/C references
-		// resolve correctly.
-		overlay := smt.NewOverlayLeafStore(leafStore)
-		tree := smt.NewTree(overlay, smt.NewInMemoryNodeCache())
-		result, err := sdkbuilder.ProcessBatch(ctx, tree,
+		// Per-batch overlay tree wrapped over the persistent
+		// leafStore + nodeStore. The overlay captures every leaf and
+		// every dirty Jellyfish node ProcessBatch produces;
+		// pre-commit failures (PG error etc.) discard the overlays
+		// and leave the persistent stores untouched. On commit
+		// success we extract the overlay mutations and persist them
+		// in the same atomic transaction as entry_index + cursor.
+		overlayLeaves := smt.NewOverlayLeafStore(leafStore)
+		overlayNodes := smt.NewOverlayNodeStore(nodeStore)
+		overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
+		overlayTree.SetRoot(currentRoot)
+
+		result, err := sdkbuilder.ProcessBatch(ctx, overlayTree,
 			entries, positions, fetcher, nil, deps.LogDID, deltaBuffer)
 		if err != nil {
 			return Stats{}, fmt.Errorf("rebuild: ProcessBatch [%d, %d): %w", batchStart, batchEnd, err)
 		}
 
-		// Atomic commit: entry_index inserts + smt_leaves
-		// inserts + cursor advance. Mirrors builder/loop.go's
-		// commit shape.
+		dirtyNodes := overlayNodes.Mutations()
+
+		// Atomic commit: entry_index + smt_leaves + jellyfish_nodes
+		// + cursor advance. Same atomicity shape as builder/loop.go.
 		commitErr := store.WithSerializableTx(ctx, deps.Pool, func(ctx context.Context, tx pgx.Tx) error {
 			for _, row := range rows {
 				if iErr := entryStore.Insert(ctx, tx, row); iErr != nil {
@@ -268,6 +282,11 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 					return fmt.Errorf("smt_leaves set %x: %w", mut.LeafKey[:8], lErr)
 				}
 			}
+			for _, node := range dirtyNodes {
+				if _, pErr := nodeStore.PutTx(ctx, tx, node); pErr != nil {
+					return fmt.Errorf("jellyfish_nodes put: %w", pErr)
+				}
+			}
 			// builder_cursor advances to batchEnd-1: the
 			// highest sequence we just committed.
 			return cursorStore.AdvanceTx(ctx, tx, batchEnd-1)
@@ -275,6 +294,11 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 		if commitErr != nil {
 			return Stats{}, fmt.Errorf("rebuild: atomic commit [%d, %d): %w", batchStart, batchEnd, commitErr)
 		}
+
+		// Advance the persistent tree's rootHash so the next batch
+		// starts from the just-committed state.
+		currentRoot = result.NewRoot
+		mainTree.SetRoot(currentRoot)
 		if result.UpdatedBuffer != nil {
 			deltaBuffer = result.UpdatedBuffer
 		}
@@ -288,26 +312,21 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 		)
 	}
 
-	// ── Step 4: Compute the final SMT root from all committed
-	//            leaves and persist to smt_root_state. The live
-	//            builder maintains this incrementally per batch;
-	//            the rebuild materializes once at the end (the
-	//            mathematical result is identical).
-	liveLeaves, err := leafStore.MaterializeToInMemory(ctx)
-	if err != nil {
-		return Stats{}, fmt.Errorf("rebuild: materialize final tree: %w", err)
-	}
-	finalTree := smt.NewTree(liveLeaves, smt.NewInMemoryNodeCache())
-	finalRoot, err := finalTree.Root(ctx)
-	if err != nil {
-		return Stats{}, fmt.Errorf("rebuild: compute final root: %w", err)
-	}
+	// ── Step 4: Persist the final SMT root to smt_root_state.
+	//
+	// currentRoot already IS the post-final-batch root — every batch
+	// commit above advanced it via mainTree.SetRoot. No separate
+	// materialisation pass needed; the v0.3.0 Jellyfish tree
+	// maintains the root incrementally and the per-batch atomic
+	// commits already persisted every node it references.
+	finalRoot := currentRoot
 	commitErr := store.WithSerializableTx(ctx, deps.Pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rootStore.SetTx(ctx, tx, finalRoot, treeSize-1)
 	})
 	if commitErr != nil {
 		return Stats{}, fmt.Errorf("rebuild: persist smt_root_state: %w", commitErr)
 	}
+	_ = mainTree // kept for future expansion (e.g. rebuild-time read endpoints)
 
 	return Stats{
 		TreeSize:         treeSize,
