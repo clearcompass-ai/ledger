@@ -39,9 +39,13 @@ package tessera
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+
+	"github.com/transparency-dev/tessera/api/layout"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -101,6 +105,55 @@ func (tr *TileReader) ReadTile(ctx context.Context, level, index uint64) ([]byte
 func (tr *TileReader) ReadEntryTile(ctx context.Context, index uint64) ([]byte, error) {
 	path := EntryTilePath(index)
 	return tr.readCached(ctx, path)
+}
+
+// Fetch implements tessera/client.TileFetcherFunc — reads a hash tile
+// (level, index) with partial-tile fallback semantics required by the
+// tlog-tiles client contract:
+//
+//   - If p > 0, attempt the partial-tile path tile/{L}/{N}.p/{p} first.
+//   - Fall back to the full-tile path tile/{L}/{N} on os.ErrNotExist.
+//
+// The fallback is required because tessera's POSIX storage driver writes
+// frontier tiles as ".p/N" partial files until they fill up; once a tile
+// is full (256 hashes) the .p/N path is replaced atomically with the
+// full-tile path. Callers that always request full tiles miss the
+// frontier and cannot generate proofs that touch the rightmost subtree.
+//
+// Cache keys are full paths, so partial tiles at different widths each
+// get distinct cache entries — safe because the contents at a given
+// (level, index, p) are immutable.
+func (tr *TileReader) Fetch(ctx context.Context, level, index uint64, p uint8) ([]byte, error) {
+	if p > 0 {
+		partialPath := layout.TilePath(level, index, p)
+		data, err := tr.readCached(ctx, partialPath)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return tr.readCached(ctx, layout.TilePath(level, index, 0))
+}
+
+// FetchEntryBundle implements tessera/client.EntryBundleFetcherFunc —
+// reads an entry bundle tile with the same partial-fallback semantics
+// as Fetch (above). Currently unused by proof generation (which only
+// reads hash tiles) but provided for callers that hydrate entry data
+// via the canonical tessera/client APIs.
+func (tr *TileReader) FetchEntryBundle(ctx context.Context, index uint64, p uint8) ([]byte, error) {
+	if p > 0 {
+		partialPath := layout.EntriesPath(index, p)
+		data, err := tr.readCached(ctx, partialPath)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return tr.readCached(ctx, layout.EntriesPath(index, 0))
 }
 
 // readCached is the shared cache-through read path.
