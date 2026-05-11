@@ -168,9 +168,17 @@ func Allocate(ctx context.Context, cfg Config, signers SignerLoader, fatal chan 
 		{"postgres", func() error { return allocatePostgres(ctx, cfg, fatal, d) }},
 		{"wal", func() error { return allocateWAL(cfg, d) }},
 		{"bytestore", func() error { return allocateBytestore(ctx, cfg, d) }},
+		// Antispam MUST be allocated BEFORE tessera so the appender
+		// can be constructed with d.Antispam wired into
+		// AppenderOptions.Antispam. Without that wiring, both the
+		// sequencer (sequencer/loop.go:238) and the builder loop
+		// (builder/loop.go:402) call AppendLeaf for the same content
+		// hash and get DISTINCT seqs back — the WAL seqIndex ends up
+		// sparse and the shipper's hwmAdvancer stalls on the first
+		// gap. Reproducer: tessera/antispam_off_reproducer_test.go.
+		{"antispam", func() error { return allocateAntispam(ctx, cfg, d) }},
 		{"tessera", func() error { return allocateTessera(ctx, cfg, signers, d) }},
 		{"signers", func() error { return allocateSigners(cfg, signers, d) }},
-		{"antispam", func() error { return allocateAntispam(ctx, cfg, d) }},
 		{"gossip-store", func() error { return allocateGossipStore(cfg, d) }},
 	}
 
@@ -398,10 +406,16 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	// runs the closer BEFORE the deferred cancel() so the
 	// integration loop is still alive when Shutdown polls — that
 	// ordering is what guarantees pending IndexFutures resolve.
+	// Antispam wired iff d.Antispam was allocated (allocateAntispam
+	// runs BEFORE allocateTessera in the Allocate orchestrator).
+	// Required to dedup duplicate AppendLeaf calls from the sequencer
+	// + builder; absent that dedup the WAL seqIndex is sparse and
+	// Shipper.hwmAdvancer stalls. See tessera/antispam_off_reproducer_test.go.
 	embedded, err := tessera.NewEmbeddedAppender(ctx, driver, tessera.AppenderOptions{
 		Origin:               origin,
 		Signer:               signer,
 		PublicCheckpointPath: filepath.Join(cfg.TesseraStorageDir, "cosigned-checkpoint"),
+		Antispam:             d.Antispam,
 	}, d.Logger)
 	if err != nil {
 		return fmt.Errorf("embedded appender: %w", err)

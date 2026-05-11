@@ -39,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	uptessera "github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
+	tposixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
 
@@ -122,6 +123,27 @@ func newWitnessedTestHarnessN(
 	_ = uptessera.Driver(driver)
 
 	publicCheckpointPath := filepath.Join(tileRoot, "cosigned-checkpoint")
+
+	// ANTISPAM (dedup) — load-bearing for the sequencer + builder
+	// architecture. Both the sequencer (sequencer/loop.go:238) AND
+	// the builder loop (builder/loop.go:402) call merkle.AppendLeaf
+	// for the same content hash. With antispam OFF, Tessera assigns
+	// each call a DISTINCT seq, the WAL's seqIndex is sparse (only
+	// sequencer-side seqs), and the shipper's hwmAdvancer's
+	// contiguous-run invariant stalls at the first gap.
+	//
+	// Reproducer: tessera/antispam_off_reproducer_test.go shows two
+	// concurrent AppendLeaf streams over 20 duplicate hashes get
+	// 40 distinct seqs and 18+ gaps in either side's sequence space.
+	//
+	// Antispam path is a tmpdir directory; AntispamOpts{} keeps the
+	// upstream defaults (cache size, retention).
+	antispamPath := filepath.Join(tileRoot, "antispam")
+	antispam, err := tposixantispam.NewAntispam(ctx, antispamPath, tposixantispam.AntispamOpts{})
+	if err != nil {
+		t.Fatalf("witnessed harness: tposixantispam.NewAntispam(%s): %v", antispamPath, err)
+	}
+
 	// CTX LIFETIME: Tessera's background goroutines listen to ctx
 	// for termination. The t.Cleanup below calls embedded.Close
 	// BEFORE the test ctx fires (the close uses a fresh shutdownCtx
@@ -136,6 +158,7 @@ func newWitnessedTestHarnessN(
 		BatchSize:            4,
 		BatchMaxAge:          50 * time.Millisecond,
 		PublicCheckpointPath: publicCheckpointPath,
+		Antispam:             antispam,
 	}, logger)
 	if err != nil {
 		t.Fatalf("witnessed harness: NewEmbeddedAppender: %v", err)
