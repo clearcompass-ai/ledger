@@ -107,7 +107,7 @@ func main() {
 		batchSize         = flag.Int("batch-size", 1000, "builder batch size")
 		pollInterval      = flag.Duration("poll-interval", 10*time.Millisecond, "queue poll interval")
 		idleShutdownAfter = flag.Duration("idle-shutdown-after", 30*time.Second, "exit cleanly after this much idle time")
-		nodeCacheSize     = flag.Int("node-cache-size", 100_000, "SMT node cache max size")
+		nodeStoreSize     = flag.Int("node-cache-size", 100_000, "SMT node cache max size")
 		deltaWindow       = flag.Int("delta-window", 10, "delta buffer window size (match production)")
 	)
 	flag.Parse()
@@ -145,7 +145,7 @@ func main() {
 
 	// ── Stores ────────────────────────────────────────────────────────
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, *nodeCacheSize)
+	nodeStore := store.NewPostgresNodeStore(ctx, pool, *nodeStoreSize)
 
 	// CRITICAL: In production, replace NewInMemoryEntryStore with your
 	// persistent byte store implementation. The rebuild loop reads entry
@@ -204,7 +204,7 @@ func main() {
 		buffer = sdkbuilder.NewDeltaWindowBuffer(*deltaWindow)
 	}
 	reader := builder.NewCursorReader(store.NewSequenceCursor(pool))
-	tree := smt.NewTree(leafStore, nodeCache)
+	tree := smt.NewTree(leafStore, nodeStore)
 
 	bl := builder.NewBuilderLoop(
 		builder.LoopConfig{
@@ -213,7 +213,7 @@ func main() {
 			PollInterval: *pollInterval,
 			DeltaWindow:  *deltaWindow,
 		},
-		pool, tree, leafStore, nodeCache,
+		pool, tree, leafStore, nodeStore,
 		reader, fetcher,
 		nil, // schema resolver
 		buffer, bufferStore,

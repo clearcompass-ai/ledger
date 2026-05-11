@@ -164,7 +164,7 @@ type AppDeps struct {
 	CreditStore     *store.CreditStore
 	CommitStore     *store.CommitmentStore
 	LeafStore       *store.PostgresLeafStore
-	NodeCache       *store.PostgresNodeCache
+	NodeStore       *store.PostgresNodeStore
 	TreeHeadStore   *store.TreeHeadStore
 	DiffController  *middleware.DifficultyController
 	BuilderLoop     *builder.BuilderLoop

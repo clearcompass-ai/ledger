@@ -322,7 +322,7 @@ func TestScale_BuilderThroughput(t *testing.T) {
 
 	// Wire up builder using cursor-mode reader.
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 100_000)
+	nodeCache := store.NewPostgresNodeStore(ctx, pool, 100_000)
 	tree := smt.NewTree(leafStore, nodeCache)
 	fetcher := store.NewPostgresEntryFetcher(pool, entryBytes, testLogDID)
 	sequenceCursor := store.NewSequenceCursor(pool)
@@ -457,7 +457,7 @@ func TestScale_SDKProcessBatch(t *testing.T) {
 		if bs > N {
 			continue
 		}
-		treeCopy := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeCache())
+		treeCopy := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 		bufCopy := sdkbuilder.NewDeltaWindowBuffer(10)
 
 		t.Logf("  starting batch_size=%d (%d iterations)...", bs, (N+bs-1)/bs)

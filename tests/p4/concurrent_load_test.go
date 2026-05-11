@@ -230,7 +230,7 @@ func TestP4_ConcurrentLoad_RootStableUnderConcurrentBenignWrites(t *testing.T) {
 	}
 
 	leafStore := store.NewPostgresLeafStore(pool)
-	nodeCache := store.NewPostgresNodeCache(ctx, pool, 1024)
+	nodeCache := store.NewPostgresNodeStore(ctx, pool, 1024)
 	tree := smt.NewTree(leafStore, nodeCache)
 
 	key := [32]byte{0xBE, 0xEF}

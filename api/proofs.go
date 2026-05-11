@@ -1,33 +1,31 @@
 /*
 FILE PATH: api/proofs.go
 
-SMT proof endpoints. Single membership/non-membership proofs, batch
-multiproofs with SDK-D13 canonical ordering, and current root query.
+SMT proof endpoints under attesta v0.3.0 (Jellyfish/Patricia trie).
+Single membership/non-membership proofs, batch multiproofs, and
+current-root query.
 
-KEY ARCHITECTURAL DECISIONS:
-  - Proof generation uses sdk smt.Tree (shared with builder — callers
-    should be aware of concurrent mutations; snapshot isolation is
-    recommended for production via read-replica or tree snapshot).
-  - Batch proof uses SDK-D13 canonical key ordering.
-  - Root endpoint includes leaf count for monitoring.
+# V0.3.0 ARCHITECTURE
 
-POSTGRES-BACKED-STORE COMPATIBILITY:
+The handlers operate against a shared smt.Tree whose internal rootHash
+is advanced by the builder loop after each atomic commit. The tree's
+LeafStore is a PostgresLeafStore; its NodeStore is a PostgresNodeStore
+with a hot LRU. Both are content-addressed and concurrent-read-safe.
+Proof generation walks the trie through the NodeStore directly — no
+materialisation, no per-request O(N) snapshot.
 
-	The SDK's Tree.Root and Tree.GenerateMembershipProof rely on
-	collectLeafHashes (attesta/core/smt/tree.go), which only supports
-	*smt.InMemoryLeafStore and *smt.OverlayLeafStore via a typed
-	switch. PostgresLeafStore lands in the default arm and Tree.Root
-	short-circuits to defaultHashes[TreeDepth] — the empty-tree root —
-	regardless of how many leaves are committed.
+The "Materializable" interface and "liveTree" indirection used in
+v0.2.0 are GONE. Their entire purpose was to work around the v0.2.0
+SDK's collectLeafHashes type-switch that short-circuited Tree.Root for
+PostgresLeafStore. v0.3.0 fixes that at the SDK level; the workaround
+is technical debt.
 
-	When deps.LeafStore implements the Materializable interface
-	(PostgresLeafStore satisfies it via MaterializeToInMemory), the
-	handlers below build an ephemeral in-memory tree on each call so
-	Root/Proof compute against the actual leaf set. O(N) per call;
-	acceptable for moderate-scale soaks and dev, NOT for 10B-leaf
-	production deployments — see Item 11 in
-	docs/production_readiness.md for the incremental-root work that
-	makes the production path scalable.
+# CONCURRENCY
+
+The shared tree.Root reads under the SDK's internal mutex; per-request
+reads (Get/GetLeaf/GenerateMembershipProof/etc.) are safe concurrent
+with the builder's writes (the single writer holds the same mutex for
+the rootHash advance + SetRoot call).
 */
 package api
 
@@ -44,55 +42,37 @@ import (
 	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
-// Materializable is implemented by LeafStores that can produce an
-// SDK-compatible in-memory snapshot. PostgresLeafStore satisfies it
-// (see store/smt_state.go). Pure in-memory stores do NOT need to
-// implement it — the SDK already handles those natively.
-type Materializable interface {
-	MaterializeToInMemory(ctx context.Context) (*smt.InMemoryLeafStore, error)
-}
-
 // SMTRootReader reads the authoritative current SMT root. The
 // production wiring (store.SMTRootStateStore) satisfies this; tests
-// can inject fakes. nil = handler falls back to materialization.
+// can inject fakes. When nil, /v1/smt/root falls back to tree.Root.
 type SMTRootReader interface {
 	ReadRoot(ctx context.Context) ([32]byte, error)
 }
 
 // SMTDeps holds dependencies for SMT proof handlers.
+//
+// Tree is the SDK's v0.3.0 smt.Tree, shared with the builder loop.
+// LeafStore is the same store the tree wraps — exposed here for the
+// Count() call on /v1/smt/root. RootState, when set, satisfies the
+// O(1) root read; production wiring always sets it.
 type SMTDeps struct {
 	Tree      *smt.Tree
 	LeafStore smt.LeafStore
-	// RootState is OPTIONAL. When set, /v1/smt/root reads from it
-	// (O(1)) instead of falling back to leaf materialization (O(N)
-	// per request). The production wiring passes
-	// store.NewSMTRootStateStore(pool) here; the builder
-	// (builder/loop.go) keeps the row up to date.
 	RootState SMTRootReader
 	Logger    *slog.Logger
 }
 
-// liveTree returns the tree to use for Root / Proof in this request.
-// For Materializable backings (PostgresLeafStore) it builds a fresh
-// in-memory tree from the current PG snapshot; otherwise it returns
-// the configured tree directly. The returned tree's lifetime is the
-// caller's HTTP request — no caching.
-func (d *SMTDeps) liveTree(ctx context.Context) (*smt.Tree, error) {
-	m, ok := d.LeafStore.(Materializable)
-	if !ok {
-		return d.Tree, nil
-	}
-	mem, err := m.MaterializeToInMemory(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Fresh in-memory node cache so we don't pollute the shared one
-	// with materialized-from-PG node hashes that may not survive PG
-	// state changes (concurrent builder commits).
-	return smt.NewTree(mem, smt.NewInMemoryNodeCache()), nil
-}
-
 // NewSMTProofHandler creates GET /v1/smt/proof/{key}.
+//
+// Behaviour:
+//   - leaf present at key  → membership proof (TerminalKind = leaf,
+//     TerminalLeaf.Key == key)
+//   - leaf absent          → non-membership proof (TerminalKind one of
+//     leaf-blocking / branch-mismatch / empty)
+//
+// The response shape is {"type": "membership"|"non_membership",
+// "proof": types.SMTProof}. The Jellyfish-shape SMTProof's exported
+// fields marshal directly via encoding/json.
 func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -107,17 +87,9 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 		var key [32]byte
 		copy(key[:], keyBytes)
 
-		tree, err := deps.liveTree(ctx)
-		if err != nil {
-			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
-				http.StatusInternalServerError, "tree materialization failed")
-			deps.Logger.Error("smt proof: liveTree", "error", err)
-			return
-		}
-
-		leaf, _ := tree.GetLeaf(ctx, key)
+		leaf, _ := deps.Tree.GetLeaf(ctx, key)
 		if leaf != nil {
-			proof, pErr := tree.GenerateMembershipProof(ctx, key)
+			proof, pErr := deps.Tree.GenerateMembershipProof(ctx, key)
 			if pErr != nil {
 				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 					http.StatusInternalServerError, "proof generation failed")
@@ -132,7 +104,7 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 			return
 		}
 
-		proof, err := tree.GenerateNonMembershipProof(ctx, key)
+		proof, err := deps.Tree.GenerateNonMembershipProof(ctx, key)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "non-membership proof failed")
@@ -148,6 +120,11 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 }
 
 // NewSMTBatchProofHandler creates POST /v1/smt/batch_proof.
+//
+// Body: {"keys": ["<hex>", ...]}, up to 1000 keys per request.
+// Response: types.BatchProof with deduplicated SMTNodes covering
+// every key's path from the SMT root. Verifier-side use:
+// smt.VerifyBatchProof(proof, root).
 func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -183,15 +160,7 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 			copy(keys[i][:], kb)
 		}
 
-		tree, err := deps.liveTree(ctx)
-		if err != nil {
-			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
-				http.StatusInternalServerError, "tree materialization failed")
-			deps.Logger.Error("smt batch proof: liveTree", "error", err)
-			return
-		}
-
-		proof, err := tree.GenerateBatchProof(ctx, keys)
+		proof, err := deps.Tree.GenerateBatchProof(ctx, keys)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "batch proof generation failed")
@@ -204,11 +173,13 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 	}
 }
 
-// NewSMTRootHandler creates GET /v1/smt/root. Reads the
-// authoritative root from deps.RootState when wired (O(1));
-// falls back to per-request materialization when not (O(N)). The
-// production wiring at cmd/ledger/boot/wire/wire.go sets RootState
-// so this never hits the materialization path in production.
+// NewSMTRootHandler creates GET /v1/smt/root.
+//
+// Reads the authoritative root from deps.RootState (O(1)) when wired.
+// Production wiring always sets RootState. When not wired (test
+// fixtures), falls back to deps.Tree.Root which returns the tree's
+// cached rootHash — still O(1) and consistent with the builder's
+// in-memory state.
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -223,14 +194,7 @@ func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 			}
 			root = r
 		} else {
-			tree, err := deps.liveTree(ctx)
-			if err != nil {
-				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
-					http.StatusInternalServerError, "tree materialization failed")
-				deps.Logger.Error("smt root: liveTree", "error", err)
-				return
-			}
-			r, err := tree.Root(ctx)
+			r, err := deps.Tree.Root(ctx)
 			if err != nil {
 				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 					http.StatusInternalServerError, "root computation failed")

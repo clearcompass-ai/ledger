@@ -253,34 +253,36 @@ path within an explicit RTO budget.
   tree_head_sigs, witness_sets; RTO budget benchmarks at 1M / 10M /
   100M entries; sharded/streamed rebuild for 10⁹+ scale.
 
-### C3 — Sharded / paginated SMT for 10⁹+ scale 🟡 (urgent)
-- **Today:** SMT root is maintained via materialize-once-per-batch
-  (`builder/loop.go`, commit `0ea1328`). O(N) per batch where N =
-  total live leaves. At 10⁷ leaves this is ~100ms/batch; at 10⁹
-  it's >10s/batch — unworkable.
-- **EVIDENCE (100K soak, 2026-05-11):** after the dense-log path
-  drained (`verifyTreeIntegrity ✓ tree_size=100000 root=49ce4fb…
-  + 100/100 inclusion proofs verified`), the SMT builder loop was
-  STILL CATCHING UP: `verifySMTConsistency: leaf_count=51856 <
-  submitted=100000 after 10s budget`. The 10s poll budget would
-  need to be tens of minutes to allow materialize-once-per-batch
-  to catch up at 100K scale. At 10⁹ it's infeasible. **§C3 is
-  now load-bearing for any soak above ~10K entries.**
-- **Plan (load-bearing for 10B scale):**
-  1. Persist intermediate node hashes from `ComputeDirtyRoot` into
-     `smt_nodes` (already write-through), via a warm
-     `PostgresNodeCache`. Cache warmth on cold-start comes from
-     PG-fallthrough Get.
-  2. With the cache properly warm, `ComputeDirtyRoot` becomes
-     O(M log N) per batch (M = batch size, ~256× M cache reads).
-  3. /v1/smt/proof/{key} reads sibling hashes from `smt_nodes`
-     directly — O(log N), no leaf enumeration. Closes §B4.
-- **Why this isn't trivial:** cache-warmth correctness requires
-  every node touched during prior batches to be in PG. The
-  builder's atomic commit must promote intermediate nodes
-  transactionally — the first attempt (commit `ea8f451`, reverted)
-  showed the cold-cache PG-roundtrip bottleneck makes naive
-  implementations unusable. Needs careful design + benchmarks.
+### C3 — Jellyfish/Patricia SMT for 10⁹+ scale 🟢 (shipped, attesta v0.3.0)
+- **Today:** SMT root is maintained incrementally via the SDK's
+  Jellyfish/Patricia trie (`attesta v0.3.0`). The builder loop
+  wraps the persistent `PostgresLeafStore` + `PostgresNodeStore`
+  in overlays per batch, runs `ProcessBatch`, and atomically
+  commits the overlay's leaf + dirty-node mutations alongside the
+  new root and cursor advance. No materialisation step — each
+  batch writes only the O(log N) dirty nodes its path touches.
+- **EVIDENCE — SDK-level scaling tests (attesta `core/smt/jellyfish_scaling_test.go`,
+  measured at N=1024):**
+  - **NodeStore.Puts per batch:** 10 122 (vs depth-256's 262 144 → 26× reduction)
+  - **Average proof length:** 10.33 ancestor branches (vs depth-256's
+    fixed 256 → 25× shorter proofs)
+  - **Live node count:** exactly 2N-1 across N ∈ {1, 2, 3, 10, 50, 200, 1000}
+  - **Path-compression invariant** holds across sequential-low,
+    sequential-high, random key distributions
+- **Read path:** /v1/smt/proof/{key} walks the trie through
+  `PostgresNodeStore`'s 1M-entry LRU; deep-node misses fall through
+  to a single PG query. At N=10¹⁰ the average proof needs ~33
+  NodeStore.Get calls of which the top 20 levels (~1M nodes) are
+  LRU-resident — the bottleneck is bounded by the deep-node-miss
+  rate, not by the tree depth.
+- **Write path:** content-addressed `INSERT ON CONFLICT DO NOTHING`
+  into `jellyfish_nodes`; the v0.2.0 256-row UPSERT-per-leaf
+  pattern is gone. Per-batch write count scales as O(B log N).
+- **Storage:** at N=10¹⁰ the table holds ~20 B rows (~50 B/row +
+  index overhead ≈ ~3 TB), well within a single PG instance's
+  capacity. Structurally immortal (no `created_at` column);
+  pruning, if ever required, is mark-and-sweep from the live
+  tree heads, never time-based.
 
 ### C4 — Tile cache sizing ⬜
 - **SLO (proposed):** tile cache hit rate ≥ 99% under steady-state
