@@ -86,10 +86,20 @@ type Bytestore interface {
 // Config configures NewShipper.
 type Config struct {
 	// PollInterval bounds how often the scanner checks for new
-	// work when the worker channel drains. Default 1s.
+	// work when the worker channel drains. Default 100ms. The
+	// scanner does an immediate first scan at startup and then
+	// runs on this cadence; tighter PollInterval keeps the work
+	// channel full but adds Badger pressure from frequent
+	// IterateSequenced calls. 100ms × MaxInFlight×2 channel cap
+	// = SLOThroughputEntriesPerSec under a 1ms bytestore — see
+	// shipper/slo.go and the throughput SLO test for the math.
 	PollInterval time.Duration
 
-	// MaxInFlight bounds concurrent uploads. Default 4.
+	// MaxInFlight bounds concurrent uploads. Default 32. Sized so
+	// a real ~50ms-per-PUT S3 backend can sustain
+	// SLOThroughputEntriesPerSec via Little's Law (throughput =
+	// concurrency / latency ⇒ 500/0.05 = 10 concurrent, with
+	// headroom for tail latency and bytestore-side retries).
 	MaxInFlight int
 
 	// MaxAttempts caps per-entry retries. After this many failed
@@ -141,10 +151,10 @@ type Shipper struct {
 // defaults.
 func NewShipper(w WAL, bs Bytestore, cfg Config) *Shipper {
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 1 * time.Second
+		cfg.PollInterval = 100 * time.Millisecond
 	}
 	if cfg.MaxInFlight <= 0 {
-		cfg.MaxInFlight = 4
+		cfg.MaxInFlight = 32
 	}
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = 10
