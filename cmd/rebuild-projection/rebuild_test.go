@@ -182,6 +182,7 @@ func TestRebuild_DeterministicProjectionFromTiles(t *testing.T) {
 	resetProjectionTables(t, ctx, pool)
 	stats2, err := Rebuild(ctx, RebuildDeps{
 		TileDir:   tileDir,
+		Bytestore: bs,
 		Pool:      pool,
 		LogDID:    testRebuildLogDID,
 		BatchSize: 16,
