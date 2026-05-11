@@ -52,10 +52,23 @@ type Materializable interface {
 	MaterializeToInMemory(ctx context.Context) (*smt.InMemoryLeafStore, error)
 }
 
+// SMTRootReader reads the authoritative current SMT root. The
+// production wiring (store.SMTRootStateStore) satisfies this; tests
+// can inject fakes. nil = handler falls back to materialization.
+type SMTRootReader interface {
+	ReadRoot(ctx context.Context) ([32]byte, error)
+}
+
 // SMTDeps holds dependencies for SMT proof handlers.
 type SMTDeps struct {
 	Tree      *smt.Tree
 	LeafStore smt.LeafStore
+	// RootState is OPTIONAL. When set, /v1/smt/root reads from it
+	// (O(1)) instead of falling back to leaf materialization (O(N)
+	// per request). The production wiring passes
+	// store.NewSMTRootStateStore(pool) here; the builder
+	// (builder/loop.go) keeps the row up to date.
+	RootState SMTRootReader
 	Logger    *slog.Logger
 }
 
@@ -191,23 +204,40 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 	}
 }
 
-// NewSMTRootHandler creates GET /v1/smt/root.
+// NewSMTRootHandler creates GET /v1/smt/root. Reads the
+// authoritative root from deps.RootState when wired (O(1));
+// falls back to per-request materialization when not (O(N)). The
+// production wiring at cmd/ledger/boot/wire/wire.go sets RootState
+// so this never hits the materialization path in production.
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		tree, err := deps.liveTree(ctx)
-		if err != nil {
-			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
-				http.StatusInternalServerError, "tree materialization failed")
-			deps.Logger.Error("smt root: liveTree", "error", err)
-			return
-		}
-		root, err := tree.Root(ctx)
-		if err != nil {
-			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
-				http.StatusInternalServerError, "root computation failed")
-			deps.Logger.Error("smt root", "error", err)
-			return
+		var root [32]byte
+		if deps.RootState != nil {
+			r, err := deps.RootState.ReadRoot(ctx)
+			if err != nil {
+				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+					http.StatusInternalServerError, "root state read failed")
+				deps.Logger.Error("smt root: ReadRoot", "error", err)
+				return
+			}
+			root = r
+		} else {
+			tree, err := deps.liveTree(ctx)
+			if err != nil {
+				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+					http.StatusInternalServerError, "tree materialization failed")
+				deps.Logger.Error("smt root: liveTree", "error", err)
+				return
+			}
+			r, err := tree.Root(ctx)
+			if err != nil {
+				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+					http.StatusInternalServerError, "root computation failed")
+				deps.Logger.Error("smt root", "error", err)
+				return
+			}
+			root = r
 		}
 		leafCount, _ := deps.LeafStore.Count(ctx)
 		w.Header().Set("Content-Type", "application/json")

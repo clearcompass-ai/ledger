@@ -441,9 +441,11 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	// to produce a membership proof, which the workload's
 	// AuthorityPath=&AuthoritySameSigner setting guarantees by
 	// routing each entry through the SDK's NewLeaf path.
+	rootStateStore := store.NewSMTRootStateStore(pool)
 	smtDeps := &api.SMTDeps{
 		Tree:      smtTree,
 		LeafStore: leafStore,
+		RootState: rootStateStore,
 		Logger:    logger,
 	}
 
@@ -513,7 +515,7 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		loopCfg, pool, smtTree, leafStore, nodeCache,
 		cursorReader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
 		soakHarness.Adapter, soakHarness.Cosigner, logger,
-	)
+	).WithRootStore(rootStateStore)
 
 	go func() { _ = server.Serve(ln) }()
 	seqDone := make(chan struct{})
