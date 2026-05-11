@@ -66,7 +66,7 @@ func resetState(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		t.Fatalf("truncate entry_index: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`,
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`,
 	); err != nil {
 		t.Fatalf("reset builder_cursor: %v", err)
 	}
@@ -205,13 +205,14 @@ func TestCursorReader_CommitBatch_RollbackKeepsCursor(t *testing.T) {
 		t.Fatalf("expected rollback to propagate, got %v", gotErr)
 	}
 
-	// Cursor in the database stays at 0 — load-bearing crash safety.
+	// Cursor in the database stays at -1 (the reset value before the
+	// rolled-back AdvanceTx) — load-bearing crash safety.
 	got, err := cur.Read(ctx)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected cursor unchanged at 0 after rollback, got %d", got)
+	if got != -1 {
+		t.Errorf("expected cursor unchanged at -1 after rollback, got %d", got)
 	}
 
 	// CRITICAL — the next BeginBatch MUST return the SAME seqs the

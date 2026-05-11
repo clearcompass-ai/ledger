@@ -41,7 +41,7 @@ func resetCursorTestState(t *testing.T, ctx context.Context, c *SequenceCursor) 
 		t.Fatalf("truncate entry_index: %v", err)
 	}
 	if _, err := c.db.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`,
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`,
 	); err != nil {
 		t.Fatalf("reset builder_cursor: %v", err)
 	}
@@ -87,8 +87,8 @@ func TestSequenceCursor_Read_DefaultsToZeroAfterMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got != 0 {
-		t.Errorf("expected default cursor = 0, got %d", got)
+	if got != -1 {
+		t.Errorf("expected default cursor = -1 (v0.3.0 'no seqs processed yet' sentinel), got %d", got)
 	}
 }
 

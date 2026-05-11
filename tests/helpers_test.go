@@ -614,13 +614,13 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	// presence assumed by the cursor reader's Read make the table a
 	// fixed-shape state holder, not a queue. Reset its value instead.
 	//
-	// Without this reset, a previous test that successfully advanced
-	// builder_cursor leaks state into the next run: the builder reads
-	// the leftover cursor, calls Next(cursor, batchSize) which finds
-	// zero entries past it (entry_index was DELETED), and produces zero
-	// SMT mutations — so verifySMTConsistency reports leaf_count=0 and
-	// every membership-proof assertion fails with non_membership.
-	_, _ = pool.Exec(ctx, "UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1")
+	// Reset to -1 (the v0.3.0 "no sequences processed yet" sentinel).
+	// store/sequence_cursor.go::Next runs `WHERE seq > $1`; with
+	// cursor=0 the query excludes seq=0, dropping the first entry
+	// permanently — proved by dumpSMTDiagnostics in soak_test.go on
+	// the 100-entry run. Migration 0004 flips fresh installs to -1;
+	// cleanTables here mirrors that for tests that wipe and restart.
+	_, _ = pool.Exec(ctx, "UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1")
 	// smt_root_state is also a singleton — reset to the SDK's
 	// empty-tree root so the builder's incremental root computation
 	// starts from a clean baseline matching an empty smt_leaves +

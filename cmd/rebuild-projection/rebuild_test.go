@@ -381,8 +381,10 @@ func resetProjectionTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 			t.Fatalf("DELETE FROM %s: %v", table, err)
 		}
 	}
+	// Reset builder_cursor to -1 (v0.3.0 "no sequences processed yet"
+	// sentinel — see store/sequence_cursor.go and migration 0004).
 	if _, err := pool.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1`,
+		`UPDATE builder_cursor SET last_processed_sequence = -1 WHERE id = 1`,
 	); err != nil {
 		t.Fatalf("reset builder_cursor: %v", err)
 	}

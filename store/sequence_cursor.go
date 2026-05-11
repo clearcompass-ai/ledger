@@ -73,8 +73,15 @@ func NewSequenceCursor(db *pgxpool.Pool) *SequenceCursor {
 // builder has fully processed). Used at builder startup to bootstrap
 // the in-memory cursor and by ops tooling to inspect builder
 // progress without scraping logs.
-func (c *SequenceCursor) Read(ctx context.Context) (uint64, error) {
-	var seq uint64
+//
+// The cursor is INT64 (signed) so that the value -1 can encode the
+// "no sequences processed yet" state on a fresh install. The
+// `WHERE sequence_number > $1` query in Next then includes seq=0
+// when cursor=-1, fixing the bootstrap off-by-one that previously
+// dropped seq=0 forever (see migration 0004 for the full context).
+// Real cursor values past bootstrap are always non-negative.
+func (c *SequenceCursor) Read(ctx context.Context) (int64, error) {
+	var seq int64
 	err := c.db.QueryRow(ctx,
 		"SELECT last_processed_sequence FROM builder_cursor WHERE id = 1",
 	).Scan(&seq)
@@ -98,7 +105,12 @@ func (c *SequenceCursor) Read(ctx context.Context) (uint64, error) {
 //
 // Returns an empty slice (NOT an error) when there are no new
 // entries; callers poll on a sleep timer.
-func (c *SequenceCursor) Next(ctx context.Context, cursor uint64, batchSize int) ([]uint64, error) {
+//
+// cursor is INT64 to admit the -1 sentinel that Read returns on a
+// fresh install. PG's signed BIGINT lets `WHERE sequence_number > -1`
+// match seq=0; using uint64 here would silently roll -1 to maxUint64
+// and the query would never return any rows.
+func (c *SequenceCursor) Next(ctx context.Context, cursor int64, batchSize int) ([]uint64, error) {
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("store/cursor: batchSize must be positive, got %d", batchSize)
 	}
