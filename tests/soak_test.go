@@ -511,10 +511,19 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	loopCfg := opbuilder.DefaultLoopConfig(testLogDID)
 	loopCfg.PollInterval = 10 * time.Millisecond
 	loopCfg.BatchSize = 500
+	// Dedicated INFO-level logger for the builder so the per-batch
+	// stage timing emitted by processBatch (begin/fetch/process/
+	// append/head_wait/cosign/commit) lands in the test output.
+	// The shared `logger` is WARN-level to keep the WAL / sequencer /
+	// shipper output quiet during the long admission burst; the
+	// builder's "batch processed" line is THE signal we read to
+	// attribute per-batch latency to a stage.
+	builderLogger := slog.New(slog.NewTextHandler(os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelInfo}))
 	builderLoop := opbuilder.NewBuilderLoop(
 		loopCfg, pool, smtTree, leafStore, nodeCache,
 		cursorReader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
-		soakHarness.Adapter, soakHarness.Cosigner, logger,
+		soakHarness.Adapter, soakHarness.Cosigner, builderLogger,
 	).WithRootStore(rootStateStore)
 
 	go func() { _ = server.Serve(ln) }()
