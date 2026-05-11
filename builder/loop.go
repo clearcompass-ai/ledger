@@ -501,52 +501,60 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		cosignSucceeded = true
 	}
 
-	// ── Step 8a: Incremental SMT root + node-cache mutations ─────────
+	// ── Step 8a: Compute new SMT root (when rootStore is wired) ──────
 	//
-	// Only runs when rootStore is wired. Computes newRoot from
-	// priorRoot + batch mutations against an OverlayNodeCache so the
-	// cache writes are TRAPPED IN MEMORY until the atomic commit
-	// promotes them into the durable backing cache. If the commit
-	// rolls back, the trapped writes are discarded — no PG / cache
-	// state corruption.
+	// We persist the SMT root in smt_root_state so /v1/smt/root reads
+	// in O(1) rather than O(N) materialization per request. The
+	// builder is the sole writer of the row.
 	//
-	// ComputeDirtyRoot's caller contract (see attesta SMT docs)
-	// requires the cache to be warm with respect to priorRoot. We
-	// rely on the PostgresNodeCache write-through from prior
-	// successful batches to keep smt_nodes populated; PostgresNodeCache.
-	// Get falls through to PG on in-memory miss, so a fresh process
-	// (cold in-mem cache) still gets correct sibling hashes.
+	// IMPLEMENTATION CHOICE — materialize-once-per-batch:
+	//
+	//   The SDK's tree.ComputeDirtyRoot walks the dirty paths (O(M
+	//   log N) per batch) but requires a node cache warm with respect
+	//   to priorRoot. With PostgresNodeCache on a cold or sparse
+	//   smt_nodes table, every clean-sibling lookup is a PG roundtrip
+	//   — at ~256 lookups per dirty leaf × 100µs each, a 500-leaf
+	//   batch takes >10s before it can commit. The soak's 6-second
+	//   drain window saw only 3 leaves land before timeout.
+	//
+	//   Materializing the live leaf set (PostgresLeafStore.All +
+	//   in-memory tree.Root) is O(N) where N = total live leaves.
+	//   For the moderate-scale targets that drive this branch
+	//   (≤ 10⁷ leaves) it's strictly faster than the warm-cache walk
+	//   AND doesn't depend on cache warmth surviving across batches.
+	//   Above 10⁷ leaves the cost crosses a few hundred ms per batch;
+	//   Item 11 in docs/production_readiness.md tracks the sharded /
+	//   partitioned SMT design needed beyond that.
+	//
+	//   Net result: /v1/smt/root is O(1) (this is the production win);
+	//   the per-batch builder cost moves from O(N) handler-side to
+	//   O(N) builder-side, where it's amortized over far fewer events
+	//   (batch commits) than HTTP requests.
 	var newRoot [32]byte
-	var nodeCacheMutations map[[32]byte][]byte
 	var maxBatchSeq uint64
 	if bl.rootStore != nil {
-		// Materialize the dirty-writes map from result.Mutations.
-		writes := make(map[[32]byte]types.SMTLeaf, len(result.Mutations))
+		// Snapshot the live leaf set, then overlay this batch's
+		// mutations. Computing root on top of this combined view
+		// produces the post-commit root.
+		liveLeaves, err := bl.leafStore.MaterializeToInMemory(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("materialize for root: %w", err)
+		}
 		for _, mut := range result.Mutations {
-			writes[mut.LeafKey] = types.SMTLeaf{
+			leaf := types.SMTLeaf{
 				Key:          mut.LeafKey,
 				OriginTip:    mut.NewOriginTip,
 				AuthorityTip: mut.NewAuthorityTip,
 			}
+			if setErr := liveLeaves.Set(ctx, mut.LeafKey, leaf); setErr != nil {
+				return 0, fmt.Errorf("overlay mutation for root: %w", setErr)
+			}
 		}
-
-		// OverlayNodeCache wraps bl.nodeCache and buffers writes
-		// in memory. Reads fall through to backing (which uses PG on
-		// in-memory miss). So ComputeDirtyRoot sees a consistent
-		// "priorRoot tree" via PG state for clean subtrees AND its
-		// own dirty writes via the overlay buffer.
-		overlay := smt.NewOverlayNodeCache(bl.nodeCache)
-		dirtyTree := smt.NewTree(bl.leafStore, overlay)
-
-		var rootErr error
-		newRoot, rootErr = dirtyTree.ComputeDirtyRoot(ctx, priorRoot, writes)
-		if rootErr != nil {
-			return 0, fmt.Errorf("compute dirty root: %w", rootErr)
+		rootTree := smt.NewTree(liveLeaves, smt.NewInMemoryNodeCache())
+		newRoot, err = rootTree.Root(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("compute root via materialization: %w", err)
 		}
-
-		// Collect the buffered node updates so the atomic commit can
-		// promote them into the durable cache via SetWithDepthTx.
-		nodeCacheMutations = overlay.Mutations()
 
 		// Track the highest seq this batch reflects for the root's
 		// committed_through_seq column.
@@ -574,19 +582,12 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			}
 		}
 
-		// Promote the OverlayNodeCache mutations into the durable
-		// backing cache (smt_nodes + in-memory) within this tx so a
-		// rollback discards them atomically with the leaf writes. The
-		// depth is encoded as 0 here — the SDK's NodeCache.Set
-		// interface drops the actual depth, and the depth column on
-		// smt_nodes is metadata for WarmCache filtering only, not for
-		// correctness.
+		// Persist the new SMT root in the same atomic transaction as
+		// the leaves so readers never see a {root, leaves} mismatch.
+		// nodeCacheMutations / SetWithDepthTx are intentionally NOT
+		// used here — see Step 8a's comment for why materialize-once
+		// replaces the incremental ComputeDirtyRoot walk.
 		if bl.rootStore != nil {
-			for k, v := range nodeCacheMutations {
-				if sErr := bl.nodeCache.SetWithDepthTx(ctx, tx, k, v, 0); sErr != nil {
-					return fmt.Errorf("set smt node %x: %w", k[:8], sErr)
-				}
-			}
 			if rErr := bl.rootStore.SetTx(ctx, tx, newRoot, maxBatchSeq); rErr != nil {
 				return fmt.Errorf("set smt root state: %w", rErr)
 			}
