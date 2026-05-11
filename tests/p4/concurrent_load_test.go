@@ -225,8 +225,8 @@ func TestP4_ConcurrentLoad_RootStableUnderConcurrentBenignWrites(t *testing.T) {
 	if _, err := pool.Exec(ctx, `DELETE FROM smt_leaves`); err != nil {
 		t.Fatalf("clear smt_leaves: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM smt_nodes`); err != nil {
-		t.Fatalf("clear smt_nodes: %v", err)
+	if _, err := pool.Exec(ctx, `DELETE FROM jellyfish_nodes`); err != nil {
+		t.Fatalf("clear jellyfish_nodes: %v", err)
 	}
 
 	leafStore := store.NewPostgresLeafStore(pool)

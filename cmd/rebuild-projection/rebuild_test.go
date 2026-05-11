@@ -38,6 +38,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -49,6 +50,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
+	"github.com/clearcompass-ai/attesta/core/smt"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
 	"github.com/clearcompass-ai/attesta/types"
 
@@ -374,7 +376,7 @@ func assertProjectionsEqual(t *testing.T, a, b projectionSnapshot) {
 // cleanTables, scoped to the projections this rebuild populates.
 func resetProjectionTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	for _, table := range []string{"entry_index", "smt_leaves", "smt_nodes"} {
+	for _, table := range []string{"entry_index", "smt_leaves", "jellyfish_nodes"} {
 		if _, err := pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatalf("DELETE FROM %s: %v", table, err)
 		}
@@ -384,11 +386,14 @@ func resetProjectionTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 	); err != nil {
 		t.Fatalf("reset builder_cursor: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
+	// Reset smt_root_state to the SDK's empty-tree root. The hex is
+	// derived from smt.EmptyHash so this expression tracks the SDK
+	// across version bumps — never hard-code the literal here.
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE smt_root_state
-		SET current_root = decode('876422b7697ae7c337e2ee7727feb3db474adf7be1cf04b6b5857d82d610e88a', 'hex'),
+		SET current_root = decode('%s', 'hex'),
 		    committed_through_seq = 0
-		WHERE id = 1`,
+		WHERE id = 1`, hex.EncodeToString(smt.EmptyHash[:])),
 	); err != nil {
 		t.Fatalf("reset smt_root_state: %v", err)
 	}

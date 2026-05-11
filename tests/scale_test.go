@@ -651,7 +651,7 @@ func TestScale_HTTPAdmission_ModeB_1K(t *testing.T) {
 
 func reportTableSizes(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	for _, table := range []string{"entry_index", "smt_leaves", "smt_nodes", "builder_cursor", "delta_window_buffers"} {
+	for _, table := range []string{"entry_index", "smt_leaves", "jellyfish_nodes", "builder_cursor", "delta_window_buffers"} {
 		var size string
 		pool.QueryRow(context.Background(),
 			fmt.Sprintf("SELECT pg_size_pretty(pg_total_relation_size('%s'))", table)).Scan(&size)
