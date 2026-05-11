@@ -31,12 +31,11 @@
 --   inserts impossible. The migration INSERTs the empty-tree default
 --   root + committed_through_seq = 0 so reads always succeed.
 --
--- The empty-tree root for a depth-256 SMT under the SDK's hashLeaf /
--- defaultHashes scheme is `876422b7697ae7c3d8ae465c72d8a2fa8b30d31a
--- b73305b4a0ac9d2dd0893d93` (verified by tessera/antispam_off_reproducer
--- and the soak's verifySMTConsistency log lines). We store this so the
--- first batch's read returns the canonical empty root rather than zero
--- bytes (which would NOT verify against any subsequent proof).
+-- This migration seeds the row with the legacy depth-256 empty-tree
+-- root for backward-compatibility with the migration ordering. Migration
+-- 0003 (Jellyfish/Patricia SMT) overwrites this with the new empty-tree
+-- root sha256("") = e3b0c4…b855 immediately after. New deployments
+-- observe only the post-0003 value.
 
 CREATE TABLE IF NOT EXISTS smt_root_state (
     id                      SMALLINT PRIMARY KEY DEFAULT 1

@@ -9,28 +9,23 @@ builder cursor (store/sequence_cursor.go).
 
 WHY THIS EXISTS:
 
-	smt.Tree.Root() in attesta@v0.2.0/core/smt/tree.go enumerates
-	leaves via a typed switch (collectLeafHashes) that only supports
-	*InMemoryLeafStore and *OverlayLeafStore. PostgresLeafStore lands
-	in the default arm and Tree.Root short-circuits to
-	defaultHashes[TreeDepth] (the empty-tree root) regardless of
-	leaf count. The materialization workaround in api/proofs.go is
-	O(N) per request — unusable above a few million leaves.
-
-	The builder's atomic commit calls Tree.ComputeDirtyRoot(priorRoot,
-	mutations) — which IS correct for any LeafStore so long as the
-	NodeCache is warm relative to priorRoot — and persists the result
-	here. /v1/smt/root reads this row in O(1).
+	The SDK's Jellyfish/Patricia tree (attesta v0.3.0 smt.Tree) reads
+	and writes nodes through a content-addressed NodeStore. The tree's
+	root is the hash of the topmost node, or the canonical empty-tree
+	hash for an empty tree. This row holds that root so /v1/smt/root
+	reads in O(1) and the builder's atomic commit can advance leaves +
+	nodes + root + cursor in a single transaction.
 
 INVARIANTS:
 
   - Exactly one row, id = 1. Enforced by PRIMARY KEY + CHECK
     constraint (see migrations/0002_smt_root_state.sql).
   - current_root is always 32 bytes (CHECK constraint).
-  - On a fresh database, current_root = SDK empty-tree root for
-    depth-256 SMT (`876422b7697ae7c337e2ee7727feb3db474adf7be1cf04b6
-    b5857d82d610e88a`). So callers never have to special-case
-    "no row yet" — Read always returns a usable root.
+  - On a fresh database, current_root = the Jellyfish empty-tree
+    hash sha256("") = `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b
+    934ca495991b7852b855`. Migration 0003 sets this; migration 0002
+    seeds a placeholder that 0003 overwrites. Read always returns a
+    usable root after migrations complete.
   - committed_through_seq is monotonically non-decreasing. The
     builder MUST NOT advance it past the largest seq it observed
     in the corresponding batch.
