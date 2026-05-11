@@ -60,6 +60,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithylog "github.com/aws/smithy-go/logging"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 )
@@ -118,6 +119,14 @@ type S3Config struct {
 	// `mc anonymous set download`; AWS S3 requires a bucket policy
 	// + Block-Public-Access opt-out.
 	PublicBaseURL string
+
+	// Logger is an optional logging.Logger (smithy-go) that captures
+	// SDK-level messages (WARN, DEBUG, etc.) emitted during request
+	// processing. Leave nil to use the SDK default. Production code
+	// leaves this nil; the regression test in s3_checksum_test.go
+	// injects a capturing logger to prove the "Response has no
+	// supported checksum" WARN is suppressed.
+	Logger smithylog.Logger
 }
 
 // S3 satisfies Backend (Store + PublicURLer) against any
@@ -188,13 +197,39 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		))
 	}
+	if cfg.Logger != nil {
+		loadOpts = append(loadOpts, awsconfig.WithLogger(cfg.Logger))
+	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("bytestore/s3: LoadDefaultConfig: %w", err)
 	}
 
-	clientOpts := []func(*s3.Options){}
+	clientOpts := []func(*s3.Options){
+		// CHECKSUM VALIDATION: switch from the SDK's default
+		// (WhenSupported) to WhenRequired.
+		//
+		// The default logs a WARN on every GetObject whose response
+		// is missing x-amz-checksum-* headers. SeaweedFS / MinIO /
+		// RustFS / R2 do not emit those headers, so the WARN fires
+		// on every read forever — at production scale (~30 reads/s
+		// per replica × 75 replicas) that is ~70 TB/year of identical
+		// noise per fleet.
+		//
+		// WhenRequired makes the SDK silent unless the caller
+		// explicitly opts in to checksum validation per request.
+		// Application-layer integrity is unaffected: the ledger
+		// stores SHA-256 canonical hashes in entry_index, TLS
+		// protects transport, and consumer paths re-hash bytes
+		// before acceptance.
+		//
+		// See bytestore/s3_checksum_test.go for the regression
+		// test that proves no WARN is emitted on a real Get.
+		func(o *s3.Options) {
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		},
+	}
 	if cfg.Endpoint != "" {
 		ep := cfg.Endpoint
 		clientOpts = append(clientOpts, func(o *s3.Options) {
