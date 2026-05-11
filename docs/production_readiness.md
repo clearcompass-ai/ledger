@@ -154,6 +154,39 @@ tracks.
   WAL / Tessera at the interface boundary; existing `benchBytestore`
   pattern with `WithFailRate` is the seed.
 
+### 11 — Incremental SMT root maintenance ⬜
+
+- **Problem:** SDK `Tree.Root` and `Tree.GenerateMembershipProof`
+  enumerate leaves via a typed `collectLeafHashes` switch (see
+  `attesta/core/smt/tree.go`) that only matches `*InMemoryLeafStore`
+  and `*OverlayLeafStore`. `PostgresLeafStore` falls through the
+  `default` arm and `Tree.Root` short-circuits to
+  `defaultHashes[TreeDepth]` (the empty-tree root) regardless of how
+  many leaves are committed in `smt_leaves`.
+- **Current workaround:** `api/proofs.go` checks for the
+  `Materializable` interface and, if present, builds an in-memory
+  tree from a fresh PG snapshot per handler call. O(N) per request
+  with N = total live leaves; fine for soak/dev (N ≤ 10⁶), unusable
+  at production scale (N ≥ 10⁹ targets minutes-per-request latency
+  and massive memory pressure).
+- **Production plan:** maintain the root incrementally.
+  - Add `smt_root_state` (singleton row: `current_root`,
+    `committed_through_seq`, `updated_at`).
+  - Builder, after committing leaves in the same PG transaction,
+    computes the new root via `Tree.ComputeDirtyRoot(priorRoot,
+    mutations)` (already implemented in the SDK; requires a warm
+    `NodeCache` — `PostgresNodeCache.SetWithDepthTx` already
+    write-throughs to `smt_nodes` for warmth across process restart).
+  - `/v1/smt/root` and `/v1/smt/proof` read the cached root directly;
+    no per-request materialization.
+- **Why this isn't urgent for the soak SLOs:** materialization works
+  at N = 10⁶ in well under a second. The incremental scheme becomes
+  load-bearing once integration tests grow beyond ~10⁷ leaves OR
+  production goes live.
+- **Evidence today:** `store/smt_state.go:PostgresLeafStore.All` +
+  `MaterializeToInMemory` + `api/proofs.go:liveTree` shipped on this
+  branch.
+
 ### 10 — Configuration-drift gate ⬜
 
 - **Assertion:** production defaults match what `docs/operations.md`

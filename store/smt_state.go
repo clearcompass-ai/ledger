@@ -40,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/clearcompass-ai/attesta/core/smt"
 	"github.com/clearcompass-ai/attesta/types"
 )
 
@@ -182,6 +183,76 @@ func (s *PostgresLeafStore) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("store/smt: count leaves: %w", err)
 	}
 	return count, nil
+}
+
+// All returns every leaf in the store as a (key → leaf) map. Used by
+// MaterializeToInMemory below to bridge PostgresLeafStore into the
+// SDK's SMT root/proof code path, which only enumerates the concrete
+// *smt.InMemoryLeafStore and *smt.OverlayLeafStore types (see
+// attesta/core/smt/tree.go:collectLeafHashes).
+//
+// O(N) cost — full table scan. Acceptable for moderate-scale soaks
+// and integration tests; production deployments with millions+ of
+// leaves should serve /v1/smt/root from a persisted root maintained
+// incrementally by the builder (see Item 11 in
+// docs/production_readiness.md).
+func (s *PostgresLeafStore) All(ctx context.Context) (map[[32]byte]types.SMTLeaf, error) {
+	rows, err := s.db.Query(ctx,
+		"SELECT leaf_key, origin_tip, authority_tip FROM smt_leaves")
+	if err != nil {
+		return nil, fmt.Errorf("store/smt: all leaves: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[[32]byte]types.SMTLeaf)
+	for rows.Next() {
+		var keyBytes, originBytes, authBytes []byte
+		if err := rows.Scan(&keyBytes, &originBytes, &authBytes); err != nil {
+			return nil, fmt.Errorf("store/smt: scan all leaves: %w", err)
+		}
+		if len(keyBytes) != 32 {
+			return nil, fmt.Errorf("store/smt: bad leaf_key length %d (want 32)", len(keyBytes))
+		}
+		originTip, err := DeserializeLogPosition(originBytes)
+		if err != nil {
+			return nil, fmt.Errorf("store/smt: decode origin_tip: %w", err)
+		}
+		authTip, err := DeserializeLogPosition(authBytes)
+		if err != nil {
+			return nil, fmt.Errorf("store/smt: decode authority_tip: %w", err)
+		}
+		var key [32]byte
+		copy(key[:], keyBytes)
+		out[key] = types.SMTLeaf{Key: key, OriginTip: originTip, AuthorityTip: authTip}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store/smt: rows all leaves: %w", err)
+	}
+	return out, nil
+}
+
+// MaterializeToInMemory pulls every leaf from PG into a fresh
+// *smt.InMemoryLeafStore. The returned store satisfies the SDK's
+// collectLeafHashes type switch (case *smt.InMemoryLeafStore), so
+// Tree.Root and Tree.GenerateMembershipProof produce mathematically
+// correct results.
+//
+// O(N) memory + O(N) PG read per call — caller is responsible for
+// bounding call frequency. Tests + soak harness use this directly;
+// the production /v1/smt/root path should NOT call this on every
+// request (see Item 11 — incremental root maintenance).
+func (s *PostgresLeafStore) MaterializeToInMemory(ctx context.Context) (*smt.InMemoryLeafStore, error) {
+	all, err := s.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mem := smt.NewInMemoryLeafStore()
+	for key, leaf := range all {
+		if setErr := mem.Set(ctx, key, leaf); setErr != nil {
+			return nil, fmt.Errorf("store/smt: materialize set leaf: %w", setErr)
+		}
+	}
+	return mem, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

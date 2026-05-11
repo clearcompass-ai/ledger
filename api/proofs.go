@@ -10,10 +10,29 @@ KEY ARCHITECTURAL DECISIONS:
     recommended for production via read-replica or tree snapshot).
   - Batch proof uses SDK-D13 canonical key ordering.
   - Root endpoint includes leaf count for monitoring.
+
+POSTGRES-BACKED-STORE COMPATIBILITY:
+
+	The SDK's Tree.Root and Tree.GenerateMembershipProof rely on
+	collectLeafHashes (attesta/core/smt/tree.go), which only supports
+	*smt.InMemoryLeafStore and *smt.OverlayLeafStore via a typed
+	switch. PostgresLeafStore lands in the default arm and Tree.Root
+	short-circuits to defaultHashes[TreeDepth] — the empty-tree root —
+	regardless of how many leaves are committed.
+
+	When deps.LeafStore implements the Materializable interface
+	(PostgresLeafStore satisfies it via MaterializeToInMemory), the
+	handlers below build an ephemeral in-memory tree on each call so
+	Root/Proof compute against the actual leaf set. O(N) per call;
+	acceptable for moderate-scale soaks and dev, NOT for 10B-leaf
+	production deployments — see Item 11 in
+	docs/production_readiness.md for the incremental-root work that
+	makes the production path scalable.
 */
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -25,11 +44,39 @@ import (
 	"github.com/clearcompass-ai/ledger/apitypes"
 )
 
+// Materializable is implemented by LeafStores that can produce an
+// SDK-compatible in-memory snapshot. PostgresLeafStore satisfies it
+// (see store/smt_state.go). Pure in-memory stores do NOT need to
+// implement it — the SDK already handles those natively.
+type Materializable interface {
+	MaterializeToInMemory(ctx context.Context) (*smt.InMemoryLeafStore, error)
+}
+
 // SMTDeps holds dependencies for SMT proof handlers.
 type SMTDeps struct {
 	Tree      *smt.Tree
 	LeafStore smt.LeafStore
 	Logger    *slog.Logger
+}
+
+// liveTree returns the tree to use for Root / Proof in this request.
+// For Materializable backings (PostgresLeafStore) it builds a fresh
+// in-memory tree from the current PG snapshot; otherwise it returns
+// the configured tree directly. The returned tree's lifetime is the
+// caller's HTTP request — no caching.
+func (d *SMTDeps) liveTree(ctx context.Context) (*smt.Tree, error) {
+	m, ok := d.LeafStore.(Materializable)
+	if !ok {
+		return d.Tree, nil
+	}
+	mem, err := m.MaterializeToInMemory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Fresh in-memory node cache so we don't pollute the shared one
+	// with materialized-from-PG node hashes that may not survive PG
+	// state changes (concurrent builder commits).
+	return smt.NewTree(mem, smt.NewInMemoryNodeCache()), nil
 }
 
 // NewSMTProofHandler creates GET /v1/smt/proof/{key}.
@@ -47,9 +94,17 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 		var key [32]byte
 		copy(key[:], keyBytes)
 
-		leaf, _ := deps.Tree.GetLeaf(ctx, key)
+		tree, err := deps.liveTree(ctx)
+		if err != nil {
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "tree materialization failed")
+			deps.Logger.Error("smt proof: liveTree", "error", err)
+			return
+		}
+
+		leaf, _ := tree.GetLeaf(ctx, key)
 		if leaf != nil {
-			proof, pErr := deps.Tree.GenerateMembershipProof(ctx, key)
+			proof, pErr := tree.GenerateMembershipProof(ctx, key)
 			if pErr != nil {
 				writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 					http.StatusInternalServerError, "proof generation failed")
@@ -64,7 +119,7 @@ func NewSMTProofHandler(deps *SMTDeps) http.HandlerFunc {
 			return
 		}
 
-		proof, err := deps.Tree.GenerateNonMembershipProof(ctx, key)
+		proof, err := tree.GenerateNonMembershipProof(ctx, key)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "non-membership proof failed")
@@ -115,7 +170,15 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 			copy(keys[i][:], kb)
 		}
 
-		proof, err := deps.Tree.GenerateBatchProof(ctx, keys)
+		tree, err := deps.liveTree(ctx)
+		if err != nil {
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "tree materialization failed")
+			deps.Logger.Error("smt batch proof: liveTree", "error", err)
+			return
+		}
+
+		proof, err := tree.GenerateBatchProof(ctx, keys)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "batch proof generation failed")
@@ -132,7 +195,14 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		root, err := deps.Tree.Root(ctx)
+		tree, err := deps.liveTree(ctx)
+		if err != nil {
+			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
+				http.StatusInternalServerError, "tree materialization failed")
+			deps.Logger.Error("smt root: liveTree", "error", err)
+			return
+		}
+		root, err := tree.Root(ctx)
 		if err != nil {
 			writeTypedError(ctx, w, apitypes.ErrorClassProofGenFailed,
 				http.StatusInternalServerError, "root computation failed")
