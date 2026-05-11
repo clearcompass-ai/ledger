@@ -850,6 +850,18 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		var entryIndexRows int64
 		_ = op.Pool.QueryRow(context.Background(),
 			"SELECT COUNT(*) FROM entry_index").Scan(&entryIndexRows)
+		// Builder progress: smt_leaves rows == entries the builder loop
+		// has integrated into the live SMT. The shipper-only HWM gate
+		// (below) does NOT guarantee builder catch-up — at high entry
+		// counts the builder is the bottleneck (cosign RTT + atomic
+		// PG commit per batch). Surfacing the count here lets each
+		// drain cycle show the exact builder lag, and the exit gate
+		// (Fix A) waits for builderRows >= expectedHWM in addition to
+		// shipper HWM.
+		var smtLeafRows int64
+		_ = op.Pool.QueryRow(context.Background(),
+			"SELECT COUNT(*) FROM smt_leaves").Scan(&smtLeafRows)
+		builderLag := entryIndexRows - smtLeafRows
 
 		// shipDup = (shipped events) - (distinct seqs that completed).
 		// Pre-dedupe baseline; with the inflight guard now in place
@@ -863,7 +875,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
 			"ship{shipped=%d unique=%d dup=%d skipInflight=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
-			"pg{entry_index=%d}",
+			"pg{entry_index=%d smt_leaves=%d builder_lag=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
@@ -872,25 +884,43 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			shipMetrics.SkippedInflight,
 			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
-			entryIndexRows,
+			entryIndexRows, smtLeafRows, builderLag,
 		)
 
-		// HWM is the LAST contiguous shipped sequence number,
-		// zero-indexed. Tessera/sequencer assigns 0-indexed leaf
-		// sequences (see tests/e2e_v1_sct_test.go:118-121: "the
-		// first admitted entry in a fresh test DB lands at seq 0").
-		// So N submitted entries occupy seqs 0..N-1; full drain is
-		// hwm == N-1, NOT hwm == N. Comparing hwm+1 >= expectedHWM
-		// makes this explicit and avoids the off-by-one that caused
-		// the drain to hang at expected=48 / hwm=47 indefinitely.
-		if expectedHWM > 0 && hwm+1 >= expectedHWM {
-			t.Logf("drained: HWM=%d (=> %d entries shipped) in %s",
-				hwm, hwm+1, time.Since(drainStart).Round(time.Second))
+		// Exit gate (Fix A): wait for BOTH the shipper AND the builder
+		// to catch up.
+		//
+		//   shipperReady = hwm+1 >= expectedHWM
+		//     HWM is the LAST contiguous shipped sequence (0-indexed),
+		//     so N submitted entries occupy seqs 0..N-1 and full
+		//     shipper drain is hwm == N-1, comparing hwm+1 >= N. This
+		//     also avoids the off-by-one that previously caused the
+		//     drain to hang at expected=48 / hwm=47 indefinitely.
+		//
+		//   builderReady = smtLeafRows >= expectedHWM
+		//     The shipper finishes ~10× faster than the builder at
+		//     high volume (builder is gated on per-batch witness
+		//     cosign + atomic PG commit). Exiting on shipper-only
+		//     left verifySMTConsistency a tight 10s window to wait
+		//     for the builder, which doesn't fit a 10K backlog at
+		//     ~200 ent/sec builder throughput. The honest "done"
+		//     signal is when both surfaces show the full submitted
+		//     count.
+		//
+		// drainTimeout is the operator's escape hatch — at high entry
+		// counts (1M+) crank ATTESTA_SOAK_DRAIN_TIMEOUT to match the
+		// builder's expected wall-clock.
+		shipperReady := expectedHWM > 0 && hwm+1 >= expectedHWM
+		builderReady := uint64(smtLeafRows) >= expectedHWM
+		if shipperReady && builderReady {
+			t.Logf("drained: HWM=%d (=> %d entries shipped), smt_leaves=%d (builder caught up) in %s",
+				hwm, hwm+1, smtLeafRows, time.Since(drainStart).Round(time.Second))
 			break
 		}
 		if time.Since(drainStart) > drainTimeout {
-			t.Fatalf("drain timeout after %s — see drain[cycle=N] log lines above for stuck-stage isolation",
-				drainTimeout)
+			t.Fatalf("drain timeout after %s — shipperReady=%t builderReady=%t (entry_index=%d smt_leaves=%d expected=%d) — see drain[cycle=N] log lines above for stuck-stage isolation",
+				drainTimeout, shipperReady, builderReady,
+				entryIndexRows, smtLeafRows, expectedHWM)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -1559,80 +1589,42 @@ func verifySMTConsistency(t *testing.T, op *soakLedger, submitted uint64) {
 	}
 	ctx := context.Background()
 
-	// 1) Fetch SMT root — poll until the builder loop has integrated
-	// at least `submitted` leaves, mirroring verifyTreeIntegrity's
-	// /v1/tree/head poll. The builder runs independently of the
-	// sequencer + shipper: drain completes when the shipper HWM
-	// reaches submitted-1, but the builder might still be working
-	// through its final batch (cosignature collection + atomic
-	// commit takes seconds at scale). Polling here is the test's
-	// way of saying "I'm asking about a steady state, not a
-	// race-window snapshot."
+	// 1) Fetch SMT root — single-shot. The drain function already
+	// gates on `smt_leaves COUNT(*) >= submitted` (Fix A), so by the
+	// time we get here the builder loop has integrated every
+	// submitted entry. Any shortfall observed below is a real bug,
+	// not a race-window snapshot — dump diagnostics and fail.
 	rootURL := op.BaseURL + "/v1/smt/root"
-	const smtRootBudget = 10 * time.Second
-	const smtRootPollEvery = 100 * time.Millisecond
 	var rootResp struct {
 		Root      string `json:"root"`
 		LeafCount uint64 `json:"leaf_count"`
 	}
-	var lastSMTStatus int
-	var lastSMTBody []byte
-	smtDeadline := time.Now().Add(smtRootBudget)
-	for time.Now().Before(smtDeadline) {
-		resp, err := http.Get(rootURL)
-		if err != nil {
-			t.Fatalf("verifySMTConsistency: GET /v1/smt/root: %v", err)
-		}
-		lastSMTBody, _ = io.ReadAll(resp.Body)
-		lastSMTStatus = resp.StatusCode
-		resp.Body.Close()
-		if lastSMTStatus != http.StatusOK {
-			// 404 before the SMT handlers are registered, or 503
-			// during a transient builder restart — keep polling.
-			time.Sleep(smtRootPollEvery)
-			continue
-		}
-		if err := json.Unmarshal(lastSMTBody, &rootResp); err != nil {
-			t.Fatalf("verifySMTConsistency: decode /v1/smt/root: %v body=%s", err, lastSMTBody)
-		}
-		if rootResp.LeafCount >= submitted {
-			break
-		}
-		time.Sleep(smtRootPollEvery)
+	resp, err := http.Get(rootURL)
+	if err != nil {
+		t.Fatalf("verifySMTConsistency: GET /v1/smt/root: %v", err)
 	}
-	if lastSMTStatus != http.StatusOK {
-		t.Fatalf("verifySMTConsistency: /v1/smt/root status=%d after %s budget body=%s",
-			lastSMTStatus, smtRootBudget, lastSMTBody)
+	smtBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("verifySMTConsistency: /v1/smt/root status=%d body=%s",
+			resp.StatusCode, smtBody)
+	}
+	if err := json.Unmarshal(smtBody, &rootResp); err != nil {
+		t.Fatalf("verifySMTConsistency: decode /v1/smt/root: %v body=%s", err, smtBody)
 	}
 	if rootResp.LeafCount < submitted {
-		// EVIDENCE-FIRST DIAGNOSTICS. Before we conclude "the builder
-		// is broken", produce the unambiguous set of facts about
-		// WHICH sequences made it where. This is observability that
-		// turns a hypothesis ("cursor skip", "race", "lost batch")
-		// into a verdict.
-		//
-		// We dump four counts from PG and one set-difference:
-		//   - entry_index row count + min/max seq
-		//   - smt_leaves row count + min/max key-derived seq is not
-		//     trivially queryable (the key is a hash), so we count
-		//     rows and inspect the cursor instead
-		//   - builder_cursor.last_processed_sequence
-		//   - smt_root_state row (root + committed_through_seq)
-		//   - the specific seq numbers in entry_index that have NO
-		//     corresponding leaf-key (= seq passed through the
-		//     sequencer but never made it through the builder).
-		//
-		// The smt_leaves.leaf_key is derived from LogPosition via
-		// smt.DeriveKey. We can't reverse-derive seq from key in PG.
-		// So instead we identify "missing" sequences by joining
-		// entry_index to smt_leaves through expected_key BYTEA
-		// (computed in Go below) and dumping the diff.
-
+		// EVIDENCE-FIRST DIAGNOSTICS. The drain gate guarantees
+		// smt_leaves COUNT(*) >= submitted before we get here, so
+		// any shortfall on /v1/smt/root is a real divergence between
+		// the table count and the API surface (e.g., handler reading
+		// stale state, root not advanced atomically, etc.). Dump the
+		// authoritative set so we know which seq numbers made it
+		// where.
 		dumpSMTDiagnostics(t, op, submitted)
 
-		t.Fatalf("verifySMTConsistency: leaf_count=%d < submitted=%d after %s budget "+
-			"(builder loop not integrating)",
-			rootResp.LeafCount, submitted, smtRootBudget)
+		t.Fatalf("verifySMTConsistency: leaf_count=%d < submitted=%d "+
+			"(drain reported builder caught up, but /v1/smt/root disagrees)",
+			rootResp.LeafCount, submitted)
 	}
 	rootBytes, err := hex.DecodeString(rootResp.Root)
 	if err != nil || len(rootBytes) != 32 {
