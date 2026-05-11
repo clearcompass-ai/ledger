@@ -68,6 +68,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -95,13 +96,66 @@ import (
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/apitypes"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/sequencer"
 	"github.com/clearcompass-ai/ledger/shipper"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/store/indexes"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 	"github.com/clearcompass-ai/ledger/wal"
 )
+
+// soakTreeHeadFetcher satisfies api.TreeHeadFetcher (api/ports.go)
+// by reading the live Tessera checkpoint directly. The soak harness
+// has no builder loop, so the production TreeHeadStore (which holds
+// K-of-N cosigned heads written by builder.loop after witness
+// quorum) never gets populated. Wiring api.NewTreeHeadHandler with
+// this fetcher means /v1/tree/head returns real Tessera state
+// (TreeSize + RootHash) without requiring builder + witnesses.
+//
+// Signatures is intentionally empty: the soak's contract is the
+// admission → sequencer → shipper → bytestore pipeline. Witness
+// cosignature lives in witnessed_harness_test.go.
+//
+// verifyTreeIntegrity (this file, ~line 1240) asserts only:
+//   - tree_size >= submitted (Tessera integrated all leaves)
+//   - root_hash is 32 hex bytes (well-formed Merkle root)
+// Both are honored by this synthesized head.
+type soakTreeHeadFetcher struct {
+	appender *optessera.EmbeddedAppender
+}
+
+const sha256HashAlgoID uint16 = 1 // SHA-256
+
+func (s *soakTreeHeadFetcher) Latest(ctx context.Context) (*apitypes.CosignedTreeHead, error) {
+	th, err := s.appender.Head()
+	if err != nil {
+		// First-boot: no checkpoint yet → nil + nil error so the
+		// handler maps to 404 "no cosigned tree head available"
+		// rather than 500.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &apitypes.CosignedTreeHead{
+		TreeSize:  th.TreeSize,
+		RootHash:  th.RootHash,
+		HashAlgo:  sha256HashAlgoID,
+		CreatedAt: time.Now(),
+		// Signatures: nil — soak does not have witness cosign.
+	}, nil
+}
+
+func (s *soakTreeHeadFetcher) GetBySize(ctx context.Context, size uint64) (*apitypes.CosignedTreeHead, error) {
+	// The soak does not index historical heads — only the latest
+	// Tessera checkpoint is exposed. A request for a specific size
+	// returns nil (handler maps to 404). Equivocation / fraud-proof
+	// monitors that need GetBySize use the production builder path,
+	// not this harness.
+	return nil, nil
+}
 
 // newTunedHTTPClient returns an *http.Client whose Transport is
 // keep-alive-friendly under the soak's connection density.
@@ -326,11 +380,36 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		PublicURLer: backend.(api.PublicURLer),
 	}
 
+	// Tree handlers (/v1/tree/head, /v1/tree/inclusion, /v1/tree/consistency).
+	//
+	// The soak has no builder loop, so the production TreeHeadStore
+	// (Postgres-backed cosigned heads) never gets populated. Instead
+	// the TreeHeadFetcher reads directly from the live Tessera
+	// checkpoint via soakTreeHeadFetcher — TreeSize + RootHash are
+	// real Merkle state; Signatures is empty because witness
+	// cosignature is a separate-harness concern (witnessed_harness
+	// tests). verifyTreeIntegrity only asserts TreeSize >= submitted
+	// and RootHash is 32 bytes, both of which this satisfies.
+	//
+	// Inclusion + Consistency come from the same Tessera adapter
+	// the e2e + integration harnesses use — real Merkle proof
+	// generation against the on-disk tile state.
+	treeHeadFetcher := &soakTreeHeadFetcher{appender: merkle}
+	treeDeps := &api.TreeDeps{
+		TreeHeadStore: treeHeadFetcher,
+		Inclusion:     soakHarness.Adapter,
+		Consistency:   soakHarness.Adapter,
+		Logger:        logger,
+	}
+
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
 		EntryBySequence: api.NewEntryBySequenceHandler(entryReadDeps),
 		EntryRaw:        api.NewRawEntryHandler(entryReadDeps),
+		TreeHead:        api.NewTreeHeadHandler(treeDeps),
+		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
+		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
 		// EntryByHash wires GET /v1/entries-hash/{hashHex}, which the
 		// soak verify pass needs to resolve hash→seq before fetching
 		// /v1/entries/{seq}/raw. Without this handler, the route 404s
@@ -1245,26 +1324,53 @@ func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
 	ctx := context.Background()
 
 	// 1) Tree head + TreeSize check.
+	//
+	// Tessera publishes checkpoints at CheckpointInterval (500ms
+	// default). After the soak's drain completes, the last few
+	// AppendLeaf calls may not yet be reflected in the most-recent
+	// checkpoint. Poll briefly so the assertion is testing real
+	// integration progress, not a 500ms timing artifact.
 	headURL := op.BaseURL + "/v1/tree/head"
-	resp, err := http.Get(headURL)
-	if err != nil {
-		t.Fatalf("verifyTreeIntegrity: GET /v1/tree/head: %v", err)
-	}
-	headBody, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("verifyTreeIntegrity: /v1/tree/head status=%d body=%s", resp.StatusCode, headBody)
-	}
+	const treeHeadBudget = 10 * time.Second
+	const treeHeadPollEvery = 100 * time.Millisecond
 	var head struct {
 		TreeSize uint64 `json:"tree_size"`
 		RootHash string `json:"root_hash"`
 	}
-	if err := json.Unmarshal(headBody, &head); err != nil {
-		t.Fatalf("verifyTreeIntegrity: decode tree head: %v body=%s", err, headBody)
+	var lastStatus int
+	var lastBody []byte
+	deadline := time.Now().Add(treeHeadBudget)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(headURL)
+		if err != nil {
+			t.Fatalf("verifyTreeIntegrity: GET /v1/tree/head: %v", err)
+		}
+		lastBody, _ = io.ReadAll(resp.Body)
+		lastStatus = resp.StatusCode
+		resp.Body.Close()
+		if lastStatus != http.StatusOK {
+			// 404 on a freshly booted Tessera (no checkpoint yet) is
+			// normal — keep polling until the first checkpoint lands
+			// OR the budget expires.
+			time.Sleep(treeHeadPollEvery)
+			continue
+		}
+		if err := json.Unmarshal(lastBody, &head); err != nil {
+			t.Fatalf("verifyTreeIntegrity: decode tree head: %v body=%s", err, lastBody)
+		}
+		if head.TreeSize >= submitted {
+			break
+		}
+		time.Sleep(treeHeadPollEvery)
+	}
+	if lastStatus != http.StatusOK {
+		t.Fatalf("verifyTreeIntegrity: /v1/tree/head status=%d after %s budget body=%s",
+			lastStatus, treeHeadBudget, lastBody)
 	}
 	if head.TreeSize < submitted {
-		t.Fatalf("verifyTreeIntegrity: tree_size=%d < submitted=%d (Tessera not integrating)",
-			head.TreeSize, submitted)
+		t.Fatalf("verifyTreeIntegrity: tree_size=%d < submitted=%d after %s budget "+
+			"(Tessera not integrating)",
+			head.TreeSize, submitted, treeHeadBudget)
 	}
 	root, err := hex.DecodeString(head.RootHash)
 	if err != nil || len(root) != 32 {
