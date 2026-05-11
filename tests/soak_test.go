@@ -1559,23 +1559,55 @@ func verifySMTConsistency(t *testing.T, op *soakLedger, submitted uint64) {
 	}
 	ctx := context.Background()
 
-	// 1) Fetch SMT root.
+	// 1) Fetch SMT root — poll until the builder loop has integrated
+	// at least `submitted` leaves, mirroring verifyTreeIntegrity's
+	// /v1/tree/head poll. The builder runs independently of the
+	// sequencer + shipper: drain completes when the shipper HWM
+	// reaches submitted-1, but the builder might still be working
+	// through its final batch (cosignature collection + atomic
+	// commit takes seconds at scale). Polling here is the test's
+	// way of saying "I'm asking about a steady state, not a
+	// race-window snapshot."
 	rootURL := op.BaseURL + "/v1/smt/root"
-	resp, err := http.Get(rootURL)
-	if err != nil {
-		t.Fatalf("verifySMTConsistency: GET /v1/smt/root: %v", err)
-	}
-	rootBody, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("verifySMTConsistency: /v1/smt/root status=%d body=%s", resp.StatusCode, rootBody)
-	}
+	const smtRootBudget = 10 * time.Second
+	const smtRootPollEvery = 100 * time.Millisecond
 	var rootResp struct {
 		Root      string `json:"root"`
 		LeafCount uint64 `json:"leaf_count"`
 	}
-	if err := json.Unmarshal(rootBody, &rootResp); err != nil {
-		t.Fatalf("verifySMTConsistency: decode /v1/smt/root: %v body=%s", err, rootBody)
+	var lastSMTStatus int
+	var lastSMTBody []byte
+	smtDeadline := time.Now().Add(smtRootBudget)
+	for time.Now().Before(smtDeadline) {
+		resp, err := http.Get(rootURL)
+		if err != nil {
+			t.Fatalf("verifySMTConsistency: GET /v1/smt/root: %v", err)
+		}
+		lastSMTBody, _ = io.ReadAll(resp.Body)
+		lastSMTStatus = resp.StatusCode
+		resp.Body.Close()
+		if lastSMTStatus != http.StatusOK {
+			// 404 before the SMT handlers are registered, or 503
+			// during a transient builder restart — keep polling.
+			time.Sleep(smtRootPollEvery)
+			continue
+		}
+		if err := json.Unmarshal(lastSMTBody, &rootResp); err != nil {
+			t.Fatalf("verifySMTConsistency: decode /v1/smt/root: %v body=%s", err, lastSMTBody)
+		}
+		if rootResp.LeafCount >= submitted {
+			break
+		}
+		time.Sleep(smtRootPollEvery)
+	}
+	if lastSMTStatus != http.StatusOK {
+		t.Fatalf("verifySMTConsistency: /v1/smt/root status=%d after %s budget body=%s",
+			lastSMTStatus, smtRootBudget, lastSMTBody)
+	}
+	if rootResp.LeafCount < submitted {
+		t.Fatalf("verifySMTConsistency: leaf_count=%d < submitted=%d after %s budget "+
+			"(builder loop not integrating)",
+			rootResp.LeafCount, submitted, smtRootBudget)
 	}
 	rootBytes, err := hex.DecodeString(rootResp.Root)
 	if err != nil || len(rootBytes) != 32 {
