@@ -125,16 +125,51 @@ type Config struct {
 	// wal.QueueSize so admission backpressure and builder lag
 	// share one knob.
 	MaxBuilderLag uint64
+
+	// MaxEntriesPerCycle bounds the work performed by a single
+	// drainOnce invocation. After dispatching this many entries to
+	// the worker pool, the iterator stops; drainOnce waits for the
+	// dispatched workers to complete, then returns. The next
+	// PollInterval tick re-enters drainOnce for the next batch.
+	//
+	// Why it must be bounded:
+	//   - Without a bound, a single drainOnce iterates the entire
+	//     inflight queue. Under load (60K+ pending), drainOnce
+	//     blocks for minutes while workers complete. During that
+	//     time the drainCycles metric reports 0 increments — it
+	//     becomes useless as a liveness signal. Shutdown latency
+	//     equals the cycle's wg.Wait duration. Memory pressure
+	//     scales with queue size, not concurrency.
+	//   - With a bound, drainCycles increments at predictable
+	//     cadence (one per ~MaxEntriesPerCycle/MaxInFlight ×
+	//     per-entry-latency). Operators get a real liveness
+	//     signal; shutdown is bounded; memory is bounded.
+	//
+	// 0 disables the bound (legacy behaviour for tests that
+	// deliberately drain the entire queue in one call). Production
+	// wiring SHOULD set DefaultMaxEntriesPerCycle.
+	MaxEntriesPerCycle int
 }
 
 // Defaults applied to a zero-valued Config.
 const (
-	DefaultPollInterval  = 1 * time.Second
-	DefaultMaxInFlight   = 4
-	DefaultMaxAttempts   = 10
-	DefaultBackoffBase   = 1 * time.Second
-	DefaultBackoffMax    = 60 * time.Second
+	DefaultPollInterval = 1 * time.Second
+	DefaultMaxInFlight  = 4
+	DefaultMaxAttempts  = 10
+	DefaultBackoffBase  = 1 * time.Second
+	DefaultBackoffMax   = 60 * time.Second
 	DefaultMaxBuilderLag = 4096
+
+	// DefaultMaxEntriesPerCycle bounds the per-cycle work so the
+	// drainCycles metric is a useful liveness signal under load.
+	//
+	// Sizing: per-entry latency is dominated by Tessera AppendLeaf
+	// (~5ms in steady state). With MaxInFlight=16 workers, 256
+	// entries per cycle = 16 entries per worker × 5ms ≈ 80ms cycle
+	// latency → ~12 cycles/sec metric updates. At smaller MaxInFlight
+	// values cycle latency scales linearly (MaxInFlight=4 → ~320ms,
+	// ~3 cycles/sec) — still meaningful.
+	DefaultMaxEntriesPerCycle = 256
 )
 
 // LagReader returns the current builder lag (admitted minus
@@ -299,6 +334,9 @@ func NewSequencer(
 	}
 	if cfg.MaxBuilderLag == 0 {
 		cfg.MaxBuilderLag = DefaultMaxBuilderLag
+	}
+	if cfg.MaxEntriesPerCycle == 0 {
+		cfg.MaxEntriesPerCycle = DefaultMaxEntriesPerCycle
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
