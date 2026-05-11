@@ -620,6 +620,18 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	// SMT mutations — so verifySMTConsistency reports leaf_count=0 and
 	// every membership-proof assertion fails with non_membership.
 	_, _ = pool.Exec(ctx, "UPDATE builder_cursor SET last_processed_sequence = 0 WHERE id = 1")
+	// smt_root_state is also a singleton — reset to the SDK's
+	// empty-tree root so the builder's incremental root computation
+	// starts from a clean baseline matching an empty smt_leaves table.
+	// The hex value below is sha256-256-fold of zero (= defaultHashes
+	// [TreeDepth] in attesta/core/smt/tree.go). Tests that don't run
+	// the builder skip this row entirely; the UPDATE is a no-op when
+	// the row is already at the default value.
+	_, _ = pool.Exec(ctx, `
+		UPDATE smt_root_state
+		SET current_root = decode('876422b7697ae7c337e2ee7727feb3db474adf7be1cf04b6b5857d82d610e88a', 'hex'),
+		    committed_through_seq = 0
+		WHERE id = 1`)
 
 	// Reset sequence.
 	// entry_sequence SEQUENCE was dropped in commit 10 (WAL-first

@@ -292,7 +292,7 @@ func composeBuilderLoop(
 		tesseraAdapter,
 		cosigner,
 		d.Logger,
-	)
+	).WithRootStore(store.NewSMTRootStateStore(pool))
 
 	anchorPub := anchor.NewPublisher(
 		anchor.PublisherConfig{
@@ -385,7 +385,12 @@ func composeHandlers(
 		Consistency:   tesseraAdapter,
 		Logger:        d.Logger,
 	}
-	smtDeps := &api.SMTDeps{Tree: tree, LeafStore: d.LeafStore, Logger: d.Logger}
+	smtDeps := &api.SMTDeps{
+		Tree:      tree,
+		LeafStore: d.LeafStore,
+		RootState: store.NewSMTRootStateStore(pool),
+		Logger:    d.Logger,
+	}
 	entryReadDeps := &api.EntryReadDeps{
 		Fetcher:     fetcher,
 		QueryAPI:    queryAPI,

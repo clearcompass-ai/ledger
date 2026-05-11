@@ -168,6 +168,20 @@ type BuilderLoop struct {
 	witness     WitnessCosigner
 	logger      *slog.Logger
 
+	// rootStore is OPTIONAL. When non-nil, the builder reads the
+	// current SMT root from it at the start of each batch, computes
+	// the new root incrementally via Tree.ComputeDirtyRoot, and
+	// persists it in the atomic commit. /v1/smt/root then reads
+	// the cached value (O(1)) instead of materializing all leaves
+	// (O(N)).
+	//
+	// nil → builder skips the incremental-root path. The handler-
+	// side materialization in api/proofs.go still produces correct
+	// roots and proofs; the system is correct but read-side cost
+	// is O(N). Production wiring (cmd/ledger/boot/wire/wire.go)
+	// MUST call WithRootStore.
+	rootStore *store.SMTRootStateStore
+
 	// Observability counters (atomic, lock-free).
 	totalBatches   atomic.Int64
 	totalEntries   atomic.Int64
@@ -208,6 +222,20 @@ func NewBuilderLoop(
 		witness:     witness,
 		logger:      logger,
 	}
+}
+
+// WithRootStore wires the SMTRootStateStore that holds the
+// authoritative current SMT root + committed-through-seq. When set,
+// processBatch reads priorRoot from it, computes newRoot
+// incrementally via Tree.ComputeDirtyRoot, and persists the new
+// value inside the same atomic commit transaction that writes the
+// batch's leaves + cursor advance.
+//
+// Returns the receiver for chaining (mirroring the WithReplayer
+// pattern used by the sequencer).
+func (bl *BuilderLoop) WithRootStore(rs *store.SMTRootStateStore) *BuilderLoop {
+	bl.rootStore = rs
+	return bl
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -313,10 +341,29 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 // -------------------------------------------------------------------------------------------------
 
 func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
-	priorRoot, err := bl.tree.Root(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("prior root: %w", err)
+	var priorRoot [32]byte
+	var priorRootSeq uint64
+	if bl.rootStore != nil {
+		// Authoritative path: read priorRoot from smt_root_state.
+		// bl.tree.Root would short-circuit to the empty-tree default
+		// for any PostgresLeafStore-backed tree (SDK collectLeafHashes
+		// limitation — see store/smt_root_state.go for the bug
+		// reference) so the persisted value is the only correct
+		// source of truth.
+		st, err := bl.rootStore.Read(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("read smt root state: %w", err)
+		}
+		priorRoot = st.CurrentRoot
+		priorRootSeq = st.CommittedThroughSeq
+	} else {
+		var err error
+		priorRoot, err = bl.tree.Root(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("prior root: %w", err)
+		}
 	}
+	_ = priorRootSeq // reserved for crash-recovery sanity checks; not used in the current flow
 
 	// ── Step 1: Dequeue batch ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
@@ -324,13 +371,13 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	var seqs []uint64
-	err = store.WithReadCommittedTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
-		var dqErr error
-		seqs, dqErr = bl.reader.BeginBatch(ctx, tx, bl.cfg.BatchSize)
-		return dqErr
+	dqErr := store.WithReadCommittedTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
+		var iErr error
+		seqs, iErr = bl.reader.BeginBatch(ctx, tx, bl.cfg.BatchSize)
+		return iErr
 	})
-	if err != nil {
-		return 0, fmt.Errorf("dequeue: %w", err)
+	if dqErr != nil {
+		return 0, fmt.Errorf("dequeue: %w", dqErr)
 	}
 	if len(seqs) == 0 {
 		return 0, nil
@@ -454,12 +501,68 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		cosignSucceeded = true
 	}
 
+	// ── Step 8a: Incremental SMT root + node-cache mutations ─────────
+	//
+	// Only runs when rootStore is wired. Computes newRoot from
+	// priorRoot + batch mutations against an OverlayNodeCache so the
+	// cache writes are TRAPPED IN MEMORY until the atomic commit
+	// promotes them into the durable backing cache. If the commit
+	// rolls back, the trapped writes are discarded — no PG / cache
+	// state corruption.
+	//
+	// ComputeDirtyRoot's caller contract (see attesta SMT docs)
+	// requires the cache to be warm with respect to priorRoot. We
+	// rely on the PostgresNodeCache write-through from prior
+	// successful batches to keep smt_nodes populated; PostgresNodeCache.
+	// Get falls through to PG on in-memory miss, so a fresh process
+	// (cold in-mem cache) still gets correct sibling hashes.
+	var newRoot [32]byte
+	var nodeCacheMutations map[[32]byte][]byte
+	var maxBatchSeq uint64
+	if bl.rootStore != nil {
+		// Materialize the dirty-writes map from result.Mutations.
+		writes := make(map[[32]byte]types.SMTLeaf, len(result.Mutations))
+		for _, mut := range result.Mutations {
+			writes[mut.LeafKey] = types.SMTLeaf{
+				Key:          mut.LeafKey,
+				OriginTip:    mut.NewOriginTip,
+				AuthorityTip: mut.NewAuthorityTip,
+			}
+		}
+
+		// OverlayNodeCache wraps bl.nodeCache and buffers writes
+		// in memory. Reads fall through to backing (which uses PG on
+		// in-memory miss). So ComputeDirtyRoot sees a consistent
+		// "priorRoot tree" via PG state for clean subtrees AND its
+		// own dirty writes via the overlay buffer.
+		overlay := smt.NewOverlayNodeCache(bl.nodeCache)
+		dirtyTree := smt.NewTree(bl.leafStore, overlay)
+
+		var rootErr error
+		newRoot, rootErr = dirtyTree.ComputeDirtyRoot(ctx, priorRoot, writes)
+		if rootErr != nil {
+			return 0, fmt.Errorf("compute dirty root: %w", rootErr)
+		}
+
+		// Collect the buffered node updates so the atomic commit can
+		// promote them into the durable cache via SetWithDepthTx.
+		nodeCacheMutations = overlay.Mutations()
+
+		// Track the highest seq this batch reflects for the root's
+		// committed_through_seq column.
+		for _, s := range seqs {
+			if s > maxBatchSeq {
+				maxBatchSeq = s
+			}
+		}
+	}
+
 	// ── Step 8: Atomic commit ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
 		return 0, cErr
 	}
 
-	err = store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
+	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		for _, mut := range result.Mutations {
 			leaf := types.SMTLeaf{
 				Key:          mut.LeafKey,
@@ -468,6 +571,24 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			}
 			if setErr := bl.leafStore.SetTx(ctx, tx, mut.LeafKey, leaf); setErr != nil {
 				return fmt.Errorf("set leaf %x: %w", mut.LeafKey[:8], setErr)
+			}
+		}
+
+		// Promote the OverlayNodeCache mutations into the durable
+		// backing cache (smt_nodes + in-memory) within this tx so a
+		// rollback discards them atomically with the leaf writes. The
+		// depth is encoded as 0 here — the SDK's NodeCache.Set
+		// interface drops the actual depth, and the depth column on
+		// smt_nodes is metadata for WarmCache filtering only, not for
+		// correctness.
+		if bl.rootStore != nil {
+			for k, v := range nodeCacheMutations {
+				if sErr := bl.nodeCache.SetWithDepthTx(ctx, tx, k, v, 0); sErr != nil {
+					return fmt.Errorf("set smt node %x: %w", k[:8], sErr)
+				}
+			}
+			if rErr := bl.rootStore.SetTx(ctx, tx, newRoot, maxBatchSeq); rErr != nil {
+				return fmt.Errorf("set smt root state: %w", rErr)
 			}
 		}
 
@@ -483,8 +604,8 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 
 		return nil
 	})
-	if err != nil {
-		return 0, fmt.Errorf("atomic commit: %w", err)
+	if commitErr != nil {
+		return 0, fmt.Errorf("atomic commit: %w", commitErr)
 	}
 
 	// ──────────────────────────────────────────────────────────────────
