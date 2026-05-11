@@ -94,9 +94,12 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
 	"github.com/clearcompass-ai/attesta/types"
 
+	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
+
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
 	"github.com/clearcompass-ai/ledger/apitypes"
+	opbuilder "github.com/clearcompass-ai/ledger/builder"
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/sequencer"
 	"github.com/clearcompass-ai/ledger/shipper"
@@ -382,14 +385,14 @@ func startSoakLedger(t *testing.T) *soakLedger {
 
 	// Tree handlers (/v1/tree/head, /v1/tree/inclusion, /v1/tree/consistency).
 	//
-	// The soak has no builder loop, so the production TreeHeadStore
-	// (Postgres-backed cosigned heads) never gets populated. Instead
-	// the TreeHeadFetcher reads directly from the live Tessera
+	// The TreeHeadFetcher reads directly from the live Tessera
 	// checkpoint via soakTreeHeadFetcher — TreeSize + RootHash are
-	// real Merkle state; Signatures is empty because witness
-	// cosignature is a separate-harness concern (witnessed_harness
-	// tests). verifyTreeIntegrity only asserts TreeSize >= submitted
-	// and RootHash is 32 bytes, both of which this satisfies.
+	// real Merkle state. Signatures is empty because the soak does
+	// not wait for witness cosignature on every checkpoint (the
+	// witness fixture in soakHarness exists for the builder loop's
+	// cosigner needs, NOT for verifying head signatures here).
+	// verifyTreeIntegrity only asserts TreeSize >= submitted and
+	// RootHash is 32 bytes, both of which this satisfies.
 	//
 	// Inclusion + Consistency come from the same Tessera adapter
 	// the e2e + integration harnesses use — real Merkle proof
@@ -402,6 +405,48 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		Logger:        logger,
 	}
 
+	// Builder-loop dependencies — required to populate the SMT so
+	// /v1/smt/root and /v1/smt/proof return real per-key state. The
+	// builder runs alongside the sequencer: sequencer writes to
+	// entry_index, builder reads from entry_index via the cursor
+	// reader, computes mutations via SDK ProcessBatch, applies them
+	// to the SMT, and commits in a single PG transaction.
+	leafStore := store.NewPostgresLeafStore(pool)
+	nodeCache := store.NewPostgresNodeCache(ctx, pool, 10000)
+	smtTree := smt.NewTree(leafStore, nodeCache)
+	cursorReader := opbuilder.NewCursorReader(sequenceCursor)
+	bufferStore := opbuilder.NewDeltaBufferStore(pool, 10, logger)
+	deltaBuffer, _ := bufferStore.Load(ctx)
+	if deltaBuffer == nil {
+		deltaBuffer = sdkbuilder.NewDeltaWindowBuffer(10)
+	}
+	// CommitmentPublisher with a no-op publish callback — soak does
+	// not exercise the commitment-publish path. Mirrors the production
+	// integration tests in testserver_setup_test.go and scale_test.go.
+	commitPub := opbuilder.NewCommitmentPublisher(
+		testLogDID, testLogDID,
+		opbuilder.CommitmentPublisherConfig{
+			IntervalEntries: 100_000,
+			IntervalTime:    24 * time.Hour,
+		},
+		func(e *envelope.Entry) error { return nil },
+		logger,
+	)
+
+	// SMTDeps + SMT handlers. The /v1/smt/root handler reads
+	// tree.Root(ctx) which always returns a valid 32-byte hash (even
+	// the empty-tree root). /v1/smt/proof/{key} returns membership
+	// proofs for keys the builder has inserted, non-membership for
+	// keys it hasn't. verifySMTConsistency requires every soak entry
+	// to produce a membership proof, which the workload's
+	// AuthorityPath=&AuthoritySameSigner setting guarantees by
+	// routing each entry through the SDK's NewLeaf path.
+	smtDeps := &api.SMTDeps{
+		Tree:      smtTree,
+		LeafStore: leafStore,
+		Logger:    logger,
+	}
+
 	handlers := api.Handlers{
 		Submission:      api.NewSubmissionHandler(submissionDeps),
 		Difficulty:      api.NewDifficultyHandler(queryDeps),
@@ -410,6 +455,9 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		TreeHead:        api.NewTreeHeadHandler(treeDeps),
 		TreeInclusion:   api.NewTreeInclusionHandler(treeDeps),
 		TreeConsistency: api.NewTreeConsistencyHandler(treeDeps),
+		SMTProof:        api.NewSMTProofHandler(smtDeps),
+		SMTBatchProof:   api.NewSMTBatchProofHandler(smtDeps),
+		SMTRoot:         api.NewSMTRootHandler(smtDeps),
 		// EntryByHash wires GET /v1/entries-hash/{hashHex}, which the
 		// soak verify pass needs to resolve hash→seq before fetching
 		// /v1/entries/{seq}/raw. Without this handler, the route 404s
@@ -452,6 +500,21 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		Logger:       logger,
 	})
 
+	// Builder loop: entry_index → SDK ProcessBatch → SMT mutations →
+	// atomic PG commit. Reads new sequences via the cursor reader,
+	// derives mutations via SDK, applies to the live SMT tree. The
+	// soak's workload sets AuthorityPath=&AuthoritySameSigner so
+	// every entry routes through the NewLeaf path and produces
+	// exactly one SMT mutation per sequence.
+	loopCfg := opbuilder.DefaultLoopConfig(testLogDID)
+	loopCfg.PollInterval = 10 * time.Millisecond
+	loopCfg.BatchSize = 500
+	builderLoop := opbuilder.NewBuilderLoop(
+		loopCfg, pool, smtTree, leafStore, nodeCache,
+		cursorReader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
+		soakHarness.Adapter, soakHarness.Cosigner, logger,
+	)
+
 	go func() { _ = server.Serve(ln) }()
 	seqDone := make(chan struct{})
 	go func() {
@@ -462,6 +525,11 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	go func() {
 		_ = ship.Run(ctx)
 		close(shipDone)
+	}()
+	builderDone := make(chan struct{})
+	go func() {
+		_ = builderLoop.Run(ctx)
+		close(builderDone)
 	}()
 
 	op := &soakLedger{
@@ -486,7 +554,7 @@ func startSoakLedger(t *testing.T) *soakLedger {
 		Server:        server,
 		Tessera:       merkle,
 		Cancel:        cancel,
-		GoroutineDone: []<-chan struct{}{seqDone, shipDone},
+		GoroutineDone: []<-chan struct{}{seqDone, shipDone, builderDone},
 		WALC:          walc,
 		WALDB:         walDB,
 		Pool:          pool,
@@ -644,10 +712,19 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			client := newTunedHTTPClient(30 * time.Second)
+			authorityPath := envelope.AuthoritySameSigner
 			for i := 0; i < per; i++ {
 				idx := workerID*per + i
+				// AuthorityPath:&AuthoritySameSigner with TargetRoot:nil
+				// routes the entry through the SDK's NewLeaf path
+				// (attesta/builder/algorithm.go:50-63): one SMT mutation
+				// per sequence. Without this, every entry classifies as
+				// PathResultCommentary (no SMT write), and
+				// verifySMTConsistency's membership-proof assertion fails
+				// for every sampled seq because the SMT is empty.
 				wire := buildWireEntry(t, envelope.ControlHeader{
-					SignerDID: "did:example:soak-signer",
+					SignerDID:     "did:example:soak-signer",
+					AuthorityPath: &authorityPath,
 				}, []byte(fmt.Sprintf("soak-%010d", idx)))
 
 				reqStart := time.Now()
