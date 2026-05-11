@@ -523,6 +523,8 @@ var _ AppenderBackend = (*ReadOnlyAppender)(nil)
 //	         ledger does not)
 //
 // Both EmbeddedAppender.Head and ReadOnlyAppender.Head call this.
+// cmd/rebuild-projection also calls it (via the exported alias
+// ParseCheckpoint) to recover the tree size before walking tiles.
 func parseSignedNoteCheckpoint(data []byte) (types.TreeHead, error) {
 	text := string(data)
 	lines := strings.Split(text, "\n")
@@ -563,4 +565,12 @@ func parseSignedNoteCheckpoint(data []byte) (types.TreeHead, error) {
 	head.TreeSize = treeSize
 	copy(head.RootHash[:], rootBytes)
 	return head, nil
+}
+
+// ParseCheckpoint is the exported wrapper around the c2sp.org/tlog-tiles
+// signed-note checkpoint parser. cmd/rebuild-projection uses it to
+// recover the tree size from a tile-store-backed `checkpoint` file
+// without needing to wire up the full Tessera reader machinery.
+func ParseCheckpoint(data []byte) (types.TreeHead, error) {
+	return parseSignedNoteCheckpoint(data)
 }
