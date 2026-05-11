@@ -374,6 +374,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	beginStart := time.Now()
 	var seqs []uint64
 	dqErr := store.WithReadCommittedTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		var iErr error
@@ -386,12 +387,14 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	if len(seqs) == 0 {
 		return 0, nil
 	}
+	beginDur := time.Since(beginStart)
 
 	// ── Step 2: Fetch entries in sequence order ───────────────────────
 	if cErr := ctx.Err(); cErr != nil {
 		return 0, cErr
 	}
 
+	fetchStart := time.Now()
 	metas := make([]*types.EntryWithMetadata, 0, len(seqs))
 	for _, seq := range seqs {
 		p := types.LogPosition{LogDID: bl.cfg.LogDID, Sequence: seq}
@@ -401,6 +404,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		}
 		metas = append(metas, meta)
 	}
+	fetchDur := time.Since(fetchStart)
 
 	// ── Step 3: Split EntryWithMetadata → entries + positions ─────────
 	entries := make([]*envelope.Entry, len(metas))
@@ -425,6 +429,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
 	overlayTree.SetRoot(priorRoot)
 
+	processStart := time.Now()
 	result, err := sdkbuilder.ProcessBatch(
 		ctx,
 		overlayTree, entries, positions,
@@ -433,6 +438,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("ProcessBatch: %w", err)
 	}
+	processDur := time.Since(processStart)
 
 	// ── Step 5 (PRE-COMMIT): Append entry identities to Tessera ───────
 	//
@@ -448,6 +454,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// Moved BEFORE the Postgres atomic commit so the cosignature step
 	// (Step 7) can see the new head and a witness-quorum failure aborts
 	// the batch BEFORE non-idempotent Postgres state advances.
+	appendStart := time.Now()
 	var lastAppendedIdx uint64
 	appendedAtLeastOne := false
 	if bl.merkle != nil {
@@ -466,6 +473,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			appendedAtLeastOne = true
 		}
 	}
+	appendDur := time.Since(appendStart)
 
 	// ── Step 6 (PRE-COMMIT): Wait for Tessera Head to reflect batch ──
 	//
@@ -475,6 +483,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// CheckpointInterval). Cosigning a head that pre-dates this batch
 	// would defeat the entire pre-commit gate. Bounded poll bridges
 	// the gap between integration and checkpoint publication.
+	headWaitStart := time.Now()
 	var head types.TreeHead
 	if appendedAtLeastOne && bl.merkle != nil {
 		var hErr error
@@ -483,6 +492,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("wait for head: %w", hErr)
 		}
 	}
+	headWaitDur := time.Since(headWaitStart)
 
 	// ── Step 7 (PRE-COMMIT): Request witness cosignatures ────────────
 	//
@@ -498,6 +508,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// cursor, the sequencer's MaxBuilderLag gate fires, the WAL
 	// saturates, and HTTP admission returns 503 Retry-After. Public
 	// API behaviour reflects the network's actual readiness.
+	cosignStart := time.Now()
 	var cosigned types.CosignedTreeHead
 	cosignSucceeded := false
 	if bl.merkle != nil && bl.witness != nil && head.TreeSize > 0 {
@@ -511,6 +522,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		}
 		cosignSucceeded = true
 	}
+	cosignDur := time.Since(cosignStart)
 
 	// ── Step 8a: New SMT root (v0.3.0 — produced by ProcessBatch) ────
 	//
@@ -543,6 +555,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	commitStart := time.Now()
 	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		// Leaves first — every mutation produced by ProcessBatch
 		// becomes a row in smt_leaves under the tx.
@@ -592,6 +605,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	if commitErr != nil {
 		return 0, fmt.Errorf("atomic commit: %w", commitErr)
 	}
+	commitDur := time.Since(commitStart)
 
 	// Advance the read-side tree's rootHash to match the persisted
 	// state. API handlers reading from bl.tree now observe the new
@@ -630,6 +644,18 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		bl.buffer = result.UpdatedBuffer
 	}
 
+	// Per-stage timing — surfaces which step dominates each batch.
+	// Stages match the inline section headers above:
+	//   begin     = Step 1  (BeginBatch dequeue)
+	//   fetch     = Step 2  (PG entry fetch loop)
+	//   process   = Step 4  (SDK ProcessBatch — overlay SMT mutations)
+	//   append    = Step 5  (Tessera AppendLeaf loop)
+	//   head_wait = Step 6  (Tessera signed-checkpoint catch-up poll)
+	//   cosign    = Step 7  (K-of-N witness cosignature collection)
+	//   commit    = Step 8  (atomic PG tx: leaves+nodes+root+buffer+cursor+fsync)
+	// total = sum of the above; gives the per-batch latency floor.
+	totalDur := beginDur + fetchDur + processDur + appendDur +
+		headWaitDur + cosignDur + commitDur
 	bl.logger.Info("batch processed",
 		"entries", len(seqs),
 		"new_leaves", result.NewLeafCounts,
@@ -638,6 +664,14 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		"path_c", result.PathCCounts,
 		"path_d", result.PathDCounts,
 		"commentary", result.CommentaryCounts,
+		"begin", beginDur.Round(time.Microsecond),
+		"fetch", fetchDur.Round(time.Microsecond),
+		"process", processDur.Round(time.Microsecond),
+		"append", appendDur.Round(time.Microsecond),
+		"head_wait", headWaitDur.Round(time.Microsecond),
+		"cosign", cosignDur.Round(time.Microsecond),
+		"commit", commitDur.Round(time.Microsecond),
+		"total", totalDur.Round(time.Microsecond),
 	)
 
 	return len(seqs), nil
