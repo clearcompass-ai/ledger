@@ -289,6 +289,10 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 		return
 	}
 	tesseraElapsed := time.Since(tesseraStart)
+	// Aggregate observation — feeds the end-of-run / end-of-soak
+	// summary that answers "does Tessera saturate at MaxInFlight=N".
+	// Lock-free; safe to call from every stage-1 worker concurrently.
+	s.metrics.tesseraLatency.Observe(tesseraElapsed)
 	// Per-entry probe — DEBUG so it surfaces only when explicitly
 	// enabled for forensics. INFO-level production runs see the
 	// committer's batch-level log lines instead (one per ~16 entries),

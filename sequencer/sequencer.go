@@ -266,6 +266,14 @@ type Metrics struct {
 	// failed; the duplicate is what unblocks the entry. Should be
 	// ~zero in steady state; non-zero implies Badger / WAL pressure.
 	staleCrashRecoveries atomic.Uint64
+
+	// tesseraLatency — per-call AppendLeaf timing histogram. Populated
+	// by stage-1 workers in loop.go::processOne. Initialized in
+	// NewSequencer; never nil after construction. Exists to answer
+	// the scale question "does Tessera saturate at MaxInFlight=N" with
+	// evidence rather than guesswork — the soak's end-of-run summary
+	// prints a snapshot.
+	tesseraLatency *LatencyHistogram
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
@@ -283,11 +291,12 @@ type MetricsSnapshot struct {
 	CommitBatchFailures      uint64
 	StaleDuplicatesDiscarded uint64
 	StaleCrashRecoveries     uint64
+	TesseraLatency           LatencyHistogramSnapshot
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
-	return MetricsSnapshot{
+	snap := MetricsSnapshot{
 		DrainCycles:              m.drainCycles.Load(),
 		Processed:                m.processed.Load(),
 		Failures:                 m.failures.Load(),
@@ -301,6 +310,10 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		StaleDuplicatesDiscarded: m.staleDuplicatesDiscarded.Load(),
 		StaleCrashRecoveries:     m.staleCrashRecoveries.Load(),
 	}
+	if m.tesseraLatency != nil {
+		snap.TesseraLatency = m.tesseraLatency.Snapshot()
+	}
+	return snap
 }
 
 // SplitIDIndexWriter is the ledger-internal hook the
@@ -450,7 +463,7 @@ func NewSequencer(
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Sequencer{
+	s := &Sequencer{
 		wal:           w,
 		tessera:       t,
 		db:            db,
@@ -460,6 +473,8 @@ func NewSequencer(
 		attempts:      make(map[[32]byte]uint32),
 		committerHeap: &committerHeap{},
 	}
+	s.metrics.tesseraLatency = newLatencyHistogram()
+	return s
 }
 
 // WithSplitIDIndex wires the gossipstore-backed splitid index

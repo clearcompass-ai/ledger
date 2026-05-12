@@ -103,6 +103,19 @@ func (f *fakeWAL) seed(hash [32]byte, wire []byte) {
 	f.bytes[hash] = wire
 }
 
+// sequencedFor returns the seq the WAL has recorded for hash, plus a
+// presence flag. Reads under f.mu so tests observing committer
+// progress don't race the committer's own writes (which also take
+// f.mu). Necessary because the committer goroutine runs concurrently
+// with the test body via t.Cleanup; bare map indexing from the test
+// would be an unsynchronized read.
+func (f *fakeWAL) sequencedFor(hash [32]byte) (uint64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seq, ok := f.sequenced[hash]
+	return seq, ok
+}
+
 func (f *fakeWAL) IterateInflight(ctx context.Context, fn func(wal.PendingHash) error) error {
 	f.mu.Lock()
 	pending := append([]wal.PendingHash(nil), f.pending...)
@@ -667,7 +680,7 @@ func TestSequencer_processOne_DuplicateHash_StaleRecover(t *testing.T) {
 	// First drain: clean path, state Pending → Sequenced.
 	s.drainOnce(context.Background())
 	waitForProcessed(t, s, 1)
-	firstSeq := w.sequenced[hash]
+	firstSeq, _ := w.sequencedFor(hash)
 
 	// Re-pendingify: simulates the post-PG-commit, pre-WAL.Sequence
 	// crash scenario. entry_index has the row (the committer's
@@ -688,7 +701,7 @@ func TestSequencer_processOne_DuplicateHash_StaleRecover(t *testing.T) {
 	waitForStaleCrashRecoveries(t, s, 1)
 
 	// Tessera dedup invariant: same hash → same seq.
-	if got := w.sequenced[hash]; got != firstSeq {
+	if got, _ := w.sequencedFor(hash); got != firstSeq {
 		t.Errorf("second drain assigned different seq: %d != %d (Tessera dedup broken?)", got, firstSeq)
 	}
 	// AppendLeaf called twice (stage-1 re-ran).
