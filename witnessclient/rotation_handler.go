@@ -14,9 +14,11 @@ package witnessclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -29,6 +31,12 @@ type RotationHandler struct {
 	currentSet []types.WitnessPublicKey
 	schemeTag  byte
 	logger     *slog.Logger
+
+	// emitter broadcasts each successful rotation as a gossip event.
+	// nil = gossip-disabled deployment (the rotation still applies
+	// locally; auditors will catch up via anti-entropy when an
+	// emitter is wired). See rotation_emitter.go.
+	emitter WitnessRotationEmitter
 }
 
 // NewRotationHandler creates a rotation handler with the current witness set.
@@ -44,6 +52,14 @@ func NewRotationHandler(
 		schemeTag:  schemeTag,
 		logger:     logger,
 	}
+}
+
+// WithEmitter wires the gossip-emitter. nil is permitted (gossip-
+// disabled). Returns the receiver so callers can chain. Mirrors the
+// sequencer's WithGhostLeafEmitter pattern.
+func (rh *RotationHandler) WithEmitter(e WitnessRotationEmitter) *RotationHandler {
+	rh.emitter = e
+	return rh
 }
 
 // ProcessRotation validates and applies a witness set rotation.
@@ -102,7 +118,33 @@ func (rh *RotationHandler) ProcessRotation(
 		"dual_sign", isDualSign,
 	)
 
+	// Broadcast the rotation to the gossip network so tailing
+	// auditors update their key registry. nil emitter = single-
+	// ledger / gossip-disabled mode (the rotation still applies
+	// locally; this branch is skipped).
+	if rh.emitter != nil {
+		rh.emitter.Emit(ctx, WitnessRotationEvent{
+			PreviousSetHash:   rotation.CurrentSetHash,
+			NewSetHash:        computeWitnessSetHash(keysJSON),
+			OldSchemeTag:      rotation.SchemeTagOld,
+			NewSchemeTag:      newScheme,
+			NewKeysCount:      len(rotation.NewSet),
+			DualSigned:        isDualSign,
+			AppliedAtUnixNano: time.Now().UnixNano(),
+		})
+	}
+
 	return rotation.NewSet, nil
+}
+
+// computeWitnessSetHash returns SHA-256 of the canonical JSON
+// encoding of a witness set. Used as a stable identifier the
+// network can index. STUB: SDK v0.6.0 will publish the canonical
+// fingerprint shape (likely matching findings.WitnessRotation
+// Finding.NewSetHash); when the SDK lands, swap this helper for
+// the canonical version.
+func computeWitnessSetHash(keysJSON []byte) [32]byte {
+	return sha256.Sum256(keysJSON)
 }
 
 // CurrentSet returns the active witness key set.

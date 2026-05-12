@@ -56,7 +56,7 @@ func hashOf(s string) [32]byte {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	wal := &fakeWAL{
 		hwm:    1,
 		hashAt: map[uint64][32]byte{1: hashOf("wal-version")},
@@ -65,7 +65,7 @@ func TestDetector_Loop_DivergencePropagatesViaPanic(t *testing.T) {
 
 	d := NewDetector(
 		wal,
-		NewVerifier(tiles),
+		NewVerifier(tiles.Fetch),
 		DetectorConfig{
 			SampleInterval:  5 * time.Millisecond,
 			SamplesPerCycle: 1,

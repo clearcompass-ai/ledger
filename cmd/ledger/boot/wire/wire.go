@@ -643,10 +643,17 @@ func composeShipper(cfg Config, d *deps.AppDeps) *shipper.Shipper {
 }
 
 // composeIntegrityDetector builds the periodic sample-verify detector.
+//
+// The verifier consumes a tessera/client.TileFetcherFunc directly —
+// *tessera.TileReader.Fetch satisfies the upstream signature and
+// implements the .p/N→full fallback per the c2sp.org/tlog-tiles
+// contract. The pre-cleanup path used ReadEntryTile (which always
+// asked for the full-tile path) and FATAL'd at boot whenever Tessera
+// had only flushed a partial tile — that codepath is now deleted.
 func composeIntegrityDetector(d *deps.AppDeps) *integrity.Detector {
 	return integrity.NewDetector(
 		d.WALCommitter,
-		integrity.NewTesseraAdapter(d.TileReader),
+		integrity.NewVerifier(d.TileReader.Fetch),
 		integrity.DetectorConfig{Logger: d.Logger},
 	)
 }

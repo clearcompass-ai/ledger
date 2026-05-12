@@ -41,6 +41,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 )
@@ -49,16 +50,18 @@ import (
 // Fakes
 // ─────────────────────────────────────────────────────────────────────
 
-// fakeTileReader satisfies TileReader by returning canned tiles.
-// Each tile is a 256 × 32-byte block of leaf hashes (Tessera tile
-// format). Tests seed by writing to the (level=0, index=tileIndex)
-// slot via putHashAtSeq.
-type fakeTileReader struct {
+// fakeTesseraView satisfies tessera/client.TileFetcherFunc via
+// its Fetch method. Each tile is a 256 × 32-byte block of leaf
+// hashes (Tessera tile format). Tests seed by writing to the
+// (level=0, index=tileIndex) slot via putHashAtSeq; missing tiles
+// return os.ErrNotExist so the verifier translates the absence
+// into ErrTileNotYetFlushed.
+type fakeTesseraView struct {
 	tiles map[uint64][]byte
 }
 
-func newFakeTileReader() *fakeTileReader {
-	return &fakeTileReader{tiles: map[uint64][]byte{}}
+func newFakeTesseraView() *fakeTesseraView {
+	return &fakeTesseraView{tiles: map[uint64][]byte{}}
 }
 
 // putHashAtSeq packs hash at (seq/256, seq%256) into the fake tile
@@ -66,7 +69,7 @@ func newFakeTileReader() *fakeTileReader {
 // of big-endian length prefix followed by the leaf hash. The
 // real Tessera tile parser (tessera.ParseEntryBundle) expects
 // this shape; a naive flat-array layout would parse-fail.
-func (f *fakeTileReader) putHashAtSeq(t *testing.T, seq uint64, hash [32]byte) {
+func (f *fakeTesseraView) putHashAtSeq(t *testing.T, seq uint64, hash [32]byte) {
 	t.Helper()
 	tileIdx := seq / EntriesPerEntryTile
 	off := seq % EntriesPerEntryTile
@@ -87,10 +90,16 @@ func (f *fakeTileReader) putHashAtSeq(t *testing.T, seq uint64, hash [32]byte) {
 	f.tiles[tileIdx] = tile
 }
 
-func (f *fakeTileReader) ReadEntryTile(ctx context.Context, index uint64) ([]byte, error) {
+// Fetch satisfies tessera/client.TileFetcherFunc. The fake ignores
+// level (always 0 for entry tiles in the verifier's usage) and p
+// (the fake's in-memory tiles are flat blobs keyed only by index).
+// Real *tessera.TileReader.Fetch respects p via the .p/N path
+// fallback; that behavior is exercised separately in
+// verifier_partial_tile_test.go.
+func (f *fakeTesseraView) Fetch(_ context.Context, _ uint64, index uint64, _ uint8) ([]byte, error) {
 	tile, ok := f.tiles[index]
 	if !ok {
-		return nil, fmt.Errorf("fakeTileReader: tile %d not found", index)
+		return nil, fmt.Errorf("fakeTesseraView: tile %d: %w", index, os.ErrNotExist)
 	}
 	return tile, nil
 }
@@ -127,11 +136,11 @@ func discardLogger() *slog.Logger {
 // ─────────────────────────────────────────────────────────────────────
 
 func TestVerifier_HashAt_RoundTrip(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	want := sha256.Sum256([]byte("hash-at-seq-42"))
 	tiles.putHashAtSeq(t, 42, want)
 
-	v := NewVerifier(tiles)
+	v := NewVerifier(tiles.Fetch)
 	got, err := v.HashAt(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("HashAt: %v", err)
@@ -142,13 +151,13 @@ func TestVerifier_HashAt_RoundTrip(t *testing.T) {
 }
 
 func TestVerifier_HashAt_DistinctSeqs(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	a := sha256.Sum256([]byte("seq-1"))
 	b := sha256.Sum256([]byte("seq-300")) // different tile
 	tiles.putHashAtSeq(t, 1, a)
 	tiles.putHashAtSeq(t, 300, b)
 
-	v := NewVerifier(tiles)
+	v := NewVerifier(tiles.Fetch)
 	gotA, err := v.HashAt(context.Background(), 1)
 	if err != nil || gotA != a {
 		t.Fatalf("seq=1: got %x err=%v, want %x", gotA[:8], err, a[:8])
@@ -160,10 +169,16 @@ func TestVerifier_HashAt_DistinctSeqs(t *testing.T) {
 }
 
 func TestVerifier_HashAt_TileMissingErrors(t *testing.T) {
-	tiles := newFakeTileReader()
-	v := NewVerifier(tiles)
-	if _, err := v.HashAt(context.Background(), 7); err == nil {
+	tiles := newFakeTesseraView()
+	v := NewVerifier(tiles.Fetch)
+	_, err := v.HashAt(context.Background(), 7)
+	if err == nil {
 		t.Fatal("expected error for missing tile")
+	}
+	// The missing tile must surface as ErrTileNotYetFlushed so the
+	// Detector skips the sample instead of treating it as divergence.
+	if !errors.Is(err, ErrTileNotYetFlushed) {
+		t.Errorf("got %v, want errors.Is(err, ErrTileNotYetFlushed)", err)
 	}
 }
 
@@ -175,32 +190,13 @@ func TestVerifier_NilReader_Errors(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TesseraAdapter — Verifier surface only
-// ─────────────────────────────────────────────────────────────────────
-
-func TestTesseraAdapter_VerifierSurface(t *testing.T) {
-	tiles := newFakeTileReader()
-	id := sha256.Sum256([]byte("adapter-test"))
-	tiles.putHashAtSeq(t, 7, id)
-
-	a := NewTesseraAdapter(tiles)
-	got, err := a.HashAt(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("HashAt: %v", err)
-	}
-	if got != id {
-		t.Fatalf("HashAt: got %x, want %x", got[:8], id[:8])
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Detector — SampleVerify
 // ─────────────────────────────────────────────────────────────────────
 
 func TestDetector_SampleVerify_HWMZeroIsNoOp(t *testing.T) {
 	d := NewDetector(
 		&fakeWAL{hwm: 0},
-		NewVerifier(newFakeTileReader()),
+		NewVerifier(newFakeTesseraView().Fetch),
 		DetectorConfig{SamplesPerCycle: 5, Logger: discardLogger()},
 	)
 	if err := d.SampleVerify(context.Background()); err != nil {
@@ -209,7 +205,7 @@ func TestDetector_SampleVerify_HWMZeroIsNoOp(t *testing.T) {
 }
 
 func TestDetector_SampleVerify_AllAgree(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	wal := &fakeWAL{hwm: 5, hashAt: map[uint64][32]byte{}}
 	for seq := uint64(1); seq <= 5; seq++ {
 		h := sha256.Sum256([]byte(fmt.Sprintf("seq-%d", seq)))
@@ -218,7 +214,7 @@ func TestDetector_SampleVerify_AllAgree(t *testing.T) {
 	}
 	d := NewDetector(
 		wal,
-		NewVerifier(tiles),
+		NewVerifier(tiles.Fetch),
 		DetectorConfig{
 			SamplesPerCycle: 5,
 			Rand:            rand.New(rand.NewSource(1)),
@@ -231,7 +227,7 @@ func TestDetector_SampleVerify_AllAgree(t *testing.T) {
 }
 
 func TestDetector_SampleVerify_DivergenceReturnsErrDiverged(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	wal := &fakeWAL{hwm: 5, hashAt: map[uint64][32]byte{}}
 	walHash := sha256.Sum256([]byte("wal-version"))
 	tessHash := sha256.Sum256([]byte("tessera-version"))
@@ -251,7 +247,7 @@ func TestDetector_SampleVerify_DivergenceReturnsErrDiverged(t *testing.T) {
 	}
 	d := NewDetector(
 		wal,
-		NewVerifier(tiles),
+		NewVerifier(tiles.Fetch),
 		DetectorConfig{
 			SamplesPerCycle: 20, // hit seq 3 with high probability
 			Rand:            rand.New(rand.NewSource(1)),
@@ -268,7 +264,7 @@ func TestDetector_SampleVerify_DivergenceReturnsErrDiverged(t *testing.T) {
 }
 
 func TestDetector_SampleVerify_WALMissDoesNotDiverge(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	wal := &fakeWAL{
 		hwm:     3,
 		hashAt:  map[uint64][32]byte{},
@@ -284,7 +280,7 @@ func TestDetector_SampleVerify_WALMissDoesNotDiverge(t *testing.T) {
 	}
 	d := NewDetector(
 		wal,
-		NewVerifier(tiles),
+		NewVerifier(tiles.Fetch),
 		DetectorConfig{
 			SamplesPerCycle: 10,
 			Rand:            rand.New(rand.NewSource(1)),
@@ -303,7 +299,7 @@ func TestDetector_SampleVerify_WALMissDoesNotDiverge(t *testing.T) {
 func TestDetector_Loop_ContextCancelReturnsCancelErr(t *testing.T) {
 	d := NewDetector(
 		&fakeWAL{},
-		NewVerifier(newFakeTileReader()),
+		NewVerifier(newFakeTesseraView().Fetch),
 		DetectorConfig{
 			SampleInterval: 50 * time.Millisecond,
 			Logger:         discardLogger(),
@@ -317,7 +313,7 @@ func TestDetector_Loop_ContextCancelReturnsCancelErr(t *testing.T) {
 }
 
 func TestDetector_Loop_DivergenceStopsLoop(t *testing.T) {
-	tiles := newFakeTileReader()
+	tiles := newFakeTesseraView()
 	wal := &fakeWAL{
 		hwm:    1,
 		hashAt: map[uint64][32]byte{1: sha256.Sum256([]byte("wal"))},
@@ -326,7 +322,7 @@ func TestDetector_Loop_DivergenceStopsLoop(t *testing.T) {
 
 	d := NewDetector(
 		wal,
-		NewVerifier(tiles),
+		NewVerifier(tiles.Fetch),
 		DetectorConfig{
 			SampleInterval:  10 * time.Millisecond,
 			SamplesPerCycle: 1,
