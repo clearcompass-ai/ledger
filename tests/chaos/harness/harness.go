@@ -160,10 +160,10 @@ func New(t *testing.T, cfg Config) *Harness {
 		}
 	}
 
-	// Bytestore env — reused across Start cycles.
-	h.bytestoreEnv = bytestoreEnvFromEnviron(t)
-	h.bytestorePrefix = fmt.Sprintf("chaos/%d/%d",
-		os.Getpid(), time.Now().UnixNano())
+	// Bytestore env — reused across Start cycles. Sourcing +
+	// per-test prefix isolation lives in bytestore.go.
+	h.bytestoreEnv = bytestoreEnv(t)
+	h.bytestorePrefix = bytestorePrefix()
 
 	// Per-test Postgres database. The ledger's first boot runs
 	// migrations against this empty DB.
@@ -333,62 +333,6 @@ func (h *Harness) Process() *Process { return h.process }
 
 // LogDID returns the configured log DID.
 func (h *Harness) LogDID() string { return h.cfg.LogDID }
-
-// ─────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────
-
-// bytestoreEnvFromEnviron extracts ATTESTA_TEST_S3_* / ATTESTA_TEST_GCS_*
-// vars from the harness's env and translates them to LEDGER_BYTE_STORE_*
-// env vars. Reuses the same backend the soak runs against.
-func bytestoreEnvFromEnviron(t *testing.T) []string {
-	t.Helper()
-	backend := os.Getenv("ATTESTA_SOAK_BYTESTORE_BACKEND")
-	if backend == "" {
-		backend = os.Getenv("LEDGER_BYTE_STORE_BACKEND")
-	}
-	switch backend {
-	case "s3":
-		bucket := requireEnv(t, "ATTESTA_TEST_S3_BUCKET")
-		endpoint := os.Getenv("ATTESTA_TEST_S3_ENDPOINT")
-		access := os.Getenv("ATTESTA_TEST_S3_ACCESS_KEY")
-		secret := os.Getenv("ATTESTA_TEST_S3_SECRET_KEY")
-		region := os.Getenv("ATTESTA_TEST_S3_REGION")
-		pathStyle := os.Getenv("ATTESTA_TEST_S3_PATH_STYLE")
-		out := []string{
-			"LEDGER_BYTE_STORE_BACKEND=s3",
-			"LEDGER_BYTE_STORE_S3_BUCKET=" + bucket,
-		}
-		if endpoint != "" {
-			out = append(out, "LEDGER_BYTE_STORE_S3_ENDPOINT="+endpoint)
-		}
-		if access != "" {
-			out = append(out, "LEDGER_BYTE_STORE_S3_ACCESS_KEY="+access)
-		}
-		if secret != "" {
-			out = append(out, "LEDGER_BYTE_STORE_S3_SECRET_KEY="+secret)
-		}
-		if region != "" {
-			out = append(out, "LEDGER_BYTE_STORE_S3_REGION="+region)
-		}
-		if pathStyle == "true" || pathStyle == "1" {
-			out = append(out, "LEDGER_BYTE_STORE_S3_PATH_STYLE=true")
-		}
-		return out
-	default:
-		t.Skipf("chaos harness needs ATTESTA_SOAK_BYTESTORE_BACKEND=s3 (got %q)", backend)
-		return nil
-	}
-}
-
-func requireEnv(t *testing.T, name string) string {
-	t.Helper()
-	v := os.Getenv(name)
-	if v == "" {
-		t.Skipf("chaos harness needs %s", name)
-	}
-	return v
-}
 
 // Compile-time confirmations.
 var _ net.Listener = (*net.TCPListener)(nil)

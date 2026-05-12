@@ -22,14 +22,42 @@
 package kill_restart
 
 import (
+	"context"
 	"testing"
+
+	"github.com/clearcompass-ai/ledger/tests/chaos/harness"
 )
 
+// TestKillRestart_PreCommitPostPG — variant #2 (the most
+// load-bearing kill point).
+//
+// Variant-specific assertion: the staleCrashRecoveries metric
+// on the restarted sequencer MUST be > 0. That metric only
+// increments inside committerStaleRecover when MetaState
+// reports StatePending — i.e., the original PG-committed-but-
+// WAL-not-advanced state. If the recovery code fired, that
+// counter moves. If it's zero, either:
+//   (a) the kill didn't actually land between PG commit and
+//       WAL.Sequence (false-positive test pass)
+//   (b) some other code path advanced the WAL state instead
+//       (regression in the recovery logic)
+//
+// Either case is a failure. This assertion is what
+// distinguishes variant #2 from the others — the unit test
+// TestSequencer_processOne_DuplicateHash_StaleRecover validates
+// the same code with in-process state manipulation; here we
+// validate it under real SIGKILL.
 func TestKillRestart_PreCommitPostPG(t *testing.T) {
-	killRestartCycle(t, cycleOpts{
-		panicAt:            "pre_commit_post_pg",
+	r := killRestartCycle(t, cycleOpts{
+		killPoint:          harness.KillPointPreCommitPostPG,
 		afterN:             3, // panic after the 3rd batch commit
 		submitBeforeKill:   200,
 		submitAfterRestart: 50,
 	})
+
+	// Variant-specific: staleCrashRecoveries must have fired.
+	// The harness's invariant assertion confirms reconciliation
+	// completed; this confirms the SPECIFIC recovery path was
+	// the one that completed it.
+	assertStaleCrashRecoveriesPositive(context.Background(), t, r.h)
 }

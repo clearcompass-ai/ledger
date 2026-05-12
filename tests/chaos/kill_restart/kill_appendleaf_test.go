@@ -14,14 +14,37 @@
 package kill_restart
 
 import (
+	"context"
 	"testing"
+
+	"github.com/clearcompass-ai/ledger/tests/chaos/harness"
 )
 
+// TestKillRestart_PostAppendLeaf — variant #1.
+//
+// Variant-specific assertion: Tessera's antispam dedup must
+// return the SAME seq for the re-AppendLeaf call after restart.
+// If dedup were broken, the post-restart submitter would see
+// either (a) a duplicate seq in entry_index (gap or
+// double-assignment) or (b) an SCT with a different canonical
+// hash than the original submitter saw. Either case fails the
+// AssertInvariants step inside killRestartCycle (gaps=0 OR SMT
+// reconstruction mismatch).
+//
+// We capture the same hash being submitted on both sides of the
+// kill, then explicitly assert it landed exactly once in
+// entry_index. This is the property "Tessera antispam dedup
+// composes with our restart" — the load-bearing invariant of
+// variant #1.
 func TestKillRestart_PostAppendLeaf(t *testing.T) {
-	killRestartCycle(t, cycleOpts{
-		panicAt:            "post_appendleaf",
+	r := killRestartCycle(t, cycleOpts{
+		killPoint:          harness.KillPointPostAppendLeaf,
 		afterN:             30,
 		submitBeforeKill:   100,
 		submitAfterRestart: 50,
 	})
+
+	// Variant-specific: confirm no canonical-hash collisions
+	// in entry_index (Tessera antispam dedup invariant).
+	assertNoHashCollisions(context.Background(), t, r.h)
 }

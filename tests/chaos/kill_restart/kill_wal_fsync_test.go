@@ -21,14 +21,43 @@
 package kill_restart
 
 import (
+	"context"
 	"testing"
+
+	"github.com/clearcompass-ai/ledger/tests/chaos/harness"
 )
 
+// TestKillRestart_PreWALFsync — variant #4 (hardest durability
+// claim).
+//
+// Variant-specific assertion: every submission that the
+// harness's submitter recorded as 202-accepted MUST be
+// recoverable from entry_index after restart. The Badger WAL
+// replay on restart surfaces every txn committed before
+// SIGKILL, including the batch whose fsync was interrupted.
+// This is the "Phase 1 Liability Transfer" durability claim
+// the ledger makes to clients: every SCT returned is durable.
+//
+// The harness's AssertInvariants validates the FINAL count
+// matches `expected` (accepted + post-restart-submissions).
+// This variant-specific check adds: every canonical_hash the
+// submitter saw in a 202 response MUST be present in
+// entry_index. Catches the failure mode where the ledger
+// returns 202 but the entry is lost on kill.
+//
+// The cycleOpts.captureHashes flag instructs killRestartCycle
+// to record every 202'd canonical_hash for this purpose.
 func TestKillRestart_PreWALFsync(t *testing.T) {
-	killRestartCycle(t, cycleOpts{
-		panicAt:            "pre_wal_fsync",
-		afterN:             2, // panic after the 2nd group-commit
+	r := killRestartCycle(t, cycleOpts{
+		killPoint:          harness.KillPointPreWALFsync,
+		afterN:             2,
 		submitBeforeKill:   200,
 		submitAfterRestart: 50,
+		captureHashes:      true,
 	})
+
+	// Variant-specific: every 202'd canonical_hash MUST appear
+	// in entry_index. Validates the "every SCT is durable"
+	// claim under abrupt-power-loss semantics.
+	assertHashesPresent(context.Background(), t, r.h, r.acceptedHashes)
 }
