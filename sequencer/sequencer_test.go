@@ -50,6 +50,7 @@ import (
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 
+	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
@@ -343,6 +344,23 @@ func waitForManual(t *testing.T, s *Sequencer, n uint64) {
 		s.metrics.manualCount.Load(), n)
 }
 
+// waitForStaleCrashRecoveries blocks until s.metrics.staleCrashRecoveries
+// reaches at least n. Used by tests that exercise the
+// committer.committerStaleRecover crash-recovery branch (duplicate
+// stagedEntry arriving while WAL state is still Pending).
+func waitForStaleCrashRecoveries(t *testing.T, s *Sequencer, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.metrics.staleCrashRecoveries.Load() >= n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("waitForStaleCrashRecoveries: timeout (have staleCrashRecoveries=%d, want >= %d)",
+		s.metrics.staleCrashRecoveries.Load(), n)
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Lifecycle tests
 // ─────────────────────────────────────────────────────────────────────
@@ -627,11 +645,18 @@ func TestSequencer_processOne_DeserializeFailure_MarksManual(t *testing.T) {
 	}
 }
 
-func TestSequencer_processOne_TesseraDedup_Idempotent(t *testing.T) {
-	// Two pending entries with the SAME hash (simulates a v1 facade
-	// retry that landed in WAL twice for the same content). Tessera
-	// dedup makes both return the same seq; both Sequence calls
-	// land at the same final state.
+// TestSequencer_processOne_DuplicateHash_StaleRecover exercises the
+// crash-recovery branch of committer.committerStaleRecover. We
+// manually reset the WAL state back to Pending between drains —
+// simulating the rare path where the original commit's
+// WAL.Sequence call failed and left state lagging entry_index. The
+// committer's stale-recover should then advance the WAL forward
+// via the recovery branch (staleCrashRecoveries++), NOT
+// double-count the processed metric.
+//
+// The normal-race branch (state already past Pending → silent
+// discard) is covered by TestCommitterStaleRecover_NormalRace.
+func TestSequencer_processOne_DuplicateHash_StaleRecover(t *testing.T) {
 	w := newFakeWAL()
 	ts := newFakeTessera()
 	wire, hash := buildEntry(t, "dedup")
@@ -639,29 +664,137 @@ func TestSequencer_processOne_TesseraDedup_Idempotent(t *testing.T) {
 
 	s := newTestSequencer(t, w, ts, Config{})
 
-	// First drain succeeds.
+	// First drain: clean path, state Pending → Sequenced.
 	s.drainOnce(context.Background())
 	waitForProcessed(t, s, 1)
 	firstSeq := w.sequenced[hash]
 
-	// Re-seed to simulate a second drain catching the same hash
-	// before the state guard transitioned.
+	// Re-pendingify: simulates the post-PG-commit, pre-WAL.Sequence
+	// crash scenario. entry_index has the row (the committer's
+	// PG batch already committed for seq=firstSeq); WAL is back
+	// at Pending.
 	w.mu.Lock()
 	w.state[hash] = wal.StatePending
 	w.pending = []wal.PendingHash{{Hash: hash}}
 	w.mu.Unlock()
 
 	s.drainOnce(context.Background())
-	// The committer sees a duplicate seq from Tessera dedup;
-	// applyPostCommitForOne fires WAL.Sequence again (idempotent in
-	// the fake), so processed will tick to 2 once the committer
-	// handles the stale-discard path.
-	waitForProcessed(t, s, 2)
+
+	// Stage-1 re-runs and re-emits. The committer sees the duplicate
+	// seq, recognizes it's < nextExpectedSeq, probes MetaState,
+	// finds StatePending, and advances via Sequence. Wait for the
+	// recovery counter rather than for processed (which must NOT
+	// double-count — see method docs on committerStaleRecover).
+	waitForStaleCrashRecoveries(t, s, 1)
+
+	// Tessera dedup invariant: same hash → same seq.
 	if got := w.sequenced[hash]; got != firstSeq {
 		t.Errorf("second drain assigned different seq: %d != %d (Tessera dedup broken?)", got, firstSeq)
 	}
+	// AppendLeaf called twice (stage-1 re-ran).
 	if got := ts.calls.Load(); got != 2 {
-		t.Errorf("AppendLeaf called %d times across two drains; expected 2", got)
+		t.Errorf("AppendLeaf calls = %d, want 2", got)
+	}
+	// processed must stay at 1 — the duplicate did not introduce
+	// a new "processed entry", just a state-fix-up.
+	if got := s.metrics.processed.Load(); got != 1 {
+		t.Errorf("processed = %d, want 1 (stale recovery must not double-count)", got)
+	}
+	// staleDuplicatesDiscarded should stay 0 (we hit the recovery
+	// branch, not the silent-discard branch).
+	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 0 {
+		t.Errorf("staleDuplicatesDiscarded = %d, want 0 (recovery branch, not discard)", got)
+	}
+}
+
+// TestCommitterStaleRecover_NormalRace covers the steady-state
+// branch: a duplicate stagedEntry arrives whose WAL state has
+// already advanced past Pending. The committer must silently
+// discard (no redundant WAL.Sequence, which would race the shipper
+// and surface as "want pending" warnings).
+//
+// We invoke committerStaleRecover directly to avoid the drainOnce
+// scheduling that would short-circuit the duplicate at the
+// MetaState guard in processOne — the goal here is to pin the
+// committer-side behavior under the duplicate-arrival contract.
+func TestCommitterStaleRecover_NormalRace(t *testing.T) {
+	w := newFakeWAL()
+	ts := newFakeTessera()
+	_, hash := buildEntry(t, "normal-race")
+	s := newTestSequencerNoCommitter(t, w, ts, Config{})
+
+	// Set WAL state to StateSequenced — what it would be after a
+	// successful prior commit. No need to seed the wire bytes;
+	// committerStaleRecover only consults MetaState.
+	w.mu.Lock()
+	w.state[hash] = wal.StateSequenced
+	w.sequenced[hash] = 42
+	w.mu.Unlock()
+
+	duplicate := stagedEntry{
+		Seq:  42,
+		Hash: hash,
+		Row:  store.EntryRow{SequenceNumber: 42, CanonicalHash: hash, Status: store.StatusLive},
+	}
+	// expected > Seq, so this is the stale branch.
+	s.committerStaleRecover(context.Background(), duplicate, 100)
+
+	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 1 {
+		t.Errorf("staleDuplicatesDiscarded = %d, want 1", got)
+	}
+	if got := s.metrics.staleCrashRecoveries.Load(); got != 0 {
+		t.Errorf("staleCrashRecoveries = %d, want 0 (state already advanced)", got)
+	}
+	if got := s.metrics.processed.Load(); got != 0 {
+		t.Errorf("processed = %d, want 0 (duplicate must not double-count)", got)
+	}
+	if got := w.sequenceCalls.Load(); got != 0 {
+		t.Errorf("WAL.Sequence calls = %d, want 0 (silent-discard branch)", got)
+	}
+}
+
+// TestCommitterStaleRecover_CrashRecovery covers the rare branch:
+// a duplicate arrives while WAL is still StatePending. The
+// committer must advance the WAL forward, leaving the entry
+// usable downstream by the shipper.
+func TestCommitterStaleRecover_CrashRecovery(t *testing.T) {
+	w := newFakeWAL()
+	ts := newFakeTessera()
+	_, hash := buildEntry(t, "crash-recovery")
+	s := newTestSequencerNoCommitter(t, w, ts, Config{})
+
+	// WAL state is StatePending (the fakeWAL default); no need to
+	// seed anything else — committerStaleRecover only consults
+	// MetaState and then calls Sequence.
+	w.mu.Lock()
+	w.state[hash] = wal.StatePending
+	w.mu.Unlock()
+
+	duplicate := stagedEntry{
+		Seq:  42,
+		Hash: hash,
+		Row:  store.EntryRow{SequenceNumber: 42, CanonicalHash: hash, Status: store.StatusLive},
+	}
+	s.committerStaleRecover(context.Background(), duplicate, 100)
+
+	if got := s.metrics.staleCrashRecoveries.Load(); got != 1 {
+		t.Errorf("staleCrashRecoveries = %d, want 1", got)
+	}
+	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 0 {
+		t.Errorf("staleDuplicatesDiscarded = %d, want 0 (recovery branch)", got)
+	}
+	if got := w.sequenceCalls.Load(); got != 1 {
+		t.Errorf("WAL.Sequence calls = %d, want 1 (recovery branch must advance state)", got)
+	}
+	w.mu.Lock()
+	finalState := w.state[hash]
+	finalSeq := w.sequenced[hash]
+	w.mu.Unlock()
+	if finalState != wal.StateSequenced {
+		t.Errorf("WAL state after recovery = %v, want StateSequenced", finalState)
+	}
+	if finalSeq != 42 {
+		t.Errorf("sequenced[hash] = %d, want 42", finalSeq)
 	}
 }
 

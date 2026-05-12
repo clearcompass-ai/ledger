@@ -250,36 +250,56 @@ type Metrics struct {
 	committedEntries    atomic.Uint64 // total entries (live + tombstone) committed
 	commitWaitOnGap     atomic.Uint64 // committer received a tuple but heap head != nextExpectedSeq
 	commitBatchFailures atomic.Uint64 // batch tx failed (re-pushed to heap)
+
+	// staleDuplicatesDiscarded — duplicate stagedEntry tuples (seq <
+	// nextExpectedSeq) whose WAL state had already advanced past
+	// Pending by the time the committer saw them. Normal-race
+	// outcome (drainOnce cycle N+1 spawned a stage-1 worker for a
+	// hash that cycle N's committer was already mid-commit on).
+	// Expected to be small but non-zero under burst load. Watch
+	// the ratio committedEntries / staleDuplicatesDiscarded for
+	// scale-budget tuning.
+	staleDuplicatesDiscarded atomic.Uint64
+	// staleCrashRecoveries — duplicate tuples whose WAL state was
+	// still Pending when the committer saw them. Indicates the
+	// rare path where the original commit's WAL.Sequence call
+	// failed; the duplicate is what unblocks the entry. Should be
+	// ~zero in steady state; non-zero implies Badger / WAL pressure.
+	staleCrashRecoveries atomic.Uint64
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
-	DrainCycles         uint64
-	Processed           uint64
-	Failures            uint64
-	ManualCount         uint64
-	CurrentLag          int64
-	BackpressureStalls  uint64
-	CommittedBatches    uint64
-	CommittedEntries    uint64
-	CommitWaitOnGap     uint64
-	CommitBatchFailures uint64
+	DrainCycles              uint64
+	Processed                uint64
+	Failures                 uint64
+	ManualCount              uint64
+	CurrentLag               int64
+	BackpressureStalls       uint64
+	CommittedBatches         uint64
+	CommittedEntries         uint64
+	CommitWaitOnGap          uint64
+	CommitBatchFailures      uint64
+	StaleDuplicatesDiscarded uint64
+	StaleCrashRecoveries     uint64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
-		DrainCycles:         m.drainCycles.Load(),
-		Processed:           m.processed.Load(),
-		Failures:            m.failures.Load(),
-		ManualCount:         m.manualCount.Load(),
-		CurrentLag:          m.currentLag.Load(),
-		BackpressureStalls:  m.backpressureStalls.Load(),
-		CommittedBatches:    m.committedBatches.Load(),
-		CommittedEntries:    m.committedEntries.Load(),
-		CommitWaitOnGap:     m.commitWaitOnGap.Load(),
-		CommitBatchFailures: m.commitBatchFailures.Load(),
+		DrainCycles:              m.drainCycles.Load(),
+		Processed:                m.processed.Load(),
+		Failures:                 m.failures.Load(),
+		ManualCount:              m.manualCount.Load(),
+		CurrentLag:               m.currentLag.Load(),
+		BackpressureStalls:       m.backpressureStalls.Load(),
+		CommittedBatches:         m.committedBatches.Load(),
+		CommittedEntries:         m.committedEntries.Load(),
+		CommitWaitOnGap:          m.commitWaitOnGap.Load(),
+		CommitBatchFailures:      m.commitBatchFailures.Load(),
+		StaleDuplicatesDiscarded: m.staleDuplicatesDiscarded.Load(),
+		StaleCrashRecoveries:     m.staleCrashRecoveries.Load(),
 	}
 }
 
