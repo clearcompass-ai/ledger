@@ -1,120 +1,42 @@
 /*
 FILE PATH: gossipnet/ghost_leaf_emitter.go
 
-GhostLeafEmitter — the seam between the sequencer (which writes
-ghost-leaf rows after detecting a Tessera antispam dedup gap) and
-the SDK gossip path (which signs + broadcasts a KindGhostLeaf
-event so offline auditors can correlate the duplicate Tessera
-leaf with the ledger's own public confession).
+In-tree GhostLeafEmitter implementations.
 
-WHY KindGhostLeaf EXISTS (corrected)
+This file ships the FALLBACK emitters used when the SDK gossip
+path isn't wired (witness-disabled deployments, unit tests,
+gossip-bundle construction failures). The PRODUCTION emitter —
+the one that signs+appends+broadcasts via attesta SDK v0.5.0's
+findings.GhostLeafFinding — lives in sdk_ghost_leaf_emitter.go.
 
-The SDK's gossip/findings/entry_commitment_equivocation.go
-*EntryCommitmentEquivocationFinding.Validate* already rejects
-identical-hash pairs:
+# WHY KindGhostLeaf EXISTS
 
-	if f.SideA.CanonicalHash == f.SideB.CanonicalHash {
-	    return fmt.Errorf("...identical canonical hashes —
-	                       not equivocation")
-	}
+See attesta/gossip/findings/ghost_leaf.go (SDK v0.5.0) for the
+load-bearing rationale. Short version: external Static-CT
+auditors observing a duplicate Tessera leaf need a signed
+ledger-side confession that the duplicate is a benign crash-
+recovery artifact; without it they reasonably flag the ledger
+for an integrity violation. KindGhostLeaf IS that confession.
 
-So a ghost-leaf scenario (two seqs sharing one canonical_hash)
-CANNOT produce a KindEntryCommitmentEquivocation publication.
-The local EquivocationScanner builds the finding via the SDK
-constructor and the constructor refuses to build — no
-suppression path is needed at the scanner.
+Note the SDK doc explicitly says ghost leaves are NOT consumed
+by the equivocation scanner — the EntryCommitmentEquivocation
+constructor's identical-hash check makes false positives
+unreachable. The scanner does not look up ghost leaves.
 
-# THE REAL USE CASE — OFFLINE AUDITOR VISIBILITY
+# CONTRACT
 
-External Static-CT auditors download the ledger's tile data and
-walk the Merkle tree. When they encounter two distinct leaves
-(at seq_a and seq_b) containing the same canonical_hash, the
-default assumption is "the ledger's uniqueness constraint is
-broken" — a flaggable integrity violation. KindGhostLeaf is the
-ledger's PUBLIC CONFESSION that the duplicate leaf at ghost_seq
-is a deliberate crash-recovery artifact whose bytes the API
-redirects (308) to canonical_seq.
+All implementations of sequencer.GhostLeafEmitter (declared on
+the consumer side in sequencer/sequencer.go) MUST:
 
-An auditor pipeline that observes a duplicate Tessera leaf MUST
-look up KindGhostLeaf events keyed on the canonical_hash (via
-the gossip /by-binding/{hash} endpoint, where Bindings()
-publishes canonical_hash). Finding a matching event = benign
-recovery, no alert. NOT finding one = real integrity break,
-escalate.
+  - Treat Emit as best-effort, fire-and-forget. The committer's
+    hot path is unaffected by emitter behaviour.
+  - Never block (no synchronous I/O on the commit path's caller
+    goroutine for longer than a single log line).
+  - Never return an error. Failures are logged + counted
+    internally.
 
-# WHY A LOCAL INTERFACE
-
-The sequencer must not depend on attesta/gossip types directly —
-that would couple the hot commit path to gossip wire semantics
-and force every test fixture to construct an SDK Signer +
-Network ID just to exercise commit logic. The local
-GhostLeafEmitter interface lets the sequencer hold a one-method
-dependency that:
-
-  - any future SDK gossip type (currently v0.5.0's
-    findings.GhostLeafFinding) satisfies STRUCTURALLY through
-    the production adapter built in gossipnet/wiring.go;
-  - the in-tree LoggingGhostLeafEmitter satisfies for unit tests
-  - the no-gossip startup mode (witness-disabled deployments,
-    fixtures that only exercise PG correctness);
-  - failing builds against a missing SDK release surface as an
-    ADAPTER-side compile error in wiring.go, not a load-bearing
-    sequencer/committer.go compile error.
-
-PRODUCTION ADAPTER (when SDK v0.5.0 ships)
-
-Replace the LoggingGhostLeafEmitter wired by wire.go with a
-SDKGossipGhostLeafEmitter that:
-
- 1. Calls findings.NewGhostLeafFinding(ev.GhostSeq, ev.CanonicalSeq,
-    ev.CanonicalHash, ev.LogDID, ev.ObservedAtUnixNano).
- 2. Reads the originator chain head + advances lamport.
- 3. Calls gossip.Sign under cosign.PurposeGossipEventV1.
- 4. Calls GossipStore.Append(signed) for the local audit log.
- 5. Calls Sink.Broadcast(signed) for peer distribution.
-
-The swap is ONE wire.go assignment. The interface contract is
-stable; the implementation behind it can evolve without touching
-any sequencer code.
-
-# CRYPTOGRAPHIC-DETERMINISM DISCIPLINE — uint64 OBSERVED-AT
-
-ObservedAt is carried as a uint64 (Unix nanoseconds since epoch),
-NEVER as a time.Time, for two independent reasons:
-
-	(1) Cross-language interop. Go's time.RFC3339Nano formatter
-	    strips trailing zeros from the fractional-seconds field
-	    (verified empirically — Go-only round-trip via
-	    time.Parse(time.RFC3339Nano, s).UnixNano() is in fact
-	    lossless). But a Rust/JS/Python consumer's RFC-3339
-	    parser is not bound to mirror Go's tolerance: a `.123` ms
-	    wire string parsed by a stricter implementation could
-	    yield a different UnixNano. uint64 sidesteps the parser
-	    entirely — the bytes on the wire ARE the integer.
-
-	(2) Format-string drift risk. If anyone ever replaces
-	    time.RFC3339Nano with a custom format string in either
-	    producer or consumer (a refactor that looks harmless),
-	    the canonical bytes silently diverge and every signed
-	    event fails verification. Hashing a raw uint64 bypasses
-	    string-formatting entirely; there is no format string to
-	    drift.
-
-Either reason is sufficient to mandate uint64. SDK Principle 8
-(Deterministic Idempotency) requires the canonical bytes survive
-every plausible producer/consumer boundary intact; uint64 is
-the only encoding that preserves that invariant across the full
-ecosystem.
-
-# OBSERVABILITY DISCIPLINE — BEST-EFFORT EMISSION
-
-Every emitter implementation MUST do best-effort emission only —
-never block the committer's hot path. The Emit method takes a
-context for cancellation but does not return an error: a failed
-emit is logged + counted by the implementation; the committer
-treats emission as fire-and-forget. The ghost-leaf row in PG is
-the authoritative record; gossip is the broadcast amplification
-for offline-auditor visibility.
+The PG ghost row written by the committer is the authoritative
+record; gossip is broadcast amplification for auditor visibility.
 */
 package gossipnet
 
@@ -127,45 +49,21 @@ import (
 	"github.com/clearcompass-ai/ledger/sequencer"
 )
 
-// NewGhostLeafEventNow constructs a sequencer.GhostLeafEvent
-// using time.Now().UTC().UnixNano() for ObservedAtUnixNano.
-// Convenience for the committer's hot-path callsite so it
-// doesn't have to repeat the uint64 conversion + UTC
-// normalization at every call.
+// LoggingGhostLeafEmitter records each emission at INFO and
+// increments an atomic counter. Used when gossip is disabled
+// AND as a fallback when the SDK adapter's construction fails.
 //
-// The returned value is the sequencer-defined struct (not a
-// gossipnet-local alias): the sequencer is the consumer of the
-// emit-side contract, so it owns the type. gossipnet's emitter
-// implementations accept the sequencer's type directly.
-func NewGhostLeafEventNow(ghostSeq, canonicalSeq uint64,
-	canonicalHash [32]byte, logDID string,
-) sequencer.GhostLeafEvent {
-	return sequencer.GhostLeafEvent{
-		GhostSeq:           ghostSeq,
-		CanonicalSeq:       canonicalSeq,
-		CanonicalHash:      canonicalHash,
-		LogDID:             logDID,
-		ObservedAtUnixNano: uint64(time.Now().UTC().UnixNano()),
-	}
-}
-
-// LoggingGhostLeafEmitter is the in-tree stub. Records each
-// emission at INFO and increments an atomic counter so
-// integration tests and SRE dashboards can verify the
-// committer's emit call-path fires.
-//
-// This is the default emitter wired in wire.go pre-v0.5.0; the
-// gossip-disabled deployment mode (witness count 0) also uses
-// this verbatim. The same counter shape is preserved when the
-// SDK adapter ships — operators reading the metric never see
-// a discontinuity.
+// The log line carries the raw uint64 ObservedAtUnixNano (and,
+// alongside it, an RFC-3339Nano human-readable rendering for
+// operator diagnosis ONLY — the cryptographic-bytes path
+// elsewhere hashes the uint64 directly per the SDK contract).
 type LoggingGhostLeafEmitter struct {
 	Logger *slog.Logger
 	count  atomic.Uint64
 }
 
 // NewLoggingGhostLeafEmitter constructs a logging-only emitter.
-// nil logger is permitted and falls back to slog.Default().
+// nil logger falls back to slog.Default.
 func NewLoggingGhostLeafEmitter(logger *slog.Logger) *LoggingGhostLeafEmitter {
 	if logger == nil {
 		logger = slog.Default()
@@ -173,18 +71,12 @@ func NewLoggingGhostLeafEmitter(logger *slog.Logger) *LoggingGhostLeafEmitter {
 	return &LoggingGhostLeafEmitter{Logger: logger}
 }
 
-// Emit logs the event + bumps the counter. Never blocks; never
-// returns an error. The committer's hot path is unaffected by
-// emitter behaviour.
-//
-// The log line formats ObservedAtUnixNano back into a
-// human-readable RFC-3339-with-nanos string for operator
-// diagnosis ONLY. The cryptographic-bytes path elsewhere uses
-// the raw uint64; this formatter is for human eyeballs only.
+// Emit logs the event + bumps the counter. Non-blocking;
+// never returns an error.
 func (e *LoggingGhostLeafEmitter) Emit(ctx context.Context, ev sequencer.GhostLeafEvent) {
 	e.count.Add(1)
 	e.Logger.InfoContext(ctx,
-		"ghost leaf emitted (logging-only emitter; gossip publication pending SDK v0.5.0 KindGhostLeaf)",
+		"ghost leaf emitted (logging-only emitter; not broadcast to peers)",
 		"ghost_seq", ev.GhostSeq,
 		"canonical_seq", ev.CanonicalSeq,
 		"canonical_hash", shortHash(ev.CanonicalHash),
@@ -195,15 +87,15 @@ func (e *LoggingGhostLeafEmitter) Emit(ctx context.Context, ev sequencer.GhostLe
 }
 
 // EmittedCount returns the running count of emissions. Used by
-// the harness and unit tests to verify the committer invoked
-// the emitter the expected number of times.
+// integration tests and SRE dashboards to verify the committer
+// invoked the emitter the expected number of times.
 func (e *LoggingGhostLeafEmitter) EmittedCount() uint64 {
 	return e.count.Load()
 }
 
-// shortHash returns the first 8 bytes as hex — readable enough
-// for diagnostic logs without dominating the log line. Bounded
-// to 16 characters of output.
+// shortHash returns the first 8 bytes of a [32]byte as 16
+// lowercase hex chars. Used by both emitter implementations for
+// diagnostic log lines.
 func shortHash(h [32]byte) string {
 	const hex = "0123456789abcdef"
 	var out [16]byte
@@ -214,20 +106,17 @@ func shortHash(h [32]byte) string {
 	return string(out[:])
 }
 
-// nopGhostLeafEmitter discards every emission. Used by test
-// fixtures that don't care about gossip and want zero allocations
-// on the commit path. Not exported because the LoggingGhost-
-// LeafEmitter is the documented default; tests that explicitly
-// want silence construct one inline.
+// nopGhostLeafEmitter discards every emission. Test fixtures
+// that exercise ghost-row paths without asserting on emission
+// use this via NopGhostLeafEmitter().
 type nopGhostLeafEmitter struct{}
 
 func (nopGhostLeafEmitter) Emit(_ context.Context, _ sequencer.GhostLeafEvent) {}
 
-// NopGhostLeafEmitter returns a discarding emitter. Used by the
-// sequencer's in-tree tests where ghost-row paths are exercised
-// without asserting on emission. Returns sequencer.GhostLeafEmitter
-// (the consumer's interface) — gossipnet implementations always
-// satisfy the consumer-side contract structurally.
+// NopGhostLeafEmitter returns a discarding emitter satisfying
+// sequencer.GhostLeafEmitter. Used by unit tests that want to
+// exercise the committer's ghost-row path without observing the
+// emit-side behaviour.
 func NopGhostLeafEmitter() sequencer.GhostLeafEmitter {
 	return nopGhostLeafEmitter{}
 }

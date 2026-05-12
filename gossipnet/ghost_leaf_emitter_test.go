@@ -142,22 +142,3 @@ func TestNopGhostLeafEmitter_AcceptsAnyEventWithoutPanic(t *testing.T) {
 	// reach this line.
 }
 
-func TestNewGhostLeafEventNow_PopulatesAllFields(t *testing.T) {
-	hash := [32]byte{0x01, 0x02, 0x03}
-	ev := NewGhostLeafEventNow(99, 8, hash, "did:example:test")
-	if ev.GhostSeq != 99 {
-		t.Errorf("GhostSeq = %d, want 99", ev.GhostSeq)
-	}
-	if ev.CanonicalSeq != 8 {
-		t.Errorf("CanonicalSeq = %d, want 8", ev.CanonicalSeq)
-	}
-	if ev.CanonicalHash != hash {
-		t.Errorf("CanonicalHash mismatch")
-	}
-	if ev.LogDID != "did:example:test" {
-		t.Errorf("LogDID = %q, want %q", ev.LogDID, "did:example:test")
-	}
-	if ev.ObservedAtUnixNano == 0 {
-		t.Errorf("ObservedAtUnixNano = 0, want non-zero (time.Now())")
-	}
-}

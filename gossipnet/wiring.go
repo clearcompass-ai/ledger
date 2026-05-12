@@ -276,9 +276,17 @@ func Build(cfg Config) (*Bundle, error) {
 		return nil, fmt.Errorf("gossipnet: NewHandler: %w", err)
 	}
 
+	// Instruments is shared with the POST handler (constructed
+	// above): attesta SDK v0.5.0 added an Instruments field to
+	// FeedHandlerConfig so feed-side panics flow into the same
+	// attesta_gossip_panic_total counter as the POST side. Nil-
+	// tolerant when LEDGER_METRICS_ENABLE=false (instruments is
+	// nil in that case); the SDK's recoverPanic accepts a nil
+	// receiver.
 	feedHandler, err := sdkgossip.NewFeedHandler(sdkgossip.FeedHandlerConfig{
-		Store:  cfg.Store,
-		Logger: cfg.Logger,
+		Store:       cfg.Store,
+		Logger:      cfg.Logger,
+		Instruments: instruments,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gossipnet: NewFeedHandler: %w", err)

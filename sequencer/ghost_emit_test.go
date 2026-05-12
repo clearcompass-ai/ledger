@@ -92,10 +92,10 @@ func TestSequencer_WithGhostLeafEmitter_StoresInstance(t *testing.T) {
 
 // TestSequencer_GhostLeafEvent_FieldsAreDeterministic pins the
 // uint64-typed observed-at field's role: the cryptographic-bytes
-// determinism story (architect's Flaw 2 correction) requires that
-// the event hand off the raw integer, not a time.Time. The struct
-// fields here MUST stay aligned with gossipnet.NewGhostLeafEventNow's
-// output and with the SDK's KindGhostLeaf wire shape.
+// determinism path requires the event hand off the raw integer,
+// not a time.Time. The struct fields MUST stay byte-aligned with
+// the SDK's findings.GhostLeafFinding (attesta v0.5.0) since the
+// production SDK adapter is a 1:1 field copy.
 //
 // If any of these field names or types drift, the production
 // adapter that converts GhostLeafEvent → findings.GhostLeafFinding

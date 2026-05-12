@@ -524,6 +524,63 @@ type GhostLeafEvent struct {
 	ObservedAtUnixNano uint64
 }
 
+// Validate enforces the same structural invariants the SDK's
+// findings.GhostLeafFinding constructor enforces (verified by
+// reading attesta v0.5.0 gossip/findings/ghost_leaf.go:Validate).
+// Defense-in-depth: the committer always populates every field
+// correctly today, but a future refactor that leaves a field
+// zero would otherwise surface as an SDK-side error deep in
+// the gossip Sign pipeline. Calling Validate at the sequencer
+// boundary attributes the misuse to the right callsite.
+//
+// Invariants (1:1 with SDK):
+//
+//   - LogDID non-empty
+//   - CanonicalHash non-zero
+//   - GhostSeq > CanonicalSeq (Tessera assigns seqs monotonically;
+//     a ghost cannot predate its primary)
+//   - ObservedAtUnixNano > 0 (zero is the uninitialized sentinel)
+//
+// Returns nil on success, a non-nil descriptive error otherwise.
+// Errors are not wrapped sentinels — callers log + drop the
+// event rather than branching on error identity.
+func (ev *GhostLeafEvent) Validate() error {
+	if ev.LogDID == "" {
+		return errGhostLeafEventEmptyLogDID
+	}
+	if ev.CanonicalHash == ([32]byte{}) {
+		return errGhostLeafEventZeroHash
+	}
+	if ev.GhostSeq <= ev.CanonicalSeq {
+		return errGhostLeafEventSeqOrder
+	}
+	if ev.ObservedAtUnixNano == 0 {
+		return errGhostLeafEventZeroObservedAt
+	}
+	return nil
+}
+
+// Sentinel errors for GhostLeafEvent.Validate. Exported as
+// values rather than types so callers can errors.Is the
+// specific failure mode. Not wrapped with the "sequencer:"
+// prefix because the SEQUENCER doesn't surface these — the
+// EMITTER does, with its own prefix in the log line.
+var (
+	errGhostLeafEventEmptyLogDID    = ghostLeafErr("empty log_did")
+	errGhostLeafEventZeroHash       = ghostLeafErr("zero canonical_hash")
+	errGhostLeafEventSeqOrder       = ghostLeafErr("ghost_seq must be > canonical_seq")
+	errGhostLeafEventZeroObservedAt = ghostLeafErr("zero observed_at_unix_nano")
+)
+
+// ghostLeafErr is a tiny stringer error used only by the
+// sentinels above. Keeps the sentinels comparable + their
+// messages stable for log greps.
+type ghostLeafErr string
+
+func (e ghostLeafErr) Error() string {
+	return "sequencer: GhostLeafEvent invalid: " + string(e)
+}
+
 // GhostLeafEmitter is the sequencer's local surface to the
 // gossip-side ghost-leaf publisher. The committer's hot path
 // calls Emit after each successful ghost row insert; the
