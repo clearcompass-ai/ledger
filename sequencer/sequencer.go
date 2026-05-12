@@ -130,6 +130,25 @@ type Config struct {
 	// share one knob.
 	MaxBuilderLag uint64
 
+	// MaxCommitterHeapSize bounds the staged-entry min-heap the
+	// committer drains. When the heap depth reaches this ceiling,
+	// drainOnce returns without dispatching new stage-1 workers —
+	// the WAL queue then saturates and admission returns 503.
+	//
+	// Why bound the heap at all: a poison-pill anomaly (e.g., a
+	// permanently-lost contiguous-prefix seq) would otherwise
+	// queue every subsequent seq in the heap waiting for the gap
+	// to fill, exhausting Go's heap until the kernel OOMs the
+	// process. A finite ceiling forces the failure mode to
+	// "admission stops accepting" instead of "process disappears".
+	//
+	// Sizing rationale: CommitMaxBatchSize (256) × MaxInFlight (4)
+	// × 4 = 4096 covers the steady-state worst case of 4× batch
+	// depth ahead of the committer. Matches DefaultMaxBuilderLag /
+	// wal.QueueSize so the three backpressure gates share one
+	// budget. 0 disables (legacy / test fixtures).
+	MaxCommitterHeapSize int
+
 	// MaxEntriesPerCycle bounds the work performed by a single
 	// drainOnce invocation. After dispatching this many entries to
 	// the worker pool, the iterator stops; drainOnce waits for the
@@ -206,6 +225,10 @@ const (
 	DefaultBackoffMax    = 60 * time.Second
 	DefaultMaxBuilderLag = 4096
 
+	// DefaultMaxCommitterHeapSize bounds the staged-entry heap.
+	// See Config.MaxCommitterHeapSize for the rationale.
+	DefaultMaxCommitterHeapSize = 4096
+
 	// DefaultMaxEntriesPerCycle bounds the per-cycle work so the
 	// drainCycles metric is a useful liveness signal under load.
 	//
@@ -248,6 +271,15 @@ type Metrics struct {
 	currentLag         atomic.Int64 // pending entries observed at last drain
 	backpressureStalls atomic.Uint64
 
+	// committerHeapStalls — drainOnce cycles that bailed because the
+	// committer heap was at MaxCommitterHeapSize. Strictly the
+	// "committer can't keep up" failure mode; distinct from
+	// backpressureStalls (the builder-cursor gate). Both saturate
+	// admission to 503, but they answer different operator
+	// questions: a builder-lag stall means cosignature pressure;
+	// a heap stall means PG write pressure.
+	committerHeapStalls atomic.Uint64
+
 	// Committer (staged pipeline) metrics. See committer.go.
 	committedBatches    atomic.Uint64 // batches committed by the committer
 	committedEntries    atomic.Uint64 // total entries (live + tombstone) committed
@@ -283,6 +315,20 @@ type Metrics struct {
 	// entry. Should be ~zero in steady state; non-zero implies
 	// Badger / WAL pressure.
 	staleCrashRecoveries atomic.Uint64
+
+	// staleCrashRecoveriesAfterPGCollision — strictly the subset of
+	// staleCrashRecoveries that surfaced through the PG canonical_hash
+	// unique-constraint path. Distinguishes "Tessera dedup gap across
+	// a crash boundary" (PG was the oracle that caught it) from
+	// "stage-1 in-flight race within one process lifetime" (the
+	// pre-existing cross-batch path).
+	//
+	// SRE alert: sustained non-zero values mean either (a) Tessera's
+	// antispam follower can't keep up with the AppendLeaf rate, or
+	// (b) a hostile actor is replaying canonical hashes across a
+	// kill cycle. Both warrant operator attention; the dimensional
+	// label separates them.
+	staleCrashRecoveriesAfterPGCollision atomic.Uint64
 
 	// staleAgeHistogram — time from stage-1 emit (stagedEntry.emittedAt)
 	// to stale-discard, observed for every dup that hits either
@@ -333,44 +379,48 @@ type Metrics struct {
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
-	DrainCycles               uint64
-	Processed                 uint64
-	Failures                  uint64
-	ManualCount               uint64
-	CurrentLag                int64
-	BackpressureStalls        uint64
-	CommittedBatches          uint64
-	CommittedEntries          uint64
-	CommitWaitOnGap           uint64
-	CommitBatchFailures       uint64
-	StaleDuplicatesDiscarded  uint64 // sum (in-batch + cross-batch), back-compat
-	StaleInBatchDuplicates    uint64 // sub-case A
-	StaleCrossBatchDuplicates uint64 // sub-case B silent-discard
-	StaleCrashRecoveries      uint64
-	StaleAgeHistogram         latency.Snapshot
-	CommitRaceWindow          latency.Snapshot
-	TesseraLatency            latency.Snapshot
-	TesseraInFlight           int64
-	TesseraInFlightHighWater  int64
+	DrainCycles                          uint64
+	Processed                            uint64
+	Failures                             uint64
+	ManualCount                          uint64
+	CurrentLag                           int64
+	BackpressureStalls                   uint64
+	CommitterHeapStalls                  uint64
+	CommittedBatches                     uint64
+	CommittedEntries                     uint64
+	CommitWaitOnGap                      uint64
+	CommitBatchFailures                  uint64
+	StaleDuplicatesDiscarded             uint64 // sum (in-batch + cross-batch), back-compat
+	StaleInBatchDuplicates               uint64 // sub-case A
+	StaleCrossBatchDuplicates            uint64 // sub-case B silent-discard
+	StaleCrashRecoveries                 uint64
+	StaleCrashRecoveriesAfterPGCollision uint64
+	StaleAgeHistogram                    latency.Snapshot
+	CommitRaceWindow                     latency.Snapshot
+	TesseraLatency                       latency.Snapshot
+	TesseraInFlight                      int64
+	TesseraInFlightHighWater             int64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	snap := MetricsSnapshot{
-		DrainCycles:               m.drainCycles.Load(),
-		Processed:                 m.processed.Load(),
-		Failures:                  m.failures.Load(),
-		ManualCount:               m.manualCount.Load(),
-		CurrentLag:                m.currentLag.Load(),
-		BackpressureStalls:        m.backpressureStalls.Load(),
-		CommittedBatches:          m.committedBatches.Load(),
-		CommittedEntries:          m.committedEntries.Load(),
-		CommitWaitOnGap:           m.commitWaitOnGap.Load(),
-		CommitBatchFailures:       m.commitBatchFailures.Load(),
-		StaleDuplicatesDiscarded:  m.staleDuplicatesDiscarded.Load(),
-		StaleInBatchDuplicates:    m.staleInBatchDuplicates.Load(),
-		StaleCrossBatchDuplicates: m.staleCrossBatchDuplicates.Load(),
-		StaleCrashRecoveries:      m.staleCrashRecoveries.Load(),
+		DrainCycles:                          m.drainCycles.Load(),
+		Processed:                            m.processed.Load(),
+		Failures:                             m.failures.Load(),
+		ManualCount:                          m.manualCount.Load(),
+		CurrentLag:                           m.currentLag.Load(),
+		BackpressureStalls:                   m.backpressureStalls.Load(),
+		CommitterHeapStalls:                  m.committerHeapStalls.Load(),
+		CommittedBatches:                     m.committedBatches.Load(),
+		CommittedEntries:                     m.committedEntries.Load(),
+		CommitWaitOnGap:                      m.commitWaitOnGap.Load(),
+		CommitBatchFailures:                  m.commitBatchFailures.Load(),
+		StaleDuplicatesDiscarded:             m.staleDuplicatesDiscarded.Load(),
+		StaleInBatchDuplicates:               m.staleInBatchDuplicates.Load(),
+		StaleCrossBatchDuplicates:            m.staleCrossBatchDuplicates.Load(),
+		StaleCrashRecoveries:                 m.staleCrashRecoveries.Load(),
+		StaleCrashRecoveriesAfterPGCollision: m.staleCrashRecoveriesAfterPGCollision.Load(),
 	}
 	if m.staleAgeHistogram != nil {
 		snap.StaleAgeHistogram = m.staleAgeHistogram.Snapshot()
@@ -491,6 +541,27 @@ type Sequencer struct {
 	// contiguous-prefix batches and runs one atomic entry_index
 	// INSERT per batch. See committer.go for the full architecture
 	// rationale.
+	// fatalCh is the lifecycle.SafeRun-wired fatal channel. When
+	// the identical-batch circuit breaker trips (3 consecutive
+	// failures on the same first_seq), a sentinel error is sent
+	// here so the supervisor terminates the process rather than
+	// looping the failed batch forever. nil-safe — see
+	// raiseFatal for the guard.
+	fatalCh chan<- error
+
+	// identicalBatchTracker holds the (first_seq, error-fingerprint)
+	// of the most recent failed flush, plus a streak count. Three
+	// consecutive failures with identical fingerprint trip the
+	// breaker. Mutex-guarded because flushPending runs on the
+	// committer goroutine but raiseFatal may need to log from
+	// another path. See checkIdenticalBatchBreaker for the
+	// full semantics.
+	identicalBatchMu      sync.Mutex
+	identicalBatchSeq     uint64
+	identicalBatchErrFP   string
+	identicalBatchStreak  int
+	identicalBatchTripped atomic.Bool
+
 	commitCh        chan stagedEntry
 	committerHeap   *committerHeap
 	nextExpectedSeq atomic.Uint64
@@ -524,6 +595,9 @@ func NewSequencer(
 	if cfg.MaxBuilderLag == 0 {
 		cfg.MaxBuilderLag = DefaultMaxBuilderLag
 	}
+	if cfg.MaxCommitterHeapSize == 0 {
+		cfg.MaxCommitterHeapSize = DefaultMaxCommitterHeapSize
+	}
 	if cfg.MaxEntriesPerCycle == 0 {
 		cfg.MaxEntriesPerCycle = DefaultMaxEntriesPerCycle
 	}
@@ -556,6 +630,23 @@ func NewSequencer(
 	s.metrics.tesseraLatency = latency.New()
 	s.metrics.staleAgeHistogram = latency.New()
 	s.metrics.commitRaceWindow = latency.New()
+	return s
+}
+
+// WithFatalChannel wires the supervisor's fatal channel into the
+// sequencer. The identical-batch circuit breaker uses it to
+// terminate the process when a flush deterministically fails on
+// the same (first_seq, error-fingerprint) three consecutive
+// times — that signature indicates a non-retriable PG constraint
+// failure or malformed data in the batch, NOT transient network
+// jitter, and the only correct disposition is process-level
+// termination so the supervisor can restart with a clean slate.
+//
+// Optional; nil-safe. When unwired, breaker trips log at ERROR
+// level but do not terminate the process — appropriate for unit
+// tests that exercise the breaker without spawning a supervisor.
+func (s *Sequencer) WithFatalChannel(fc chan<- error) *Sequencer {
+	s.fatalCh = fc
 	return s
 }
 

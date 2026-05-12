@@ -538,6 +538,15 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 	})
 	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
 
+	// Wire the supervisor fatal channel so the identical-batch
+	// circuit breaker can escalate to process-level termination.
+	// Without this the breaker would log ERROR but the broken
+	// committer would keep looping (logging + no forward progress)
+	// until the operator manually intervenes.
+	if d.Fatal != nil {
+		seq = seq.WithFatalChannel(d.Fatal)
+	}
+
 	// v0.4.0 DI schema registry — built once at Wire (step 7b) and
 	// shared with the api submission handler. The sequencer's
 	// dispatchCommitmentSchema reads the same frozen instance.

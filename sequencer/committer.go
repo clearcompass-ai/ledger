@@ -15,19 +15,19 @@ The original sequencer ran processOne fully in stage-1 workers,
 each opening its own per-entry Postgres transaction. That created
 two structural problems:
 
-  1. N+1 write path — N entries = N synchronous PG fsyncs. Capped
-     end-to-end throughput at ~200 ent/sec even with parallel
-     workers and parallel cosignatures (verified via per-batch
-     telemetry; see commit 545af49).
+ 1. N+1 write path — N entries = N synchronous PG fsyncs. Capped
+    end-to-end throughput at ~200 ent/sec even with parallel
+    workers and parallel cosignatures (verified via per-batch
+    telemetry; see commit 545af49).
 
-  2. Commit-order inversions — concurrent stage-1 workers
-     commit their per-entry transactions in arbitrary order under
-     PG MVCC. A higher seq could become visible before a lower
-     one, briefly leaving a hole in entry_index. The builder's
-     BeginBatch (which assumes contiguous visibility) would then
-     leapfrog past the hole and lose the missing seq forever
-     (proved empirically; see the 19:43:39 log evidence in commit
-     6386aa0).
+ 2. Commit-order inversions — concurrent stage-1 workers
+    commit their per-entry transactions in arbitrary order under
+    PG MVCC. A higher seq could become visible before a lower
+    one, briefly leaving a hole in entry_index. The builder's
+    BeginBatch (which assumes contiguous visibility) would then
+    leapfrog past the hole and lose the missing seq forever
+    (proved empirically; see the 19:43:39 log evidence in commit
+    6386aa0).
 
 This file's committer fixes both at once: ONE tx commits N rows
 (eliminates the N+1 path), and the min-heap drains contiguous
@@ -230,19 +230,40 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 		err := s.flushBatch(currentCtx, pending)
 		if err != nil {
 			s.metrics.commitBatchFailures.Add(1)
+			firstSeq := pending[0].Seq
 			s.logger.Error("sequencer: committer batch commit failed; re-pushing",
 				"batch_size", len(pending),
-				"first_seq", pending[0].Seq,
+				"first_seq", firstSeq,
 				"last_seq", pending[len(pending)-1].Seq,
 				"error", err,
 			)
+			// Identical-batch circuit breaker: three consecutive
+			// failures with the SAME first_seq AND the SAME error
+			// fingerprint indicate a deterministic batch-poisoning
+			// condition (e.g., malformed bytea, a PG constraint we
+			// can't satisfy, schema drift). Retrying forever is a
+			// death spiral that grows the heap until OOM. Trip the
+			// breaker → supervisor fatal → process restart with
+			// clean state. The next-up committer will read MAX(seq)
+			// from PG and skip past the poisoned batch only if the
+			// poison was transient; otherwise it'll trip again and
+			// the operator gets paged.
+			if s.checkIdenticalBatchBreaker(firstSeq, err) {
+				// Breaker tripped — do NOT re-push. The fatal channel
+				// has been signalled; the supervisor will terminate.
+				// Re-pushing would just re-fail in the next cycle
+				// before the process exits, generating log noise.
+				pending = pending[:0]
+				return
+			}
 			for _, e := range pending {
 				heap.Push(s.committerHeap, e)
 			}
 			pending = pending[:0]
 			return
 		}
-		// Success — advance the cursor and reset.
+		// Success path — clear the breaker state and advance.
+		s.resetIdenticalBatchBreaker()
 		batchSize := uint64(len(pending))
 		s.nextExpectedSeq.Add(batchSize)
 		s.metrics.committedBatches.Add(1)
@@ -332,7 +353,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 // successful PG commit, so a flush failure leaves the cursor
 // untouched and a retry re-pushes the same prefix.
 //
-// STALE-DUPLICATE DISCRIMINATION
+// # STALE-DUPLICATE DISCRIMINATION
 //
 // When the heap head's Seq is below the expected next seq it's a
 // duplicate, but there are TWO structurally distinct sub-cases and
@@ -431,29 +452,44 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 	}
 
 	commitStart := time.Now()
+	var insertResult store.InsertBatchResult
 	commitErr := store.WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
-		// Batched INSERT into entry_index. ON CONFLICT (sequence_number)
-		// DO NOTHING under the hood — idempotent under crash recovery
-		// where a prior committer-run committed seqs we're re-presenting.
-		rowsAffected, err := s.store.InsertBatch(ctx, tx, rows)
+		// Batched INSERT into entry_index. ON CONFLICT DO NOTHING +
+		// RETURNING surfaces three dispositions per row:
+		//
+		//   Inserted  — newly durable.
+		//   SeqReplay — same (seq, hash) already in entry_index;
+		//               benign idempotent retry. No action.
+		//   HashColl  — same hash already at a DIFFERENT seq.
+		//               Tessera dedup gap across a crash; route
+		//               via committerStaleRecover with the
+		//               EXISTING seq, dropping the duplicate
+		//               Tessera leaf (the "Ghost Leaf" pattern).
+		var err error
+		insertResult, err = s.store.InsertBatch(ctx, tx, rows)
 		if err != nil {
 			return fmt.Errorf("entry_index batch insert (n=%d): %w", len(rows), err)
 		}
-		if rowsAffected != int64(len(rows)) {
-			// Indicates ON CONFLICT skipped some rows (crash-recovery
-			// idempotent path). Log INFO — informational, not an
-			// error.
-			s.logger.Info("sequencer: committer InsertBatch skipped pre-existing rows",
+		if insertResult.SeqReplays > 0 {
+			s.logger.Info("sequencer: committer InsertBatch idempotent seq-replays",
 				"input_rows", len(rows),
-				"affected", rowsAffected,
-				"skipped_idempotent", int64(len(rows))-rowsAffected,
+				"inserted", insertResult.Inserted,
+				"seq_replays", insertResult.SeqReplays,
 			)
 		}
-
 		// Per-entry commitment_split_id rows (only for live entries
 		// with a split-id; tombstones are not commitment carriers).
+		// SKIP entries whose hash collided — their canonical_hash
+		// already has a commitment_split_id row at the ExistingSeq.
+		collidedHashes := make(map[[32]byte]struct{}, len(insertResult.HashCollisions))
+		for _, c := range insertResult.HashCollisions {
+			collidedHashes[c.CanonicalHash] = struct{}{}
+		}
 		for _, e := range batch {
 			if e.Tombstone || !e.HasSplitID {
+				continue
+			}
+			if _, dup := collidedHashes[e.Hash]; dup {
 				continue
 			}
 			if _, err := tx.Exec(ctx, `
@@ -478,6 +514,7 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 		"first_seq", batch[0].Seq,
 		"last_seq", batch[len(batch)-1].Seq,
 		"tombstones", countTombstones(batch),
+		"hash_collisions", len(insertResult.HashCollisions),
 		"elapsed", commitElapsed.Round(time.Microsecond),
 	)
 
@@ -492,9 +529,91 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 	// state without producing duplicate entry_index rows.
 	chaos.Trigger("pre_commit_post_pg")
 
+	// Hash-collision recovery — the Ghost Leaf path.
+	//
+	// For each row whose canonical_hash was already in entry_index
+	// at a DIFFERENT seq, route through committerStaleRecover using
+	// the EXISTING seq (the PG row is the authoritative answer).
+	// The duplicate Tessera leaf at the AttemptedSeq becomes a
+	// Ghost Leaf — mathematically valid in the log, dropped from
+	// the projection. The WAL state for the hash is advanced under
+	// the original seq so the shipper picks it up exactly once.
+	//
+	// Each collision bumps the dedicated SRE counter so operators
+	// can distinguish "Tessera dedup gap" from "hostile replay".
+	if len(insertResult.HashCollisions) > 0 {
+		// expected here is the "next-expected" cursor the
+		// committerStaleRecover diagnostic logs use. We're past the
+		// flush so the cursor hasn't advanced yet; pass nextExpectedSeq
+		// directly.
+		expected := s.nextExpectedSeq.Load() + uint64(len(batch))
+		// Build a fast lookup hash → *stagedEntry from this batch so
+		// each collision can be matched to its original tuple
+		// (preserves Tombstone flag + emittedAt for WAL transition
+		// and histogram observation).
+		byHash := make(map[[32]byte]stagedEntry, len(batch))
+		for _, e := range batch {
+			byHash[e.Hash] = e
+		}
+		for _, c := range insertResult.HashCollisions {
+			orig, ok := byHash[c.CanonicalHash]
+			if !ok {
+				// Defensive: the collision is for a hash we don't
+				// have in this batch. Should be impossible (PG only
+				// returns rows we sent). Log and skip.
+				s.logger.Error("sequencer: PG-collision hash not in batch (impossible state)",
+					"existing_seq", c.ExistingSeq,
+					"attempted_seq", c.AttemptedSeq,
+					"hash", hashPrefix(c.CanonicalHash),
+				)
+				continue
+			}
+			// Substitute the EXISTING seq before routing. This is
+			// the load-bearing semantic: WAL.Sequence is called with
+			// the seq that's actually in entry_index, not the
+			// duplicate Tessera leaf's seq.
+			recover := orig
+			recover.Seq = c.ExistingSeq
+			recover.Row.SequenceNumber = c.ExistingSeq
+			s.logger.Warn("sequencer: PG canonical_hash collision — routing duplicate through stale-recover (Ghost Leaf path)",
+				"attempted_seq", c.AttemptedSeq,
+				"existing_seq", c.ExistingSeq,
+				"hash", hashPrefix(c.CanonicalHash),
+				"tombstone", orig.Tombstone,
+			)
+			s.metrics.staleCrashRecoveriesAfterPGCollision.Add(1)
+			s.committerStaleRecover(ctx, recover, expected)
+		}
+	}
+
 	// Post-commit hooks per entry (WAL state, sidecar writes,
 	// per-entry metrics, attempt-counter reset).
+	//
+	// CRITICAL: Skip ghost-leaf entries here.
+	//
+	// applyPostCommitForOne calls wal.Sequence(ctx, e.Hash, e.Seq)
+	// unconditionally. For a ghost-leaf entry, e.Seq is the FRESH
+	// Tessera seq (16 in the running example) — NOT the canonical
+	// seq (8) that's actually in entry_index. Calling wal.Sequence
+	// with the fresh seq would commit a hallucinated seq into WAL
+	// metadata. The shipper tails the WAL for Sequenced items and
+	// would then upload the payload to bytestore under path 16
+	// while PG says the entry lives at 8. PG and bytestore diverge
+	// permanently — auditors querying /v1/entries/8 get 404 from
+	// the bytestore. That's a hard CQRS-parity violation.
+	//
+	// The ghost-leaf path ALREADY advanced WAL state under the
+	// CANONICAL seq via the committerStaleRecover call above
+	// (recover.Seq = c.ExistingSeq). Skipping the post-commit hook
+	// here is the only correct disposition.
+	collided := make(map[[32]byte]struct{}, len(insertResult.HashCollisions))
+	for _, c := range insertResult.HashCollisions {
+		collided[c.CanonicalHash] = struct{}{}
+	}
 	for _, e := range batch {
+		if _, dup := collided[e.Hash]; dup {
+			continue
+		}
 		s.applyPostCommitForOne(ctx, e, true)
 	}
 	return nil
@@ -757,4 +876,83 @@ func countTombstones(batch []stagedEntry) int {
 // a false error in the logs.
 func isContextErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// identicalBatchBreakerThreshold is the number of consecutive
+// failures with the same (first_seq, error-fingerprint) that trips
+// the breaker. Three: enough to filter transient PG blips (one
+// flake), drop one false-alarm retry margin, then escalate.
+const identicalBatchBreakerThreshold = 3
+
+// checkIdenticalBatchBreaker tracks consecutive identical-batch
+// failures and returns true when the threshold is crossed. On
+// trip, it pushes a sentinel error onto the fatal channel so the
+// supervisor terminates the process.
+//
+// Fingerprint: (firstSeq, error string). The error string is
+// stable enough for "same constraint failure on same batch
+// prefix" while still distinguishing different failure modes on
+// the same seq.
+//
+// Race-safe: identicalBatchMu guards the streak counters. The
+// fatal-channel send is non-blocking (matches the lifecycle.SafeRun
+// pattern) so a saturated channel doesn't hold the committer.
+func (s *Sequencer) checkIdenticalBatchBreaker(firstSeq uint64, err error) bool {
+	fp := err.Error()
+	s.identicalBatchMu.Lock()
+	if firstSeq == s.identicalBatchSeq && fp == s.identicalBatchErrFP {
+		s.identicalBatchStreak++
+	} else {
+		s.identicalBatchSeq = firstSeq
+		s.identicalBatchErrFP = fp
+		s.identicalBatchStreak = 1
+	}
+	streak := s.identicalBatchStreak
+	s.identicalBatchMu.Unlock()
+
+	if streak < identicalBatchBreakerThreshold {
+		return false
+	}
+
+	// Idempotent trip: only fire the fatal once even if the
+	// committer somehow re-enters this branch before the
+	// supervisor terminates the process.
+	if !s.identicalBatchTripped.CompareAndSwap(false, true) {
+		return true
+	}
+
+	s.logger.Error("sequencer: identical-batch circuit breaker TRIPPED — escalating to FATAL",
+		"first_seq", firstSeq,
+		"error_fingerprint", fp,
+		"consecutive_failures", streak,
+		"threshold", identicalBatchBreakerThreshold,
+	)
+	if s.fatalCh != nil {
+		// Non-blocking send: lifecycle.SafeRun pattern. If the
+		// channel is full/nil the panic still surfaces via the
+		// next drainOnce cycle log spam, but the operator already
+		// got the ERROR line above.
+		select {
+		case s.fatalCh <- fmt.Errorf(
+			"sequencer: identical-batch breaker tripped at first_seq=%d after %d consecutive failures: %s",
+			firstSeq, streak, fp):
+		default:
+		}
+	}
+	return true
+}
+
+// resetIdenticalBatchBreaker clears the streak counters on a
+// successful flush. Called from flushPending after each batch that
+// commits without error so a transient flake (1 or 2 consecutive
+// failures) doesn't accumulate toward the breaker threshold.
+func (s *Sequencer) resetIdenticalBatchBreaker() {
+	s.identicalBatchMu.Lock()
+	defer s.identicalBatchMu.Unlock()
+	if s.identicalBatchStreak == 0 {
+		return
+	}
+	s.identicalBatchSeq = 0
+	s.identicalBatchErrFP = ""
+	s.identicalBatchStreak = 0
 }
