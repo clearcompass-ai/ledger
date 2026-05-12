@@ -164,9 +164,17 @@ func (s *PostgresLeafStore) SetTx(ctx context.Context, tx pgx.Tx, key [32]byte, 
 // row level (the same (origin_tip, authority_tip) goes back in).
 //
 // Empty input is a no-op — callers don't need to guard.
-func (s *PostgresLeafStore) SetBatchTx(ctx context.Context, tx pgx.Tx, leaves []types.SMTLeaf) error {
+//
+// Returns the number of rows affected by the INSERT (per PG semantics
+// for INSERT … ON CONFLICT DO UPDATE: every input row counts as 1
+// affected, whether it inserted or updated). The caller can compare
+// against len(leaves) — a mismatch is pathological (would require an
+// in-batch leaf_key collision, which sha256(LogDID||seq) makes
+// near-impossible across distinct seqs) and is THE smoking gun for
+// "leaves silently collapsed via ON CONFLICT".
+func (s *PostgresLeafStore) SetBatchTx(ctx context.Context, tx pgx.Tx, leaves []types.SMTLeaf) (int64, error) {
 	if len(leaves) == 0 {
-		return nil
+		return 0, nil
 	}
 	keys := make([][]byte, len(leaves))
 	origins := make([][]byte, len(leaves))
@@ -183,7 +191,7 @@ func (s *PostgresLeafStore) SetBatchTx(ctx context.Context, tx pgx.Tx, leaves []
 		origins[i] = SerializeLogPosition(leaves[i].OriginTip)
 		auths[i] = SerializeLogPosition(leaves[i].AuthorityTip)
 	}
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO smt_leaves (leaf_key, origin_tip, authority_tip, updated_at)
 		SELECT leaf_key, origin_tip, authority_tip, NOW()
 		FROM unnest($1::bytea[], $2::bytea[], $3::bytea[])
@@ -195,9 +203,9 @@ func (s *PostgresLeafStore) SetBatchTx(ctx context.Context, tx pgx.Tx, leaves []
 		keys, origins, auths,
 	)
 	if err != nil {
-		return fmt.Errorf("store/smt: set batch tx (n=%d): %w", len(leaves), err)
+		return 0, fmt.Errorf("store/smt: set batch tx (n=%d): %w", len(leaves), err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 // SetBatch writes multiple leaves using Postgres batching.
@@ -455,16 +463,25 @@ func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node)
 // accounting stays consistent.
 //
 // Empty input is a no-op — callers don't need to guard.
-func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []smt.Node) error {
+//
+// Returns the number of rows actually INSERTED (per PG semantics for
+// INSERT … ON CONFLICT DO NOTHING: rows that hit a conflict are NOT
+// counted as affected). So `len(nodes) - rowsAffected` is the number
+// of nodes that already existed in jellyfish_nodes — perfectly
+// legitimate under content-addressing (the same Jellyfish branch
+// node appears as a dirty mutation in multiple batches when leaves
+// near it are updated). Callers should NOT treat a < len(nodes)
+// return as an error.
+func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []smt.Node) (int64, error) {
 	if len(nodes) == 0 {
-		return nil
+		return 0, nil
 	}
 	hashSlices := make([][]byte, len(nodes))
 	payloads := make([][]byte, len(nodes))
 	hashArrays := make([][32]byte, len(nodes))
 	for i, node := range nodes {
 		if node == nil {
-			return fmt.Errorf("store/smt: put batch tx: nil node at index %d", i)
+			return 0, fmt.Errorf("store/smt: put batch tx: nil node at index %d", i)
 		}
 		hashArrays[i] = smt.HashNode(node)
 		hashSlices[i] = hashArrays[i][:]
@@ -479,7 +496,7 @@ func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []s
 	}
 	s.mu.Unlock()
 
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO jellyfish_nodes (node_hash, payload)
 		SELECT node_hash, payload
 		FROM unnest($1::bytea[], $2::bytea[])
@@ -488,9 +505,9 @@ func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []s
 		hashSlices, payloads,
 	)
 	if err != nil {
-		return fmt.Errorf("store/smt: put batch tx (n=%d): %w", len(nodes), err)
+		return 0, fmt.Errorf("store/smt: put batch tx (n=%d): %w", len(nodes), err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 // cachePutLocked inserts/updates the LRU. Caller MUST hold s.mu.

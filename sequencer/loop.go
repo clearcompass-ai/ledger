@@ -235,13 +235,29 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 
 	// Step 4: Tessera AppendLeaf — antispam-idempotent under
 	// retries.
+	tesseraStart := time.Now()
 	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
 	if err != nil {
 		s.handleEntryError(ctx, hash, "tessera AppendLeaf", err)
 		return
 	}
+	tesseraElapsed := time.Since(tesseraStart)
+	// Per-entry seq-assignment probe. Emitted INFO so it surfaces
+	// in WARN-level production logs only when the logger is bumped
+	// for diagnostic runs (e.g., soak). The pair of (this log,
+	// the entry_index_committed log below) lets us reconstruct the
+	// commit-order timeline across concurrent processOne goroutines
+	// and detect when a higher seq becomes PG-visible before a
+	// lower seq commits — the entry_index transient-hole condition
+	// the builder's BeginBatch cursor-leapfrog hypothesis hinges on.
+	s.logger.Info("sequencer: tessera seq assigned (entry_index commit pending)",
+		"seq", seq,
+		"hash", hashPrefix(hash),
+		"tessera_elapsed", tesseraElapsed.Round(time.Microsecond),
+	)
 
 	// Step 5: Postgres entry_index INSERT inside a transaction.
+	insertStart := time.Now()
 	if err := s.insertEntryIndex(ctx, seq, hash, entry); err != nil {
 		// UNIQUE collision on canonical_hash: a prior drain or
 		// the v1 facade beat us. Idempotent — fall through to
@@ -253,6 +269,22 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 		s.logger.Debug("sequencer: entry_index already inserted (idempotent)",
 			"seq", seq, "hash", hashPrefix(hash))
 	}
+	insertElapsed := time.Since(insertStart)
+	// THE critical probe for the leapfrog investigation: the moment
+	// `seq` becomes visible to any reader (including the builder's
+	// BeginBatch) is the moment `tx.Commit` returns inside
+	// insertEntryIndex. The slog timestamp on THIS line is the
+	// best per-entry approximation of when entry_index gained this
+	// row. Cross-referencing seq order vs. timestamp order reveals
+	// commit-order inversions directly: if seq=K+1 logs BEFORE
+	// seq=K, the builder will see [..., K-1, K+1] missing K on its
+	// next BeginBatch SELECT.
+	s.logger.Info("sequencer: entry_index committed",
+		"seq", seq,
+		"hash", hashPrefix(hash),
+		"insert_elapsed", insertElapsed.Round(time.Microsecond),
+		"tessera_to_pg", time.Since(tesseraStart).Round(time.Microsecond),
+	)
 
 	// Step 6: WAL state transition pending → sequenced.
 	if err := s.wal.Sequence(ctx, hash, seq); err != nil {

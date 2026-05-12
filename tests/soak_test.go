@@ -485,9 +485,18 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	// at StatePending indefinitely; the shipper's HWM never advances
 	// past 0; the drain wait below times out at 10 minutes.
 	// Mirrors startE2ELedger in e2e_shipper_redirect_test.go.
+	// Dedicated INFO-level logger for the sequencer so the per-entry
+	// seq-assignment / entry_index-committed probes (sequencer/loop.go
+	// Step 4 + Step 5) emit during the soak. We need these to detect
+	// commit-order inversions in entry_index — the per-entry-tx
+	// commit pattern in processOne can leave transient holes that the
+	// builder's BeginBatch reads, causing cursor leapfrog. WARN-level
+	// production logging continues to suppress them.
+	sequencerLogger := slog.New(slog.NewTextHandler(os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelInfo}))
 	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
 		PollInterval: 10 * time.Millisecond,
-		Logger:       logger,
+		Logger:       sequencerLogger,
 	})
 
 	// Shipper: WAL StateSequenced → bytestore upload → WAL StateShipped.
@@ -891,6 +900,36 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			"SELECT COALESCE(MAX(sequence_number), -1)::bigint FROM entry_index").
 			Scan(&entryMaxSeq)
 
+		// Two derived health signals that name the bug class on sight:
+		//
+		//   entry_index_gaps  = (max_seq + 1) - entry_index_count
+		//     Size of the SEQUENCER's transient hole in entry_index
+		//     RIGHT NOW. Caused by the per-entry-tx commit pattern in
+		//     sequencer/loop.go — concurrent processOne goroutines
+		//     commit out of order, briefly leaving holes that fill in
+		//     on the next tx commit. Builder-side BeginBatch sees the
+		//     hole and grabs the higher seqs visible at SELECT time.
+		//
+		//   leapfrog          = (cursor + 1) - smt_leaves
+		//     Size of the BUILDER's permanent skip — entries whose
+		//     seqs the cursor advanced past without producing a row
+		//     in smt_leaves. Once leapfrog goes positive it stays
+		//     positive (cursor never goes backwards).
+		//
+		// In a healthy run both should be 0 at all times. A healthy
+		// drain endpoint requires entry_index_gaps == 0 AND leapfrog
+		// == 0. Use -1 sentinels carefully: when entry_index is
+		// empty, max_seq=-1 and count=0 → gaps=0; when no batches
+		// processed yet, cursor=-1 and smt_leaves=0 → leapfrog=0.
+		entryIndexGaps := int64(0)
+		if entryMaxSeq >= 0 {
+			entryIndexGaps = (entryMaxSeq + 1) - entryIndexRows
+		}
+		leapfrog := int64(0)
+		if builderCursor >= 0 {
+			leapfrog = (builderCursor + 1) - smtLeafRows
+		}
+
 		// shipDup = (shipped events) - (distinct seqs that completed).
 		// Pre-dedupe baseline; with the inflight guard now in place
 		// (shipper.Shipper.inflight) this should converge on 0.
@@ -903,7 +942,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
 			"ship{shipped=%d unique=%d dup=%d skipInflight=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
-			"pg{entry_index=%d smt_leaves=%d builder_lag=%d cursor=%d max_seq=%d}",
+			"pg{entry_index=%d smt_leaves=%d builder_lag=%d cursor=%d max_seq=%d gaps=%d leapfrog=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
@@ -913,7 +952,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
 			entryIndexRows, smtLeafRows, builderLag,
-			builderCursor, entryMaxSeq,
+			builderCursor, entryMaxSeq, entryIndexGaps, leapfrog,
 		)
 
 		// Exit gate (Fix A): wait for BOTH the shipper AND the builder
