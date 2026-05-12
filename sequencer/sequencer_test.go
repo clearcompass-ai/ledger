@@ -178,7 +178,7 @@ type fakeTessera struct {
 
 func newFakeTessera() *fakeTessera {
 	return &fakeTessera{
-		nextSeq:  1,
+		nextSeq:  0,
 		assigned: make(map[[32]byte]uint64),
 	}
 }
@@ -241,9 +241,58 @@ func buildEntry(t *testing.T, payload string) (wire []byte, hash [32]byte) {
 	return wire, hash
 }
 
-// newTestSequencer wires a Sequencer with the supplied fakes. db
-// and store are nil so insertEntryIndex short-circuits cleanly.
+// newTestSequencer wires a Sequencer with the supplied fakes plus
+// a running committer goroutine — for tests that drive drainOnce
+// or processOne directly. db and store are nil so the committer's
+// flushBatch short-circuits the PG INSERT, but still fires the
+// per-entry WAL state transitions and metrics so tests can assert
+// as they would against a real PG-backed sequencer.
+//
+// Tests that exercise the full Run() lifecycle should use
+// newTestSequencerNoCommitter instead — Run() spawns its own
+// committer, and running two committers on one channel races.
+//
+// t.Cleanup cancels the committer's context and waits for it to
+// drain — guaranteeing no stale goroutines leak between tests.
+//
+// Tests must use waitForProcessed / waitForManual after drainOnce
+// to give the committer time to process emitted tuples; processOne
+// is now async with respect to WAL state transitions.
 func newTestSequencer(t *testing.T, w WAL, ts Tessera, cfg Config) *Sequencer {
+	t.Helper()
+	s := newTestSequencerNoCommitter(t, w, ts, cfg)
+	// Stand up the committer the same way Run() does, but in a
+	// test-scoped goroutine. Tests live in-package, so we touch
+	// the unexported fields directly.
+	committerCtx, cancel := context.WithCancel(context.Background())
+	s.commitCh = make(chan stagedEntry, s.cfg.CommitChannelBuffer)
+	// Both fakeTessera and concurrencyTrackingTessera assign seqs
+	// starting at 1 (not 0). nextExpectedSeq has to match or the
+	// committer's heap stalls waiting for seq=0 forever. Real
+	// production paths source nextExpectedSeq from
+	// readNextExpectedSeq → MAX(entry_index.seq)+1, which is also
+	// 1-based on a fresh seeded fake.
+	// Fake Tessera assigns seqs starting at 0; init committer to
+	// match. Production paths use readNextExpectedSeq from PG.
+	s.nextExpectedSeq.Store(0)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.committerLoop(committerCtx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+	return s
+}
+
+// newTestSequencerNoCommitter is the constructor for tests that
+// drive Run(ctx) and rely on Run's own committer goroutine.
+// Spawning a second committer (as newTestSequencer does) would
+// race the Run-spawned one on the same channel.
+func newTestSequencerNoCommitter(t *testing.T, w WAL, ts Tessera, cfg Config) *Sequencer {
 	t.Helper()
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 10 * time.Millisecond
@@ -251,7 +300,47 @@ func newTestSequencer(t *testing.T, w WAL, ts Tessera, cfg Config) *Sequencer {
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = 3
 	}
+	// Snappy defaults so the committer flushes individual entries
+	// without the 50ms production wait — tests want sub-ms turnaround.
+	if cfg.CommitMaxWait == 0 {
+		cfg.CommitMaxWait = 1 * time.Millisecond
+	}
+	if cfg.CommitMaxBatchSize == 0 {
+		cfg.CommitMaxBatchSize = 1
+	}
 	return NewSequencer(w, ts, nil, nil, cfg)
+}
+
+// waitForProcessed blocks until s.metrics.processed reaches at
+// least n, or t.Fatal's after a generous timeout. Used by tests
+// that assert WAL state transitions after a drainOnce — the
+// committer is async, so the metric is the synchronization point.
+func waitForProcessed(t *testing.T, s *Sequencer, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.metrics.processed.Load() >= n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("waitForProcessed: timeout (have processed=%d, want >= %d)",
+		s.metrics.processed.Load(), n)
+}
+
+// waitForManual blocks until s.metrics.manualCount reaches at least n.
+// Used by tests that drive tombstone-or-deserialize-failure paths.
+func waitForManual(t *testing.T, s *Sequencer, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.metrics.manualCount.Load() >= n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("waitForManual: timeout (have manualCount=%d, want >= %d)",
+		s.metrics.manualCount.Load(), n)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -373,7 +462,9 @@ func TestSequencer_Run_DrainsOnceImmediately(t *testing.T) {
 	_, hash := buildEntry(t, "drain-on-start")
 	w.seed(hash, mustSerializeWith(t, "drain-on-start"))
 
-	s := newTestSequencer(t, w, ts, Config{PollInterval: time.Hour})
+	// Run-based test: Run() spawns its own committer. Use the
+	// no-committer helper to avoid racing two committers on commitCh.
+	s := newTestSequencerNoCommitter(t, w, ts, Config{PollInterval: time.Hour})
 
 	// Cancel before the first ticker tick fires; only the immediate
 	// drainOnce on Run start can have processed the entry.
@@ -399,7 +490,8 @@ func TestSequencer_Run_DrainsOnceImmediately(t *testing.T) {
 func TestSequencer_Run_StopsOnCtxCancel(t *testing.T) {
 	w := newFakeWAL()
 	ts := newFakeTessera()
-	s := newTestSequencer(t, w, ts, Config{})
+	// Run-based test: avoid double-committer race.
+	s := newTestSequencerNoCommitter(t, w, ts, Config{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -428,6 +520,10 @@ func TestSequencer_processOne_HappyPath(t *testing.T) {
 
 	s := newTestSequencer(t, w, ts, Config{})
 	s.drainOnce(context.Background())
+	// Stage-1 emitted to commitCh; wait for the committer goroutine
+	// to drain it and run the post-commit hook (WAL.Sequence + metric
+	// increment). processed=1 is the synchronization point.
+	waitForProcessed(t, s, 1)
 
 	if got := ts.calls.Load(); got != 1 {
 		t.Errorf("Tessera.AppendLeaf calls = %d, want 1", got)
@@ -476,8 +572,10 @@ func TestSequencer_processOne_TransientTesseraFailure_MarksRetry(t *testing.T) {
 		t.Errorf("after first drain: MarkManual = %d, want 0", got)
 	}
 
-	// Second drain: Tessera succeeds → Sequence advances.
+	// Second drain: Tessera succeeds → stage-1 emits; committer
+	// flushes; WAL.Sequence advances. Wait for processed=1.
 	s.drainOnce(context.Background())
+	waitForProcessed(t, s, 1)
 	if got := w.sequenceCalls.Load(); got != 1 {
 		t.Errorf("after second drain: Sequence calls = %d, want 1", got)
 	}
@@ -543,6 +641,7 @@ func TestSequencer_processOne_TesseraDedup_Idempotent(t *testing.T) {
 
 	// First drain succeeds.
 	s.drainOnce(context.Background())
+	waitForProcessed(t, s, 1)
 	firstSeq := w.sequenced[hash]
 
 	// Re-seed to simulate a second drain catching the same hash
@@ -553,6 +652,11 @@ func TestSequencer_processOne_TesseraDedup_Idempotent(t *testing.T) {
 	w.mu.Unlock()
 
 	s.drainOnce(context.Background())
+	// The committer sees a duplicate seq from Tessera dedup;
+	// applyPostCommitForOne fires WAL.Sequence again (idempotent in
+	// the fake), so processed will tick to 2 once the committer
+	// handles the stale-discard path.
+	waitForProcessed(t, s, 2)
 	if got := w.sequenced[hash]; got != firstSeq {
 		t.Errorf("second drain assigned different seq: %d != %d (Tessera dedup broken?)", got, firstSeq)
 	}
@@ -605,7 +709,7 @@ type concurrencyTrackingTessera struct {
 func newConcurrencyTrackingTessera(holdInside time.Duration) *concurrencyTrackingTessera {
 	return &concurrencyTrackingTessera{
 		holdInside: holdInside,
-		nextSeq:    1,
+		nextSeq:    0,
 		assigned:   make(map[[32]byte]uint64),
 	}
 }
@@ -668,6 +772,9 @@ func TestSequencer_drainOnce_HonorsMaxInFlight(t *testing.T) {
 	s := newTestSequencer(t, w, ts, cfg)
 
 	s.drainOnce(context.Background())
+	// drainOnce.wg.Wait only ensures stage-1 workers finished; the
+	// committer is async. Wait for it to flush the staged tuples.
+	waitForProcessed(t, s, numEntries)
 
 	if peak := ts.PeakConcurrent(); peak > maxInFlight {
 		t.Errorf("peak concurrent AppendLeaf calls = %d, want <= %d", peak, maxInFlight)
@@ -702,12 +809,15 @@ func TestSequencer_drainOnce_BlocksUntilWorkersComplete(t *testing.T) {
 
 	// 5 entries × 15ms with 2 in-flight ⇒ ceil(5/2)*15ms = 45ms minimum.
 	// drainOnce must NOT return after the iterator finishes spawning;
-	// it must wait for the pipeline goroutines too.
+	// it must wait for the stage-1 goroutines too.
 	if elapsed < 30*time.Millisecond {
 		t.Errorf("drainOnce returned in %v — too fast; workers must not have completed", elapsed)
 	}
 
-	// And every entry must be sequenced after drain returns.
+	// Stage-1 emits happen before drainOnce returns (wg.Wait); the
+	// committer flushes asynchronously. Wait for processed=5 so the
+	// WAL state transitions complete.
+	waitForProcessed(t, s, 5)
 	if got := s.metrics.processed.Load(); got != 5 {
 		t.Errorf("processed = %d, want 5", got)
 	}

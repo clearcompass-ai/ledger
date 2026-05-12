@@ -56,8 +56,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/crypto/artifact"
 	"github.com/clearcompass-ai/attesta/crypto/escrow"
@@ -185,9 +183,38 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 // it out of the error log.
 var errCycleBudget = errors.New("sequencer: per-cycle work budget exhausted")
 
-// processOne runs the per-entry pipeline. Error paths log,
-// increment counters, and trigger MarkRetry / MarkManual; they
-// never bubble up to the iteration.
+// processOne runs the per-entry STAGE-1 pipeline: MetaState guard,
+// WAL read, deserialize, Tessera AppendLeaf, then emit a stagedEntry
+// tuple to commitCh for the committer goroutine to atomically batch
+// into entry_index. Error paths log, increment counters, and trigger
+// MarkRetry / MarkManual; they never bubble up to the iteration.
+//
+// STAGE-1 / STAGE-2 SPLIT:
+//
+//   Stage-1 (this function, runs in MaxInFlight parallel workers):
+//     Step 1. MetaState guard — skip if no longer Pending.
+//     Step 2. wal.Read → wire bytes.
+//     Step 3. envelope.Deserialize → header metadata.
+//     Step 4. tessera.AppendLeaf → assigned seq.
+//     Step 5. dispatchCommitmentSchema → split-id (if applicable).
+//     Step 6. Build stagedEntry; emit to commitCh.
+//
+//   Stage-2 (committer goroutine, singleton — see committer.go):
+//     Step 7. Pop contiguous prefix from min-heap.
+//     Step 8. Batched INSERT into entry_index (+ commitment_split_id).
+//     Step 9. Per-entry WAL.Sequence / MarkManual (post-commit).
+//     Step 10. Sidecar writes 0x0A (splitid index), 0x0C (entry lookup).
+//
+// THE INVARIANT THE SPLIT ENFORCES:
+//   Steps 1-4 are idempotent under retries. Once Tessera.AppendLeaf
+//   returns, the seq is irrevocably allocated; the stage-1 worker
+//   MUST emit a tuple to commitCh (live or tombstone) or the
+//   committer's heap stalls forever waiting for that seq. The
+//   tombstone routing below covers the only post-AppendLeaf failure
+//   currently reachable in stage-1 (dispatchCommitmentSchema
+//   parse error); any future post-AppendLeaf work that could fail
+//   permanently MUST emit a tombstone via the same path or risk the
+//   deadlock.
 func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	// Step 1: state guard.
 	meta, err := s.wal.MetaState(ctx, hash)
@@ -215,13 +242,14 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 		return
 	}
 
-	// Step 3: deserialize for metadata extraction.
+	// Step 3: deserialize for metadata extraction. PRE-AppendLeaf —
+	// no tombstone needed if this fails because no seq has been
+	// assigned yet. Deserialization failure on durable WAL bytes is
+	// catastrophic — those bytes were admitted, so they passed
+	// envelope.NewUnsignedEntry at submit time. Treat as permanent
+	// and transition to Manual immediately.
 	entry, err := envelope.Deserialize(wire)
 	if err != nil {
-		// Deserialization failure on durable WAL bytes is
-		// catastrophic — those bytes admitted, so they passed
-		// envelope.NewUnsignedEntry at submit time. Treat as
-		// permanent and transition to Manual immediately.
 		s.logger.Error("sequencer: deserialize WAL bytes — transitioning to Manual",
 			"hash", hashPrefix(hash), "error", err)
 		s.metrics.failures.Add(1)
@@ -234,88 +262,69 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	}
 
 	// Step 4: Tessera AppendLeaf — antispam-idempotent under
-	// retries.
+	// retries. POINT OF NO RETURN: once this returns, `seq` exists
+	// in Tessera permanently. From here, every code path MUST emit
+	// a tuple to commitCh (live or tombstone) or risk deadlocking
+	// the committer's contiguous-prefix drain.
 	tesseraStart := time.Now()
 	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
 	if err != nil {
+		// No seq assigned — normal retry path. Tombstone NOT needed.
 		s.handleEntryError(ctx, hash, "tessera AppendLeaf", err)
 		return
 	}
 	tesseraElapsed := time.Since(tesseraStart)
-	// Per-entry seq-assignment probe. Emitted INFO so it surfaces
-	// in WARN-level production logs only when the logger is bumped
-	// for diagnostic runs (e.g., soak). The pair of (this log,
-	// the entry_index_committed log below) lets us reconstruct the
-	// commit-order timeline across concurrent processOne goroutines
-	// and detect when a higher seq becomes PG-visible before a
-	// lower seq commits — the entry_index transient-hole condition
-	// the builder's BeginBatch cursor-leapfrog hypothesis hinges on.
-	s.logger.Info("sequencer: tessera seq assigned (entry_index commit pending)",
+	s.logger.Info("sequencer: tessera seq assigned (committer enqueue pending)",
 		"seq", seq,
 		"hash", hashPrefix(hash),
 		"tessera_elapsed", tesseraElapsed.Round(time.Microsecond),
 	)
 
-	// Step 5: Postgres entry_index INSERT inside a transaction.
-	insertStart := time.Now()
-	if err := s.insertEntryIndex(ctx, seq, hash, entry); err != nil {
-		// UNIQUE collision on canonical_hash: a prior drain or
-		// the v1 facade beat us. Idempotent — fall through to
-		// the WAL state transition.
-		if !isUniqueViolation(err) {
-			s.handleEntryError(ctx, hash, "entry_index insert", err)
-			return
-		}
-		s.logger.Debug("sequencer: entry_index already inserted (idempotent)",
-			"seq", seq, "hash", hashPrefix(hash))
-	}
-	insertElapsed := time.Since(insertStart)
-	// THE critical probe for the leapfrog investigation: the moment
-	// `seq` becomes visible to any reader (including the builder's
-	// BeginBatch) is the moment `tx.Commit` returns inside
-	// insertEntryIndex. The slog timestamp on THIS line is the
-	// best per-entry approximation of when entry_index gained this
-	// row. Cross-referencing seq order vs. timestamp order reveals
-	// commit-order inversions directly: if seq=K+1 logs BEFORE
-	// seq=K, the builder will see [..., K-1, K+1] missing K on its
-	// next BeginBatch SELECT.
-	s.logger.Info("sequencer: entry_index committed",
-		"seq", seq,
-		"hash", hashPrefix(hash),
-		"insert_elapsed", insertElapsed.Round(time.Microsecond),
-		"tessera_to_pg", time.Since(tesseraStart).Round(time.Microsecond),
-	)
-
-	// Step 6: WAL state transition pending → sequenced.
-	if err := s.wal.Sequence(ctx, hash, seq); err != nil {
-		// At-least-once: the entry IS sequenced in Tessera and
-		// indexed in Postgres. WAL state lag is recoverable —
-		// the next drain cycle re-probes MetaState and short-
-		// circuits at Step 1.
-		s.handleEntryError(ctx, hash, "wal Sequence", err)
+	// Step 5: parse commitment-schema sidecar info. dispatchErr
+	// here is a post-AppendLeaf failure — Tessera owns the seq but
+	// the entry's domain payload couldn't be schema-dispatched, so
+	// we route to a tombstone to preserve the committer's
+	// contiguous-prefix invariant. The hash is still valid; only
+	// the projection-side metadata is dropped.
+	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
+	if dispatchErr != nil {
+		s.logger.Error("sequencer: post-AppendLeaf dispatchCommitmentSchema error — routing to tombstone",
+			"seq", seq, "hash", hashPrefix(hash), "error", dispatchErr)
+		s.emitTombstone(ctx, seq, hash, fmt.Sprintf("dispatchCommitmentSchema: %v", dispatchErr))
 		return
 	}
 
-	s.metrics.processed.Add(1)
-	s.resetAttempts(hash)
-	s.logger.Debug("sequencer: entry sequenced",
-		"seq", seq, "hash", hashPrefix(hash))
+	// Step 6: build the staged tuple and emit to commitCh. The
+	// pre-built EntryRow lets the committer batch-INSERT N tuples
+	// without per-entry serialization work in the critical section.
+	tuple := s.buildLiveStagedEntry(seq, hash, entry, extractedSplitID, extractedSchemaID)
+
+	select {
+	case s.commitCh <- tuple:
+		// Queued — committer will batch + commit + transition WAL
+		// state. Per-entry metrics fire from inside the committer
+		// (see committer.go::applyPostCommitForOne).
+	case <-ctx.Done():
+		// Shutdown — entry stays in WAL Pending state. On restart,
+		// drainOnce re-fetches; AppendLeaf returns same seq
+		// (idempotent via Tessera antispam); the tuple is rebuilt
+		// and emitted again. No state loss.
+		s.logger.Warn("sequencer: ctx cancelled before committer enqueue",
+			"seq", seq, "hash", hashPrefix(hash))
+	}
 }
 
-// insertEntryIndex runs the entry_index INSERT inside a
-// ReadCommitted transaction. Mirrors the path the old inline
-// admission step 12 took.
-func (s *Sequencer) insertEntryIndex(
-	ctx context.Context,
+// buildLiveStagedEntry assembles a stagedEntry for a normal (live)
+// entry: extracts the EventTime, serializes the LogPositions, and
+// populates the entry_index Row + optional commitment-split-id
+// sidecar payload.
+func (s *Sequencer) buildLiveStagedEntry(
 	seq uint64,
 	hash [32]byte,
 	entry *envelope.Entry,
-) error {
-	if s.db == nil || s.store == nil {
-		// Test mode: nil DB skips the INSERT entirely. Real
-		// production wiring requires both.
-		return nil
-	}
+	extractedSplitID *[32]byte,
+	extractedSchemaID string,
+) stagedEntry {
 	var targetRoot, cosigOf, schemaRef []byte
 	if entry.Header.TargetRoot != nil {
 		targetRoot = store.SerializeLogPosition(*entry.Header.TargetRoot)
@@ -334,13 +343,13 @@ func (s *Sequencer) insertEntryIndex(
 	if entry.Header.EventTime != 0 {
 		logTime = time.UnixMicro(entry.Header.EventTime).UTC()
 	}
-	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
-	if dispatchErr != nil {
-		return fmt.Errorf("commitment schema: %w", dispatchErr)
-	}
 
-	if err := store.WithReadCommittedTx(ctx, s.db, func(ctx context.Context, tx pgx.Tx) error {
-		if err := s.store.Insert(ctx, tx, store.EntryRow{
+	tuple := stagedEntry{
+		Seq:       seq,
+		Hash:      hash,
+		Tombstone: false,
+		Entry:     entry,
+		Row: store.EntryRow{
 			SequenceNumber: seq,
 			CanonicalHash:  hash,
 			LogTime:        logTime,
@@ -348,78 +357,57 @@ func (s *Sequencer) insertEntryIndex(
 			TargetRoot:     targetRoot,
 			CosignatureOf:  cosigOf,
 			SchemaRef:      schemaRef,
-		}); err != nil {
-			return err
-		}
-		if extractedSplitID != nil {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO commitment_split_id (sequence_number, schema_id, split_id)
-				VALUES ($1, $2, $3)`,
-				seq, extractedSchemaID, extractedSplitID[:],
-			); err != nil {
-				return fmt.Errorf("commitment_split_id insert: %w", err)
-			}
-		}
-		return nil
-	}); err != nil {
-		return err
+			Status:         store.StatusLive,
+		},
 	}
+	if extractedSplitID != nil {
+		tuple.HasSplitID = true
+		tuple.SplitID = *extractedSplitID
+		tuple.SchemaID = extractedSchemaID
+	}
+	return tuple
+}
 
-	// Postgres committed. Now write the splitid index entry to
-	// the ledger-local Badger store (prefix 0x0A) so the
-	// gossipnet.EquivocationScanner's db.Subscribe wakes and
-	// detects collisions. AFTER the Postgres commit so a
-	// rollback never leaves a stale index entry.
-	//
-	// Best-effort: a write failure here doesn't block the commit
-	// path. Postgres still has the durable record; on ledger
-	// restart the splitid index is rebuilt by replaying
-	// entry_index (future migration — not in this PR's scope).
-	if extractedSplitID != nil && s.splitIDIndex != nil && len(entry.Signatures) > 0 {
-		idxEntry := SplitIDIndexEntry{
-			EquivocatorDID: entry.Header.SignerDID,
+// emitTombstone is the post-AppendLeaf safety valve. Tessera has
+// assigned `seq` for `hash`, but the entry cannot be projected
+// normally (e.g., dispatchCommitmentSchema parse error). We emit
+// a tombstone tuple so the committer's contiguous-prefix drain
+// advances past `seq` instead of stalling. The entry_index row
+// carries the real hash but the metadata fields are NULL and
+// signer_did = TombstoneSignerDID.
+//
+// Reason is logged when the committer transitions WAL state to
+// Manual (see committer.go::applyPostCommitForOne). Auditors
+// querying /v1/entries/{seq} for a tombstoned seq receive a
+// definitive "manual" status response rather than an infinite 404.
+func (s *Sequencer) emitTombstone(ctx context.Context, seq uint64, hash [32]byte, reason string) {
+	tuple := stagedEntry{
+		Seq:       seq,
+		Hash:      hash,
+		Tombstone: true,
+		Reason:    reason,
+		Row: store.EntryRow{
+			SequenceNumber: seq,
 			CanonicalHash:  hash,
-			SigBytes:       append([]byte{}, entry.Signatures[0].Bytes...),
-		}
-		if werr := s.splitIDIndex.WriteSplitIDIndexEntry(
-			ctx, extractedSchemaID, *extractedSplitID, seq, idxEntry,
-		); werr != nil {
-			s.logger.Warn("sequencer: splitid index write failed",
-				"seq", seq, "schema_id", extractedSchemaID,
-				"error", werr)
-		}
+			LogTime:        time.Now().UTC(),
+			SignerDID:      store.TombstoneSignerDID,
+			Status:         store.StatusTombstone,
+		},
+		// Tombstones have no Entry / sidecar fields; explicit zero
+		// for readability.
+		Entry:      nil,
+		HasSplitID: false,
 	}
-
-	// 0x0C entry-lookup projection (pure CQRS read path). Same write
-	// discipline as 0x0A: AFTER the Postgres commit, best-effort,
-	// non-blocking. The full canonical wire bytes are captured
-	// here so the read endpoint serves /v1/commitments/by-split-id
-	// without re-loading from Postgres or Tessera.
-	if extractedSplitID != nil && s.entryLookup != nil {
-		canonical, serr := envelope.Serialize(entry)
-		if serr != nil {
-			// Best-effort projection write only — log and skip.
-			// The Postgres entry_index row is already durable; the
-			// 0x0C projection is a read-side cache that the boot
-			// replayer can rebuild from Postgres.
-			s.logger.Warn("sequencer: entry-lookup serialize failed",
-				"seq", seq, "schema_id", extractedSchemaID, "error", serr)
-		} else {
-			lookupEntry := EntryLookupIndexEntry{
-				CanonicalBytes: canonical,
-				LogTimeMicros:  entry.Header.EventTime,
-				LogDID:         s.logDID,
-			}
-			if werr := s.entryLookup.WriteEntryLookupEntry(
-				ctx, extractedSchemaID, *extractedSplitID, seq, lookupEntry,
-			); werr != nil {
-				s.logger.Warn("sequencer: entry lookup projection write failed",
-					"seq", seq, "schema_id", extractedSchemaID,
-					"error", werr)
-			}
-		}
+	select {
+	case s.commitCh <- tuple:
+	case <-ctx.Done():
+		// Shutdown before tombstone enqueued. WAL state is still
+		// Pending; on restart, drainOnce re-fetches and stage-1
+		// re-runs. dispatchCommitmentSchema will produce the same
+		// error and re-emit the tombstone.
+		s.logger.Warn("sequencer: ctx cancelled before tombstone enqueue",
+			"seq", seq, "hash", hashPrefix(hash))
 	}
-	return nil
 }
 
 type commitmentPayloadPeek struct {

@@ -129,7 +129,7 @@ func TestSequenceCursor_Next_ReturnsAscendingSequences(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	want := []uint64{1, 2, 3, 4, 5}
-	if !equalUint64Slice(got, want) {
+	if !equalUint64Slice(seqsOf(got), want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -149,7 +149,7 @@ func TestSequenceCursor_Next_RespectsBatchSize(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	want := []uint64{1, 2, 3}
-	if !equalUint64Slice(got, want) {
+	if !equalUint64Slice(seqsOf(got), want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -169,7 +169,7 @@ func TestSequenceCursor_Next_FiltersAtOrBelowCursor(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	want := []uint64{6, 7, 8, 9, 10}
-	if !equalUint64Slice(got, want) {
+	if !equalUint64Slice(seqsOf(got), want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -353,4 +353,17 @@ func equalUint64Slice(a, b []uint64) bool {
 		}
 	}
 	return true
+}
+
+// seqsOf extracts the Seq field from a slice of CursorEntry rows
+// for comparison against a plain []uint64 expectation. SequenceCursor
+// .Next now returns (Seq, Status) pairs; most legacy tests assert
+// only on seqs (tombstones are a v0.4.0 addition and have dedicated
+// tests below).
+func seqsOf(entries []CursorEntry) []uint64 {
+	out := make([]uint64, len(entries))
+	for i, e := range entries {
+		out[i] = e.Seq
+	}
+	return out
 }

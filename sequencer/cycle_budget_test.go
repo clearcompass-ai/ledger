@@ -137,7 +137,8 @@ func TestDrainOnce_PerCycleBudget_MetricFreshness(t *testing.T) {
 		delay:    appendLeafDelay,
 	}
 
-	s := newTestSequencer(t, w, ts, Config{
+	// Run-based test: Run() spawns its own committer.
+	s := newTestSequencerNoCommitter(t, w, ts, Config{
 		PollInterval:       pollInterval,
 		MaxInFlight:        maxInFlight,
 		MaxEntriesPerCycle: entriesPerCycle,
@@ -267,7 +268,9 @@ func TestDrainOnce_NegativeControl_UnboundedExhibitsBadFreshness(t *testing.T) {
 	// Explicit 0 → MaxEntriesPerCycle disabled (legacy unbounded).
 	// NewSequencer's default would set it to DefaultMaxEntriesPerCycle,
 	// so we have to override AFTER construction.
-	s := newTestSequencer(t, w, ts, Config{
+	// Run-based test: avoid double-committer race via the
+	// no-committer helper.
+	s := newTestSequencerNoCommitter(t, w, ts, Config{
 		PollInterval: pollInterval,
 		MaxInFlight:  maxInFlight,
 	})

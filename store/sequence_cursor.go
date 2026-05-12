@@ -91,9 +91,19 @@ func (c *SequenceCursor) Read(ctx context.Context) (int64, error) {
 	return seq, nil
 }
 
-// Next returns up to batchSize sequence numbers from entry_index
-// whose sequence_number > cursor. Result is in ASC order so callers
-// can stream sequentially.
+// CursorEntry is one row from SequenceCursor.Next — the sequence
+// number plus its tombstone status. Callers must filter out
+// tombstones (status == StatusTombstone) when building work lists
+// but must STILL advance the cursor past them on commit, otherwise
+// the next BeginBatch would re-read them.
+type CursorEntry struct {
+	Seq    uint64
+	Status EntryStatus
+}
+
+// Next returns up to batchSize entry_index rows whose
+// sequence_number > cursor, in ASC order. Each returned CursorEntry
+// carries the row's tombstone status alongside the seq.
 //
 // cursor is supplied by the caller (typically from a prior Read or
 // from an in-memory advancing counter the builder maintains across
@@ -110,12 +120,17 @@ func (c *SequenceCursor) Read(ctx context.Context) (int64, error) {
 // fresh install. PG's signed BIGINT lets `WHERE sequence_number > -1`
 // match seq=0; using uint64 here would silently roll -1 to maxUint64
 // and the query would never return any rows.
-func (c *SequenceCursor) Next(ctx context.Context, cursor int64, batchSize int) ([]uint64, error) {
+//
+// Both live and tombstone rows are returned; the caller is responsible
+// for filtering. The status column was added in migration 0005 to
+// support gap-free committer architecture (see migrations/0005 for
+// the full rationale).
+func (c *SequenceCursor) Next(ctx context.Context, cursor int64, batchSize int) ([]CursorEntry, error) {
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("store/cursor: batchSize must be positive, got %d", batchSize)
 	}
 	rows, err := c.db.Query(ctx, `
-		SELECT sequence_number FROM entry_index
+		SELECT sequence_number, status FROM entry_index
 		WHERE sequence_number > $1
 		ORDER BY sequence_number ASC
 		LIMIT $2`,
@@ -126,13 +141,16 @@ func (c *SequenceCursor) Next(ctx context.Context, cursor int64, batchSize int) 
 	}
 	defer rows.Close()
 
-	out := make([]uint64, 0, batchSize)
+	out := make([]CursorEntry, 0, batchSize)
 	for rows.Next() {
-		var seq uint64
-		if err := rows.Scan(&seq); err != nil {
+		var (
+			seq    uint64
+			status int16
+		)
+		if err := rows.Scan(&seq, &status); err != nil {
 			return nil, fmt.Errorf("store/cursor: scan: %w", err)
 		}
-		out = append(out, seq)
+		out = append(out, CursorEntry{Seq: seq, Status: EntryStatus(status)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store/cursor: rows: %w", err)
@@ -197,6 +215,40 @@ func (c *SequenceCursor) Lag(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 	return lag, nil
+}
+
+// AdvancePastTombstones moves the cursor to newCursor outside of
+// the builder's atomic commit. Used by the builder's BeginBatch
+// when the contiguous prefix it observes is ENTIRELY tombstones —
+// there is no SMT work to atomically couple the cursor advance to,
+// but the cursor still needs to move past those seqs so the next
+// BeginBatch doesn't re-read them.
+//
+// Safe to call from the builder's hot path because:
+//   1. Tombstone rows in entry_index never participate in SMT state
+//      (they have NULL signer_did_real / payload metadata and are
+//      filtered out of leaf production).
+//   2. The advance is naturally idempotent — re-running it sets the
+//      cursor to the same value.
+//   3. If the call fails (tx error), the next BeginBatch re-reads
+//      the same tombstones and re-tries the advance.
+//
+// Distinct method name (rather than overloading AdvanceForRebuild)
+// so the call site's intent is explicit and grep-able.
+func (c *SequenceCursor) AdvancePastTombstones(ctx context.Context, newCursor uint64) error {
+	tag, err := c.db.Exec(ctx,
+		`UPDATE builder_cursor
+		   SET last_processed_sequence = $1, updated_at = NOW()
+		   WHERE id = 1 AND last_processed_sequence < $1`,
+		newCursor,
+	)
+	if err != nil {
+		return fmt.Errorf("store/cursor: advance-tombstones: %w", err)
+	}
+	// RowsAffected may be 0 if a concurrent advance already moved the
+	// cursor past newCursor — that's fine, the invariant is preserved.
+	_ = tag
+	return nil
 }
 
 // AdvanceForRebuild resets the cursor to a caller-supplied value
