@@ -501,7 +501,7 @@ func TestSequencer_Run_DrainsReplayerOnCtxCancel(t *testing.T) {
 		logger: discardReplayLog(),
 	}
 
-	s := newTestSequencer(t, newFakeWAL(), newFakeTessera(),
+	s := newTestSequencerNoCommitter(t, newFakeWAL(), newFakeTessera(),
 		Config{PollInterval: time.Hour})
 	s.WithReplayer(r)
 
@@ -537,7 +537,7 @@ func TestSequencer_Run_DrainsReplayerOnCtxCancel(t *testing.T) {
 // replayer is harmless: Run starts the drain loop and returns
 // on ctx cancel without spawning a child goroutine.
 func TestSequencer_Run_NoReplayer_StillStarts(t *testing.T) {
-	s := newTestSequencer(t, newFakeWAL(), newFakeTessera(),
+	s := newTestSequencerNoCommitter(t, newFakeWAL(), newFakeTessera(),
 		Config{PollInterval: time.Hour})
 	// no WithReplayer call
 

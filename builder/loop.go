@@ -757,6 +757,26 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// throughput of SetBatchTx / PutBatchTx; a regression to
 	// per-row SetTx / PutTx would show up immediately as commit
 	// climbing back into the seconds.
+	//
+	// process_per_leaf / nodes_per_leaf / cum_seq answer the SCALING
+	// question: at 10M leaves, does the SDK's jellyfishInsert path
+	// remain constant-time per leaf? The Jellyfish-Patricia tree's
+	// theoretical depth is ⌈log2(N)⌉ ≈ 23 at N=10M, so per-leaf node
+	// touches should converge to ~24 in steady state regardless of
+	// cum_seq. A rising process_per_leaf with cum_seq names PG /
+	// LRU cache thrash; a flat curve names "constant per leaf as
+	// designed". Either way the decision is data-driven.
+	processPerLeafUs := int64(0)
+	nodesPerLeaf := float64(0)
+	if len(seqs) > 0 {
+		processPerLeafUs = processDur.Microseconds() / int64(len(seqs))
+		nodesPerLeaf = float64(nodesAffected) / float64(len(seqs))
+	}
+	// cum_seq = sequences processed before this batch + this batch.
+	// Used as a proxy for "cumulative SMT working set"; SMT root is
+	// monotonically advancing with seqs so this directly characterises
+	// the test's scale axis when comparing log lines across cycles.
+	cumSeqs := bl.totalEntries.Load() + int64(len(seqs))
 	totalDur := beginDur + fetchDur + processDur + appendDur +
 		headWaitDur + cosignDur + commitDur
 	bl.logger.Info("batch processed",
@@ -767,6 +787,9 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		"nodes_written", len(nodesToWrite),
 		"nodes_affected", nodesAffected,
 		"nodes_skipped_existing", int64(len(nodesToWrite))-nodesAffected,
+		"process_per_leaf_us", processPerLeafUs,
+		"nodes_per_leaf", fmt.Sprintf("%.2f", nodesPerLeaf),
+		"cum_seq", cumSeqs,
 		"path_a", result.PathACounts,
 		"path_b", result.PathBCounts,
 		"path_c", result.PathCCounts,

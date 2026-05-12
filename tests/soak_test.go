@@ -983,6 +983,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		if shipperReady && builderReady {
 			t.Logf("drained: HWM=%d (=> %d entries shipped), smt_leaves=%d (builder caught up) in %s",
 				hwm, hwm+1, smtLeafRows, time.Since(drainStart).Round(time.Second))
+			logScalingEvidence(t, op)
 			break
 		}
 		if time.Since(drainStart) > drainTimeout {
@@ -1876,6 +1877,67 @@ func verifyEvidenceFetchAll(t *testing.T, ctx context.Context, op *soakLedger, s
 				refs[0].seq, pu)
 		}
 	}
+}
+
+// logScalingEvidence prints the end-of-drain scaling summary used to
+// answer the two outstanding capacity questions evidence-first:
+//
+//	(1) Tessera ceiling — does AppendLeaf latency degrade as we
+//	    raise LEDGER_SEQUENCER_MAX_INFLIGHT? A flat distribution
+//	    across MaxInFlight={4,8,16,32} means Tessera is not the
+//	    bottleneck; a sharp p99 climb at a specific value names
+//	    the antispam-checkpoint serialization point. Either
+//	    decision is data-driven — no SDK changes land on theory.
+//
+//	(2) Committer batch profile — how many entries committer
+//	    batches aggregated, total committer rows, and the
+//	    duplicate-work fraction. Combined with the builder's
+//	    batch_processed log lines (process_per_leaf_us,
+//	    nodes_per_leaf, cum_seq) gives end-to-end shape of the
+//	    pipeline under the soak's exact MaxInFlight setting.
+//
+// Called once per drain, immediately after both shipper and builder
+// confirm they have caught up. The output is a single line each, so
+// successive soaks at different MaxInFlight values can be compared by
+// grepping for "scaling_evidence" in the captured logs.
+func logScalingEvidence(t *testing.T, op *soakLedger) {
+	t.Helper()
+	seqMetrics := op.Sequencer.Metrics()
+
+	// Tessera-side: histogram captures every per-call elapsed seen by
+	// the sequencer's stage-1 workers across the entire soak. The
+	// soak's MaxInFlight is the X-axis for capacity-planning sweeps.
+	t.Logf("scaling_evidence tessera_latency{%s}",
+		seqMetrics.TesseraLatency.Format())
+
+	// Committer-side: mean batch size + the staleDuplicatesDiscarded
+	// to committedEntries ratio. A high mean batch (close to
+	// CommitMaxBatchSize) means the pipeline saturated the batched
+	// commit path as designed; a low mean (<50) means stage-1 traffic
+	// was below the batch threshold and the CommitMaxWait timer drove
+	// most flushes — useful for tuning. staleDuplicates/committed > 5%
+	// means the drainOnce cadence is racing the committer hard;
+	// consider raising MaxEntriesPerCycle or PollInterval.
+	meanBatch := float64(0)
+	if seqMetrics.CommittedBatches > 0 {
+		meanBatch = float64(seqMetrics.CommittedEntries) / float64(seqMetrics.CommittedBatches)
+	}
+	stalePct := float64(0)
+	if seqMetrics.CommittedEntries > 0 {
+		stalePct = 100 * float64(seqMetrics.StaleDuplicatesDiscarded) /
+			float64(seqMetrics.CommittedEntries)
+	}
+	t.Logf("scaling_evidence committer{batches=%d entries=%d mean_batch=%.1f "+
+		"stale_discarded=%d stale_pct=%.2f%% crash_recoveries=%d wait_on_gap=%d failures=%d}",
+		seqMetrics.CommittedBatches,
+		seqMetrics.CommittedEntries,
+		meanBatch,
+		seqMetrics.StaleDuplicatesDiscarded,
+		stalePct,
+		seqMetrics.StaleCrashRecoveries,
+		seqMetrics.CommitWaitOnGap,
+		seqMetrics.CommitBatchFailures,
+	)
 }
 
 // dumpSMTDiagnostics prints unambiguous evidence about which entries
