@@ -223,9 +223,14 @@ func TestPostgresLeafStore_SetBatchTx_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := ls.SetBatchTx(ctx, tx, leaves); err != nil {
+	rowsAffected, err := ls.SetBatchTx(ctx, tx, leaves)
+	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("SetBatchTx: %v", err)
+	}
+	if rowsAffected != int64(len(leaves)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx rows_affected=%d, want %d", rowsAffected, len(leaves))
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -287,7 +292,7 @@ func TestPostgresLeafStore_SetBatchTx_Idempotent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin %d: %v", i, err)
 		}
-		if err := ls.SetBatchTx(ctx, tx, batch); err != nil {
+		if _, err := ls.SetBatchTx(ctx, tx, batch); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatalf("SetBatchTx %d: %v", i, err)
 		}
@@ -329,13 +334,19 @@ func TestPostgresLeafStore_SetBatchTx_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := ls.SetBatchTx(ctx, tx, nil); err != nil {
+	if affected, err := ls.SetBatchTx(ctx, tx, nil); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("SetBatchTx(nil): %v", err)
+	} else if affected != 0 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx(nil) affected=%d, want 0", affected)
 	}
-	if err := ls.SetBatchTx(ctx, tx, []types.SMTLeaf{}); err != nil {
+	if affected, err := ls.SetBatchTx(ctx, tx, []types.SMTLeaf{}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("SetBatchTx(empty): %v", err)
+	} else if affected != 0 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("SetBatchTx(empty) affected=%d, want 0", affected)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -385,9 +396,17 @@ func TestPostgresNodeStore_PutBatchTx_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := ns.PutBatchTx(ctx, tx, nodes); err != nil {
+	rowsAffected, err := ns.PutBatchTx(ctx, tx, nodes)
+	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("PutBatchTx: %v", err)
+	}
+	// All nodes are fresh (clean table); every input must be
+	// inserted, not skipped.
+	if rowsAffected != int64(len(nodes)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("PutBatchTx rows_affected=%d, want %d (no nodes should pre-exist)",
+			rowsAffected, len(nodes))
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -452,7 +471,7 @@ func TestPostgresNodeStore_PutBatchTx_CachePromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := ns.PutBatchTx(ctx, tx, nodes); err != nil {
+	if _, err := ns.PutBatchTx(ctx, tx, nodes); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("PutBatchTx: %v", err)
 	}
@@ -485,7 +504,7 @@ func TestPostgresNodeStore_PutBatchTx_NilNode(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	err = ns.PutBatchTx(ctx, tx, []smt.Node{
+	_, err = ns.PutBatchTx(ctx, tx, []smt.Node{
 		&smt.LeafNode{Value: types.SMTLeaf{
 			Key:          [32]byte{0xAA},
 			OriginTip:    types.LogPosition{LogDID: testLogDID, Sequence: 1},

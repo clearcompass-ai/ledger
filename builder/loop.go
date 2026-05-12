@@ -389,6 +389,47 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 	beginDur := time.Since(beginStart)
 
+	// Contiguity check on the dequeued seqs. BeginBatch returns
+	// `WHERE seq > cursor ORDER BY seq ASC LIMIT N`, so the result
+	// should be a contiguous run [cursor+1, cursor+N] when the
+	// sequencer has gap-free entry_index visibility. Non-contiguous
+	// returns mean entry_index has a transient hole — usually from
+	// per-entry-tx commits in sequencer.processOne landing out of
+	// order. CommitBatch advances cursor to max(seqs), so any
+	// non-contiguous return causes the cursor to LEAPFROG over the
+	// missing seqs; once that happens those seqs are skipped
+	// forever (the next BeginBatch's `seq > cursor` filter excludes
+	// them when they finally commit).
+	//
+	// firstSeq / lastSeq derived from the ASC-ordered slice; the
+	// prior cursor value is implicitly firstSeq-1 because BeginBatch
+	// returns rows strictly greater than cursor.
+	firstSeq := seqs[0]
+	lastSeq := seqs[len(seqs)-1]
+	priorCursor := int64(firstSeq) - 1
+	expectedIfContiguous := int(lastSeq - firstSeq + 1)
+	contiguous := expectedIfContiguous == len(seqs)
+	gapsInBatch := expectedIfContiguous - len(seqs)
+	if !contiguous {
+		// WARN — this is the leapfrog-imminent moment. Surface the
+		// first ~16 seqs returned so the operator can correlate the
+		// gap pattern with sequencer commit order. The full set is
+		// reconstructable from prior commits via firstSeq..lastSeq.
+		previewN := len(seqs)
+		if previewN > 16 {
+			previewN = 16
+		}
+		bl.logger.Warn("BeginBatch returned non-contiguous seqs — cursor will leapfrog on commit",
+			"prior_cursor", priorCursor,
+			"first_seq", firstSeq,
+			"last_seq", lastSeq,
+			"count", len(seqs),
+			"expected_if_contiguous", expectedIfContiguous,
+			"gaps_in_batch", gapsInBatch,
+			"preview_seqs", seqs[:previewN],
+		)
+	}
+
 	// ── Step 2: Fetch entries in sequence order ───────────────────────
 	if cErr := ctx.Err(); cErr != nil {
 		return 0, cErr
@@ -574,6 +615,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	var leavesAffected, nodesAffected int64
 	commitStart := time.Now()
 	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		// Leaves first — every mutation produced by ProcessBatch
@@ -584,8 +626,26 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		// paid one synchronous PG hop per leaf, capping builder
 		// throughput at ~loop-overhead × per-row-rtt ≈ ~200 ent/sec
 		// even with cosign fully parallel.
-		if setErr := bl.leafStore.SetBatchTx(ctx, tx, leavesToWrite); setErr != nil {
+		var setErr error
+		leavesAffected, setErr = bl.leafStore.SetBatchTx(ctx, tx, leavesToWrite)
+		if setErr != nil {
 			return fmt.Errorf("set leaves batch (n=%d): %w", len(leavesToWrite), setErr)
+		}
+		// Invariant: every input leaf is either inserted (new key)
+		// or updated (existing key) — PG counts both as 1 affected
+		// row under ON CONFLICT DO UPDATE. A mismatch is pathological
+		// and means the in-batch slice had a duplicate leaf_key
+		// (which sha256(LogDID||seq) makes near-impossible across
+		// distinct seqs). Surface it loudly inside the tx so we see
+		// the exact batch.
+		if leavesAffected != int64(len(leavesToWrite)) {
+			bl.logger.Warn("SetBatchTx rows-affected mismatch — leaves silently collapsed via ON CONFLICT",
+				"input_leaves", len(leavesToWrite),
+				"rows_affected", leavesAffected,
+				"collapsed", int64(len(leavesToWrite))-leavesAffected,
+				"first_seq", firstSeq,
+				"last_seq", lastSeq,
+			)
 		}
 
 		// Nodes second — every dirty Jellyfish node captured by the
@@ -595,7 +655,9 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		// transaction is bounded by the number of unique new nodes
 		// (~33 per leaf at N=10^10, well within PG's per-tx budget).
 		// PutBatchTx collapses the M row-inserts into ONE round-trip.
-		if putErr := bl.nodeStore.PutBatchTx(ctx, tx, nodesToWrite); putErr != nil {
+		var putErr error
+		nodesAffected, putErr = bl.nodeStore.PutBatchTx(ctx, tx, nodesToWrite)
+		if putErr != nil {
 			return fmt.Errorf("put nodes batch (n=%d): %w", len(nodesToWrite), putErr)
 		}
 
@@ -613,6 +675,22 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 			}
 		}
 
+		// commit_intent — emitted INSIDE the atomic tx, immediately
+		// before CommitBatch advances the cursor. Pairs with the
+		// BeginBatch-side contiguity log to give end-to-end evidence
+		// of every cursor movement. Especially useful at leapfrog
+		// time: if `delta > count` the cursor advanced further than
+		// the seq count justifies, and the difference is the number
+		// of seqs lost.
+		bl.logger.Info("commit_intent",
+			"prior_cursor", priorCursor,
+			"new_cursor", lastSeq,
+			"delta", int64(lastSeq)-priorCursor,
+			"seqs_count", len(seqs),
+			"contiguous", contiguous,
+			"leaves_in_tx", len(leavesToWrite),
+			"nodes_in_tx", len(nodesToWrite),
+		)
 		if qErr := bl.reader.CommitBatch(ctx, tx, seqs); qErr != nil {
 			return fmt.Errorf("commit batch: %w", qErr)
 		}
@@ -685,12 +763,16 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		"entries", len(seqs),
 		"new_leaves", result.NewLeafCounts,
 		"leaves_written", len(leavesToWrite),
+		"leaves_affected", leavesAffected,
 		"nodes_written", len(nodesToWrite),
+		"nodes_affected", nodesAffected,
+		"nodes_skipped_existing", int64(len(nodesToWrite))-nodesAffected,
 		"path_a", result.PathACounts,
 		"path_b", result.PathBCounts,
 		"path_c", result.PathCCounts,
 		"path_d", result.PathDCounts,
 		"commentary", result.CommentaryCounts,
+		"contiguous", contiguous,
 		"begin", beginDur.Round(time.Microsecond),
 		"fetch", fetchDur.Round(time.Microsecond),
 		"process", processDur.Round(time.Microsecond),
