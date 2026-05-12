@@ -62,6 +62,7 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/escrow"
 	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
+	"github.com/clearcompass-ai/ledger/chaos"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -300,6 +301,14 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	}
 	tesseraStart := time.Now()
 	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
+	// Chaos injection point #1 — "post_appendleaf":
+	// Tessera has assigned the seq but the staged-entry tuple
+	// hasn't been emitted yet. A kill here tests the WAL/Tessera
+	// recovery path: Tessera dedupes on re-AppendLeaf (same hash
+	// → same seq), so on restart the seq is re-assigned and
+	// flows through normally. No production-build cost: chaos.Trigger
+	// is a no-op compiled to nothing in default builds.
+	chaos.Trigger("post_appendleaf")
 	s.metrics.tesseraInFlight.Add(-1)
 	if err != nil {
 		// No seq assigned — normal retry path. Tombstone NOT needed.

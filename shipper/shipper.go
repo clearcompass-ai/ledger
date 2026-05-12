@@ -59,6 +59,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/clearcompass-ai/ledger/chaos"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -371,6 +372,15 @@ func (s *Shipper) shipOne(ctx context.Context, e wal.SequencedEntry) {
 		s.recordFailure(ctx, e)
 		return
 	}
+
+	// Chaos injection point #3 — "pre_shipper_upload":
+	// WAL bytes have been read but bytestore.WriteEntry hasn't
+	// fired yet. A kill here tests the shipper restart path: on
+	// restart, the seq is still StateSequenced in WAL (not
+	// Shipped), the shipper re-fetches it via IterateSequenced,
+	// re-uploads to the bytestore (idempotent by seq+hash key),
+	// and advances WAL state to Shipped.
+	chaos.Trigger("pre_shipper_upload")
 
 	if err := s.bytestore.WriteEntry(ctx, e.Seq, e.Hash, wire); err != nil {
 		s.logger.Warn("shipper: bytestore upload failed",

@@ -54,6 +54,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
+	"github.com/clearcompass-ai/ledger/chaos"
 	"github.com/clearcompass-ai/ledger/latency"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 )
@@ -390,6 +391,16 @@ func (c *Committer) flushBatch(batch []*submission) error {
 	// Sync() nil-derefs when there is no on-disk WAL. Production
 	// MUST leave it enabled.
 	if !c.cfg.DisableSync {
+		// Chaos injection point #4 — "pre_wal_fsync":
+		// The Badger txn has committed to the in-memory memtable +
+		// WAL buffer but db.Sync() (the fsync that flips entries from
+		// "in memory" to "durable on disk") hasn't fired yet. A kill
+		// here tests the hardest durability claim: every submission
+		// that returned 202 must be recoverable, even if SIGKILL fires
+		// the instant before fsync. The post-kill restart relies on
+		// Badger's WAL replay to surface every entry; the harness
+		// asserts that every 202'd submission ends up in entry_index.
+		chaos.Trigger("pre_wal_fsync")
 		if err := c.db.Sync(); err != nil {
 			return fmt.Errorf("wal/committer: db.Sync: %w", err)
 		}

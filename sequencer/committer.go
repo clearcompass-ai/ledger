@@ -98,6 +98,7 @@ import (
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 
+	"github.com/clearcompass-ai/ledger/chaos"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -479,6 +480,17 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 		"tombstones", countTombstones(batch),
 		"elapsed", commitElapsed.Round(time.Microsecond),
 	)
+
+	// Chaos injection point #2 — "pre_commit_post_pg":
+	// The PG transaction has committed (entry_index rows are
+	// durable) but no WAL.Sequence call has fired yet. A kill
+	// here is the exact failure mode committerStaleRecover was
+	// written for: on restart, drainOnce re-fetches the hashes
+	// still in StatePending, re-runs stage-1, AppendLeaf dedupes,
+	// the duplicate stagedEntry hits the cross-batch stale path,
+	// and committerStaleRecover calls Sequence to advance WAL
+	// state without producing duplicate entry_index rows.
+	chaos.Trigger("pre_commit_post_pg")
 
 	// Post-commit hooks per entry (WAL state, sidecar writes,
 	// per-entry metrics, attempt-counter reset).
