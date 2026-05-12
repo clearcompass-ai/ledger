@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -261,20 +262,61 @@ func applyMigrationTx(ctx context.Context, db *pgxpool.Pool, m migration) error 
 }
 
 // applyMigrationNoTx is the autocommit path for migrations marked
-// `-- migrate:no-transaction`. The whole SQL string is sent in one
-// Exec call; PostgreSQL's simple query protocol runs the
-// statements sequentially in autocommit mode, which is exactly
-// what CREATE INDEX CONCURRENTLY requires.
+// `-- migrate:no-transaction`. Each statement in the file is sent
+// as its OWN simple_query message under pgx's simple protocol —
+// PostgreSQL runs each individual statement as its own autocommit
+// unit, no transaction wrap. This is exactly what
+// `CREATE INDEX CONCURRENTLY` requires.
 //
-// On success, the version is recorded in schema_migrations via a
-// SEPARATE small transaction. If that record-insert fails after
-// the DDL succeeded, the migration is replayed on next boot — the
-// idempotent-DDL discipline (documented on migration.noTransaction)
-// makes the replay safe.
+// WHY MULTI-STATEMENT IS NOT ENOUGH
+//
+// The naive implementation — `db.Exec(ctx, wholeFile, simpleProtocol)`
+// — fails with SQLSTATE 25001 because PostgreSQL treats a
+// multi-statement Query message as a SINGLE IMPLICIT TRANSACTION:
+//
+//   "Multiple statements sent in a single Query message are treated
+//    as a single transaction, unless there are explicit BEGIN/COMMIT
+//    commands included in the query string to divide it into
+//    multiple transactions."
+//                                    — PG docs, "Simple Query"
+//
+// The implicit-transaction wrap fires inside PG itself, regardless
+// of pgx's protocol choice. CREATE INDEX CONCURRENTLY checks for
+// any active transaction (implicit or explicit) and refuses.
+//
+// `psql -f migration.sql` works for the same reason this code now
+// does: psql splits the file on `;` (after stripping comments) and
+// sends each statement as its OWN simple_query message. Each
+// individual statement runs as a single-statement Query message,
+// which PG runs as autocommit — no implicit-transaction wrap, and
+// CONCURRENTLY works.
+//
+// We replicate that discipline here:
+//
+//  1. splitSQLStatements parses the file into individual
+//     statements, stripping `--` line comments and `/* */` block
+//     comments before tokenizing on `;`.
+//  2. Each statement is Exec'd separately under simple protocol.
+//     Single-statement simple_query → PG autocommit → no
+//     implicit transaction.
+//
+// The version-record INSERT (a parametrized query) runs AFTER all
+// DDL via the default extended protocol — recording the version
+// doesn't need CONCURRENTLY.
+//
+// On record-insert failure after the DDL succeeded, the migration
+// replays on next boot. The idempotent-DDL discipline (documented
+// on migration.noTransaction) makes the replay safe.
 func applyMigrationNoTx(ctx context.Context, db *pgxpool.Pool, m migration) error {
-	if _, err := db.Exec(ctx, m.sql); err != nil {
-		return fmt.Errorf("store/migrations: apply v%d (%s, no-tx): %w",
-			m.version, m.description, err)
+	stmts := splitSQLStatements(m.sql)
+	for i, stmt := range stmts {
+		if _, err := db.Exec(ctx, stmt, pgx.QueryExecModeSimpleProtocol); err != nil {
+			return fmt.Errorf(
+				"store/migrations: apply v%d (%s, no-tx, stmt %d/%d): %w\n  statement: %s",
+				m.version, m.description, i+1, len(stmts), err,
+				truncateForLog(stmt, 200),
+			)
+		}
 	}
 	if _, err := db.Exec(ctx,
 		`INSERT INTO schema_migrations (version, description) VALUES ($1, $2)
@@ -284,6 +326,134 @@ func applyMigrationNoTx(ctx context.Context, db *pgxpool.Pool, m migration) erro
 		return fmt.Errorf("store/migrations: record v%d (no-tx): %w", m.version, err)
 	}
 	return nil
+}
+
+// splitSQLStatements parses a multi-statement SQL string into a
+// slice of individual statements. Used by the no-tx migration path
+// to send each statement as its own simple_query message.
+//
+// PARSING DISCIPLINE
+//
+// The parser is intentionally SIMPLE — it handles the SQL shapes
+// our migrations actually use, and FAILS LOUDLY on shapes it
+// doesn't. Trying to write a real PG parser in-tree is the wrong
+// trade-off; the migration runner needs ~30 lines of correct code,
+// not a 300-line tokenizer that grows bugs.
+//
+// Supported:
+//
+//   - `--` line comments. Stripped from `--` to end of line. The
+//     `-- migrate:no-transaction` directive on the first line is
+//     stripped here too — the runner detected it earlier via
+//     detectNoTransactionDirective on the raw bytes.
+//
+//   - `/* ... */` block comments. Stripped wholesale. Non-nested
+//     (PG supports nesting; our migrations don't use it).
+//
+//   - Statements separated by `;`. Whitespace between statements is
+//     trimmed. Empty/whitespace-only statements are dropped.
+//
+// NOT supported (no production migration uses these):
+//
+//   - String literals containing `;` or `--` or `/*` (e.g., `INSERT
+//     INTO foo VALUES ('a;b')`). The splitter will mis-split here.
+//   - Dollar-quoted strings (`$$ ... $$`, `$tag$ ... $tag$`).
+//   - Nested block comments.
+//
+// If a future migration NEEDS these features, two options exist:
+//
+//  1. Drop the `-- migrate:no-transaction` directive and use the
+//     transactional path, which sends the whole file as one Exec
+//     and lets PG handle parsing.
+//  2. Replace splitSQLStatements with a real SQL tokenizer (or
+//     import pgsql/sqlparser). The current shape is bounded scope.
+//
+// The unit tests in migrations_split_test.go pin every supported
+// shape; a regression in the parser surfaces there before any
+// production migration runs.
+func splitSQLStatements(sql string) []string {
+	cleaned := stripSQLBlockComments(sql)
+	cleaned = stripSQLLineComments(cleaned)
+	parts := strings.Split(cleaned, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// stripSQLLineComments removes every `--` line comment from sql.
+// A `--` anywhere on a line terminates the line; the rest is
+// dropped. Newlines are preserved so error logs that reference
+// statement line numbers stay meaningful.
+//
+// Distinct from the Go-style stripLineComments helper in
+// append_only_guard_test.go (which strips `//`). Same package; the
+// name carries the language context.
+//
+// Note: this strips literally — a `--` inside a string literal
+// would be incorrectly treated as a comment. See splitSQLStatements'
+// "NOT supported" docstring for the bounded scope.
+func stripSQLLineComments(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+	for _, line := range strings.Split(sql, "\n") {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// stripSQLBlockComments removes every `/* ... */` block comment
+// from sql. Non-nested; the first unmatched `*/` closes the block.
+// Unterminated `/*` (no matching `*/`) drops to end-of-string —
+// matches PG's behavior.
+//
+// Distinct from the Go-style stripBlockComments helper in
+// append_only_guard_test.go. The Go variant pads with spaces to
+// preserve line numbers for the mutation guard's grep; the SQL
+// variant drops the bytes outright since splitSQLStatements
+// re-tokenizes on `;` after stripping.
+//
+// Note: this strips literally — a `/*` inside a string literal
+// would be incorrectly treated as a comment opener. See
+// splitSQLStatements' "NOT supported" docstring for bounded scope.
+func stripSQLBlockComments(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+	for {
+		start := strings.Index(sql, "/*")
+		if start < 0 {
+			b.WriteString(sql)
+			return b.String()
+		}
+		b.WriteString(sql[:start])
+		end := strings.Index(sql[start:], "*/")
+		if end < 0 {
+			// Unterminated block comment — drop the rest.
+			return b.String()
+		}
+		sql = sql[start+end+2:]
+	}
+}
+
+// truncateForLog returns the first n characters of s with a
+// trailing ellipsis if truncated. Used only in error messages so
+// a 10 KB migration statement doesn't dump into the log on apply
+// failure.
+func truncateForLog(s string, n int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // pendingMigrations returns the subset of loaded migrations that are
