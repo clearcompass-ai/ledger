@@ -188,6 +188,20 @@ func Wire(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	d.BuilderLoop = bl
 	d.AnchorPublisher = anchorPub
 
+	// 7b. v0.4.0 DI schema admission registry — single source of
+	// truth shared by the api submission handler (front-door gate)
+	// and the sequencer (post-AppendLeaf SplitID dispatch).
+	// schemareg.BuildLedgerSchemaRegistry binds the SDK-shipped
+	// commitment validators and returns a frozen *schema.Registry.
+	// A bind error here is a programming error in boot/schemareg
+	// (e.g., duplicate SchemaID), not a runtime condition — fail
+	// fast at boot so the operator notices immediately.
+	reg, err := schemareg.BuildLedgerSchemaRegistry()
+	if err != nil {
+		return fmt.Errorf("wire: schemareg.BuildLedgerSchemaRegistry: %w", err)
+	}
+	d.SchemaRegistry = reg
+
 	// 8. HTTP handlers (submission, query, tree, smt, entries,
 	// commitments, witness, tiles).
 	handlers, err := composeHandlers(ctx, cfg, d, tesseraAdapter, escrowOverrideHandler)
@@ -370,6 +384,7 @@ func composeHandlers(
 		Logger:             d.Logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
 		BLSQuorumVerifier:  blsQuorumVerifier,
+		SchemaRegistry:     d.SchemaRegistry,
 	}
 
 	tree := smt.NewTree(d.LeafStore, d.NodeStore)
@@ -523,19 +538,12 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 	})
 	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
 
-	// v0.4.0 DI schema registry — the explicit, frozen binding
-	// container declaring which commitment schemas this deployment
-	// admits. Construction is fail-fast: a bind error here is a
-	// programming error in boot/schemareg (e.g., a duplicate
-	// SchemaID), not a runtime condition, so we panic to surface
-	// it at process start rather than letting the registry silently
-	// disable schema admission. dispatchCommitmentSchema consults
-	// this registry on the post-AppendLeaf hot path.
-	reg, err := schemareg.BuildLedgerSchemaRegistry()
-	if err != nil {
-		panic(fmt.Sprintf("boot/wire: BuildLedgerSchemaRegistry: %v", err))
+	// v0.4.0 DI schema registry — built once at Wire (step 7b) and
+	// shared with the api submission handler. The sequencer's
+	// dispatchCommitmentSchema reads the same frozen instance.
+	if d.SchemaRegistry != nil {
+		seq = seq.WithSchemaRegistry(d.SchemaRegistry)
 	}
-	seq = seq.WithSchemaRegistry(reg)
 	if d.GossipStore != nil {
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(d.GossipStore))

@@ -217,6 +217,19 @@ type SubmissionDeps struct {
 	// heads the K-of-N check fires without an additional code change.
 	// Wired by cmd/ledger/main.go iff a witness key set is loaded.
 	BLSQuorumVerifier *admission.BLSQuorumVerifier
+
+	// SchemaRegistry is the v0.4.0 DI schema admission registry
+	// (attesta SDK schema.Registry). The handler calls
+	// admission.VerifyEntrySchema against it to reject malformed
+	// commitment payloads at the front door, BEFORE the entry
+	// consumes a Tessera sequence number.
+	//
+	// Optional: nil disables the schema gate entirely (the
+	// downstream sequencer still validates via the parse path —
+	// defense in depth). Production wiring (cmd/ledger/boot/wire)
+	// constructs the registry via schemareg.BuildLedgerSchemaRegistry
+	// and threads it here.
+	SchemaRegistry admission.SchemaRegistry
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +398,28 @@ func prepareSubmission(
 					http.StatusInternalServerError, "tree head verification failed")
 			}
 		}
+	}
+
+	// ── Step 4c: Schema validation (v0.4.0 DI registry) ────────────
+	// Reject malformed commitment payloads at the front door BEFORE
+	// the entry consumes a Tessera sequence number. The downstream
+	// sequencer dispatch is defense-in-depth — by the time we reach
+	// this point, the envelope + signature + BLS gates have all
+	// passed, so any structural rejection here is purely about the
+	// schema-specific Domain Payload shape.
+	//
+	// nil SchemaRegistry → no gate (back-compat for test fixtures).
+	// Unknown schema_id → pass-through (same back-compat semantic
+	//   the sequencer's legacy default branch carries).
+	// Bound + invalid → ErrSchemaInvalid → HTTP 422.
+	if err := admission.VerifyEntrySchema(ctx, entry, deps.SchemaRegistry); err != nil {
+		if errors.Is(err, admission.ErrSchemaInvalid) {
+			return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
+				http.StatusUnprocessableEntity, "%s", err)
+		}
+		deps.Logger.Error("schema verification path failed", "error", err)
+		return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+			http.StatusInternalServerError, "schema verification failed")
 	}
 
 	// ── Step 5: Entry size ─────────────────────────────────────────
