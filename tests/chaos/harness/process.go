@@ -139,6 +139,15 @@ func (p *Process) Start(ctx context.Context, readyTimeout time.Duration) error {
 // Kill sends SIGKILL to the subprocess and its process group.
 // Returns when the process has exited. Idempotent — safe to call
 // on an already-stopped process.
+//
+// The Unix wait(2) convention is that a signal-terminated process
+// produces a non-zero exit status; Go surfaces that as
+// *exec.ExitError from cmd.Wait. When WE'RE the ones who sent the
+// signal (this method just did) the resulting "error" is the
+// expected, successful outcome — not an actual failure. We
+// inspect the exit code and treat the specific case of "exited
+// because of the signal we just sent" as success, while still
+// reporting genuine pre-signal crash exits as errors.
 func (p *Process) Kill() error {
 	if !p.running.CompareAndSwap(1, 0) {
 		return nil // already stopped
@@ -146,7 +155,50 @@ func (p *Process) Kill() error {
 	if err := p.kill(); err != nil {
 		return err
 	}
-	return p.wait()
+	waitErr := p.wait()
+	if waitErr == nil {
+		return nil
+	}
+	if isExpectedKillExit(waitErr) {
+		return nil
+	}
+	return waitErr
+}
+
+// isExpectedKillExit reports whether err is the *exec.ExitError
+// produced by cmd.Wait when our own SIGKILL terminates the
+// subprocess. Other exit causes (chaos panic, OOM, etc.) return
+// false so the caller still surfaces them.
+//
+// Detection on Unix: ExitError.ProcessState.Sys() returns
+// syscall.WaitStatus; Signaled() reports a signal-terminated
+// child; Signal() returns the specific signal. SIGKILL is the
+// match.
+func isExpectedKillExit(err error) bool {
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		// Windows doesn't surface signals. Treat any exit
+		// after our Kill() call as expected — we already
+		// guarded with running.CompareAndSwap so we only get
+		// here once per process.
+		return true
+	}
+	status, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok {
+		return false
+	}
+	if !status.Signaled() {
+		// Process exited via exit(2), not from a signal. Not
+		// our kill — return the error.
+		return false
+	}
+	// We only treat SIGKILL as "expected". A SIGTERM or SIGSEGV
+	// here would mean something else killed the process before
+	// our SIGKILL landed; surface that to the caller.
+	return status.Signal() == syscall.SIGKILL
 }
 
 // kill sends SIGKILL without state-check. Internal helper.
