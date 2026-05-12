@@ -52,6 +52,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,6 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/escrow"
 	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
-	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
 )
@@ -145,15 +145,30 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Per-entry panic recovery. A bug in processOne for
-			// one entry must not crash the binary; log + continue.
+			// Per-entry panic recovery. A bug in processOne for one
+			// entry must not crash the binary; log + continue.
 			// processOne already handles per-entry errors internally
-			// (MarkRetry / MarkManual), so the SafeRun branch only
-			// fires on a panic, not on a normal error path.
-			_ = lifecycle.SafeRun(ctx, "sequencer-process-entry", s.logger, nil, func() error {
-				s.processOne(ctx, hash)
-				return nil
-			})
+			// (MarkRetry / MarkManual); recover() here only fires on
+			// an actual panic, not on a normal error path.
+			//
+			// Inline rather than lifecycle.SafeRun because the latter
+			// emits INFO-level "goroutine started" + "goroutine stopped"
+			// lines per call — at 10K entries × 4 in-flight that's
+			// 80K log lines for a single soak. Hot path needs panic
+			// safety, not lifecycle telemetry.
+			defer func() {
+				if r := recover(); r != nil {
+					buf := make([]byte, 4096)
+					n := runtime.Stack(buf, false)
+					s.logger.Error("sequencer: processOne panic recovered",
+						"goroutine", "sequencer-process-entry",
+						"hash", hashPrefix(hash),
+						"panic", fmt.Sprintf("%v", r),
+						"stack", string(buf[:n]),
+					)
+				}
+			}()
+			s.processOne(ctx, hash)
 		}()
 		return nil
 	})
@@ -274,7 +289,12 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 		return
 	}
 	tesseraElapsed := time.Since(tesseraStart)
-	s.logger.Info("sequencer: tessera seq assigned (committer enqueue pending)",
+	// Per-entry probe — DEBUG so it surfaces only when explicitly
+	// enabled for forensics. INFO-level production runs see the
+	// committer's batch-level log lines instead (one per ~16 entries),
+	// which carry the same correlatable seq + timing info at a sane
+	// signal-to-noise ratio.
+	s.logger.Debug("sequencer: tessera seq assigned (committer enqueue pending)",
 		"seq", seq,
 		"hash", hashPrefix(hash),
 		"tessera_elapsed", tesseraElapsed.Round(time.Microsecond),
