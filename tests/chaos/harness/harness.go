@@ -277,7 +277,9 @@ func (h *Harness) buildEnv(opts RestartOpts) []string {
 		"LEDGER_TESSERA_STORAGE_DIR="+h.tesseraDir,
 		"LEDGER_TESSERA_ANTISPAM_PATH="+h.antispamDir,
 		"LEDGER_TESSERA_ORIGIN="+h.cfg.LogDID,
-		"LEDGER_SIGNER_KEY_FILE="+h.bootstrap.SignerKeyPath,
+		// LEDGER_SIGNER_KEY_FILE intentionally unset — see
+		// bootstrap.go's package comment. The ledger generates
+		// an ephemeral secp256k1 signer per boot.
 		"LEDGER_NETWORK_BOOTSTRAP_FILE="+h.bootstrap.BootstrapPath,
 		"LEDGER_WITNESS_ENDPOINTS="+strings.Join(h.witnesses.URLs(), ","),
 		"LEDGER_WITNESS_QUORUM_K="+strconv.Itoa(h.cfg.WitnessQuorumK),
