@@ -46,8 +46,13 @@
 #                                                merkle/proof. Same shape as
 #                                                VERIFY_SAMPLES.
 #   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
-#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT  16       parallel uploads — bump for
+#   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT    16     parallel uploads — bump for
 #                                                higher-volume soaks
+#   ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT  0      sequencer stage-1 pool size
+#                                                (parallel Tessera AppendLeaf).
+#                                                0 ⇒ sequencer.DefaultMaxInFlight (4).
+#                                                Set to 8/16/32 to sweep Tessera
+#                                                concurrency without code changes.
 #   ATTESTA_SOAK_DRAIN_TIMEOUT          10m      in-test wait for WAL HWM
 #   ATTESTA_SOAK_TEST_TIMEOUT           30m      go test process ceiling
 #   ATTESTA_SOAK_KEEP_DATA              0/1      when set, the test does NOT
@@ -287,6 +292,10 @@ SAMPLES="${ATTESTA_SOAK_VERIFY_SAMPLES:-100}"
 TREE_PROOF_SAMPLES="${ATTESTA_SOAK_TREE_PROOF_SAMPLES:-100}"
 P99_BOUND_MS="${ATTESTA_SOAK_P99_BOUND_MS:-100}"
 SHIPPER_MAX_IN_FLIGHT="${ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT:-16}"
+# 0 means "use the sequencer package default (4)". Set non-zero for
+# Tessera-concurrency sweep runs (8, 16, 32). Wired into
+# sequencer.Config.MaxInFlight in soak_test.go.
+SEQUENCER_MAX_IN_FLIGHT="${ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT:-0}"
 DRAIN_TIMEOUT="${ATTESTA_SOAK_DRAIN_TIMEOUT:-10m}"
 TEST_TIMEOUT="${ATTESTA_SOAK_TEST_TIMEOUT:-30m}"
 
@@ -294,6 +303,7 @@ TEST_TIMEOUT="${ATTESTA_SOAK_TEST_TIMEOUT:-30m}"
 # them up via os.Getenv. Re-export to be safe even if the caller
 # only set them in the script's local scope.
 export ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT="${SHIPPER_MAX_IN_FLIGHT}"
+export ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT="${SEQUENCER_MAX_IN_FLIGHT}"
 export ATTESTA_SOAK_DRAIN_TIMEOUT="${DRAIN_TIMEOUT}"
 
 if [ "${PROVISIONED_PG}" -eq 1 ]; then
@@ -348,6 +358,7 @@ echo "   bytestore target:  ${BS_TARGET}"
 echo "   auth mode:         ${BS_AUTH_MODE}"
 echo "   entries:           ${ENTRIES}"
 echo "   concurrency:       ${CONCURRENCY}        (submitter goroutines)"
+echo "   sequencer pool:    ${SEQUENCER_MAX_IN_FLIGHT}        (parallel Tessera AppendLeaf; 0 ⇒ default 4)"
 echo "   shipper workers:   ${SHIPPER_MAX_IN_FLIGHT}        (parallel uploads)"
 echo "   verify:            ${SAMPLES}        (HTTP /raw → 302 follow + SHA-256 round-trip; count or N%)"
 echo "   tree-proof:        ${TREE_PROOF_SAMPLES}        (random inclusion proofs vs /v1/tree/head root; count or N%)"

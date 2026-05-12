@@ -494,8 +494,17 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	// production logging continues to suppress them.
 	sequencerLogger := slog.New(slog.NewTextHandler(os.Stderr,
 		&slog.HandlerOptions{Level: slog.LevelInfo}))
+	// MaxInFlight is the sequencer stage-1 pool size — the bound on
+	// parallel Tessera.AppendLeaf calls. Distinct from the shipper's
+	// MaxInFlight (ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT). Without this
+	// wiring the soak silently used the package default (4)
+	// regardless of any LEDGER_SEQUENCER_MAX_INFLIGHT env override —
+	// which invalidated three previous MaxInFlight={8,16,32}
+	// sweep runs that all reported tess_in_flight high_water=4.
+	seqMaxInFlight := envInt("ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT", 0)
 	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
 		PollInterval: 10 * time.Millisecond,
+		MaxInFlight:  seqMaxInFlight, // 0 → package DefaultMaxInFlight (4)
 		Logger:       sequencerLogger,
 	})
 
@@ -685,12 +694,13 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	// are also read where they're used (startSoakLedger for
 	// MaxInFlight, drain loop for drainTimeout).
 	maxInFlightLog := envInt("ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT", 16)
+	seqMaxInFlightLog := envInt("ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT", 0)
 	drainTimeoutLog := envDuration("ATTESTA_SOAK_DRAIN_TIMEOUT", 10*time.Minute)
 
 	t.Logf("soak config: entries=%d concurrency=%d verify_samples=%d p99_bound_ms=%d "+
-		"shipper_max_in_flight=%d drain_timeout=%s",
+		"shipper_max_in_flight=%d sequencer_max_in_flight=%d drain_timeout=%s",
 		total, concurrency, verifySamples, p99BoundMs,
-		maxInFlightLog, drainTimeoutLog)
+		maxInFlightLog, seqMaxInFlightLog, drainTimeoutLog)
 
 	resultCh := make(chan soakSubmission, 4096)
 	sampler := newLatencySampler(50_000)
@@ -1966,6 +1976,43 @@ func logScalingEvidence(t *testing.T, op *soakLedger) {
 		t.Logf("scaling_evidence wal_submit{%s}",
 			op.WAL.SubmitLatencySnapshot().Format())
 	}
+
+	// Stale-duplicate diagnostics — quantify the mechanism driving
+	// the stale_pct number. Three correlated views, read together:
+	//
+	//   stale_split           in-batch vs cross-batch breakdown.
+	//                         In-batch dominates ⇒ drainOnce cycle
+	//                         N+1 caught hashes still mid-flight on
+	//                         cycle N. Cross-batch dominates ⇒ the
+	//                         drainOnce iterator IS re-fetching
+	//                         already-committed hashes (rare in
+	//                         practice; would indicate a slow WAL).
+	//   commit_race_window    Per-committed-entry distribution of
+	//                         (emit → applyPostCommitForOne) time.
+	//                         The "how long does the original take
+	//                         to commit" baseline.
+	//   stale_age             Per-stale-dup distribution of (emit →
+	//                         stale-discard) time. If this tracks
+	//                         commit_race_window, the in-batch race
+	//                         is the cause; if it's much larger,
+	//                         something else (e.g., heap retention)
+	//                         is.
+	//
+	// Cross-run grep target for testing the "stale_pct climbed
+	// between runs" hypothesis: compare commit_race_window mean +
+	// p99 across two runs. If commit_race_window rose, the higher
+	// stale_pct is explained. If it didn't, the cause is upstream
+	// (drainOnce cadence variance, scheduler jitter).
+	t.Logf("scaling_evidence stale_split{in_batch=%d cross_batch=%d sum=%d crash_recoveries=%d}",
+		seqMetrics.StaleInBatchDuplicates,
+		seqMetrics.StaleCrossBatchDuplicates,
+		seqMetrics.StaleDuplicatesDiscarded,
+		seqMetrics.StaleCrashRecoveries,
+	)
+	t.Logf("scaling_evidence commit_race_window{%s}",
+		seqMetrics.CommitRaceWindow.Format())
+	t.Logf("scaling_evidence stale_age{%s}",
+		seqMetrics.StaleAgeHistogram.Format())
 }
 
 // dumpSMTDiagnostics prints unambiguous evidence about which entries

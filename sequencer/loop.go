@@ -340,6 +340,11 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	// pre-built EntryRow lets the committer batch-INSERT N tuples
 	// without per-entry serialization work in the critical section.
 	tuple := s.buildLiveStagedEntry(seq, hash, entry, extractedSplitID, extractedSchemaID)
+	// Stamp the emit time at the moment of channel send (not at
+	// buildLiveStagedEntry construction) so commitRaceWindow and
+	// staleAge measurements include the actual time-in-channel as
+	// well as the time-in-heap.
+	tuple.emittedAt = time.Now()
 
 	select {
 	case s.commitCh <- tuple:
@@ -439,6 +444,9 @@ func (s *Sequencer) emitTombstone(ctx context.Context, seq uint64, hash [32]byte
 		// for readability.
 		Entry:      nil,
 		HasSplitID: false,
+		// Same emit-stamp discipline as buildLiveStagedEntry: set
+		// here for the histogram observability path.
+		emittedAt: time.Now(),
 	}
 	select {
 	case s.commitCh <- tuple:
