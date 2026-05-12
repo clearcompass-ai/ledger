@@ -65,6 +65,7 @@ import (
 	"github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/deps"
+	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/schemareg"
 	"github.com/clearcompass-ai/ledger/gossipnet"
 	"github.com/clearcompass-ai/ledger/gossipstore"
 	"github.com/clearcompass-ai/ledger/integrity"
@@ -186,6 +187,20 @@ func Wire(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	bl, anchorPub := composeBuilderLoop(ctx, cfg, d, tesseraAdapter, cosigner)
 	d.BuilderLoop = bl
 	d.AnchorPublisher = anchorPub
+
+	// 7b. v0.4.0 DI schema admission registry — single source of
+	// truth shared by the api submission handler (front-door gate)
+	// and the sequencer (post-AppendLeaf SplitID dispatch).
+	// schemareg.BuildLedgerSchemaRegistry binds the SDK-shipped
+	// commitment validators and returns a frozen *schema.Registry.
+	// A bind error here is a programming error in boot/schemareg
+	// (e.g., duplicate SchemaID), not a runtime condition — fail
+	// fast at boot so the operator notices immediately.
+	reg, err := schemareg.BuildLedgerSchemaRegistry()
+	if err != nil {
+		return fmt.Errorf("wire: schemareg.BuildLedgerSchemaRegistry: %w", err)
+	}
+	d.SchemaRegistry = reg
 
 	// 8. HTTP handlers (submission, query, tree, smt, entries,
 	// commitments, witness, tiles).
@@ -369,6 +384,7 @@ func composeHandlers(
 		Logger:             d.Logger,
 		FreshnessTolerance: policy.FreshnessInteractive,
 		BLSQuorumVerifier:  blsQuorumVerifier,
+		SchemaRegistry:     d.SchemaRegistry,
 	}
 
 	tree := smt.NewTree(d.LeafStore, d.NodeStore)
@@ -521,6 +537,13 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 		Logger:       d.Logger,
 	})
 	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
+
+	// v0.4.0 DI schema registry — built once at Wire (step 7b) and
+	// shared with the api submission handler. The sequencer's
+	// dispatchCommitmentSchema reads the same frozen instance.
+	if d.SchemaRegistry != nil {
+		seq = seq.WithSchemaRegistry(d.SchemaRegistry)
+	}
 	if d.GossipStore != nil {
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(d.GossipStore))

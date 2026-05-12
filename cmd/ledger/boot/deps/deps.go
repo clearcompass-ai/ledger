@@ -74,6 +74,7 @@ import (
 	tposixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
 
 	"go.opentelemetry.io/otel/metric"
 
@@ -173,6 +174,17 @@ type AppDeps struct {
 	AnchorPublisher *anchor.Publisher
 	GossipBundle    *gossipnet.Bundle       // nil when gossip disabled
 	GossipPublisher *gossipnet.STHPublisher // nil when gossip disabled
+
+	// SchemaRegistry is the attesta v0.4.0 DI schema admission
+	// registry. Built once at wire time via
+	// schemareg.BuildLedgerSchemaRegistry and consumed by both
+	// the api submission handler (front-door admission gate) and
+	// the sequencer (post-AppendLeaf SplitID dispatch). Single
+	// instance is the audit guarantee: an auditor reading
+	// schemareg.BuildLedgerSchemaRegistry sees the full schema
+	// list this deployment admits, and both consumers route
+	// through the same frozen Registry.
+	SchemaRegistry *sdkschema.Registry
 
 	// HTTPServer is the *api.Server wrapper — exposes Shutdown +
 	// SetReady. Stdlib http.Server lives inside it; teardown calls

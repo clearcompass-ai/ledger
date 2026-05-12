@@ -1,8 +1,33 @@
 // FILE PATH: chaos/trigger_chaos.go
 //
-// Chaos-build Trigger: panics when LEDGER_CHAOS_PANIC_AT matches
-// the call-site name. Compiled only when -tags=chaos is set.
-// The default (production) build uses trigger_default.go.
+// Chaos-build Trigger: terminates the process via os.Exit(2) when
+// LEDGER_CHAOS_PANIC_AT matches the call-site name. Compiled only
+// when -tags=chaos is set. The default (production) build uses
+// trigger_default.go.
+//
+// WHY os.Exit AND NOT panic
+//
+// The ledger wraps every long-running goroutine (sequencer,
+// shipper, anti-entropy, etc.) in lifecycle.SafeRun, which has a
+// defer recover() that catches any panic, logs it, and does a
+// NON-BLOCKING send to the fatal channel. If the fatal channel is
+// full or nil the panic is silently swallowed and the goroutine
+// just terminates — the rest of the process keeps running. That
+// breaks the chaos contract: we want to simulate SIGKILL, which
+// is an unrecoverable termination.
+//
+// os.Exit(2) bypasses every defer recover() in the goroutine
+// chain because it terminates the process at the kernel level
+// before any Go unwinding happens. This is exactly the semantic
+// chaos tests need: a hard kill at the injection point. We emit a
+// stable marker line to stderr BEFORE calling os.Exit so the test
+// harness can still grep for the marker to confirm the kill fired
+// at the intended injection point.
+//
+// (The exit code 2 distinguishes chaos kills from normal exits
+// (0) and from generic Go panics that escaped to the runtime (2
+// is also Go's default for unrecovered panics, but the marker
+// line disambiguates).
 
 //go:build chaos
 // +build chaos
@@ -17,10 +42,10 @@ import (
 	"sync/atomic"
 )
 
-// Trigger panics when name matches LEDGER_CHAOS_PANIC_AT. The
-// panic message includes the name + a trace marker so the test
-// harness can confirm via stderr capture that the panic fired at
-// the intended injection point.
+// Trigger terminates the process via os.Exit(2) when name matches
+// LEDGER_CHAOS_PANIC_AT. The marker line written to stderr before
+// exit lets the harness's stderr capture confirm the trigger
+// fired at the intended injection point.
 //
 // LEDGER_CHAOS_PANIC_AT accepts a single name or a comma-separated
 // list; any matching name triggers. The variable is read once per
@@ -31,7 +56,7 @@ import (
 //
 // LEDGER_CHAOS_PANIC_AFTER_N caps the trigger to fire only on the
 // Nth or later match (1-indexed). Without it, the FIRST matching
-// call panics — usually what's wanted for "kill mid-AppendLeaf"
+// call kills — usually what's wanted for "kill mid-AppendLeaf"
 // style tests where any matching call is acceptable. For tests
 // like "kill on the 100th submission" set it to 100.
 func Trigger(name string) {
@@ -49,12 +74,34 @@ func Trigger(name string) {
 		return
 	}
 
-	// Panic with a unambiguously-recognizable marker so the
-	// harness's stderr scrape can confirm the trigger fired here
-	// (and not from some unrelated production panic). The marker
-	// is stable and exported via the Marker constant below.
-	panic(fmt.Sprintf("%s name=%s count=%d", Marker, name, count))
+	// Emit the marker line to stderr FIRST. The default emitMarker
+	// is a single fmt.Fprint to os.Stderr — one Write syscall to
+	// the stderr FD, which the kernel buffers atomically; when the
+	// harness wires the subprocess stderr as a pipe the harness
+	// reader sees the marker before the SIGCHLD/exit notification.
+	emitMarker(fmt.Sprintf("%s name=%s count=%d\n", Marker, name, count))
+
+	// exitFn — bypasses every defer recover() in the goroutine
+	// chain. Default is os.Exit(2) (matches SIGKILL semantics:
+	// no Go unwinding, no deferred cleanup, no graceful close).
+	// Indirected through a variable so in-process unit tests can
+	// intercept without terminating the test runner.
+	exitFn(2)
 }
+
+// exitFn is the process-termination function used by Trigger.
+// Production uses os.Exit. Unit tests in this package replace it
+// with a panic-on-call shim so they can assert behavior without
+// killing the test runner; the shim restores os.Exit on cleanup.
+//
+// emitMarker writes the chaos marker line to stderr. Tests
+// override it with a synchronous buffer writer so the captured
+// stderr line is observable immediately after Trigger returns
+// (no pipe, no goroutine drain, no scheduling race).
+var (
+	exitFn     = os.Exit
+	emitMarker = func(line string) { fmt.Fprint(os.Stderr, line) }
+)
 
 // Marker is the leading substring of every chaos-induced panic
 // message. Test harnesses grep stderr for this to assert the
