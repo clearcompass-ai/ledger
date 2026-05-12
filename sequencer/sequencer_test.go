@@ -39,6 +39,7 @@ WHAT'S COVERED:
 package sequencer
 
 import (
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -808,6 +809,126 @@ func TestCommitterStaleRecover_CrashRecovery(t *testing.T) {
 	}
 	if finalSeq != 42 {
 		t.Errorf("sequenced[hash] = %d, want 42", finalSeq)
+	}
+}
+
+// TestDrainHeapInto_InBatchDuplicate_SilentDiscard pins the
+// structural fix for the WAL.Sequence-after-commit WARN noise: when
+// the heap contains BOTH the original tuple and a duplicate for the
+// same seq, the committer MUST keep the original in `pending` and
+// silently discard the duplicate. Calling committerStaleRecover for
+// the duplicate would probe MetaState before flushBatch runs, see
+// Pending, and incorrectly fire the crash-recovery path — racing the
+// impending applyPostCommitForOne call.
+//
+// Discriminator: head.Seq < expected (it IS a duplicate) AND
+// head.Seq >= committed (the original is still in pending, not yet
+// flushed). Sub-case (A) of drainHeapInto.
+func TestDrainHeapInto_InBatchDuplicate_SilentDiscard(t *testing.T) {
+	w := newFakeWAL()
+	ts := newFakeTessera()
+	s := newTestSequencerNoCommitter(t, w, ts, Config{
+		CommitMaxBatchSize: 256,
+	})
+
+	// nextExpectedSeq starts at 0; "committed" cursor is 0.
+	// Push ORIGINAL tuple seq=0 and DUPLICATE tuple seq=0.
+	_, hashA := buildEntry(t, "in-batch-dup-orig")
+	original := stagedEntry{
+		Seq:  0,
+		Hash: hashA,
+		Row:  store.EntryRow{SequenceNumber: 0, CanonicalHash: hashA, Status: store.StatusLive},
+	}
+	duplicate := stagedEntry{
+		Seq:  0,
+		Hash: hashA,
+		Row:  store.EntryRow{SequenceNumber: 0, CanonicalHash: hashA, Status: store.StatusLive},
+	}
+	heap.Push(s.committerHeap, original)
+	heap.Push(s.committerHeap, duplicate)
+
+	// State for hashA is StatePending (the fakeWAL default for a
+	// hash never seeded — the test's mu unlocked path needs explicit
+	// state set).
+	w.mu.Lock()
+	w.state[hashA] = wal.StatePending
+	w.mu.Unlock()
+
+	pending := s.drainHeapInto(context.Background(), nil)
+
+	if len(pending) != 1 {
+		t.Fatalf("pending size = %d, want 1 (original kept, dup discarded)", len(pending))
+	}
+	if pending[0].Seq != 0 {
+		t.Errorf("pending[0].Seq = %d, want 0 (original preserved)", pending[0].Seq)
+	}
+	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 1 {
+		t.Errorf("staleDuplicatesDiscarded = %d, want 1 (in-batch dup silently discarded)", got)
+	}
+	if got := s.metrics.staleCrashRecoveries.Load(); got != 0 {
+		t.Errorf("staleCrashRecoveries = %d, want 0 (in-batch dup must NOT fire recovery)", got)
+	}
+	if got := w.sequenceCalls.Load(); got != 0 {
+		t.Errorf("WAL.Sequence calls = %d, want 0 (only flushBatch should call Sequence later)", got)
+	}
+	if s.committerHeap.Len() != 0 {
+		t.Errorf("heap remaining = %d, want 0 (both original and dup popped)",
+			s.committerHeap.Len())
+	}
+}
+
+// TestDrainHeapInto_CrossBatchStale_RoutesToRecover pins the OTHER
+// sub-case of drainHeapInto: a duplicate whose seq is strictly less
+// than committed (nextExpectedSeq) — i.e., the original was committed
+// in a PRIOR batch. This must route to committerStaleRecover so the
+// MetaState probe can distinguish "WAL state already advanced"
+// (silent discard) from "WAL state still Pending" (crash-recovery
+// must run WAL.Sequence to unblock the shipper).
+//
+// Sub-case (B) of drainHeapInto. Pairs with
+// TestCommitterStaleRecover_NormalRace +
+// TestCommitterStaleRecover_CrashRecovery which pin the
+// committerStaleRecover internals.
+func TestDrainHeapInto_CrossBatchStale_RoutesToRecover(t *testing.T) {
+	w := newFakeWAL()
+	ts := newFakeTessera()
+	s := newTestSequencerNoCommitter(t, w, ts, Config{
+		CommitMaxBatchSize: 256,
+	})
+
+	// Advance nextExpectedSeq to 10 — simulates 10 entries already
+	// committed in earlier batches. Pushing a stagedEntry for seq=5
+	// is then a TRUE cross-batch stale.
+	s.nextExpectedSeq.Store(10)
+	_, hash := buildEntry(t, "cross-batch-stale")
+	// Set state to StateSequenced — matches "original committed in
+	// a prior batch, state already advanced." committerStaleRecover
+	// should silently discard.
+	w.mu.Lock()
+	w.state[hash] = wal.StateSequenced
+	w.sequenced[hash] = 5
+	w.mu.Unlock()
+
+	stale := stagedEntry{
+		Seq:  5,
+		Hash: hash,
+		Row:  store.EntryRow{SequenceNumber: 5, CanonicalHash: hash, Status: store.StatusLive},
+	}
+	heap.Push(s.committerHeap, stale)
+
+	pending := s.drainHeapInto(context.Background(), nil)
+
+	if len(pending) != 0 {
+		t.Errorf("pending size = %d, want 0 (stale must NOT enter pending)", len(pending))
+	}
+	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 1 {
+		t.Errorf("staleDuplicatesDiscarded = %d, want 1 (state was Sequenced — silent discard)", got)
+	}
+	if got := s.metrics.staleCrashRecoveries.Load(); got != 0 {
+		t.Errorf("staleCrashRecoveries = %d, want 0 (state already advanced)", got)
+	}
+	if got := w.sequenceCalls.Load(); got != 0 {
+		t.Errorf("WAL.Sequence calls = %d, want 0 (silent-discard branch)", got)
 	}
 }
 
