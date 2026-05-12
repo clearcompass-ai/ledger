@@ -545,10 +545,29 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 
 	// Snapshot the overlay's node mutations BEFORE entering the
 	// atomic transaction. Iterating overlay.Mutations() returns a
-	// copy keyed by node hash — every entry must be PutTx'd or the
+	// copy keyed by node hash — every entry must be persisted or the
 	// committed root will reference a node that doesn't exist on
 	// disk, breaking every subsequent proof.
 	dirtyNodes := overlayNodes.Mutations()
+
+	// Pre-build the leaf slice and node slice OUTSIDE the atomic tx
+	// so the tx's wire critical section is as short as possible (a
+	// long-running tx blocks vacuum and inflates dead-tuple bloat on
+	// builder_cursor + smt_leaves). All of the serialization /
+	// allocation work happens here; the tx body below is just three
+	// batched INSERTs + the singleton-row UPDATEs.
+	leavesToWrite := make([]types.SMTLeaf, len(result.Mutations))
+	for i, mut := range result.Mutations {
+		leavesToWrite[i] = types.SMTLeaf{
+			Key:          mut.LeafKey,
+			OriginTip:    mut.NewOriginTip,
+			AuthorityTip: mut.NewAuthorityTip,
+		}
+	}
+	nodesToWrite := make([]smt.Node, 0, len(dirtyNodes))
+	for _, n := range dirtyNodes {
+		nodesToWrite = append(nodesToWrite, n)
+	}
 
 	// ── Step 8: Atomic commit ─────────────────────────────────────────
 	if cErr := ctx.Err(); cErr != nil {
@@ -558,16 +577,15 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	commitStart := time.Now()
 	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
 		// Leaves first — every mutation produced by ProcessBatch
-		// becomes a row in smt_leaves under the tx.
-		for _, mut := range result.Mutations {
-			leaf := types.SMTLeaf{
-				Key:          mut.LeafKey,
-				OriginTip:    mut.NewOriginTip,
-				AuthorityTip: mut.NewAuthorityTip,
-			}
-			if setErr := bl.leafStore.SetTx(ctx, tx, mut.LeafKey, leaf); setErr != nil {
-				return fmt.Errorf("set leaf %x: %w", mut.LeafKey[:8], setErr)
-			}
+		// becomes a row in smt_leaves. SetBatchTx collapses the N
+		// row-upserts into ONE round-trip via `unnest($1::bytea[],
+		// $2::bytea[], $3::bytea[])`. This is THE per-batch latency
+		// fix: the prior `for _, mut := range result.Mutations` loop
+		// paid one synchronous PG hop per leaf, capping builder
+		// throughput at ~loop-overhead × per-row-rtt ≈ ~200 ent/sec
+		// even with cosign fully parallel.
+		if setErr := bl.leafStore.SetBatchTx(ctx, tx, leavesToWrite); setErr != nil {
+			return fmt.Errorf("set leaves batch (n=%d): %w", len(leavesToWrite), setErr)
 		}
 
 		// Nodes second — every dirty Jellyfish node captured by the
@@ -576,10 +594,9 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		// duplicates (same hash, same payload) are no-ops; the
 		// transaction is bounded by the number of unique new nodes
 		// (~33 per leaf at N=10^10, well within PG's per-tx budget).
-		for _, node := range dirtyNodes {
-			if _, putErr := bl.nodeStore.PutTx(ctx, tx, node); putErr != nil {
-				return fmt.Errorf("put node: %w", putErr)
-			}
+		// PutBatchTx collapses the M row-inserts into ONE round-trip.
+		if putErr := bl.nodeStore.PutBatchTx(ctx, tx, nodesToWrite); putErr != nil {
+			return fmt.Errorf("put nodes batch (n=%d): %w", len(nodesToWrite), putErr)
 		}
 
 		// New root atomic with leaves + nodes so readers never see a
@@ -654,11 +671,21 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	//   cosign    = Step 7  (K-of-N witness cosignature collection)
 	//   commit    = Step 8  (atomic PG tx: leaves+nodes+root+buffer+cursor+fsync)
 	// total = sum of the above; gives the per-batch latency floor.
+	//
+	// leaves_written / nodes_written verify the N+1 fix landed:
+	// every batch must show ONE log line covering leaves_written N
+	// AND nodes_written M, NOT N+M separate PG round-trips. Pair
+	// this with `commit` duration to compute the effective
+	// throughput of SetBatchTx / PutBatchTx; a regression to
+	// per-row SetTx / PutTx would show up immediately as commit
+	// climbing back into the seconds.
 	totalDur := beginDur + fetchDur + processDur + appendDur +
 		headWaitDur + cosignDur + commitDur
 	bl.logger.Info("batch processed",
 		"entries", len(seqs),
 		"new_leaves", result.NewLeafCounts,
+		"leaves_written", len(leavesToWrite),
+		"nodes_written", len(nodesToWrite),
 		"path_a", result.PathACounts,
 		"path_b", result.PathBCounts,
 		"path_c", result.PathCCounts,

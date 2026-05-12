@@ -125,6 +125,11 @@ func (s *PostgresLeafStore) Set(ctx context.Context, key [32]byte, leaf types.SM
 }
 
 // SetTx writes a leaf within a transaction (for atomic builder commit).
+//
+// Prefer SetBatchTx for any path that writes more than one leaf — the
+// builder's per-batch commit must use the batched form to collapse N
+// network round-trips into 1. SetTx remains for unit tests and the
+// rebuild tool that legitimately write a single row.
 func (s *PostgresLeafStore) SetTx(ctx context.Context, tx pgx.Tx, key [32]byte, leaf types.SMTLeaf) error {
 	originBytes := SerializeLogPosition(leaf.OriginTip)
 	authBytes := SerializeLogPosition(leaf.AuthorityTip)
@@ -140,6 +145,57 @@ func (s *PostgresLeafStore) SetTx(ctx context.Context, tx pgx.Tx, key [32]byte, 
 	)
 	if err != nil {
 		return fmt.Errorf("store/smt: set leaf tx: %w", err)
+	}
+	return nil
+}
+
+// SetBatchTx writes N leaves inside the supplied transaction in a
+// single round-trip. THIS is the method the builder's atomic commit
+// uses; per-row SetTx in a Go for-loop pays N synchronous network
+// hops to Postgres and is the N+1-query write path the 10K soak
+// telemetry surfaced as the per-batch latency floor (~2.5s of
+// commit time at BatchSize=500 ≈ 1500 RTTs × 1.5ms).
+//
+// The implementation uses PostgreSQL's parallel `unnest($1::bytea[],
+// $2::bytea[], $3::bytea[])` form so the server plans ONE INSERT,
+// executes ONE statement, and round-trips ONE OK packet. ON CONFLICT
+// DO UPDATE preserves the per-row idempotency the builder's retry
+// semantics rely on; identical leaves rewritten are no-ops at the
+// row level (the same (origin_tip, authority_tip) goes back in).
+//
+// Empty input is a no-op — callers don't need to guard.
+func (s *PostgresLeafStore) SetBatchTx(ctx context.Context, tx pgx.Tx, leaves []types.SMTLeaf) error {
+	if len(leaves) == 0 {
+		return nil
+	}
+	keys := make([][]byte, len(leaves))
+	origins := make([][]byte, len(leaves))
+	auths := make([][]byte, len(leaves))
+	for i := range leaves {
+		// Copy the [32]byte key array onto the heap so the slice
+		// header we hand to pgx outlives this loop iteration. (Go's
+		// GC keeps the underlying array alive via the slice in
+		// keys[i], but only because the slice's backing array is a
+		// fresh allocation per iteration — which `leaves[i].Key` is
+		// since it's a value field on the struct.)
+		k := leaves[i].Key
+		keys[i] = k[:]
+		origins[i] = SerializeLogPosition(leaves[i].OriginTip)
+		auths[i] = SerializeLogPosition(leaves[i].AuthorityTip)
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO smt_leaves (leaf_key, origin_tip, authority_tip, updated_at)
+		SELECT leaf_key, origin_tip, authority_tip, NOW()
+		FROM unnest($1::bytea[], $2::bytea[], $3::bytea[])
+			AS t(leaf_key, origin_tip, authority_tip)
+		ON CONFLICT (leaf_key) DO UPDATE SET
+			origin_tip = EXCLUDED.origin_tip,
+			authority_tip = EXCLUDED.authority_tip,
+			updated_at = NOW()`,
+		keys, origins, auths,
+	)
+	if err != nil {
+		return fmt.Errorf("store/smt: set batch tx (n=%d): %w", len(leaves), err)
 	}
 	return nil
 }
@@ -344,6 +400,11 @@ func (s *PostgresNodeStore) Put(node smt.Node) ([32]byte, error) {
 //
 // Returns the canonical hash so the caller can reference the node
 // from a parent without re-hashing.
+//
+// Prefer PutBatchTx for any path that writes more than one node —
+// the builder's per-batch commit must use the batched form to
+// collapse N network round-trips into 1. PutTx remains for unit
+// tests that legitimately write a single row.
 func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node) ([32]byte, error) {
 	if node == nil {
 		return [32]byte{}, errors.New("store/smt: cannot store nil node")
@@ -364,6 +425,72 @@ func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node)
 		return [32]byte{}, fmt.Errorf("store/smt: put node tx %x: %w", hash[:8], err)
 	}
 	return hash, nil
+}
+
+// PutBatchTx stores N nodes inside the supplied transaction in a
+// single round-trip. This is the production write path for the
+// builder's atomic commit; the per-row PutTx in a Go for-loop pays
+// N synchronous network hops to Postgres and is the dominant cost
+// in the per-batch latency floor (a 500-leaf Jellyfish batch
+// generates ~1,000–1,500 dirty internal nodes, so the loop becomes
+// ~1,500 sequential RTTs).
+//
+// The implementation uses PostgreSQL's parallel `unnest($1::bytea[],
+// $2::bytea[])` form: one INSERT, one server-side execution, one
+// round-trip. ON CONFLICT DO NOTHING preserves content-addressed
+// idempotency — duplicate nodes (same hash, same payload, byte-
+// identical from any prior builder cycle or any other producer)
+// silently no-op at the row level. There is no write amplification
+// beyond the unique-hash count.
+//
+// The LRU cache is promoted for every node in the batch BEFORE the
+// INSERT fires. Cache promotion before Postgres write means the
+// next ProcessBatch's Get() path sees these nodes in-cache even if
+// the outer transaction takes an extra tick to commit; on tx
+// rollback the cache entries are still consistent (content-addressed
+// nodes are immutable — a cached node that hasn't been persisted
+// yet is harmless because anyone looking it up will get the same
+// bytes back from any other path that does persist it). The cache
+// is updated under a single mu.Lock so the LRU's eviction
+// accounting stays consistent.
+//
+// Empty input is a no-op — callers don't need to guard.
+func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []smt.Node) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	hashSlices := make([][]byte, len(nodes))
+	payloads := make([][]byte, len(nodes))
+	hashArrays := make([][32]byte, len(nodes))
+	for i, node := range nodes {
+		if node == nil {
+			return fmt.Errorf("store/smt: put batch tx: nil node at index %d", i)
+		}
+		hashArrays[i] = smt.HashNode(node)
+		hashSlices[i] = hashArrays[i][:]
+		payloads[i] = node.Serialize()
+	}
+
+	// Cache promotion: single lock acquire covers all N nodes so the
+	// LRU's eviction counter stays well-ordered with the batch.
+	s.mu.Lock()
+	for i, node := range nodes {
+		s.cachePutLocked(hashArrays[i], node)
+	}
+	s.mu.Unlock()
+
+	_, err := tx.Exec(ctx, `
+		INSERT INTO jellyfish_nodes (node_hash, payload)
+		SELECT node_hash, payload
+		FROM unnest($1::bytea[], $2::bytea[])
+			AS t(node_hash, payload)
+		ON CONFLICT (node_hash) DO NOTHING`,
+		hashSlices, payloads,
+	)
+	if err != nil {
+		return fmt.Errorf("store/smt: put batch tx (n=%d): %w", len(nodes), err)
+	}
+	return nil
 }
 
 // cachePutLocked inserts/updates the LRU. Caller MUST hold s.mu.

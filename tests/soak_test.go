@@ -511,10 +511,19 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	loopCfg := opbuilder.DefaultLoopConfig(testLogDID)
 	loopCfg.PollInterval = 10 * time.Millisecond
 	loopCfg.BatchSize = 500
+	// Dedicated INFO-level logger for the builder so the per-batch
+	// stage timing emitted by processBatch (begin/fetch/process/
+	// append/head_wait/cosign/commit) lands in the test output.
+	// The shared `logger` is WARN-level to keep the WAL / sequencer /
+	// shipper output quiet during the long admission burst; the
+	// builder's "batch processed" line is THE signal we read to
+	// attribute per-batch latency to a stage.
+	builderLogger := slog.New(slog.NewTextHandler(os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelInfo}))
 	builderLoop := opbuilder.NewBuilderLoop(
 		loopCfg, pool, smtTree, leafStore, nodeCache,
 		cursorReader, fetcher, nil, deltaBuffer, bufferStore, commitPub,
-		soakHarness.Adapter, soakHarness.Cosigner, logger,
+		soakHarness.Adapter, soakHarness.Cosigner, builderLogger,
 	).WithRootStore(rootStateStore)
 
 	go func() { _ = server.Serve(ln) }()
@@ -863,6 +872,25 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			"SELECT COUNT(*) FROM smt_leaves").Scan(&smtLeafRows)
 		builderLag := entryIndexRows - smtLeafRows
 
+		// Cursor diagnostic — the 10K soak previously showed a
+		// terminal `smt_leaves=9998 builder_lag=2` plateau where
+		// the builder went idle with 2 entries still in entry_index.
+		// Without seeing the cursor value AND the entry_index max
+		// seq, we can't distinguish:
+		//   (1) cursor advanced past the missing seqs (real bug)
+		//   (2) cursor at correct position but builder loop wedged
+		//   (3) entry_index missing the tail rows entirely
+		//
+		// Reading both every cycle gives evidence-first attribution
+		// to whichever of those scenarios is actually happening.
+		var builderCursor, entryMaxSeq int64
+		_ = op.Pool.QueryRow(context.Background(),
+			"SELECT last_processed_sequence FROM builder_cursor WHERE id = 1").
+			Scan(&builderCursor)
+		_ = op.Pool.QueryRow(context.Background(),
+			"SELECT COALESCE(MAX(sequence_number), -1)::bigint FROM entry_index").
+			Scan(&entryMaxSeq)
+
 		// shipDup = (shipped events) - (distinct seqs that completed).
 		// Pre-dedupe baseline; with the inflight guard now in place
 		// (shipper.Shipper.inflight) this should converge on 0.
@@ -875,7 +903,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			"wal{hwm=%d pending=%d sequenced=%d} "+
 			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
 			"ship{shipped=%d unique=%d dup=%d skipInflight=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
-			"pg{entry_index=%d smt_leaves=%d builder_lag=%d}",
+			"pg{entry_index=%d smt_leaves=%d builder_lag=%d cursor=%d max_seq=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
@@ -885,6 +913,7 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			shipMetrics.Retries, shipMetrics.Manual,
 			shipMetrics.MarkShippedFailures, shipMetrics.HWM, shipMetrics.ShipLatencyMeanMillis,
 			entryIndexRows, smtLeafRows, builderLag,
+			builderCursor, entryMaxSeq,
 		)
 
 		// Exit gate (Fix A): wait for BOTH the shipper AND the builder
@@ -918,9 +947,15 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 			break
 		}
 		if time.Since(drainStart) > drainTimeout {
-			t.Fatalf("drain timeout after %s — shipperReady=%t builderReady=%t (entry_index=%d smt_leaves=%d expected=%d) — see drain[cycle=N] log lines above for stuck-stage isolation",
+			// Snapshot full diagnostic on the way out so the operator
+			// has the exact missing-seq set and the cursor /
+			// max(entry_index.seq) pair in the failure log without
+			// re-running the soak.
+			dumpSMTDiagnostics(t, op, expectedHWM)
+			t.Fatalf("drain timeout after %s — shipperReady=%t builderReady=%t (entry_index=%d smt_leaves=%d expected=%d cursor=%d max_seq=%d) — see drain[cycle=N] log lines above for stuck-stage isolation",
 				drainTimeout, shipperReady, builderReady,
-				entryIndexRows, smtLeafRows, expectedHWM)
+				entryIndexRows, smtLeafRows, expectedHWM,
+				builderCursor, entryMaxSeq)
 		}
 		time.Sleep(2 * time.Second)
 	}
