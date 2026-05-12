@@ -207,30 +207,31 @@ var errCycleBudget = errors.New("sequencer: per-cycle work budget exhausted")
 //
 // STAGE-1 / STAGE-2 SPLIT:
 //
-//   Stage-1 (this function, runs in MaxInFlight parallel workers):
-//     Step 1. MetaState guard — skip if no longer Pending.
-//     Step 2. wal.Read → wire bytes.
-//     Step 3. envelope.Deserialize → header metadata.
-//     Step 4. tessera.AppendLeaf → assigned seq.
-//     Step 5. dispatchCommitmentSchema → split-id (if applicable).
-//     Step 6. Build stagedEntry; emit to commitCh.
+//	Stage-1 (this function, runs in MaxInFlight parallel workers):
+//	  Step 1. MetaState guard — skip if no longer Pending.
+//	  Step 2. wal.Read → wire bytes.
+//	  Step 3. envelope.Deserialize → header metadata.
+//	  Step 4. tessera.AppendLeaf → assigned seq.
+//	  Step 5. dispatchCommitmentSchema → split-id (if applicable).
+//	  Step 6. Build stagedEntry; emit to commitCh.
 //
-//   Stage-2 (committer goroutine, singleton — see committer.go):
-//     Step 7. Pop contiguous prefix from min-heap.
-//     Step 8. Batched INSERT into entry_index (+ commitment_split_id).
-//     Step 9. Per-entry WAL.Sequence / MarkManual (post-commit).
-//     Step 10. Sidecar writes 0x0A (splitid index), 0x0C (entry lookup).
+//	Stage-2 (committer goroutine, singleton — see committer.go):
+//	  Step 7. Pop contiguous prefix from min-heap.
+//	  Step 8. Batched INSERT into entry_index (+ commitment_split_id).
+//	  Step 9. Per-entry WAL.Sequence / MarkManual (post-commit).
+//	  Step 10. Sidecar writes 0x0A (splitid index), 0x0C (entry lookup).
 //
 // THE INVARIANT THE SPLIT ENFORCES:
-//   Steps 1-4 are idempotent under retries. Once Tessera.AppendLeaf
-//   returns, the seq is irrevocably allocated; the stage-1 worker
-//   MUST emit a tuple to commitCh (live or tombstone) or the
-//   committer's heap stalls forever waiting for that seq. The
-//   tombstone routing below covers the only post-AppendLeaf failure
-//   currently reachable in stage-1 (dispatchCommitmentSchema
-//   parse error); any future post-AppendLeaf work that could fail
-//   permanently MUST emit a tombstone via the same path or risk the
-//   deadlock.
+//
+//	Steps 1-4 are idempotent under retries. Once Tessera.AppendLeaf
+//	returns, the seq is irrevocably allocated; the stage-1 worker
+//	MUST emit a tuple to commitCh (live or tombstone) or the
+//	committer's heap stalls forever waiting for that seq. The
+//	tombstone routing below covers the only post-AppendLeaf failure
+//	currently reachable in stage-1 (dispatchCommitmentSchema
+//	parse error); any future post-AppendLeaf work that could fail
+//	permanently MUST emit a tombstone via the same path or risk the
+//	deadlock.
 func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	// Step 1: state guard.
 	meta, err := s.wal.MetaState(ctx, hash)
@@ -337,7 +338,7 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	// we route to a tombstone to preserve the committer's
 	// contiguous-prefix invariant. The hash is still valid; only
 	// the projection-side metadata is dropped.
-	extractedSplitID, extractedSchemaID, dispatchErr := dispatchCommitmentSchema(entry)
+	extractedSplitID, extractedSchemaID, dispatchErr := s.dispatchCommitmentSchema(entry)
 	if dispatchErr != nil {
 		s.logger.Error("sequencer: post-AppendLeaf dispatchCommitmentSchema error — routing to tombstone",
 			"seq", seq, "hash", hashPrefix(hash), "error", dispatchErr)
@@ -473,7 +474,33 @@ type commitmentPayloadPeek struct {
 	SchemaID string `json:"schema_id"`
 }
 
-func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) {
+// dispatchCommitmentSchema decides whether an entry carries a
+// commitment schema we recognize, validates it via the v0.4.0 DI
+// schema registry (when wired), and parses it to extract the
+// SplitID.
+//
+// Order of operations:
+//
+//  1. JSON-peek the SchemaID. Non-JSON or missing → not a
+//     commitment, return (nil, "", nil) — caller stages without
+//     SplitID indexing.
+//  2. If a schema registry is wired (production path), consult
+//     Registry.Has: an unknown SchemaID is treated as no-
+//     commitment (back-compat: pre-registry deployments and test
+//     fixtures both produce that result). For a known SchemaID,
+//     Registry.ValidateEntry runs as the admission gate. A
+//     validator error here is a structural rejection — the caller
+//     emits a tombstone.
+//  3. Parse the entry via the SDK's typed parser to extract the
+//     SplitID. Post-validation the parse cannot fail for
+//     structural reasons but the SDK contract still surfaces an
+//     error path; we propagate it (defensive) and the caller
+//     tombstones.
+//
+// When schemaRegistry is nil (test fixtures), the legacy hard-
+// coded switch runs verbatim — preserves existing test behaviour
+// without requiring every test to construct a registry.
+func (s *Sequencer) dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) {
 	if entry == nil || len(entry.DomainPayload) == 0 {
 		return nil, "", nil
 	}
@@ -481,6 +508,54 @@ func dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, string, error) 
 	if err := json.Unmarshal(entry.DomainPayload, &peek); err != nil {
 		return nil, "", nil
 	}
+
+	// Production path — registry-driven admission.
+	if s.schemaRegistry != nil {
+		sid := sdkschema.SchemaID(peek.SchemaID)
+		if !s.schemaRegistry.Has(sid) {
+			// Unbound SchemaID: not a commitment we recognize.
+			// Stage the entry without SplitID indexing — same
+			// semantic as the default branch of the legacy switch.
+			return nil, "", nil
+		}
+		if err := s.schemaRegistry.ValidateEntry(sid, entry); err != nil {
+			// Admission rejection. Caller emits a tombstone via
+			// the dispatchErr path in processOne.
+			return nil, "", err
+		}
+		// Validated: parse to extract the SplitID. The parse
+		// re-deserializes the payload; the cost is small relative
+		// to the AppendLeaf that already ran for this entry, and
+		// the defense-in-depth is worth keeping (a future Validator
+		// might tolerate a payload the legacy parser rejects).
+		switch peek.SchemaID {
+		case artifact.PREGrantCommitmentSchemaID:
+			commitment, err := sdkschema.ParsePREGrantCommitmentEntry(entry)
+			if err != nil {
+				return nil, "", err
+			}
+			out := commitment.SplitID
+			return &out, artifact.PREGrantCommitmentSchemaID, nil
+		case escrow.EscrowSplitCommitmentSchemaID:
+			commitment, err := sdkschema.ParseEscrowSplitCommitmentEntry(entry)
+			if err != nil {
+				return nil, "", err
+			}
+			out := commitment.SplitID
+			return &out, escrow.EscrowSplitCommitmentSchemaID, nil
+		default:
+			// Registry.Has returned true but no parser branch — this
+			// would indicate the registry was bound to a SchemaID we
+			// don't have an in-process parser for, a wiring error in
+			// boot/schemareg. Surface as a dispatch error.
+			return nil, "", fmt.Errorf("dispatchCommitmentSchema: %s is registry-bound but has no SplitID parser",
+				peek.SchemaID)
+		}
+	}
+
+	// Legacy path — preserved verbatim for tests that haven't
+	// wired a registry. Production code MUST go through the
+	// registry branch above (wire.go enforces this at boot).
 	switch peek.SchemaID {
 	case artifact.PREGrantCommitmentSchemaID:
 		commitment, err := sdkschema.ParsePREGrantCommitmentEntry(entry)

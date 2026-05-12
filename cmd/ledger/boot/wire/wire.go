@@ -65,6 +65,7 @@ import (
 	"github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/deps"
+	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/schemareg"
 	"github.com/clearcompass-ai/ledger/gossipnet"
 	"github.com/clearcompass-ai/ledger/gossipstore"
 	"github.com/clearcompass-ai/ledger/integrity"
@@ -521,6 +522,20 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 		Logger:       d.Logger,
 	})
 	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
+
+	// v0.4.0 DI schema registry — the explicit, frozen binding
+	// container declaring which commitment schemas this deployment
+	// admits. Construction is fail-fast: a bind error here is a
+	// programming error in boot/schemareg (e.g., a duplicate
+	// SchemaID), not a runtime condition, so we panic to surface
+	// it at process start rather than letting the registry silently
+	// disable schema admission. dispatchCommitmentSchema consults
+	// this registry on the post-AppendLeaf hot path.
+	reg, err := schemareg.BuildLedgerSchemaRegistry()
+	if err != nil {
+		panic(fmt.Sprintf("boot/wire: BuildLedgerSchemaRegistry: %v", err))
+	}
+	seq = seq.WithSchemaRegistry(reg)
 	if d.GossipStore != nil {
 		seq = seq.WithSplitIDIndex(
 			gossipnet.NewSequencerSplitIDAdapter(d.GossipStore))

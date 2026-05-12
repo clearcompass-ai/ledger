@@ -71,6 +71,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	sdkschema "github.com/clearcompass-ai/attesta/schema"
+
 	"github.com/clearcompass-ai/ledger/latency"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
@@ -464,6 +466,16 @@ type Sequencer struct {
 	cfg          Config
 	logger       *slog.Logger
 
+	// schemaRegistry, when non-nil, is the v0.4.0 DI schema
+	// admission registry built by cmd/ledger/boot/schemareg.
+	// dispatchCommitmentSchema consults it: if Has(schema-id)
+	// returns false the entry is treated as schema-less; if true
+	// ValidateEntry runs as the admission gate before the parse
+	// step that extracts the SplitID. nil → fall back to the
+	// legacy hard-coded switch (preserves test fixtures that
+	// don't build a registry).
+	schemaRegistry *sdkschema.Registry
+
 	metrics Metrics
 
 	// attempts tracks per-hash retry counts in memory across
@@ -583,6 +595,22 @@ func (s *Sequencer) WithEntryLookup(w EntryLookupWriter, logDID string) *Sequenc
 // Run starts.
 func (s *Sequencer) WithLagReader(r LagReader) *Sequencer {
 	s.lagReader = r
+	return s
+}
+
+// WithSchemaRegistry wires the v0.4.0 DI schema admission registry
+// produced by cmd/ledger/boot/schemareg.BuildLedgerSchemaRegistry.
+// When set, dispatchCommitmentSchema consults the registry to
+// decide whether a SchemaID is admitted and runs the registry's
+// EntryValidator before the SplitID-extraction parse. nil →
+// legacy hard-coded switch (preserves test fixtures that don't
+// build a registry).
+//
+// Optional; nil receiver is a no-op (intended for unit-test
+// fixtures that exercise dispatch via the legacy path).
+// Race-free against drain cycles only when called before Run starts.
+func (s *Sequencer) WithSchemaRegistry(r *sdkschema.Registry) *Sequencer {
+	s.schemaRegistry = r
 	return s
 }
 
