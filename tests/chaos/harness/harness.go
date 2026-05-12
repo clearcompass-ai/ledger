@@ -192,6 +192,27 @@ func New(t *testing.T, cfg Config) *Harness {
 	// the env before subprocess Start.
 	h.port = PickFreePort(t)
 	h.addr = fmt.Sprintf("127.0.0.1:%d", h.port)
+
+	// Subprocess-lifetime cleanup. Without this, every chaos
+	// test leaves a zombie ledger binary running until the
+	// test framework process exits — observable in the smoke-
+	// test run as a post-test ERROR line ("read smt root state:
+	// terminating connection due to administrator command")
+	// from the orphaned subprocess after Postgres.Close drops
+	// the per-test database underneath it.
+	//
+	// Registered AFTER NewPostgres so it fires BEFORE PG cleanup
+	// (t.Cleanup is LIFO). Order: kill subprocess → drop DB →
+	// close witnesses. The subprocess is gone before its
+	// dependencies disappear, so no spurious post-test error
+	// lines from a dying process complaining about missing PG.
+	//
+	// h.Kill is idempotent — safe even when tests called it
+	// explicitly. Suppresses error since a subprocess that
+	// already exited (e.g., via chaos panic) is expected
+	// state for kill_restart tests.
+	t.Cleanup(func() { _ = h.Kill() })
+
 	return h
 }
 
