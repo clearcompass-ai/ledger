@@ -204,7 +204,11 @@ func main() {
 		buffer = sdkbuilder.NewDeltaWindowBuffer(*deltaWindow)
 	}
 	reader := builder.NewCursorReader(store.NewSequenceCursor(pool))
-	tree := smt.NewTree(leafStore, nodeStore)
+	tree, err := smt.NewTree(leafStore, nodeStore)
+	if err != nil {
+		logger.Error("rebuild-tiles: new SMT tree", "error", err)
+		os.Exit(1)
+	}
 
 	bl := builder.NewBuilderLoop(
 		builder.LoopConfig{

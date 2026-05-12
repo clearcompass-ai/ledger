@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.0
 	github.com/aws/smithy-go v1.25.0
-	github.com/clearcompass-ai/attesta v0.5.1-0.20260512213043-3c8857cb346f
+	github.com/clearcompass-ai/attesta v0.5.1-0.20260512220004-eca22ce0613c
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/google/uuid v1.6.0

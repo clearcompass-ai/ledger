@@ -383,20 +383,22 @@ func (s *PostgresNodeStore) Put(node smt.Node) ([32]byte, error) {
 	if node == nil {
 		return [32]byte{}, errors.New("store/smt: cannot store nil node")
 	}
-	hash := smt.HashNode(node)
+	hash, err := smt.HashNode(node)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("store/smt: hash node: %w", err)
+	}
 
 	// Promote to LRU regardless of whether PG already had it.
 	s.mu.Lock()
 	s.cachePutLocked(hash, node)
 	s.mu.Unlock()
 
-	_, err := s.db.Exec(s.ctx, `
+	if _, err := s.db.Exec(s.ctx, `
 		INSERT INTO jellyfish_nodes (node_hash, payload)
 		VALUES ($1, $2)
 		ON CONFLICT (node_hash) DO NOTHING`,
 		hash[:], node.Serialize(),
-	)
-	if err != nil {
+	); err != nil {
 		return [32]byte{}, fmt.Errorf("store/smt: put node %x: %w", hash[:8], err)
 	}
 	return hash, nil
@@ -417,19 +419,21 @@ func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node)
 	if node == nil {
 		return [32]byte{}, errors.New("store/smt: cannot store nil node")
 	}
-	hash := smt.HashNode(node)
+	hash, err := smt.HashNode(node)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("store/smt: hash node: %w", err)
+	}
 
 	s.mu.Lock()
 	s.cachePutLocked(hash, node)
 	s.mu.Unlock()
 
-	_, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO jellyfish_nodes (node_hash, payload)
 		VALUES ($1, $2)
 		ON CONFLICT (node_hash) DO NOTHING`,
 		hash[:], node.Serialize(),
-	)
-	if err != nil {
+	); err != nil {
 		return [32]byte{}, fmt.Errorf("store/smt: put node tx %x: %w", hash[:8], err)
 	}
 	return hash, nil
@@ -483,7 +487,11 @@ func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []s
 		if node == nil {
 			return 0, fmt.Errorf("store/smt: put batch tx: nil node at index %d", i)
 		}
-		hashArrays[i] = smt.HashNode(node)
+		h, err := smt.HashNode(node)
+		if err != nil {
+			return 0, fmt.Errorf("store/smt: put batch tx: hash node at index %d: %w", i, err)
+		}
+		hashArrays[i] = h
 		hashSlices[i] = hashArrays[i][:]
 		payloads[i] = node.Serialize()
 	}
