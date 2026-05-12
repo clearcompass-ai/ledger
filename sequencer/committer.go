@@ -99,6 +99,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 
 	"github.com/clearcompass-ai/ledger/store"
+	"github.com/clearcompass-ai/ledger/wal"
 )
 
 // stagedEntry is the unit emitted by stage-1 workers and consumed
@@ -200,19 +201,15 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 		for s.committerHeap.Len() > 0 {
 			head := (*s.committerHeap)[0]
 			expected := s.nextExpectedSeq.Load() + uint64(len(pending))
-			// Discard stale entries (seq already committed in a
-			// prior batch — happens on crash-recovery when stage-1
-			// re-fetches a hash whose entry_index row is already
-			// present). The WAL state still needs to advance, so
-			// we route the stale entry through the post-commit
-			// hook BEFORE discarding.
+			// Stale duplicate: the entry's row is already in
+			// entry_index from a prior commit. Route to
+			// committerStaleRecover to handle the two distinct
+			// scenarios — normal-race (silent discard) vs.
+			// crash-recovery (advance lagging WAL state). See the
+			// method docs for the discriminator.
 			if head.Seq < expected {
 				stale := heap.Pop(s.committerHeap).(stagedEntry)
-				s.logger.Debug("sequencer: committer discarding stale entry",
-					"seq", stale.Seq, "expected", expected,
-					"tombstone", stale.Tombstone,
-				)
-				s.applyPostCommitForOne(ctx, stale, false)
+				s.committerStaleRecover(ctx, stale, expected)
 				continue
 			}
 			if head.Seq != expected {
@@ -415,6 +412,131 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 		s.applyPostCommitForOne(ctx, e, true)
 	}
 	return nil
+}
+
+// committerStaleRecover handles a stagedEntry whose seq is strictly
+// less than nextExpectedSeq — i.e., a duplicate tuple for an entry
+// whose row is already in entry_index from a prior commit. Two
+// distinct scenarios produce duplicates; this method discriminates
+// between them via a single MetaState probe.
+//
+// # Scenario 1 — Normal race (common; benign)
+//
+// drainOnce cycle N captures hash H (state=Pending), spawns stage-1
+// worker A. A calls Tessera.AppendLeaf (~14ms) and emits a tuple.
+// While A is in flight, drainOnce cycle N+1 (10ms later) ALSO
+// captures H — the committer hasn't reached H's WAL.Sequence call
+// yet, so H is still StatePending and re-appears in IterateInflight.
+// Cycle N+1 spawns worker B for the same hash. B re-runs Tessera
+// (which dedups and returns the same seq) and emits a duplicate
+// tuple. By the time the committer pops B's tuple, A's tuple has
+// already moved nextExpectedSeq past it.
+//
+// In this scenario the original commit path already called
+// WAL.Sequence (state is StateSequenced, or further if the shipper
+// got there). Re-firing Sequence here would race the shipper's
+// state transitions and surface as "want pending" errors. The
+// correct response is to silently discard the duplicate; the entry
+// is fully processed.
+//
+// # Scenario 2 — Crash-recovery (rare; load-bearing)
+//
+// Process crashed (or Badger fsync transiently failed) between the
+// committer's PG commit and its WAL.Sequence call. entry_index has
+// the row, but the WAL state never advanced past Pending. On the
+// next drainOnce cycle the hash is still in IterateInflight; stage-1
+// re-runs and emits a duplicate tuple. The committer sees seq <
+// nextExpectedSeq because PG already has the row.
+//
+// In this scenario the WAL state still needs to advance for the
+// shipper to pick the entry up. The MetaState probe will report
+// StatePending and this method calls Sequence (or MarkManual for
+// tombstones) on the WAL. The WAL's own idempotency guard
+// (StateSequenced + matching seq → no-op) makes a redundant call
+// here safe in any case.
+//
+// # Metrics
+//
+// committedBatches / committedEntries / processed are NOT bumped
+// here — the original commit path already counted the entry. The
+// stale path increments one of two purpose-built counters:
+//
+//	staleDuplicatesDiscarded — Scenario 1 outcomes (silent discard).
+//	staleCrashRecoveries     — Scenario 2 outcomes (WAL state advance).
+//
+// Ratio committedEntries : staleDuplicatesDiscarded is the
+// "duplicate-work fraction" — quantifies the stage-1 race the
+// architecture tolerates by design. Expected single-digit percent
+// under burst; trends upward at high traffic and shrinks again as
+// the committer keeps up.
+//
+// staleCrashRecoveries should be ~zero in steady state. Sustained
+// non-zero values indicate Badger / WAL fsync pressure and warrant
+// an operator alert.
+//
+// # Determinism / context cancellation
+//
+// A failed MetaState probe falls through to a Debug log + return.
+// We do NOT propagate the error to the caller — the next drainOnce
+// cycle will re-fetch the hash if there's actual recovery work
+// pending. Bailing out silently on context errors avoids surfacing
+// shutdown noise as a fault.
+func (s *Sequencer) committerStaleRecover(ctx context.Context, e stagedEntry, expected uint64) {
+	meta, err := s.wal.MetaState(ctx, e.Hash)
+	if err != nil {
+		if !isContextErr(err) {
+			s.logger.Debug("sequencer: stale-recover MetaState probe failed; will retry next cycle",
+				"seq", e.Seq,
+				"hash", hashPrefix(e.Hash),
+				"error", err,
+			)
+		}
+		return
+	}
+
+	if meta.State != wal.StatePending {
+		// Scenario 1 — normal race. Original commit path already
+		// advanced WAL state. Nothing to do.
+		s.metrics.staleDuplicatesDiscarded.Add(1)
+		s.logger.Debug("sequencer: stale duplicate discarded (WAL state already advanced)",
+			"seq", e.Seq,
+			"hash", hashPrefix(e.Hash),
+			"state", meta.State,
+			"next_expected", expected,
+		)
+		return
+	}
+
+	// Scenario 2 — crash-recovery. WAL state is still Pending; PG
+	// has the row from the original commit. Advance the WAL so the
+	// shipper can pick the entry up.
+	s.metrics.staleCrashRecoveries.Add(1)
+	s.logger.Warn("sequencer: stale-recover advancing WAL state (crash-recovery path)",
+		"seq", e.Seq,
+		"hash", hashPrefix(e.Hash),
+		"tombstone", e.Tombstone,
+	)
+	if e.Tombstone {
+		if err := s.wal.MarkManual(ctx, e.Hash); err != nil && !isContextErr(err) {
+			s.logger.Error("sequencer: stale-recover MarkManual failed",
+				"seq", e.Seq,
+				"hash", hashPrefix(e.Hash),
+				"error", err,
+			)
+		}
+	} else {
+		if err := s.wal.Sequence(ctx, e.Hash, e.Seq); err != nil && !isContextErr(err) {
+			s.logger.Error("sequencer: stale-recover WAL.Sequence failed",
+				"seq", e.Seq,
+				"hash", hashPrefix(e.Hash),
+				"error", err,
+			)
+		}
+	}
+	// resetAttempts is idempotent under a missing key, so calling
+	// it again here is harmless even when the original commit path
+	// already cleared the counter for this hash.
+	s.resetAttempts(e.Hash)
 }
 
 // applyPostCommitForOne fires the per-entry post-commit work:
