@@ -494,8 +494,17 @@ func startSoakLedger(t *testing.T) *soakLedger {
 	// production logging continues to suppress them.
 	sequencerLogger := slog.New(slog.NewTextHandler(os.Stderr,
 		&slog.HandlerOptions{Level: slog.LevelInfo}))
+	// MaxInFlight is the sequencer stage-1 pool size — the bound on
+	// parallel Tessera.AppendLeaf calls. Distinct from the shipper's
+	// MaxInFlight (ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT). Without this
+	// wiring the soak silently used the package default (4)
+	// regardless of any LEDGER_SEQUENCER_MAX_INFLIGHT env override —
+	// which invalidated three previous MaxInFlight={8,16,32}
+	// sweep runs that all reported tess_in_flight high_water=4.
+	seqMaxInFlight := envInt("ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT", 0)
 	seq := sequencer.NewSequencer(walc, merkle, pool, entryStore, sequencer.Config{
 		PollInterval: 10 * time.Millisecond,
+		MaxInFlight:  seqMaxInFlight, // 0 → package DefaultMaxInFlight (4)
 		Logger:       sequencerLogger,
 	})
 
@@ -685,12 +694,13 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	// are also read where they're used (startSoakLedger for
 	// MaxInFlight, drain loop for drainTimeout).
 	maxInFlightLog := envInt("ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT", 16)
+	seqMaxInFlightLog := envInt("ATTESTA_SOAK_SEQUENCER_MAX_IN_FLIGHT", 0)
 	drainTimeoutLog := envDuration("ATTESTA_SOAK_DRAIN_TIMEOUT", 10*time.Minute)
 
 	t.Logf("soak config: entries=%d concurrency=%d verify_samples=%d p99_bound_ms=%d "+
-		"shipper_max_in_flight=%d drain_timeout=%s",
+		"shipper_max_in_flight=%d sequencer_max_in_flight=%d drain_timeout=%s",
 		total, concurrency, verifySamples, p99BoundMs,
-		maxInFlightLog, drainTimeoutLog)
+		maxInFlightLog, seqMaxInFlightLog, drainTimeoutLog)
 
 	resultCh := make(chan soakSubmission, 4096)
 	sampler := newLatencySampler(50_000)
