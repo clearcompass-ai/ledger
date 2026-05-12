@@ -1,11 +1,10 @@
-// FILE PATH: sequencer/histogram_test.go
+// FILE PATH: latency/histogram_test.go
 //
-// Focused tests for the LatencyHistogram. Verifies the empty / single
-// / many-observation cases and the concurrent-Observe safety contract.
-// The wider sequencer suite exercises the histogram through
-// processOne; these tests pin its behaviour directly so any future
-// refactor surfaces a regression at unit-test latency.
-package sequencer
+// Focused tests for the Histogram. Verifies the empty / bucket-
+// boundary / concurrent-Observe / p99-semantics cases. Locks in the
+// behaviour relied on by the sequencer (Tessera AppendLeaf
+// histogram), wal (Submit duration), and any future consumer.
+package latency
 
 import (
 	"sync"
@@ -13,8 +12,8 @@ import (
 	"time"
 )
 
-func TestLatencyHistogram_Empty(t *testing.T) {
-	h := newLatencyHistogram()
+func TestHistogram_Empty(t *testing.T) {
+	h := New()
 	snap := h.Snapshot()
 	if snap.Count != 0 {
 		t.Fatalf("Count = %d, want 0", snap.Count)
@@ -30,20 +29,20 @@ func TestLatencyHistogram_Empty(t *testing.T) {
 	}
 }
 
-func TestLatencyHistogram_BucketBoundaries(t *testing.T) {
-	h := newLatencyHistogram()
+func TestHistogram_BucketBoundaries(t *testing.T) {
+	h := New()
 	// One observation in each bucket — values picked to land just
 	// under each upper bound so a future bucket-shift bug surfaces
 	// loudly (count would migrate to the neighbour).
 	observations := []time.Duration{
-		500 * time.Microsecond,    // bucket 0 (< 1ms)
-		4 * time.Millisecond,      // bucket 1 (< 5ms)
-		9 * time.Millisecond,      // bucket 2 (< 10ms)
-		49 * time.Millisecond,     // bucket 3 (< 50ms)
-		99 * time.Millisecond,     // bucket 4 (< 100ms)
-		499 * time.Millisecond,    // bucket 5 (< 500ms)
-		999 * time.Millisecond,    // bucket 6 (< 1s)
-		2 * time.Second,           // bucket 7 (>= 1s)
+		500 * time.Microsecond, // bucket 0 (< 1ms)
+		4 * time.Millisecond,   // bucket 1 (< 5ms)
+		9 * time.Millisecond,   // bucket 2 (< 10ms)
+		49 * time.Millisecond,  // bucket 3 (< 50ms)
+		99 * time.Millisecond,  // bucket 4 (< 100ms)
+		499 * time.Millisecond, // bucket 5 (< 500ms)
+		999 * time.Millisecond, // bucket 6 (< 1s)
+		2 * time.Second,        // bucket 7 (>= 1s)
 	}
 	for _, d := range observations {
 		h.Observe(d)
@@ -65,10 +64,10 @@ func TestLatencyHistogram_BucketBoundaries(t *testing.T) {
 	}
 }
 
-func TestLatencyHistogram_ConcurrentObserve(t *testing.T) {
+func TestHistogram_ConcurrentObserve(t *testing.T) {
 	const goroutines = 32
 	const perGoroutine = 1000
-	h := newLatencyHistogram()
+	h := New()
 	var wg sync.WaitGroup
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -104,20 +103,20 @@ func TestLatencyHistogram_ConcurrentObserve(t *testing.T) {
 	}
 }
 
-func TestLatencyHistogram_ApproxP99(t *testing.T) {
+func TestHistogram_ApproxP99(t *testing.T) {
 	// p99 of 100 observations is the 99th-ranked value, so a 1% slow
 	// tail is HIDDEN at p99 (visible only in MaxUs). A 50% slow tail
 	// is captured. Both behaviours pinned below to prevent silent
-	// semantic drift in approxP99.
+	// semantic drift in ApproxP99.
 	t.Run("one_percent_tail_hidden_in_p99", func(t *testing.T) {
-		h := newLatencyHistogram()
+		h := New()
 		for i := 0; i < 99; i++ {
 			h.Observe(2 * time.Millisecond) // bucket 1 (< 5ms)
 		}
 		h.Observe(750 * time.Millisecond) // bucket 6 (< 1s)
 		snap := h.Snapshot()
-		if got := snap.approxP99(); got != "<5.0ms" {
-			t.Fatalf("approxP99 = %q, want %q (99th rank is fast)",
+		if got := snap.ApproxP99(); got != "<5.0ms" {
+			t.Fatalf("ApproxP99 = %q, want %q (99th rank is fast)",
 				got, "<5.0ms")
 		}
 		// And the max correctly captures the 1% tail.
@@ -128,24 +127,24 @@ func TestLatencyHistogram_ApproxP99(t *testing.T) {
 	})
 
 	t.Run("fifty_percent_tail_visible_in_p99", func(t *testing.T) {
-		h := newLatencyHistogram()
+		h := New()
 		for i := 0; i < 50; i++ {
 			h.Observe(2 * time.Millisecond)   // bucket 1 (< 5ms)
 			h.Observe(750 * time.Millisecond) // bucket 6 (< 1s)
 		}
 		snap := h.Snapshot()
-		// usToString(1_000_000) formats the bucket-6 upper bound as
+		// UsToString(1_000_000) formats the bucket-6 upper bound as
 		// "1.00s" because the < 1_000_000 boundary is strict — both
-		// the formatter and approxP99 use the same bound, so the
+		// the formatter and ApproxP99 use the same bound, so the
 		// printed value is self-consistent.
-		if got := snap.approxP99(); got != "<1.00s" {
-			t.Fatalf("approxP99 = %q, want %q (50%% in slow bucket)",
+		if got := snap.ApproxP99(); got != "<1.00s" {
+			t.Fatalf("ApproxP99 = %q, want %q (50%% in slow bucket)",
 				got, "<1.00s")
 		}
 	})
 
 	t.Run("overflow_bucket_returns_open_ended_bound", func(t *testing.T) {
-		h := newLatencyHistogram()
+		h := New()
 		// All observations land in the overflow bucket; p99 must
 		// surface that the distribution is entirely beyond the
 		// resolved range.
@@ -153,8 +152,8 @@ func TestLatencyHistogram_ApproxP99(t *testing.T) {
 			h.Observe(2 * time.Second)
 		}
 		snap := h.Snapshot()
-		if got := snap.approxP99(); got != ">=1s" {
-			t.Fatalf("approxP99 = %q, want %q (overflow)", got, ">=1s")
+		if got := snap.ApproxP99(); got != ">=1s" {
+			t.Fatalf("ApproxP99 = %q, want %q (overflow)", got, ">=1s")
 		}
 	})
 }

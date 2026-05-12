@@ -54,6 +54,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
+	"github.com/clearcompass-ai/ledger/latency"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 )
 
@@ -98,6 +99,22 @@ type Committer struct {
 	closing  chan struct{}
 	closed   chan struct{}
 	closedMu sync.Mutex
+
+	// submitLatency captures the wall-time distribution of every
+	// Submit call (both committed and canceled outcomes). The OTEL
+	// histogram (instruments.go::recordSubmitDuration) is the
+	// production telemetry surface; this in-process histogram is the
+	// soak/test diagnostic surface — readable via SubmitLatencySnapshot
+	// without an OTEL meter being installed. Initialized in
+	// NewCommitter; never nil after construction.
+	//
+	// Why both: the OTEL one is observed by Prometheus and surfaces
+	// to SRE alerting; the in-process one drives the soak's
+	// scaling_evidence summary, which has no OTEL meter wired. They
+	// observe the same Submit calls; the duplication is at the
+	// observe-site, not the data, and matches the sequencer's
+	// tesseraLatency pattern.
+	submitLatency *latency.Histogram
 }
 
 // submission is a per-Submit record handed to the commit goroutine.
@@ -129,12 +146,13 @@ func NewCommitter(db *badger.DB, cfg CommitterConfig) *Committer {
 		cfg.Logger = slog.Default()
 	}
 	c := &Committer{
-		db:      db,
-		cfg:     cfg,
-		logger:  cfg.Logger,
-		in:      make(chan *submission, cfg.QueueSize),
-		closing: make(chan struct{}),
-		closed:  make(chan struct{}),
+		db:            db,
+		cfg:           cfg,
+		logger:        cfg.Logger,
+		in:            make(chan *submission, cfg.QueueSize),
+		closing:       make(chan struct{}),
+		closed:        make(chan struct{}),
+		submitLatency: latency.New(),
 	}
 	// commitLoop wrapped in SafeRun so a panic during group commit
 	// is logged + the goroutine exits cleanly. The deferred
@@ -181,7 +199,9 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 	}
 	select {
 	case err := <-s.done:
-		recordSubmitDuration(ctx, OutcomeCommitted, time.Since(t0))
+		elapsed := time.Since(t0)
+		recordSubmitDuration(ctx, OutcomeCommitted, elapsed)
+		c.submitLatency.Observe(elapsed)
 		return err
 	case <-ctx.Done():
 		// Submitter gave up before group commit completed.
@@ -191,7 +211,9 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 		// when WAL pressure is hurting clients (clients time out
 		// first → no observation under outcome=committed → SREs
 		// miss the alert).
-		recordSubmitDuration(ctx, OutcomeCanceled, time.Since(t0))
+		elapsed := time.Since(t0)
+		recordSubmitDuration(ctx, OutcomeCanceled, elapsed)
+		c.submitLatency.Observe(elapsed)
 		// The submission is still in flight; the commit goroutine will
 		// flush its batch normally and write to a now-orphaned
 		// done channel (buffered, so non-blocking). The bytes will
@@ -200,6 +222,22 @@ func (c *Committer) Submit(ctx context.Context, hash [32]byte, wire []byte, logT
 	case <-c.closing:
 		return ErrClosed
 	}
+}
+
+// SubmitLatencySnapshot returns a point-in-time snapshot of the
+// in-process Submit-duration histogram. Records both committed and
+// canceled outcomes; the canceled-path observations are the
+// load-bearing ones for diagnosing WAL backpressure (clients time
+// out first, so under stress committed-p99 looks artificially
+// healthy without canceled-path data).
+//
+// Counterpart to the OTEL histogram (instruments.go). The OTEL one
+// goes to SRE alerting; this one goes to soak / scaling diagnostics
+// that don't wire an OTEL meter.
+//
+// Safe to call concurrently with Submit.
+func (c *Committer) SubmitLatencySnapshot() latency.Snapshot {
+	return c.submitLatency.Snapshot()
 }
 
 // Close stops the commit goroutine. In-flight batches are flushed

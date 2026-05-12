@@ -121,6 +121,46 @@ func TestWAL_Submit_RejectsEmptyWire(t *testing.T) {
 	}
 }
 
+// TestWAL_Submit_LatencyObserved pins the in-process Submit latency
+// histogram: every successful Submit MUST produce one observation in
+// SubmitLatencySnapshot. This is the path the soak relies on to
+// diagnose WAL-side backpressure (admission p99 spikes); a silent
+// regression in the observe-site would hide WAL fsync slowdowns
+// behind admission-side timeouts.
+func TestWAL_Submit_LatencyObserved(t *testing.T) {
+	ctx := context.Background()
+	c, _ := openTestCommitter(t)
+
+	// Before any Submit, the snapshot is empty.
+	if snap := c.SubmitLatencySnapshot(); snap.Count != 0 {
+		t.Fatalf("pre-Submit Count = %d, want 0", snap.Count)
+	}
+
+	const n = 10
+	for i := 0; i < n; i++ {
+		wire := []byte(fmt.Sprintf("entry-%d-wire-bytes", i))
+		hash := wireHashWal(wire)
+		if err := c.Submit(ctx, hash, wire, time.Now().UnixMicro()); err != nil {
+			t.Fatalf("Submit[%d]: %v", i, err)
+		}
+	}
+
+	snap := c.SubmitLatencySnapshot()
+	if snap.Count != n {
+		t.Fatalf("Count = %d, want %d (every Submit must observe)",
+			snap.Count, n)
+	}
+	if snap.MinUs == 0 {
+		t.Fatalf("MinUs = 0 after observations — sentinel collapse on non-empty histogram")
+	}
+	if snap.MaxUs < snap.MinUs {
+		t.Fatalf("MaxUs=%d < MinUs=%d", snap.MaxUs, snap.MinUs)
+	}
+	if got := snap.Format(); got == "n=0" {
+		t.Fatalf("Format = %q on populated histogram", got)
+	}
+}
+
 func TestWAL_Read_NotFound(t *testing.T) {
 	ctx := context.Background()
 	c, _ := openTestCommitter(t)
