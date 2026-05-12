@@ -85,13 +85,38 @@ const (
 	// schema_ref are NULL. Builder.BeginBatch skips these but
 	// advances the cursor past them.
 	StatusTombstone EntryStatus = 1
+	// StatusGhostLeaf — Tessera assigned this seq to a hash that
+	// already has a PRIMARY row (Live or Tombstone) at a different
+	// seq. The pre_commit_post_pg crash window can produce a
+	// duplicate Tessera leaf when antispam loses its in-memory
+	// cache; the ghost row at this seq preserves the routable
+	// projection so the API can serve bytes for the Tessera leaf
+	// via redirect to the primary seq. canonical_hash matches the
+	// primary's; the unique constraint is a PARTIAL UNIQUE INDEX
+	// scoped to status <> 2 (migration 0006). Builder.BeginBatch
+	// skips ghost rows.
+	//
+	// CRYPTOGRAPHIC INVARIANT: every Tessera-assigned seq has an
+	// entry_index row. Ghosts preserve that invariant under
+	// crash-recovery edges where Tessera dedup gaps would otherwise
+	// produce gaps in the projection.
+	StatusGhostLeaf EntryStatus = 2
 )
 
 // TombstoneSignerDID is the sentinel signer for tombstone rows. The
-// schema's CHECK (signer_did <> '') requires non-empty, so we use a
+// schema's CHECK (signer_did <> ”) requires non-empty, so we use a
 // reserved namespace identifier that can never collide with a real
 // signer.
 const TombstoneSignerDID = "system:tombstone"
+
+// GhostSignerDID is the sentinel signer for StatusGhostLeaf rows.
+// Distinct from TombstoneSignerDID so audit-trail queries can
+// distinguish a tombstone (admission-time rejection) from a ghost
+// leaf (crash-recovery duplicate Tessera leaf) by signer_did
+// alone, without joining on status. Both are reserved "system:"
+// namespace identifiers that can never collide with a real signer
+// DID.
+const GhostSignerDID = "system:ghost"
 
 // EntryRow is the index record for insertion. No canonical_bytes, no sig_bytes.
 //
@@ -139,6 +164,62 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 	return nil
 }
 
+// HashCollision describes a row whose INSERT into the primary
+// partition (status <> 2) was silently skipped because the
+// canonical_hash matched an existing primary row at a DIFFERENT
+// sequence_number. This is the structural signature of a Tessera
+// antispam dedup gap across a crash boundary: Tessera assigned
+// AttemptedSeq to a hash that already had an entry_index row at
+// ExistingSeq from a pre-crash commit.
+//
+// On every HashCollision the InsertBatch path follows up with a
+// second INSERT that writes a GHOST ROW at AttemptedSeq with
+// status=StatusGhostLeaf, preserving the routable-projection
+// invariant: every Tessera-assigned seq has an entry_index row
+// (ghosts redirect to primaries; the partial unique index admits
+// the duplicate canonical_hash at status=2).
+//
+// The committer additionally routes each HashCollision through
+// committerStaleRecover with ExistingSeq so the WAL state for the
+// hash advances under the canonical seq — the shipper uploads
+// bytes to the canonical-seq bytestore path exactly once.
+//
+// AttemptedSeq is what Tessera tried to give us (now stored as the
+// ghost row's seq). ExistingSeq is the canonical seq that the
+// shipper / API / WAL state should reference.
+type HashCollision struct {
+	AttemptedSeq  uint64
+	CanonicalHash [32]byte
+	ExistingSeq   uint64
+}
+
+// InsertBatchResult is the disposition of an InsertBatch call.
+//
+// Inserted is the number of rows that became durable on this call
+// as primary rows (status <> 2).
+//
+// SeqReplays counts rows skipped because a row with the same
+// (sequence_number, canonical_hash) tuple was already present —
+// benign idempotent retry of a prior batch. Not a collision; not
+// actionable.
+//
+// HashCollisions enumerates rows whose canonical_hash matched an
+// existing PRIMARY row at a DIFFERENT seq. For each collision, the
+// InsertBatch call ALSO wrote a ghost row at AttemptedSeq with
+// status=StatusGhostLeaf so the projection has no gaps. The caller
+// must additionally route each through committerStaleRecover with
+// ExistingSeq to advance WAL state under the canonical seq.
+// Empty in steady state; non-empty only on crash-recovery edges
+// where Tessera's in-memory antispam cache lost a mapping.
+//
+// Inserted + SeqReplays + len(HashCollisions) == len(input rows)
+// is the invariant. Caller may assert it as a sanity check.
+type InsertBatchResult struct {
+	Inserted       int
+	SeqReplays     int
+	HashCollisions []HashCollision
+}
+
 // InsertBatch persists N entry_index rows in a single transactional
 // round-trip using PostgreSQL's parallel `unnest()` form. This is the
 // hot sequencer-committer write path; the gap-free commit invariant
@@ -147,17 +228,39 @@ func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error 
 // snapshot cannot let the builder's cursor reader leapfrog past
 // uncommitted seqs).
 //
-// Mixed live + tombstone rows are supported in the same call.
+// CONFLICT HANDLING — ON CONFLICT (canonical_hash) DO NOTHING RETURNING
 //
-// Returns the rows-affected count from PG (== len(rows) under normal
-// operation — ON CONFLICT DO NOTHING means the count drops if a seq
-// happens to already exist from a crash-recovery re-run, which is
-// the desired idempotent behavior).
+// The targeted `ON CONFLICT (canonical_hash)` form catches the case
+// the architecture has to tolerate: a Tessera antispam dedup gap
+// across a crash, where Tessera assigned a fresh seq to a hash
+// that already had an entry_index row at a different seq. The
+// RETURNING clause yields the (sequence_number, canonical_hash)
+// pairs that actually landed; the set-difference identifies
+// skipped rows; a single follow-up SELECT classifies each as:
 //
-// Empty input is a no-op — callers don't need to guard.
-func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow) (int64, error) {
+//	seq-replay     — existing_seq == attempted_seq (benign
+//	                 idempotent retry; same row already present).
+//	hash-collision — existing_seq != attempted_seq (the ghost-
+//	                 leaf pattern; caller routes via stale-recover
+//	                 with ExistingSeq).
+//
+// The targeted form (vs bare `ON CONFLICT DO NOTHING`) is
+// deliberate: a UNIQUE(sequence_number) violation indicates a
+// genuine bug (two different hashes assigned the same seq, which
+// Tessera's contract forbids). We WANT that to surface as a hard
+// PG error, not be silently swallowed.
+//
+// Cost discipline:
+//
+//   - Fast path (no skips): one INSERT roundtrip. Same as before.
+//   - Skip path: one INSERT + one SELECT roundtrip. Only fires
+//     when PG actually skipped at least one row, which is rare
+//     (crash-recovery only) AND already-anomalous.
+//
+// Mixed live + tombstone rows are supported. Empty input is a no-op.
+func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow) (InsertBatchResult, error) {
 	if len(rows) == 0 {
-		return 0, nil
+		return InsertBatchResult{}, nil
 	}
 	// Build the parallel-array shape pgx expects for unnest. Each
 	// nullable column (target_root, cosignature_of, schema_ref) is
@@ -181,7 +284,7 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 		schemas[i] = rows[i].SchemaRef
 		statuses[i] = int16(rows[i].Status)
 	}
-	tag, err := tx.Exec(ctx, `
+	insertRows, err := tx.Query(ctx, `
 		INSERT INTO entry_index (
 			sequence_number, canonical_hash, log_time,
 			signer_did, target_root, cosignature_of, schema_ref, status
@@ -197,14 +300,149 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 			sequence_number, canonical_hash, log_time,
 			signer_did, target_root, cosignature_of, schema_ref, status
 		)
-		ON CONFLICT (sequence_number) DO NOTHING`,
+		ON CONFLICT (canonical_hash) WHERE status <> 2 DO NOTHING
+		RETURNING sequence_number, canonical_hash`,
 		seqs, hashes, logTimes, signers,
 		targets, cosigs, schemas, statuses,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("store/entries: insert batch (n=%d): %w", len(rows), err)
+		return InsertBatchResult{}, fmt.Errorf("store/entries: insert batch (n=%d): %w", len(rows), err)
 	}
-	return tag.RowsAffected(), nil
+
+	// Collect the (seq, hash) pairs actually inserted. The keyed-by-
+	// hash set is what we set-difference against the input.
+	insertedByHash := make(map[[32]byte]uint64, len(rows))
+	for insertRows.Next() {
+		var insSeq int64
+		var insHash []byte
+		if scanErr := insertRows.Scan(&insSeq, &insHash); scanErr != nil {
+			insertRows.Close()
+			return InsertBatchResult{}, fmt.Errorf("store/entries: scan returning (n=%d): %w", len(rows), scanErr)
+		}
+		var h [32]byte
+		copy(h[:], insHash)
+		insertedByHash[h] = uint64(insSeq)
+	}
+	insertRows.Close()
+	if err := insertRows.Err(); err != nil {
+		return InsertBatchResult{}, fmt.Errorf("store/entries: insert batch iterate (n=%d): %w", len(rows), err)
+	}
+
+	result := InsertBatchResult{Inserted: len(insertedByHash)}
+	if result.Inserted == len(rows) {
+		// Fast path: every row landed. No skips, no follow-up query.
+		return result, nil
+	}
+
+	// Skip path: at least one row was skipped. Identify which input
+	// hashes were NOT in the returned set; query for their existing
+	// (seq, canonical_hash) tuples in one roundtrip.
+	//
+	// The follow-up SELECT explicitly filters status <> 2 because
+	// the partial unique index only constrains PRIMARY rows. A row
+	// with status=2 (ghost) coexisting with the same canonical_hash
+	// at status<2 is not a conflict — it's a prior ghost-leaf
+	// recovery. We want the PRIMARY row's seq for each skipped hash.
+	skippedHashBytes := make([][]byte, 0, len(rows)-result.Inserted)
+	skippedAttemptedRow := make(map[[32]byte]EntryRow, len(rows)-result.Inserted)
+	for i := range rows {
+		h := rows[i].CanonicalHash
+		if _, ok := insertedByHash[h]; ok {
+			continue
+		}
+		skippedHashBytes = append(skippedHashBytes, h[:])
+		skippedAttemptedRow[h] = rows[i]
+	}
+
+	existingRows, err := tx.Query(ctx, `
+		SELECT sequence_number, canonical_hash FROM entry_index
+		WHERE canonical_hash = ANY($1::bytea[]) AND status <> 2`,
+		skippedHashBytes,
+	)
+	if err != nil {
+		return InsertBatchResult{}, fmt.Errorf("store/entries: skip-lookup (n=%d skipped): %w",
+			len(skippedHashBytes), err)
+	}
+	for existingRows.Next() {
+		var existSeq int64
+		var existHash []byte
+		if scanErr := existingRows.Scan(&existSeq, &existHash); scanErr != nil {
+			existingRows.Close()
+			return InsertBatchResult{}, fmt.Errorf("store/entries: scan skip-lookup: %w", scanErr)
+		}
+		var h [32]byte
+		copy(h[:], existHash)
+		attemptedRow, ok := skippedAttemptedRow[h]
+		if !ok {
+			continue
+		}
+		if uint64(existSeq) == attemptedRow.SequenceNumber {
+			result.SeqReplays++
+		} else {
+			result.HashCollisions = append(result.HashCollisions, HashCollision{
+				AttemptedSeq:  attemptedRow.SequenceNumber,
+				CanonicalHash: h,
+				ExistingSeq:   uint64(existSeq),
+			})
+		}
+	}
+	existingRows.Close()
+	if err := existingRows.Err(); err != nil {
+		return InsertBatchResult{}, fmt.Errorf("store/entries: skip-lookup iterate: %w", err)
+	}
+
+	// Second pass: for each HashCollision, INSERT a ghost row at the
+	// ATTEMPTED seq (the Tessera-assigned duplicate seq) with
+	// status=StatusGhostLeaf. The partial unique index admits this
+	// row: status=2 is outside the canonical_hash uniqueness
+	// partition. Each ghost row carries the SAME canonical_hash as
+	// the primary, so the API's ghost-resolution path can find the
+	// primary by canonical_hash lookup.
+	//
+	// Cryptographic invariant: every Tessera-assigned seq now has an
+	// entry_index row, either primary (status<2) or ghost (status=2).
+	// External auditors querying GET /v1/entries/{seq}/raw never get
+	// a 404 for a seq Tessera published.
+	if len(result.HashCollisions) > 0 {
+		gSeqs := make([]int64, len(result.HashCollisions))
+		gHashes := make([][]byte, len(result.HashCollisions))
+		gLogTimes := make([]time.Time, len(result.HashCollisions))
+		gSigners := make([]string, len(result.HashCollisions))
+		gStatuses := make([]int16, len(result.HashCollisions))
+		now := time.Now().UTC()
+		for i, c := range result.HashCollisions {
+			gSeqs[i] = int64(c.AttemptedSeq)
+			h := c.CanonicalHash
+			gHashes[i] = h[:]
+			gLogTimes[i] = now
+			gSigners[i] = GhostSignerDID // distinct from TombstoneSignerDID
+			gStatuses[i] = int16(StatusGhostLeaf)
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO entry_index (
+				sequence_number, canonical_hash, log_time,
+				signer_did, target_root, cosignature_of, schema_ref, status
+			)
+			SELECT
+				sequence_number, canonical_hash, log_time,
+				signer_did, NULL, NULL, NULL, status
+			FROM unnest(
+				$1::bigint[], $2::bytea[], $3::timestamptz[],
+				$4::text[], $5::smallint[]
+			) AS t(
+				sequence_number, canonical_hash, log_time,
+				signer_did, status
+			)
+			ON CONFLICT (sequence_number) DO NOTHING`,
+			gSeqs, gHashes, gLogTimes, gSigners, gStatuses,
+		)
+		if err != nil {
+			return InsertBatchResult{}, fmt.Errorf("store/entries: ghost-leaf insert (n=%d): %w",
+				len(result.HashCollisions), err)
+		}
+	}
+
+	return result, nil
 }
 
 // FetchHashBySeq returns the canonical_hash and admission log_time
@@ -216,28 +454,58 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 //   - decide between inline (WAL) serve and 302 redirect (bytestore)
 //   - stamp X-Sequence + X-Log-Time response headers per the SDK
 //     fetcher's contract (Tier-2 alignment).
-func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
+func (s *EntryStore) FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, bool, error) {
 	var (
 		hashCol []byte
 		logTime time.Time
+		status  int16
 	)
 	err := s.db.QueryRow(ctx,
-		"SELECT canonical_hash, log_time FROM entry_index WHERE sequence_number = $1", seq,
-	).Scan(&hashCol, &logTime)
+		"SELECT canonical_hash, log_time, status FROM entry_index WHERE sequence_number = $1", seq,
+	).Scan(&hashCol, &logTime, &status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return [32]byte{}, time.Time{}, false, nil
+		return [32]byte{}, time.Time{}, false, false, nil
 	}
 	if err != nil {
-		return [32]byte{}, time.Time{}, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
+		return [32]byte{}, time.Time{}, false, false, fmt.Errorf("store/entries: fetch by seq: %w", err)
 	}
 	if len(hashCol) != 32 {
-		return [32]byte{}, time.Time{}, false, fmt.Errorf(
+		return [32]byte{}, time.Time{}, false, false, fmt.Errorf(
 			"store/entries: corrupt canonical_hash seq=%d (len=%d, want 32)", seq, len(hashCol))
 	}
 	var hash [32]byte
 	copy(hash[:], hashCol)
-	return hash, logTime, true, nil
+	isGhost := EntryStatus(status) == StatusGhostLeaf
+	return hash, logTime, isGhost, true, nil
+}
+
+// FetchPrimarySeqByHash returns the canonical (primary) sequence
+// number for a given canonical_hash — the row with status <> 2.
+// Used by the API's ghost-redirect path: when a client requests
+// GET /v1/entries/{ghost_seq}/raw, the handler resolves the
+// underlying canonical_hash and routes to the primary seq's
+// bytestore path so the bytes are served (302 or proxied)
+// regardless of which Tessera seq the auditor asked for.
+//
+// Returns (primarySeq, true, nil) on hit, (0, false, nil) when no
+// non-ghost row exists for the hash, (0, false, err) on transport
+// failure. The partial unique index
+// entry_index_canonical_hash_primary_idx guarantees AT MOST one
+// non-ghost row per hash, so the query is single-row-bounded.
+func (s *EntryStore) FetchPrimarySeqByHash(ctx context.Context, hash [32]byte) (uint64, bool, error) {
+	var seq int64
+	err := s.db.QueryRow(ctx,
+		"SELECT sequence_number FROM entry_index WHERE canonical_hash = $1 AND status <> 2",
+		hash[:],
+	).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store/entries: fetch primary seq by hash: %w", err)
+	}
+	return uint64(seq), true, nil
 }
 
 // FetchByHash checks if an entry with the given canonical hash exists.

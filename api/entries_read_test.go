@@ -44,20 +44,33 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 
 type fakeSeqHashLookup struct {
-	hashesBySeq  map[uint64][32]byte
-	logTimeBySeq map[uint64]time.Time
-	err          error
+	hashesBySeq   map[uint64][32]byte
+	logTimeBySeq  map[uint64]time.Time
+	ghostBySeq    map[uint64]bool     // optional; absent ⇒ not a ghost
+	primaryByHash map[[32]byte]uint64 // optional; populated for ghost lookups
+	err           error
 }
 
-func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, time.Time, bool, error) {
+func (f *fakeSeqHashLookup) FetchHashBySeq(_ context.Context, seq uint64) ([32]byte, time.Time, bool, bool, error) {
 	if f.err != nil {
-		return [32]byte{}, time.Time{}, false, f.err
+		return [32]byte{}, time.Time{}, false, false, f.err
 	}
 	h, ok := f.hashesBySeq[seq]
 	if !ok {
-		return [32]byte{}, time.Time{}, false, nil
+		return [32]byte{}, time.Time{}, false, false, nil
 	}
-	return h, f.logTimeBySeq[seq], true, nil
+	return h, f.logTimeBySeq[seq], f.ghostBySeq[seq], true, nil
+}
+
+func (f *fakeSeqHashLookup) FetchPrimarySeqByHash(_ context.Context, hash [32]byte) (uint64, bool, error) {
+	if f.err != nil {
+		return 0, false, f.err
+	}
+	primary, ok := f.primaryByHash[hash]
+	if !ok {
+		return 0, false, nil
+	}
+	return primary, true, nil
 }
 
 type fakeWAL struct {
@@ -144,8 +157,10 @@ func makeRequest(seq uint64) *http.Request {
 func newDeps(t *testing.T) (*EntryReadDeps, *fakeSeqHashLookup, *fakeWAL, *fakePublicURLer) {
 	t.Helper()
 	store := &fakeSeqHashLookup{
-		hashesBySeq:  map[uint64][32]byte{},
-		logTimeBySeq: map[uint64]time.Time{},
+		hashesBySeq:   map[uint64][32]byte{},
+		logTimeBySeq:  map[uint64]time.Time{},
+		ghostBySeq:    map[uint64]bool{},
+		primaryByHash: map[[32]byte]uint64{},
 	}
 	w := newFakeWAL()
 	p := &fakePublicURLer{urlByPair: map[uint64]string{}}
@@ -488,5 +503,81 @@ func TestRawEntry_OmitsXLogTime_WhenNotPersisted(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Log-Time"); got != "" {
 		t.Errorf("X-Log-Time should be absent for zero log_time, got %q", got)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Ghost-leaf redirect path (status=2 row)
+// ─────────────────────────────────────────────────────────────────────
+
+// TestRawEntry_Ghost_RedirectsToPrimary verifies that a GET on a
+// ghost-row seq returns a 302 to the primary seq's /raw path. This
+// is the load-bearing property of the migration-0006 Ghost Leaf
+// design: every Tessera-assigned seq must be routable to bytes.
+// A 404 here would be cryptographically equivalent to the operator
+// destroying evidence (Tessera says the leaf exists; the API says
+// it doesn't).
+func TestRawEntry_Ghost_RedirectsToPrimary(t *testing.T) {
+	deps, store, _, _ := newDeps(t)
+
+	hash := hashFor("dup-hash")
+	// Primary entry lives at seq=8; the ghost duplicate Tessera leaf
+	// is at seq=16. Both rows share the canonical_hash.
+	const primarySeq = 8
+	const ghostSeq = 16
+	store.hashesBySeq[ghostSeq] = hash
+	store.ghostBySeq[ghostSeq] = true
+	store.primaryByHash[hash] = primarySeq
+
+	rec := httptest.NewRecorder()
+	NewRawEntryHandler(deps)(rec, makeRequest(ghostSeq))
+
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status: got %d, want 308 (permanent redirect)", rec.Code)
+	}
+	wantLoc := fmt.Sprintf("/v1/entries/%d/raw", primarySeq)
+	if got := rec.Header().Get("Location"); got != wantLoc {
+		t.Errorf("Location: got %q, want %q", got, wantLoc)
+	}
+	if got := rec.Header().Get("X-Source"); got != "ghost-redirect" {
+		t.Errorf("X-Source: got %q, want %q", got, "ghost-redirect")
+	}
+	if got := rec.Header().Get("X-Sequence"); got != fmt.Sprintf("%d", ghostSeq) {
+		t.Errorf("X-Sequence: got %q, want %d (the GHOST seq, so clients can correlate with the Tessera tile leaf)",
+			got, ghostSeq)
+	}
+	if got := rec.Header().Get("X-Primary-Sequence"); got != fmt.Sprintf("%d", primarySeq) {
+		t.Errorf("X-Primary-Sequence: got %q, want %d", got, primarySeq)
+	}
+	// Cache-Control must be `public, max-age=31536000, immutable` so
+	// CDNs cache the redirect for a year — the ledger is append-only
+	// and the ghost→primary mapping is mathematically permanent.
+	wantCC := "public, max-age=31536000, immutable"
+	if got := rec.Header().Get("Cache-Control"); got != wantCC {
+		t.Errorf("Cache-Control: got %q, want %q", got, wantCC)
+	}
+}
+
+// TestRawEntry_GhostWithoutPrimary_Surfaces500 pins the
+// integrity-invariant guard: a ghost row whose canonical_hash has
+// no primary row in entry_index is structurally impossible
+// (migration 0006's partial unique index requires a primary to
+// exist before a ghost can be inserted). If it ever happens, the
+// API must surface 500, not 404 or 200, so SRE notices.
+func TestRawEntry_GhostWithoutPrimary_Surfaces500(t *testing.T) {
+	deps, store, _, _ := newDeps(t)
+
+	hash := hashFor("orphan-ghost")
+	store.hashesBySeq[100] = hash
+	store.ghostBySeq[100] = true
+	// Deliberately leave primaryByHash empty — the ghost has no
+	// primary row.
+
+	rec := httptest.NewRecorder()
+	NewRawEntryHandler(deps)(rec, makeRequest(100))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500 (orphan ghost row is an integrity violation)",
+			rec.Code)
 	}
 }

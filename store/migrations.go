@@ -80,7 +80,46 @@ type migration struct {
 	version     int64
 	description string
 	sql         string
+	// noTransaction is set when the .sql file's first non-blank
+	// line is the directive `-- migrate:no-transaction`. The
+	// runner then applies the file via autocommit (no BEGIN/COMMIT
+	// wrapper). Required for statements PostgreSQL rejects inside
+	// a transaction block, most importantly
+	// `CREATE INDEX CONCURRENTLY`.
+	//
+	// DISCIPLINE — when noTransaction is true:
+	//
+	//   - Every statement in the file MUST be IDEMPOTENT.
+	//     CREATE ... IF NOT EXISTS, DROP ... IF EXISTS, etc. The
+	//     runner records the version AFTER all DDL succeeds, in a
+	//     SEPARATE small transaction; if that record-insert fails,
+	//     the schema has migrated but the version is unrecorded.
+	//     On the next boot the migration is re-applied — the
+	//     idempotent shape makes that safe.
+	//
+	//   - Avoid mixing structural changes that depend on each
+	//     other in the same file. If DDL #2 needs the row state
+	//     DDL #1 produced and DDL #1 partially fails, recovery is
+	//     manual. Split into 0006a + 0006b instead.
+	//
+	//   - The version IS recorded only after the entire file
+	//     succeeds. Re-applies cost one redundant DDL pass but
+	//     never break the schema.
+	//
+	// This pattern matches golang-migrate's per-file
+	// `migrate:no-transaction` directive and pressly/goose's
+	// `+goose NO TRANSACTION`. Same discipline, in-tree.
+	noTransaction bool
 }
+
+// noTransactionDirective is the literal substring the migration
+// runner scans for at the top of each .sql file. Matching is line-
+// based: the first non-empty line must contain this exact byte
+// sequence (case-sensitive, after trimming leading whitespace).
+// Any later occurrence is ignored — directives must be at the top
+// so reading the first 80 bytes of the file is enough to classify
+// it.
+const noTransactionDirective = "-- migrate:no-transaction"
 
 // loadMigrations reads embedded *.sql files, parses the version + name,
 // returns them in ascending version order. Filenames must match
@@ -112,7 +151,12 @@ func loadMigrations() ([]migration, error) {
 			return nil, fmt.Errorf("store/migrations: read %q: %w", name, err)
 		}
 		desc := strings.TrimSuffix(name[under+1:], ".sql")
-		out = append(out, migration{version: v, description: desc, sql: string(body)})
+		out = append(out, migration{
+			version:       v,
+			description:   desc,
+			sql:           string(body),
+			noTransaction: detectNoTransactionDirective(body),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
 	return out, nil
@@ -145,11 +189,55 @@ func listApplied(ctx context.Context, db *pgxpool.Pool) (map[int64]struct{}, err
 	return out, rows.Err()
 }
 
-// applyMigration runs one file in a single transaction. The version
-// + description are recorded in schema_migrations as the final
-// statement of the transaction so a partial failure leaves the
-// database in the file's pre-state.
+// detectNoTransactionDirective scans the leading bytes of a
+// migration file for the `-- migrate:no-transaction` directive.
+// Returns true iff the directive appears in the first non-empty
+// LINE of the file. The directive MUST be at the top so a glance
+// at the file (or an audit grep) reveals the transaction mode.
+//
+// Implementation note: we don't bring in bufio/regexp for this —
+// a tight string scan over the leading 256 bytes is enough for
+// every plausible migration file. The cost is O(file header size)
+// per migration at boot.
+func detectNoTransactionDirective(body []byte) bool {
+	// Examine at most the first 256 bytes; the directive must
+	// appear before any DDL so this is sufficient.
+	const headerLimit = 256
+	head := body
+	if len(head) > headerLimit {
+		head = head[:headerLimit]
+	}
+	for _, line := range strings.Split(string(head), "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" {
+			continue
+		}
+		// First non-empty line decides. Either match or stop.
+		return strings.HasPrefix(trimmed, noTransactionDirective)
+	}
+	return false
+}
+
+// applyMigration runs one file. Two paths:
+//
+//	Default (transactional): wrap the file's SQL in BEGIN/COMMIT.
+//	The version-record INSERT runs inside the same transaction so a
+//	partial DDL failure leaves the database in the file's pre-state.
+//
+//	`-- migrate:no-transaction` (autocommit): run the SQL directly
+//	via the pool, then record the version in a SEPARATE small
+//	transaction. Used for statements PG rejects inside a tx block
+//	(notably CREATE INDEX CONCURRENTLY). REQUIRES idempotent DDL
+//	in the file — see migration.noTransaction docstring.
 func applyMigration(ctx context.Context, db *pgxpool.Pool, m migration) error {
+	if m.noTransaction {
+		return applyMigrationNoTx(ctx, db, m)
+	}
+	return applyMigrationTx(ctx, db, m)
+}
+
+// applyMigrationTx is the default transactional path.
+func applyMigrationTx(ctx context.Context, db *pgxpool.Pool, m migration) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store/migrations: begin v%d: %w", m.version, err)
@@ -168,6 +256,32 @@ func applyMigration(ctx context.Context, db *pgxpool.Pool, m migration) error {
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store/migrations: commit v%d: %w", m.version, err)
+	}
+	return nil
+}
+
+// applyMigrationNoTx is the autocommit path for migrations marked
+// `-- migrate:no-transaction`. The whole SQL string is sent in one
+// Exec call; PostgreSQL's simple query protocol runs the
+// statements sequentially in autocommit mode, which is exactly
+// what CREATE INDEX CONCURRENTLY requires.
+//
+// On success, the version is recorded in schema_migrations via a
+// SEPARATE small transaction. If that record-insert fails after
+// the DDL succeeded, the migration is replayed on next boot — the
+// idempotent-DDL discipline (documented on migration.noTransaction)
+// makes the replay safe.
+func applyMigrationNoTx(ctx context.Context, db *pgxpool.Pool, m migration) error {
+	if _, err := db.Exec(ctx, m.sql); err != nil {
+		return fmt.Errorf("store/migrations: apply v%d (%s, no-tx): %w",
+			m.version, m.description, err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT INTO schema_migrations (version, description) VALUES ($1, $2)
+		 ON CONFLICT (version) DO NOTHING`,
+		m.version, m.description,
+	); err != nil {
+		return fmt.Errorf("store/migrations: record v%d (no-tx): %w", m.version, err)
 	}
 	return nil
 }

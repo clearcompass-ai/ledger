@@ -69,11 +69,31 @@ type EntryStore interface {
 	// is not on the ledger's log.
 	FetchByHash(ctx context.Context, hash [32]byte) (uint64, bool, error)
 
-	// FetchHashBySeq returns the canonical hash + admission
-	// log_time of the entry at the given sequence number, or
-	// ([32]byte{}, time.Time{}, false, nil) if the sequence is
-	// unassigned.
-	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error)
+	// FetchHashBySeq returns the canonical hash, admission
+	// log_time, and a ghost-row flag for the entry at the given
+	// sequence number. (`isGhost == true` means the row's
+	// EntryStatus is StatusGhostLeaf; the caller should resolve
+	// the canonical seq via FetchPrimarySeqByHash and redirect.)
+	// Returns ([32]byte{}, time.Time{}, false, false, nil) when
+	// the sequence is unassigned.
+	//
+	// The isGhost field is a plain bool to keep this interface
+	// independent of the concrete store/ enum type — preserving
+	// the CQRS pin (`go list -deps ./api/ | grep pgx == 0`).
+	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, bool, error)
+
+	// FetchPrimarySeqByHash returns the canonical (primary) seq
+	// for a given canonical_hash — the row with status <> Ghost.
+	// Used by the API's ghost-redirect path: a request for
+	// GET /v1/entries/{ghost_seq}/raw resolves the underlying
+	// canonical_hash and routes to the primary seq so the bytes
+	// are served (302 or proxied) regardless of which Tessera seq
+	// the auditor asked for.
+	//
+	// Returns (primarySeq, true, nil) on hit, (0, false, nil) when
+	// no non-ghost row exists for the hash, (0, false, err) on
+	// transport failure.
+	FetchPrimarySeqByHash(ctx context.Context, hash [32]byte) (uint64, bool, error)
 }
 
 // CreditDeducter is the api/ → credit-store surface for Mode A

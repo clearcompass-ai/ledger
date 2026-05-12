@@ -105,6 +105,21 @@ func (s *Sequencer) drainOnce(ctx context.Context) {
 		}
 	}
 
+	// Committer-heap gate: if the staged-entry heap is already at
+	// the ceiling, refuse to spawn more stage-1 workers this cycle.
+	// In-flight workers (up to MaxInFlight) will continue to emit;
+	// the heap can grow slightly past the ceiling but is bounded.
+	// The WAL queue then saturates and admission 503s — same wire
+	// as the builder-lag gate, different upstream cause.
+	if s.cfg.MaxCommitterHeapSize > 0 &&
+		s.committerHeap.Len() >= s.cfg.MaxCommitterHeapSize {
+		s.metrics.committerHeapStalls.Add(1)
+		s.logger.Warn("sequencer: committer-heap stall — heap at ceiling",
+			"heap_depth", s.committerHeap.Len(),
+			"max_committer_heap", s.cfg.MaxCommitterHeapSize)
+		return
+	}
+
 	// Semaphore caps in-flight processOne workers. Buffered to
 	// MaxInFlight; sending blocks the iterator when the sem is full.
 	sem := make(chan struct{}, s.cfg.MaxInFlight)

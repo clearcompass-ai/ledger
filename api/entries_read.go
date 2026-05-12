@@ -94,7 +94,8 @@ type EntryWALReader interface {
 // SeqHashLookup resolves seq → canonical_hash + log_time via Postgres entry_index.
 // *store.EntryStore satisfies it.
 type SeqHashLookup interface {
-	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, error)
+	FetchHashBySeq(ctx context.Context, seq uint64) ([32]byte, time.Time, bool, bool, error)
+	FetchPrimarySeqByHash(ctx context.Context, hash [32]byte) (uint64, bool, error)
 }
 
 // PublicURLer issues credential-free URLs for (seq, hash) tuples.
@@ -236,8 +237,9 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 			return
 		}
 
-		// Step 1: seq → canonical_hash + log_time via Postgres entry_index.
-		hash, logTime, found, err := deps.EntryStore.FetchHashBySeq(ctx, seq)
+		// Step 1: seq → canonical_hash + log_time + isGhost via
+		// Postgres entry_index.
+		hash, logTime, isGhost, found, err := deps.EntryStore.FetchHashBySeq(ctx, seq)
 		if err != nil {
 			deps.Logger.Error("raw entry: seq lookup", "seq", seq, "error", err)
 			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
@@ -247,6 +249,72 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 		if !found {
 			writeTypedError(ctx, w, apitypes.ErrorClassNotFound,
 				http.StatusNotFound, "entry not found")
+			return
+		}
+
+		// Step 1b: ghost-row resolution.
+		//
+		// Tessera publishes a leaf at every seq it assigns, including
+		// the duplicate seq produced by a pre_commit_post_pg crash
+		// recovery. The corresponding entry_index row is marked
+		// StatusGhostLeaf — the bytes live in the bytestore under
+		// the PRIMARY seq (with the same canonical_hash). We MUST
+		// route the request to the primary's path; returning 404
+		// for a ghost seq would be cryptographically equivalent to
+		// the operator destroying evidence (Tessera says the leaf
+		// exists; the API says it doesn't).
+		//
+		// 302 Found → /v1/entries/{primarySeq}/raw. The client
+		// re-issues the request and the second-call path serves the
+		// bytes inline or via bytestore redirect. The X-Sequence
+		// header on this 302 response remains the GHOST seq, so the
+		// client can correlate with the Tessera tile leaf they
+		// were verifying.
+		if isGhost {
+			primarySeq, ok, lookupErr := deps.EntryStore.FetchPrimarySeqByHash(ctx, hash)
+			if lookupErr != nil {
+				deps.Logger.Error("raw entry: ghost lookup", "seq", seq, "error", lookupErr)
+				writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+					http.StatusInternalServerError, "ghost lookup failed")
+				return
+			}
+			if !ok {
+				// A ghost row whose primary canonical_hash row is
+				// missing — should be impossible (the migration's
+				// partial unique index requires a primary per
+				// canonical_hash to exist when a ghost is inserted).
+				// Surface as 500 so the integrity invariant
+				// violation gets paged.
+				deps.Logger.Error("raw entry: ghost row with no primary",
+					"seq", seq, "hash", fmt.Sprintf("%x", hash[:8]))
+				writeTypedError(ctx, w, apitypes.ErrorClassReadProjectionFailed,
+					http.StatusInternalServerError, "ghost row missing primary")
+				return
+			}
+			// 308 Permanent Redirect (NOT 302 Found):
+			//
+			// The ledger is append-only and immutable — a ghost
+			// row at ghost_seq with canonical_seq=N is bound
+			// FOREVER (the canonical_hash → canonical_seq mapping
+			// is monotonic; the ghost can never be re-pointed). A
+			// 308 signals to caches and clients that the forwarding
+			// is permanent: CDN-cache for a year (matches the SDK
+			// fetcher's tile-cache horizon), and clients may
+			// permanently substitute the canonical URL for the
+			// ghost URL in their state.
+			//
+			// 302 Found would let caches re-ask the ledger every
+			// request — wasted roundtrips for a redirect that is
+			// mathematically permanent. Per RFC 7538 §3 the
+			// semantic for permanent redirects on idempotent GETs
+			// is 308.
+			redirectURL := fmt.Sprintf("/v1/entries/%d/raw", primarySeq)
+			w.Header().Set("Location", redirectURL)
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			setRawHeaders(w, seq, logTime)
+			w.Header().Set("X-Source", "ghost-redirect")
+			w.Header().Set("X-Primary-Sequence", strconv.FormatUint(primarySeq, 10))
+			w.WriteHeader(http.StatusPermanentRedirect)
 			return
 		}
 

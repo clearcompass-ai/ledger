@@ -538,6 +538,59 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 	})
 	seq = seq.WithLagReader(store.NewSequenceCursor(pool))
 
+	// Wire the supervisor fatal channel so the identical-batch
+	// circuit breaker can escalate to process-level termination.
+	// Without this the breaker would log ERROR but the broken
+	// committer would keep looping (logging + no forward progress)
+	// until the operator manually intervenes.
+	if d.Fatal != nil {
+		seq = seq.WithFatalChannel(d.Fatal)
+	}
+
+	// Ghost-leaf emitter — broadcasts a KindGhostLeaf event for
+	// offline-auditor visibility every time the committer writes a
+	// crash-recovery ghost row. Two paths:
+	//
+	//   Production (gossip enabled): SDKGossipGhostLeafEmitter,
+	//   which constructs a findings.GhostLeafFinding (attesta SDK
+	//   v0.5.0) and signs+appends+broadcasts via the same
+	//   Sign / GossipStore.Append / Sink pipeline the
+	//   EquivocationScanner uses. Shares the originator chain so
+	//   ghost-leaf and equivocation findings advance the same
+	//   lamport scalar.
+	//
+	//   Fallback (gossip disabled, GossipBundle nil): in-tree
+	//   LoggingGhostLeafEmitter, which records the event at INFO
+	//   and bumps an atomic counter. The ledger still writes the
+	//   ghost row to PG (entry_index is the authoritative record);
+	//   it just doesn't broadcast it to peers. Used by witness-
+	//   disabled deployments and unit-test fixtures.
+	if d.GossipStore != nil && d.GossipBundle != nil {
+		emitter, ferr := gossipnet.NewSDKGossipGhostLeafEmitter(
+			gossipnet.SDKGossipGhostLeafEmitterConfig{
+				GossipStore: d.GossipStore,
+				Sink:        d.GossipBundle.Sink,
+				Signer:      cosign.NewECDSAWitnessSigner(d.LedgerSignerPriv),
+				NetworkID:   cfg.NetworkID,
+				Originator:  cfg.LedgerDID,
+				Logger:      d.Logger,
+			})
+		if ferr != nil {
+			// Construction failed at boot: fall back to the logging
+			// emitter so the committer can still record evidence.
+			// The construction error is itself logged.
+			d.Logger.Error("ghost-leaf SDK emitter construction; falling back to logging-only",
+				"error", ferr)
+			seq = seq.WithGhostLeafEmitter(gossipnet.NewLoggingGhostLeafEmitter(d.Logger))
+		} else {
+			seq = seq.WithGhostLeafEmitter(emitter)
+			d.Logger.Info("ghost-leaf emitter: SDK gossip path wired (KindGhostLeaf publication enabled)")
+		}
+	} else {
+		seq = seq.WithGhostLeafEmitter(gossipnet.NewLoggingGhostLeafEmitter(d.Logger))
+		d.Logger.Info("ghost-leaf emitter: logging-only (gossip disabled — ghost rows recorded in PG, not broadcast)")
+	}
+
 	// v0.4.0 DI schema registry — built once at Wire (step 7b) and
 	// shared with the api submission handler. The sequencer's
 	// dispatchCommitmentSchema reads the same frozen instance.
