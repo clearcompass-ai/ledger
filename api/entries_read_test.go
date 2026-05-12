@@ -532,8 +532,8 @@ func TestRawEntry_Ghost_RedirectsToPrimary(t *testing.T) {
 	rec := httptest.NewRecorder()
 	NewRawEntryHandler(deps)(rec, makeRequest(ghostSeq))
 
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status: got %d, want 302 (ghost redirect)", rec.Code)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status: got %d, want 308 (permanent redirect)", rec.Code)
 	}
 	wantLoc := fmt.Sprintf("/v1/entries/%d/raw", primarySeq)
 	if got := rec.Header().Get("Location"); got != wantLoc {
@@ -548,6 +548,13 @@ func TestRawEntry_Ghost_RedirectsToPrimary(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Primary-Sequence"); got != fmt.Sprintf("%d", primarySeq) {
 		t.Errorf("X-Primary-Sequence: got %q, want %d", got, primarySeq)
+	}
+	// Cache-Control must be `public, max-age=31536000, immutable` so
+	// CDNs cache the redirect for a year — the ledger is append-only
+	// and the ghost→primary mapping is mathematically permanent.
+	wantCC := "public, max-age=31536000, immutable"
+	if got := rec.Header().Get("Cache-Control"); got != wantCC {
+		t.Errorf("Cache-Control: got %q, want %q", got, wantCC)
 	}
 }
 

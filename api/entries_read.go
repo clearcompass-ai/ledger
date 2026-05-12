@@ -291,12 +291,30 @@ func NewRawEntryHandler(deps *EntryReadDeps) http.HandlerFunc {
 					http.StatusInternalServerError, "ghost row missing primary")
 				return
 			}
+			// 308 Permanent Redirect (NOT 302 Found):
+			//
+			// The ledger is append-only and immutable — a ghost
+			// row at ghost_seq with canonical_seq=N is bound
+			// FOREVER (the canonical_hash → canonical_seq mapping
+			// is monotonic; the ghost can never be re-pointed). A
+			// 308 signals to caches and clients that the forwarding
+			// is permanent: CDN-cache for a year (matches the SDK
+			// fetcher's tile-cache horizon), and clients may
+			// permanently substitute the canonical URL for the
+			// ghost URL in their state.
+			//
+			// 302 Found would let caches re-ask the ledger every
+			// request — wasted roundtrips for a redirect that is
+			// mathematically permanent. Per RFC 7538 §3 the
+			// semantic for permanent redirects on idempotent GETs
+			// is 308.
 			redirectURL := fmt.Sprintf("/v1/entries/%d/raw", primarySeq)
 			w.Header().Set("Location", redirectURL)
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			setRawHeaders(w, seq, logTime)
 			w.Header().Set("X-Source", "ghost-redirect")
 			w.Header().Set("X-Primary-Sequence", strconv.FormatUint(primarySeq, 10))
-			w.WriteHeader(http.StatusFound)
+			w.WriteHeader(http.StatusPermanentRedirect)
 			return
 		}
 

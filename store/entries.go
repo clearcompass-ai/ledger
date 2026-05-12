@@ -109,6 +109,15 @@ const (
 // signer.
 const TombstoneSignerDID = "system:tombstone"
 
+// GhostSignerDID is the sentinel signer for StatusGhostLeaf rows.
+// Distinct from TombstoneSignerDID so audit-trail queries can
+// distinguish a tombstone (admission-time rejection) from a ghost
+// leaf (crash-recovery duplicate Tessera leaf) by signer_did
+// alone, without joining on status. Both are reserved "system:"
+// namespace identifiers that can never collide with a real signer
+// DID.
+const GhostSignerDID = "system:ghost"
+
 // EntryRow is the index record for insertion. No canonical_bytes, no sig_bytes.
 //
 // For tombstones, set Status = StatusTombstone, leave TargetRoot /
@@ -291,7 +300,7 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 			sequence_number, canonical_hash, log_time,
 			signer_did, target_root, cosignature_of, schema_ref, status
 		)
-		ON CONFLICT (canonical_hash) DO NOTHING
+		ON CONFLICT (canonical_hash) WHERE status <> 2 DO NOTHING
 		RETURNING sequence_number, canonical_hash`,
 		seqs, hashes, logTimes, signers,
 		targets, cosigs, schemas, statuses,
@@ -406,7 +415,7 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 			h := c.CanonicalHash
 			gHashes[i] = h[:]
 			gLogTimes[i] = now
-			gSigners[i] = TombstoneSignerDID // reuse the system signer
+			gSigners[i] = GhostSignerDID // distinct from TombstoneSignerDID
 			gStatuses[i] = int16(StatusGhostLeaf)
 		}
 		_, err := tx.Exec(ctx, `

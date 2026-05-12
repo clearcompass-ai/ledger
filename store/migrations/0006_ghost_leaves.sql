@@ -1,3 +1,20 @@
+-- migrate:no-transaction
+--
+-- This directive MUST appear as the first non-empty line of the
+-- file. The migration runner (store/migrations.go) detects it and
+-- applies the file via autocommit instead of the default
+-- BEGIN/COMMIT wrapper. Required because Phase 3 below uses
+-- `CREATE INDEX CONCURRENTLY`, which PostgreSQL refuses to run
+-- inside an explicit transaction block.
+--
+-- DISCIPLINE: every statement in this file is IDEMPOTENT
+-- (IF EXISTS / IF NOT EXISTS / DO NOTHING). On replay the file is
+-- a no-op against an already-migrated schema. The runner records
+-- the version in schema_migrations in a SEPARATE small
+-- transaction after all statements succeed; if that record fails,
+-- the next boot replays this file safely because every statement
+-- short-circuits when already applied.
+--
 -- ──────────────────────────────────────────────────────────────────────
 -- Migration 0006 — Ghost leaf admission via partial unique index
 -- ──────────────────────────────────────────────────────────────────────
@@ -23,42 +40,40 @@
 -- ledger returns 404 — a Transparency Log that publishes a Merkle
 -- leaf and then refuses to serve its bytes is cryptographically
 -- indistinguishable from a malicious operator destroying evidence.
--- That's a fatal liability under the SDK's Principle 8 (Deterministic
+-- That's a fatal liability under SDK Principle 8 (Deterministic
 -- Idempotency).
 --
 -- THE FIX — PARTIAL UNIQUE INDEX + GHOST STATUS
 --
--- (1) Drop the blanket UNIQUE(canonical_hash) constraint.
+-- (1) Add status=2 (StatusGhostLeaf) to the entry_index_status_check
+--     enum.
 --
--- (2) Add a new status value: 2 = ghost-leaf. A ghost row says
---     "Tessera assigned this seq to a hash that already lives at a
---     PRIMARY seq; serve the bytes via redirect to the primary."
+-- (2) Replace the blanket UNIQUE(canonical_hash) with a PARTIAL
+--     UNIQUE INDEX scoped to status <> 2. Primary (live or
+--     tombstone) rows stay uniquely indexed; ghost rows at status=2
+--     are outside the unique partition and coexist with the primary
+--     row carrying the same canonical_hash.
 --
--- (3) Replace the blanket uniqueness with a PARTIAL UNIQUE INDEX on
---     canonical_hash WHERE status <> 2. The primary (live or
---     tombstone) row at the canonical seq stays uniquely indexed;
---     the ghost row at the duplicate Tessera seq is outside the
---     unique partition, so it coexists with the primary row.
+-- (3) Application-level commit path (sequencer/committer.go): on
+--     `ON CONFLICT (canonical_hash) DO NOTHING` skip, the committer
+--     issues a second INSERT for the skipped row with status=2.
+--     The partial index passes it through; entry_index has rows
+--     for EVERY Tessera seq, no gaps.
 --
--- (4) Application-level commit path: on PG `ON CONFLICT (canonical_hash)
---     DO NOTHING` skip, the committer issues a second INSERT for the
---     skipped row with status=2. The partial index passes it through;
---     entry_index has rows for EVERY Tessera seq, no gaps.
+-- (4) API resolution: a request for GET /v1/entries/{seq}/raw whose
+--     row has status=2 looks up the primary row by canonical_hash
+--     and 308-redirects to the bytestore path under the primary's
+--     seq. The Tessera leaf at the duplicate seq is honored
+--     publicly; the bytes are deterministically routed to the
+--     canonical storage location.
 --
--- (5) API resolution: a request for GET /v1/entries/{seq}/raw whose
---     row has status=2 looks up the primary row by canonical_hash and
---     redirects (or proxies) to the bytestore path under the
---     primary's seq. The Tessera leaf at the duplicate seq is honored
---     publicly; the bytes are deterministically routed to the canonical
---     storage location.
+-- ORDER OF STATEMENTS
 --
--- CRYPTOGRAPHIC INVARIANT PRESERVED
---
--- Tessera's tree is unchanged: every leaf the auditor sees is
--- reachable. entry_index becomes a routable projection — for any seq
--- the tree publishes, the API returns either the bytes directly
--- (status<>2) or a deterministic redirect (status=2). The 1:1 parity
--- between Tessera's public tree and the routable API is restored.
+-- Phases 1 + 2 (CHECK + new partial index) run first so the new
+-- shape exists before we drop the old constraint. Phase 3 drops
+-- the old blanket UNIQUE constraint. Phase 4 adds a supporting
+-- index for the ghost-to-primary lookup path. All four are
+-- idempotent.
 --
 -- COST DISCIPLINE
 --
@@ -70,58 +85,48 @@
 -- leaf, scoped to the collision recovery only. Bounded by the
 -- maximum in-flight batch at kill time.
 
--- ── Step 1 — drop the blanket UNIQUE(canonical_hash) constraint ───────
---
--- Pre-0006 schema (migration 0001) defined:
---   canonical_hash BYTEA NOT NULL UNIQUE
--- That UNIQUE creates an implicit constraint named
--- entry_index_canonical_hash_key. We drop it before adding the
--- replacement partial index. IF EXISTS makes this idempotent in
--- case the migration is re-run after a partial apply.
-ALTER TABLE entry_index
-    DROP CONSTRAINT IF EXISTS entry_index_canonical_hash_key;
-
--- ── Step 2 — relax the status CHECK to admit ghost (2) ────────────────
---
--- Migration 0005 pinned status IN (0, 1). Add 2 (ghost-leaf) to the
--- allowed set so the committer can INSERT ghost rows. Existing rows
--- with status=0 or status=1 still satisfy the new check.
+-- ── Phase 1 — extend the status enum to admit ghost (2) ────────────────
 ALTER TABLE entry_index
     DROP CONSTRAINT IF EXISTS entry_index_status_check;
 ALTER TABLE entry_index
     ADD CONSTRAINT entry_index_status_check CHECK (status IN (0, 1, 2));
 
--- ── Step 3 — partial unique index on canonical_hash for non-ghost rows─
+-- ── Phase 2 — build the new partial unique index ───────────────────────
 --
--- The new uniqueness rule:
+-- CONCURRENTLY is REQUIRED here. It allows ongoing INSERTs/UPDATEs
+-- on entry_index while the index builds. Today the table is empty
+-- (zero users), so this is instant; once we have production data
+-- this is the difference between a maintenance-window operation and
+-- an online migration. Disciplined now, paid forward.
 --
---   For any canonical_hash, at most ONE row in entry_index has
---   status <> 2 (i.e., one Live OR Tombstone row per hash).
---   Multiple status=2 (ghost) rows may share the canonical_hash,
---   each at its own Tessera-assigned sequence_number.
---
--- This is exactly the constraint set the Ghost Leaf recovery model
--- requires. Postgres's `ON CONFLICT (canonical_hash) DO NOTHING`
--- clause references this index by column; the partial WHERE clause
--- is implicit.
-CREATE UNIQUE INDEX IF NOT EXISTS entry_index_canonical_hash_primary_idx
+-- The IF NOT EXISTS clause keeps the statement idempotent on replay.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
+    entry_index_canonical_hash_primary_idx
     ON entry_index (canonical_hash)
     WHERE status <> 2;
 
--- ── Step 4 — supporting index for ghost-to-primary lookup ─────────────
+-- ── Phase 3 — drop the old blanket UNIQUE constraint ───────────────────
 --
--- The API's ghost-redirect path queries:
---   SELECT sequence_number FROM entry_index
---   WHERE canonical_hash = $1 AND status <> 2
--- to resolve a ghost row's primary seq. The partial unique index
--- above (entry_index_canonical_hash_primary_idx) covers this query
--- directly — Postgres uses it for the lookup, returning the unique
--- non-ghost row's seq.
+-- The pre-0006 schema (migration 0001) defined:
+--   canonical_hash BYTEA NOT NULL UNIQUE
+-- That UNIQUE creates an implicit constraint named
+-- entry_index_canonical_hash_key. Dropping it is fast (catalog-only
+-- change), and the new partial index from Phase 2 already covers
+-- the same uniqueness rule for non-ghost rows — so during the
+-- moment between the new index existing and the old constraint
+-- dropping, both rules are enforced (more strictly than needed,
+-- never less).
+ALTER TABLE entry_index
+    DROP CONSTRAINT IF EXISTS entry_index_canonical_hash_key;
+
+-- ── Phase 4 — supporting partial index for ghost-row audit ─────────────
 --
--- For the inverse direction — listing all ghost rows for a given
--- canonical_hash (audit / SRE) — add a small partial index keyed on
--- canonical_hash WHERE status = 2. Bounded to ghost rows so it's
--- cheap even when ghosts are rare.
-CREATE INDEX IF NOT EXISTS entry_index_canonical_hash_ghost_idx
+-- The API's ghost-redirect path queries by canonical_hash with
+-- status <> 2; Phase 2's index covers that exactly. The INVERSE
+-- (listing all ghosts for one canonical_hash, for SRE audit) needs
+-- its own index scoped to status = 2. Bounded to ghost rows so the
+-- index is tiny in steady state.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS
+    entry_index_canonical_hash_ghost_idx
     ON entry_index (canonical_hash)
     WHERE status = 2;

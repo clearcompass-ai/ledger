@@ -502,6 +502,47 @@ type EntryLookupIndexEntry struct {
 	LogDID         string
 }
 
+// GhostLeafEvent mirrors gossipnet.GhostLeafEvent. Defined here so
+// the sequencer does not import gossipnet (preserves the no-
+// gossip-deps invariant used by SplitIDIndexEntry +
+// EntryLookupIndexEntry).
+//
+// Field set is byte-aligned with the gossipnet type so a concrete
+// gossipnet.LoggingGhostLeafEmitter satisfies GhostLeafEmitter
+// below structurally without an explicit converter — the same
+// pattern the splitid + entry-lookup interfaces use today.
+//
+// ObservedAtUnixNano is a uint64 (never time.Time) so the
+// downstream cryptographic-bytes path is deterministic across
+// every plausible producer/consumer boundary. See
+// gossipnet/ghost_leaf_emitter.go for the full rationale.
+type GhostLeafEvent struct {
+	GhostSeq           uint64
+	CanonicalSeq       uint64
+	CanonicalHash      [32]byte
+	LogDID             string
+	ObservedAtUnixNano uint64
+}
+
+// GhostLeafEmitter is the sequencer's local surface to the
+// gossip-side ghost-leaf publisher. The committer's hot path
+// calls Emit after each successful ghost row insert; the
+// concrete implementation (in gossipnet/) constructs a signed
+// gossip event and broadcasts it for offline-auditor visibility.
+//
+// Emit MUST be non-blocking and MUST NOT return an error: the
+// commit path treats emission as fire-and-forget. The PG ghost
+// row is the authoritative record; gossip is broadcast
+// amplification only.
+//
+// nil-safe at the sequencer level: WithGhostLeafEmitter ignores
+// a nil argument and dispatchGhostLeaf short-circuits when
+// ghostEmitter is nil. Used by test fixtures that don't care
+// about emission and by deployments running without gossip.
+type GhostLeafEmitter interface {
+	Emit(ctx context.Context, ev GhostLeafEvent)
+}
+
 // Sequencer is the WAL → Tessera → entry_index pipeline worker.
 type Sequencer struct {
 	wal          WAL
@@ -525,6 +566,19 @@ type Sequencer struct {
 	// legacy hard-coded switch (preserves test fixtures that
 	// don't build a registry).
 	schemaRegistry *sdkschema.Registry
+
+	// ghostEmitter, when non-nil, receives a GhostLeafEvent after
+	// each successful canonical_hash-collision recovery (the
+	// committer's Ghost Leaf path). Best-effort emission only;
+	// failure here NEVER blocks the commit path. Nil is the
+	// gossip-disabled deployment mode (matches the LoggingGhost-
+	// LeafEmitter behavioural contract — no broadcast, no panic).
+	//
+	// Production wiring threads a concrete gossipnet.GhostLeafEmitter
+	// from cmd/ledger/boot/wire/wire.go. When SDK v0.5.0 ships
+	// findings.GhostLeafFinding, the wiring layer swaps the logging
+	// emitter for the SDK adapter; the sequencer does not change.
+	ghostEmitter GhostLeafEmitter
 
 	metrics Metrics
 
@@ -630,6 +684,28 @@ func NewSequencer(
 	s.metrics.tesseraLatency = latency.New()
 	s.metrics.staleAgeHistogram = latency.New()
 	s.metrics.commitRaceWindow = latency.New()
+	return s
+}
+
+// WithGhostLeafEmitter wires the gossip-side ghost-leaf
+// publisher. The committer calls Emit after each successful
+// ghost-row insert; the emitter constructs + signs +
+// broadcasts the corresponding KindGhostLeaf event so offline
+// auditors can correlate the duplicate Tessera leaf with the
+// ledger's public confession.
+//
+// Optional. nil leaves the field unset; dispatchGhostLeaf
+// short-circuits and the ghost row remains an in-PG record
+// only (still routed correctly by the API's 308 redirect, but
+// not announced to peers). The gossip-disabled deployment mode
+// uses nil; production wiring always installs a concrete
+// emitter (LoggingGhostLeafEmitter pre-v0.5.0, SDK adapter
+// post-v0.5.0).
+//
+// Race-free against drain cycles only when called before Run
+// starts; the wiring respects that.
+func (s *Sequencer) WithGhostLeafEmitter(e GhostLeafEmitter) *Sequencer {
+	s.ghostEmitter = e
 	return s
 }
 

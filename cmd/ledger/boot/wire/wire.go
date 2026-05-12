@@ -547,6 +547,24 @@ func composeSequencer(cfg Config, d *deps.AppDeps) *sequencer.Sequencer {
 		seq = seq.WithFatalChannel(d.Fatal)
 	}
 
+	// Ghost-leaf emitter — broadcasts a KindGhostLeaf event for
+	// offline-auditor visibility every time the committer writes a
+	// crash-recovery ghost row. Today wired to the in-tree logging
+	// emitter, which records the event at INFO + bumps an atomic
+	// counter. When attesta SDK v0.5.0 ships findings.GhostLeafFinding
+	// + KindGhostLeaf wire registration, this single line swaps to
+	// the SDK adapter (which signs via the same Sign / Append /
+	// Broadcast pipeline as the existing EquivocationScanner) — no
+	// other wire.go change required because the GhostLeafEmitter
+	// contract is defined on the consumer side (sequencer/).
+	//
+	// The logging emitter satisfies the production contract for
+	// gossip-disabled deployments (witness count 0) and as a safety
+	// belt while the SDK release is in flight: a crash-recovery
+	// ghost row still gets PUBLIC log evidence even though the
+	// gossip broadcast is pending.
+	seq = seq.WithGhostLeafEmitter(gossipnet.NewLoggingGhostLeafEmitter(d.Logger))
+
 	// v0.4.0 DI schema registry — built once at Wire (step 7b) and
 	// shared with the api submission handler. The sequencer's
 	// dispatchCommitmentSchema reads the same frozen instance.

@@ -583,6 +583,25 @@ func (s *Sequencer) flushBatch(ctx context.Context, batch []stagedEntry) error {
 			)
 			s.metrics.staleCrashRecoveriesAfterPGCollision.Add(1)
 			s.committerStaleRecover(ctx, recover, expected)
+
+			// Best-effort gossip emission for offline-auditor
+			// visibility. A duplicate Tessera leaf at AttemptedSeq
+			// is publicly observable in the Static-CT tile stream;
+			// without a corresponding KindGhostLeaf event the
+			// auditor sees a uniqueness-rule violation. The emit
+			// is fire-and-forget — the ghost row in PG is the
+			// authoritative record, gossip is broadcast
+			// amplification. nil emitter is the gossip-disabled
+			// deployment mode and skips silently.
+			if s.ghostEmitter != nil {
+				s.ghostEmitter.Emit(ctx, GhostLeafEvent{
+					GhostSeq:           c.AttemptedSeq,
+					CanonicalSeq:       c.ExistingSeq,
+					CanonicalHash:      c.CanonicalHash,
+					LogDID:             s.logDID,
+					ObservedAtUnixNano: uint64(time.Now().UTC().UnixNano()),
+				})
+			}
 		}
 	}
 
