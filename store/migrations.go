@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -261,18 +262,42 @@ func applyMigrationTx(ctx context.Context, db *pgxpool.Pool, m migration) error 
 }
 
 // applyMigrationNoTx is the autocommit path for migrations marked
-// `-- migrate:no-transaction`. The whole SQL string is sent in one
-// Exec call; PostgreSQL's simple query protocol runs the
-// statements sequentially in autocommit mode, which is exactly
-// what CREATE INDEX CONCURRENTLY requires.
+// `-- migrate:no-transaction`. The whole SQL string is sent via
+// PostgreSQL's SIMPLE query protocol — each semicolon-separated
+// statement runs as its own autocommit unit, no outer transaction
+// wrap. This is exactly what `CREATE INDEX CONCURRENTLY` requires:
+// PG aborts the statement with SQLSTATE 25001 if it detects an
+// active transaction block, including the IMPLICIT one pgx's
+// default extended protocol attaches for prepared-statement
+// atomicity.
+//
+// THE pgx.QueryExecModeSimpleProtocol IS LOAD-BEARING
+//
+// pgx's default exec mode (QueryExecModeCacheStatement) uses the
+// EXTENDED protocol with a prepared statement. PG sees the
+// prepared-statement bind+execute as an implicit transaction; the
+// CONCURRENTLY guard fires and the migration crashes at boot with
+//
+//   ERROR: CREATE INDEX CONCURRENTLY cannot run inside a
+//   transaction block (SQLSTATE 25001)
+//
+// Passing pgx.QueryExecModeSimpleProtocol as a query argument
+// instructs pgx to skip the prepared-statement machinery and send
+// the SQL verbatim under PG's simple_query protocol — no implicit
+// transaction, no prepared-statement wrap. The simple protocol is
+// what `psql` uses by default, which is why a CONCURRENTLY
+// migration that works in psql can mysteriously fail under a Go
+// pgx-based runner; THIS line is the one-flag fix.
 //
 // On success, the version is recorded in schema_migrations via a
-// SEPARATE small transaction. If that record-insert fails after
-// the DDL succeeded, the migration is replayed on next boot — the
+// SEPARATE small parametrized query (which CAN use the default
+// extended protocol — recording the version doesn't need
+// CONCURRENTLY). If that record-insert fails after the DDL
+// succeeded, the migration is replayed on next boot — the
 // idempotent-DDL discipline (documented on migration.noTransaction)
 // makes the replay safe.
 func applyMigrationNoTx(ctx context.Context, db *pgxpool.Pool, m migration) error {
-	if _, err := db.Exec(ctx, m.sql); err != nil {
+	if _, err := db.Exec(ctx, m.sql, pgx.QueryExecModeSimpleProtocol); err != nil {
 		return fmt.Errorf("store/migrations: apply v%d (%s, no-tx): %w",
 			m.version, m.description, err)
 	}
