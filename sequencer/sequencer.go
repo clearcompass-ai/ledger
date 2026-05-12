@@ -63,6 +63,7 @@ package sequencer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -149,15 +150,57 @@ type Config struct {
 	// deliberately drain the entire queue in one call). Production
 	// wiring SHOULD set DefaultMaxEntriesPerCycle.
 	MaxEntriesPerCycle int
+
+	// CommitChannelBuffer caps the staged-entry channel that stage-1
+	// workers emit into and the committer drains. Acts as
+	// backpressure: when the committer is slower than stage-1, the
+	// channel fills, stage-1 workers block on send, the drain
+	// iterator blocks on the semaphore, the WAL queue saturates,
+	// admission 503s. Recommended sizing: 4 × MaxInFlight (gives
+	// the committer headroom to flush one full batch while stage-1
+	// is preparing the next).
+	//
+	// 0 → DefaultCommitChannelBuffer (= 4 × MaxInFlight after
+	// MaxInFlight normalization).
+	CommitChannelBuffer int
+
+	// CommitMaxBatchSize caps how many entries the committer
+	// aggregates into one entry_index transaction. Smaller batches
+	// → lower per-entry latency, more PG fsyncs. Larger batches
+	// → fewer fsyncs (better throughput), longer tail latency for
+	// the first entries in a batch.
+	//
+	// Recommended default: 256, which:
+	//   - matches Postgres's optimal unnest() array size for the
+	//     INSERT path,
+	//   - aligns with Tessera's tile boundary (256 leaves per
+	//     tile), so committer cadence tracks the underlying
+	//     storage's physical block boundaries.
+	//
+	// 0 → DefaultCommitMaxBatchSize.
+	CommitMaxBatchSize int
+
+	// CommitMaxWait is the tail-flush deadline — if a batch hasn't
+	// reached CommitMaxBatchSize within this duration of the first
+	// entry being added, the committer flushes whatever it has.
+	// Prevents low-traffic stragglers from sitting in the staged
+	// buffer indefinitely.
+	//
+	// Recommended default: 50ms — under a 5K TPS spike the batch
+	// fills (256 entries / 5K = 51ms) before the timer fires; under
+	// idle traffic the timer caps entry-to-visible latency at 50ms.
+	//
+	// 0 → DefaultCommitMaxWait.
+	CommitMaxWait time.Duration
 }
 
 // Defaults applied to a zero-valued Config.
 const (
-	DefaultPollInterval = 1 * time.Second
-	DefaultMaxInFlight  = 4
-	DefaultMaxAttempts  = 10
-	DefaultBackoffBase  = 1 * time.Second
-	DefaultBackoffMax   = 60 * time.Second
+	DefaultPollInterval  = 1 * time.Second
+	DefaultMaxInFlight   = 4
+	DefaultMaxAttempts   = 10
+	DefaultBackoffBase   = 1 * time.Second
+	DefaultBackoffMax    = 60 * time.Second
 	DefaultMaxBuilderLag = 4096
 
 	// DefaultMaxEntriesPerCycle bounds the per-cycle work so the
@@ -170,6 +213,15 @@ const (
 	// values cycle latency scales linearly (MaxInFlight=4 → ~320ms,
 	// ~3 cycles/sec) — still meaningful.
 	DefaultMaxEntriesPerCycle = 256
+
+	// DefaultCommitMaxBatchSize aligns with Tessera's 256-leaf tile
+	// boundary AND with Postgres's optimal unnest() array size for
+	// the entry_index INSERT path. See Config.CommitMaxBatchSize.
+	DefaultCommitMaxBatchSize = 256
+
+	// DefaultCommitMaxWait — 50ms tail-flush deadline. See
+	// Config.CommitMaxWait.
+	DefaultCommitMaxWait = 50 * time.Millisecond
 )
 
 // LagReader returns the current builder lag (admitted minus
@@ -192,28 +244,42 @@ type Metrics struct {
 	manualCount        atomic.Uint64
 	currentLag         atomic.Int64 // pending entries observed at last drain
 	backpressureStalls atomic.Uint64
+
+	// Committer (staged pipeline) metrics. See committer.go.
+	committedBatches    atomic.Uint64 // batches committed by the committer
+	committedEntries    atomic.Uint64 // total entries (live + tombstone) committed
+	commitWaitOnGap     atomic.Uint64 // committer received a tuple but heap head != nextExpectedSeq
+	commitBatchFailures atomic.Uint64 // batch tx failed (re-pushed to heap)
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
-	DrainCycles        uint64
-	Processed          uint64
-	Failures           uint64
-	ManualCount        uint64
-	CurrentLag         int64
-	BackpressureStalls uint64
+	DrainCycles         uint64
+	Processed           uint64
+	Failures            uint64
+	ManualCount         uint64
+	CurrentLag          int64
+	BackpressureStalls  uint64
+	CommittedBatches    uint64
+	CommittedEntries    uint64
+	CommitWaitOnGap     uint64
+	CommitBatchFailures uint64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	return MetricsSnapshot{
-		DrainCycles:        m.drainCycles.Load(),
-		Processed:          m.processed.Load(),
-		Failures:           m.failures.Load(),
-		ManualCount:        m.manualCount.Load(),
-		CurrentLag:         m.currentLag.Load(),
-		BackpressureStalls: m.backpressureStalls.Load(),
+		DrainCycles:         m.drainCycles.Load(),
+		Processed:           m.processed.Load(),
+		Failures:            m.failures.Load(),
+		ManualCount:         m.manualCount.Load(),
+		CurrentLag:          m.currentLag.Load(),
+		BackpressureStalls:  m.backpressureStalls.Load(),
+		CommittedBatches:    m.committedBatches.Load(),
+		CommittedEntries:    m.committedEntries.Load(),
+		CommitWaitOnGap:     m.commitWaitOnGap.Load(),
+		CommitBatchFailures: m.commitBatchFailures.Load(),
 	}
 }
 
@@ -305,6 +371,16 @@ type Sequencer struct {
 	// guarantee against retry storms.
 	attemptsMu sync.Mutex
 	attempts   map[[32]byte]uint32
+
+	// Staged commit pipeline. Stage-1 workers (loop.go::processOne)
+	// emit stagedEntry tuples to commitCh; the committer goroutine
+	// (committer.go::committerLoop) drains them via min-heap into
+	// contiguous-prefix batches and runs one atomic entry_index
+	// INSERT per batch. See committer.go for the full architecture
+	// rationale.
+	commitCh        chan stagedEntry
+	committerHeap   *committerHeap
+	nextExpectedSeq atomic.Uint64
 }
 
 // NewSequencer wires the Sequencer with normalized config.
@@ -338,17 +414,31 @@ func NewSequencer(
 	if cfg.MaxEntriesPerCycle == 0 {
 		cfg.MaxEntriesPerCycle = DefaultMaxEntriesPerCycle
 	}
+	if cfg.CommitMaxBatchSize <= 0 {
+		cfg.CommitMaxBatchSize = DefaultCommitMaxBatchSize
+	}
+	if cfg.CommitMaxWait <= 0 {
+		cfg.CommitMaxWait = DefaultCommitMaxWait
+	}
+	if cfg.CommitChannelBuffer <= 0 {
+		// Headroom for the committer to flush one full batch while
+		// stage-1 prepares the next. MaxInFlight has been normalized
+		// above; 4× gives 16 entries of slack at the default
+		// MaxInFlight=4, plenty to absorb single-batch commit jitter.
+		cfg.CommitChannelBuffer = 4 * cfg.MaxInFlight
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 	return &Sequencer{
-		wal:      w,
-		tessera:  t,
-		db:       db,
-		store:    es,
-		cfg:      cfg,
-		logger:   cfg.Logger,
-		attempts: make(map[[32]byte]uint32),
+		wal:           w,
+		tessera:       t,
+		db:            db,
+		store:         es,
+		cfg:           cfg,
+		logger:        cfg.Logger,
+		attempts:      make(map[[32]byte]uint32),
+		committerHeap: &committerHeap{},
 	}
 }
 
@@ -430,18 +520,39 @@ func (s *Sequencer) Run(ctx context.Context) error {
 		return errors.New("sequencer: WAL and Tessera both required")
 	}
 
-	// Replay goroutine. Drains via wg.Wait below — guarantees the
-	// replayer is fully stopped before Run returns, even on
-	// abrupt ctx cancellation. The deferred wg.Wait runs AFTER
-	// the for-select loop exits, so the replayer sees ctx.Done()
-	// at the same instant the loop does.
-	//
-	// Wrapped in lifecycle.SafeRun so a panic in Replay logs +
-	// exits the goroutine cleanly without crashing the supervisor.
-	// Replay is best-effort — boot replay failure is logged but
-	// not fatal; the steady-state drain loop catches up later.
+	// Initialize the staged-commit pipeline state from Postgres
+	// BEFORE spawning any goroutines. The committer's
+	// nextExpectedSeq must reflect entry_index's current high-water
+	// mark — otherwise on a restart after crash-recovery the
+	// committer would wait indefinitely for seqs that are already
+	// committed.
+	nextSeq, err := s.readNextExpectedSeq(ctx)
+	if err != nil {
+		return fmt.Errorf("sequencer: initialize committer state: %w", err)
+	}
+	s.nextExpectedSeq.Store(nextSeq)
+	s.commitCh = make(chan stagedEntry, s.cfg.CommitChannelBuffer)
+
+	// Goroutines spawned in this method drain via wg.Wait below —
+	// guarantees clean teardown even on abrupt ctx cancellation.
+	// All goroutines see ctx.Done() at the same instant the
+	// for-select loop does; the deferred wg.Wait then collects them.
 	var wg sync.WaitGroup
 	defer wg.Wait()
+
+	// Committer goroutine — the staged-commit consumer. MUST be
+	// running before stage-1 workers emit any tuples (otherwise
+	// commitCh fills up and stage-1 blocks).
+	lifecycle.SafeRunInWG(ctx, &wg, "sequencer-committer", s.logger, nil, func() error {
+		s.committerLoop(ctx)
+		return nil
+	})
+
+	// Replay goroutine. Wrapped in lifecycle.SafeRun so a panic in
+	// Replay logs + exits the goroutine cleanly without crashing
+	// the supervisor. Replay is best-effort — boot replay failure
+	// is logged but not fatal; the steady-state drain loop catches
+	// up later.
 	if s.replayer != nil {
 		lifecycle.SafeRunInWG(ctx, &wg, "sequencer-replay", s.logger, nil, func() error {
 			if err := s.replayer.Replay(ctx); err != nil &&
