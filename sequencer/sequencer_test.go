@@ -932,6 +932,120 @@ func TestDrainHeapInto_CrossBatchStale_RoutesToRecover(t *testing.T) {
 	}
 }
 
+// TestSequencer_TesseraInFlight_TracksConcurrentWorkers verifies that
+// the in-flight counter and high-water mark behave correctly under
+// concurrent stage-1 workers calling processOne. The HW mark is the
+// load-bearing observation: it survives the recovery to zero, so even
+// post-soak we can see the saturation peak.
+func TestSequencer_TesseraInFlight_TracksConcurrentWorkers(t *testing.T) {
+	w := newFakeWAL()
+	// Make Tessera AppendLeaf block until we release it, so multiple
+	// stage-1 workers pile up inside the call simultaneously.
+	gate := make(chan struct{})
+	released := make(chan struct{})
+	ts := &blockingTessera{
+		gate:     gate,
+		released: released,
+	}
+
+	const concurrent = 8
+	cfg := Config{MaxInFlight: concurrent, CommitMaxBatchSize: 1, CommitMaxWait: time.Millisecond}
+	s := newTestSequencer(t, w, ts, cfg)
+
+	// Seed the WAL with `concurrent` distinct pending hashes so
+	// drainOnce dispatches one worker per slot.
+	for i := 0; i < concurrent; i++ {
+		wire, hash := buildEntry(t, fmt.Sprintf("in-flight-%d", i))
+		w.seed(hash, wire)
+	}
+
+	// Drive the drain on a separate goroutine — drainOnce blocks
+	// until all dispatched workers complete, but our blockingTessera
+	// won't let them complete until we send on `gate`.
+	drainDone := make(chan struct{})
+	go func() {
+		s.drainOnce(context.Background())
+		close(drainDone)
+	}()
+
+	// Wait for all `concurrent` workers to be inside AppendLeaf.
+	// blockingTessera signals each entry via `released`; we collect
+	// that many to know everyone is parked.
+	for i := 0; i < concurrent; i++ {
+		select {
+		case <-released:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d workers reached AppendLeaf within 2s",
+				i, concurrent)
+		}
+	}
+
+	// In-flight should equal MaxInFlight; high-water tracks it.
+	snap := s.Metrics()
+	if snap.TesseraInFlight != int64(concurrent) {
+		t.Errorf("TesseraInFlight = %d, want %d (all workers parked)",
+			snap.TesseraInFlight, concurrent)
+	}
+	if snap.TesseraInFlightHighWater != int64(concurrent) {
+		t.Errorf("TesseraInFlightHighWater = %d, want %d",
+			snap.TesseraInFlightHighWater, concurrent)
+	}
+
+	// Release every worker; drainOnce should return.
+	for i := 0; i < concurrent; i++ {
+		gate <- struct{}{}
+	}
+	select {
+	case <-drainDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainOnce did not return within 2s of releasing all workers")
+	}
+
+	// After release, in-flight returns to zero but high-water stays
+	// at the peak — the post-recovery saturation evidence.
+	snap = s.Metrics()
+	if snap.TesseraInFlight != 0 {
+		t.Errorf("TesseraInFlight after drain = %d, want 0",
+			snap.TesseraInFlight)
+	}
+	if snap.TesseraInFlightHighWater != int64(concurrent) {
+		t.Errorf("TesseraInFlightHighWater after recovery = %d, want %d "+
+			"(high-water must NOT reset)",
+			snap.TesseraInFlightHighWater, concurrent)
+	}
+}
+
+// blockingTessera is a fake Tessera that parks each AppendLeaf call
+// until the test releases it via `gate`. Used by
+// TestSequencer_TesseraInFlight_TracksConcurrentWorkers to deterministically
+// hold N workers inside AppendLeaf simultaneously.
+type blockingTessera struct {
+	gate     chan struct{} // test sends → one worker is released
+	released chan struct{} // worker sends after entering AppendLeaf
+	calls    atomic.Uint64
+	nextSeq  atomic.Uint64
+}
+
+func (b *blockingTessera) AppendLeaf(ctx context.Context, data []byte) (uint64, error) {
+	b.calls.Add(1)
+	// Signal "I am inside AppendLeaf" before blocking.
+	select {
+	case b.released <- struct{}{}:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	// Block until the test releases this worker.
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	// Allocate the seq AFTER unblocking so seqs are monotonic in
+	// release order (irrelevant to this test but matches real
+	// Tessera ordering for any future assertions).
+	return b.nextSeq.Add(1) - 1, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // isUniqueViolation
 // ─────────────────────────────────────────────────────────────────────

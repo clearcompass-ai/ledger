@@ -938,15 +938,22 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		// (and avoided potential per-object 429) AND an avoided
 		// Badger MarkShipped MVCC conflict.
 		shipDup := int64(shipMetrics.Shipped) - int64(shipMetrics.UniqueShipped)
+		// tess_in_flight is the diagnostic for the silent-Tessera-
+		// stall failure mode: if this == MaxInFlight across many
+		// cycles, stage-1 workers are wedged inside AppendLeaf with
+		// no observations being recorded by the tesseraLatency
+		// histogram (because the call never returns). Pair with the
+		// hw (high water) so a peak-then-recover pattern is visible.
 		t.Logf("drain[cycle=%d t=%s] expected=%d "+
 			"wal{hwm=%d pending=%d sequenced=%d} "+
-			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d} "+
+			"seq{cycles=%d processed=%d failures=%d manual=%d lag=%d tess_in_flight=%d hw=%d} "+
 			"ship{shipped=%d unique=%d dup=%d skipInflight=%d retries=%d manual=%d markFail=%d hwm=%d latMs=%.1f} "+
 			"pg{entry_index=%d smt_leaves=%d builder_lag=%d cursor=%d max_seq=%d gaps=%d leapfrog=%d}",
 			cycle, time.Since(drainStart).Round(time.Second), expectedHWM,
 			hwm, pendingCount, sequencedCount,
 			seqMetrics.DrainCycles, seqMetrics.Processed,
 			seqMetrics.Failures, seqMetrics.ManualCount, seqMetrics.CurrentLag,
+			seqMetrics.TesseraInFlight, seqMetrics.TesseraInFlightHighWater,
 			shipMetrics.Shipped, shipMetrics.UniqueShipped, shipDup,
 			shipMetrics.SkippedInflight,
 			shipMetrics.Retries, shipMetrics.Manual,
@@ -1938,6 +1945,27 @@ func logScalingEvidence(t *testing.T, op *soakLedger) {
 		seqMetrics.CommitWaitOnGap,
 		seqMetrics.CommitBatchFailures,
 	)
+
+	// Tessera in-flight high-water: the peak number of stage-1 workers
+	// simultaneously blocked inside AppendLeaf. == MaxInFlight ⇒ the
+	// pool was fully saturated at some point. Strictly < MaxInFlight ⇒
+	// throughput is bounded upstream of Tessera (drainOnce cadence,
+	// WAL Submit, etc.), not by Tessera itself.
+	t.Logf("scaling_evidence tessera_in_flight{live=%d high_water=%d}",
+		seqMetrics.TesseraInFlight,
+		seqMetrics.TesseraInFlightHighWater,
+	)
+
+	// WAL-side: Submit duration distribution. The submission path's
+	// p99 is the admission-side latency budget; mean climbing with
+	// scale tells us Badger / fsync queueing is the new bottleneck.
+	// Without this line, the only Submit observation was the OTEL
+	// histogram which the soak doesn't wire — making admission-p99
+	// failures (see ATTESTA_SOAK_P99_BOUND_MS) un-diagnosable.
+	if op.WAL != nil {
+		t.Logf("scaling_evidence wal_submit{%s}",
+			op.WAL.SubmitLatencySnapshot().Format())
+	}
 }
 
 // dumpSMTDiagnostics prints unambiguous evidence about which entries

@@ -71,6 +71,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/clearcompass-ai/ledger/latency"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/wal"
@@ -273,7 +274,25 @@ type Metrics struct {
 	// the scale question "does Tessera saturate at MaxInFlight=N" with
 	// evidence rather than guesswork — the soak's end-of-run summary
 	// prints a snapshot.
-	tesseraLatency *LatencyHistogram
+	tesseraLatency *latency.Histogram
+
+	// tesseraInFlight — live count of stage-1 workers currently
+	// blocked inside Tessera.AppendLeaf. Diagnostic for the
+	// silent-stall failure mode where Tessera's internal integration
+	// future never resolves: a saturated histogram is useless when
+	// no observations are being recorded, but
+	// tesseraInFlight==MaxInFlight across many drain cycles is
+	// unambiguous evidence that the workers are wedged on Tessera.
+	// Incremented on AppendLeaf entry, decremented on return (both
+	// happy and error paths).
+	tesseraInFlight atomic.Int64
+
+	// tesseraInFlightHighWater — the maximum value tesseraInFlight
+	// has ever reached. Maintained via CAS so concurrent stage-1
+	// workers compose correctly. Surfaces "we touched the ceiling"
+	// even after the system recovers; the live count alone would
+	// drop back to zero and obscure the peak.
+	tesseraInFlightHighWater atomic.Int64
 }
 
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
@@ -291,7 +310,9 @@ type MetricsSnapshot struct {
 	CommitBatchFailures      uint64
 	StaleDuplicatesDiscarded uint64
 	StaleCrashRecoveries     uint64
-	TesseraLatency           LatencyHistogramSnapshot
+	TesseraLatency           latency.Snapshot
+	TesseraInFlight          int64
+	TesseraInFlightHighWater int64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
@@ -313,6 +334,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	if m.tesseraLatency != nil {
 		snap.TesseraLatency = m.tesseraLatency.Snapshot()
 	}
+	snap.TesseraInFlight = m.tesseraInFlight.Load()
+	snap.TesseraInFlightHighWater = m.tesseraInFlightHighWater.Load()
 	return snap
 }
 
@@ -473,7 +496,7 @@ func NewSequencer(
 		attempts:      make(map[[32]byte]uint32),
 		committerHeap: &committerHeap{},
 	}
-	s.metrics.tesseraLatency = newLatencyHistogram()
+	s.metrics.tesseraLatency = latency.New()
 	return s
 }
 

@@ -281,8 +281,26 @@ func (s *Sequencer) processOne(ctx context.Context, hash [32]byte) {
 	// in Tessera permanently. From here, every code path MUST emit
 	// a tuple to commitCh (live or tombstone) or risk deadlocking
 	// the committer's contiguous-prefix drain.
+	//
+	// IN-FLIGHT TRACKING: increment BEFORE the synchronous AppendLeaf
+	// call and decrement AFTER it returns (regardless of outcome).
+	// This means tesseraInFlight reflects exactly the count of
+	// workers currently blocked inside Tessera's antispam future
+	// resolution — the silent-stall failure mode where Tessera's
+	// integration loop hangs and no observations are recorded by
+	// tesseraLatency (because AppendLeaf never returns). The high-
+	// water mark is updated via CAS so a peak that has since
+	// receded is still visible in the snapshot.
+	inFlight := s.metrics.tesseraInFlight.Add(1)
+	for {
+		hw := s.metrics.tesseraInFlightHighWater.Load()
+		if inFlight <= hw || s.metrics.tesseraInFlightHighWater.CompareAndSwap(hw, inFlight) {
+			break
+		}
+	}
 	tesseraStart := time.Now()
 	seq, err := s.tessera.AppendLeaf(ctx, hash[:])
+	s.metrics.tesseraInFlight.Add(-1)
 	if err != nil {
 		// No seq assigned — normal retry path. Tombstone NOT needed.
 		s.handleEntryError(ctx, hash, "tessera AppendLeaf", err)

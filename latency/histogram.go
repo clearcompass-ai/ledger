@@ -1,44 +1,37 @@
 /*
-FILE PATH: sequencer/histogram.go
+FILE PATH: latency/histogram.go
 
 A small, lock-free latency histogram for per-call timing
 observations. The purpose is operational, not statistical: enough
 buckets to read the shape of the distribution off a soak summary
 without pulling in a percentile library, no more.
 
-WHY THIS FILE EXISTS
+WHY THIS PACKAGE EXISTS
 
-The sequencer already records per-entry Tessera AppendLeaf elapsed
-times at DEBUG level — useful for forensics but invisible when
-running INFO-level. Aggregating those elapsed values into a
-histogram lets the soak's end-of-run summary answer the operational
-question evidence-first:
-
-    "Does Tessera AppendLeaf latency degrade as we raise
-     LEDGER_SEQUENCER_MAX_INFLIGHT?"
-
-If the histogram stays flat across MaxInFlight={4,8,16,32}, Tessera
-is not the bottleneck. If p99 climbs sharply at a specific
-MaxInFlight, the antispam-checkpoint serialization point is the
-ceiling and the conversation moves to the SDK with numbers
-attached. Either way the decision is data-driven; no SDK changes
-land on theory.
+Multiple pipeline boundaries — sequencer (Tessera AppendLeaf),
+wal (Committer.Submit fsync), builder (per-batch processing) —
+each need a histogram of per-call elapsed times to answer scaling
+questions evidence-first. The original sequencer-local
+LatencyHistogram was correct but couldn't be shared with wal/
+without inverting the import graph (sequencer/ already imports
+wal/), so this package extracts the type into a shared place
+both can depend on.
 
 DESIGN
 
-  - Eight fixed buckets covering 1µs to 1s (Tessera's expected
+  - Eight fixed buckets covering 1µs to 1s (typical pipeline
     operating envelope), plus an overflow bucket. Bucket bounds
-    chosen so p50/p95/p99 of typical Tessera traffic land in
-    different buckets — distribution shape is readable directly
-    from bucket counts.
+    chosen so p50/p95/p99 of typical traffic land in different
+    buckets — distribution shape is readable directly from
+    bucket counts.
 
   - count, sum (µs), min (µs), max (µs) as atomic counters. min
     and max use a CAS loop so concurrent Observe calls compose
     correctly without taking a lock.
 
   - Snapshot returns a non-atomic value copy for printing /
-    exporting. The Mean and ApproxPercentile helpers are pure
-    functions on the snapshot.
+    exporting. The MeanUs and Format helpers are pure functions
+    on the snapshot.
 
 ZERO-OBSERVATION SAFETY
 
@@ -57,7 +50,7 @@ CONCURRENCY
   and the soak has already stopped emitting by the time
   Snapshot runs).
 */
-package sequencer
+package latency
 
 import (
 	"fmt"
@@ -65,10 +58,10 @@ import (
 	"time"
 )
 
-// LatencyHistogram accumulates timing observations into a fixed set
-// of buckets, plus min/max/count/sum aggregates. All fields are
-// atomic; concurrent Observe is safe.
-type LatencyHistogram struct {
+// Histogram accumulates timing observations into a fixed set of
+// buckets, plus min/max/count/sum aggregates. All fields are atomic;
+// concurrent Observe is safe.
+type Histogram struct {
 	count atomic.Uint64
 	sumUs atomic.Uint64
 	minUs atomic.Uint64 // ^uint64(0) sentinel before first Observe
@@ -83,17 +76,16 @@ type LatencyHistogram struct {
 	buckets [8]atomic.Uint64
 }
 
-// newLatencyHistogram returns a histogram primed for observation
-// (min set to its uninitialized sentinel so the first observation
-// wins the CAS).
-func newLatencyHistogram() *LatencyHistogram {
-	h := &LatencyHistogram{}
+// New returns a histogram primed for observation (min set to its
+// uninitialized sentinel so the first observation wins the CAS).
+func New() *Histogram {
+	h := &Histogram{}
 	h.minUs.Store(^uint64(0))
 	return h
 }
 
 // Observe records one elapsed measurement.
-func (h *LatencyHistogram) Observe(d time.Duration) {
+func (h *Histogram) Observe(d time.Duration) {
 	if d < 0 {
 		d = 0
 	}
@@ -140,9 +132,9 @@ func bucketIndex(us uint64) int {
 	}
 }
 
-// LatencyHistogramSnapshot is a non-atomic copy for callers
-// (Prometheus, log lines, end-of-soak summaries).
-type LatencyHistogramSnapshot struct {
+// Snapshot is a non-atomic copy for callers (Prometheus, log lines,
+// end-of-soak summaries).
+type Snapshot struct {
 	Count   uint64
 	SumUs   uint64
 	MinUs   uint64
@@ -150,10 +142,10 @@ type LatencyHistogramSnapshot struct {
 	Buckets [8]uint64
 }
 
-// Snapshot returns a point-in-time copy of the histogram state.
-// Safe to call concurrently with Observe.
-func (h *LatencyHistogram) Snapshot() LatencyHistogramSnapshot {
-	s := LatencyHistogramSnapshot{
+// Snapshot returns a point-in-time copy of the histogram state. Safe
+// to call concurrently with Observe.
+func (h *Histogram) Snapshot() Snapshot {
+	s := Snapshot{
 		Count: h.count.Load(),
 		SumUs: h.sumUs.Load(),
 		MinUs: h.minUs.Load(),
@@ -172,7 +164,7 @@ func (h *LatencyHistogram) Snapshot() LatencyHistogramSnapshot {
 
 // MeanUs returns the arithmetic mean observation in microseconds.
 // Returns 0 when no observations have been recorded.
-func (s LatencyHistogramSnapshot) MeanUs() float64 {
+func (s Snapshot) MeanUs() float64 {
 	if s.Count == 0 {
 		return 0
 	}
@@ -189,33 +181,33 @@ func BucketUpperBoundsUs() [8]uint64 {
 	}
 }
 
-// Format returns a compact one-line representation suitable for
-// slog log values:
+// Format returns a compact one-line representation suitable for slog
+// log values:
 //
-//	"n=10000 min=2.1ms mean=8.7ms max=312.4ms p99~50ms b=[12 1402 6210 2350 24 2 0 0]"
+//	"n=10000 min=2.1ms mean=8.7ms max=312.4ms p99~<50.0ms b=[12 1402 6210 2350 24 2 0 0]"
 //
 // The p99 bound is the upper edge of the bucket containing the 99th
 // percentile observation (overflow bucket shows as ">=1s"). It is a
 // coarse but honest estimate — fine for "is the curve flat or does
-// it cliff at MaxInFlight=N" capacity-planning questions.
-func (s LatencyHistogramSnapshot) Format() string {
+// it cliff" capacity-planning questions.
+func (s Snapshot) Format() string {
 	if s.Count == 0 {
 		return "n=0"
 	}
 	return fmt.Sprintf(
 		"n=%d min=%s mean=%s max=%s p99~%s b=%v",
 		s.Count,
-		usToString(s.MinUs),
-		usToString(uint64(s.MeanUs())),
-		usToString(s.MaxUs),
-		s.approxP99(),
+		UsToString(s.MinUs),
+		UsToString(uint64(s.MeanUs())),
+		UsToString(s.MaxUs),
+		s.ApproxP99(),
 		s.Buckets,
 	)
 }
 
-// approxP99 returns a human-readable upper bound for the 99th
+// ApproxP99 returns a human-readable upper bound for the 99th
 // percentile bucket. Coarse — see Format documentation.
-func (s LatencyHistogramSnapshot) approxP99() string {
+func (s Snapshot) ApproxP99() string {
 	if s.Count == 0 {
 		return "n/a"
 	}
@@ -231,14 +223,14 @@ func (s LatencyHistogramSnapshot) approxP99() string {
 			if bounds[i] == 0 {
 				return ">=1s"
 			}
-			return "<" + usToString(bounds[i])
+			return "<" + UsToString(bounds[i])
 		}
 	}
 	return ">=1s"
 }
 
-// usToString prints a µs count in the most legible time unit.
-func usToString(us uint64) string {
+// UsToString prints a µs count in the most legible time unit.
+func UsToString(us uint64) string {
 	switch {
 	case us < 1_000:
 		return fmt.Sprintf("%dµs", us)
