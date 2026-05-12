@@ -252,21 +252,54 @@ type Metrics struct {
 	commitWaitOnGap     atomic.Uint64 // committer received a tuple but heap head != nextExpectedSeq
 	commitBatchFailures atomic.Uint64 // batch tx failed (re-pushed to heap)
 
-	// staleDuplicatesDiscarded — duplicate stagedEntry tuples (seq <
-	// nextExpectedSeq) whose WAL state had already advanced past
-	// Pending by the time the committer saw them. Normal-race
-	// outcome (drainOnce cycle N+1 spawned a stage-1 worker for a
-	// hash that cycle N's committer was already mid-commit on).
-	// Expected to be small but non-zero under burst load. Watch
-	// the ratio committedEntries / staleDuplicatesDiscarded for
-	// scale-budget tuning.
+	// staleDuplicatesDiscarded — total duplicate stagedEntry tuples
+	// (seq < expected) that were silently discarded. Sum of the two
+	// split counters below, kept for back-compat with existing log
+	// surfaces (scaling_evidence committer{stale_discarded=…}).
 	staleDuplicatesDiscarded atomic.Uint64
+	// staleInBatchDuplicates — sub-case A of drainHeapInto: dup's
+	// Seq is in [nextExpectedSeq, expected), meaning the original is
+	// still in `pending` and will be flushed momentarily. The
+	// committer detects this BEFORE the original's commit completes
+	// — discriminating purely on the committer's own state (Seq <
+	// expected) without touching the WAL. The dominant population
+	// under normal burst load; rate is driven by drainOnce cadence
+	// × commitRaceWindow.
+	staleInBatchDuplicates atomic.Uint64
+	// staleCrossBatchDuplicates — sub-case B silent-discard from
+	// committerStaleRecover: dup's Seq < nextExpectedSeq AND
+	// MetaState shows state != Pending, meaning the original was
+	// committed in a PRIOR batch and WAL state has already advanced.
+	// Pure dup-after-commit race. Expected to be a small minority of
+	// total stales — non-zero only when drainOnce N+1 fires AFTER
+	// cycle N's committer has fully flushed.
+	staleCrossBatchDuplicates atomic.Uint64
 	// staleCrashRecoveries — duplicate tuples whose WAL state was
-	// still Pending when the committer saw them. Indicates the
-	// rare path where the original commit's WAL.Sequence call
-	// failed; the duplicate is what unblocks the entry. Should be
-	// ~zero in steady state; non-zero implies Badger / WAL pressure.
+	// still Pending when the committer saw them in the cross-batch
+	// branch. Indicates the rare path where the original commit's
+	// WAL.Sequence call failed; the duplicate is what unblocks the
+	// entry. Should be ~zero in steady state; non-zero implies
+	// Badger / WAL pressure.
 	staleCrashRecoveries atomic.Uint64
+
+	// staleAgeHistogram — time from stage-1 emit (stagedEntry.emittedAt)
+	// to stale-discard, observed for every dup that hits either
+	// sub-case A or sub-case B silent-discard. The "how old was the
+	// dup when the committer rejected it" distribution. Pairs with
+	// commitRaceWindow: if the two distributions overlap, dups are
+	// being produced inside the original's race window, which is
+	// the hypothesis we're trying to test (vs. some other
+	// mechanism).
+	staleAgeHistogram *latency.Histogram
+
+	// commitRaceWindow — time from stage-1 emit to successful commit
+	// (applyPostCommitForOne entry), observed per committed tuple.
+	// The "how long does the original take to commit" distribution.
+	// drainOnce cycle N+1 catches the hash still Pending if
+	// PollInterval + cycle_N_duration < commitRaceWindow for a given
+	// entry. So commitRaceWindow p99 vs. effective drainOnce period
+	// is the structural relationship that drives in-batch-dup rate.
+	commitRaceWindow *latency.Histogram
 
 	// tesseraLatency — per-call AppendLeaf timing histogram. Populated
 	// by stage-1 workers in loop.go::processOne. Initialized in
@@ -298,38 +331,50 @@ type Metrics struct {
 // MetricsSnapshot is a non-atomic view for callers (Prometheus
 // exposition, log lines).
 type MetricsSnapshot struct {
-	DrainCycles              uint64
-	Processed                uint64
-	Failures                 uint64
-	ManualCount              uint64
-	CurrentLag               int64
-	BackpressureStalls       uint64
-	CommittedBatches         uint64
-	CommittedEntries         uint64
-	CommitWaitOnGap          uint64
-	CommitBatchFailures      uint64
-	StaleDuplicatesDiscarded uint64
-	StaleCrashRecoveries     uint64
-	TesseraLatency           latency.Snapshot
-	TesseraInFlight          int64
-	TesseraInFlightHighWater int64
+	DrainCycles               uint64
+	Processed                 uint64
+	Failures                  uint64
+	ManualCount               uint64
+	CurrentLag                int64
+	BackpressureStalls        uint64
+	CommittedBatches          uint64
+	CommittedEntries          uint64
+	CommitWaitOnGap           uint64
+	CommitBatchFailures       uint64
+	StaleDuplicatesDiscarded  uint64 // sum (in-batch + cross-batch), back-compat
+	StaleInBatchDuplicates    uint64 // sub-case A
+	StaleCrossBatchDuplicates uint64 // sub-case B silent-discard
+	StaleCrashRecoveries      uint64
+	StaleAgeHistogram         latency.Snapshot
+	CommitRaceWindow          latency.Snapshot
+	TesseraLatency            latency.Snapshot
+	TesseraInFlight           int64
+	TesseraInFlightHighWater  int64
 }
 
 // Snapshot returns a non-atomic copy of the current metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	snap := MetricsSnapshot{
-		DrainCycles:              m.drainCycles.Load(),
-		Processed:                m.processed.Load(),
-		Failures:                 m.failures.Load(),
-		ManualCount:              m.manualCount.Load(),
-		CurrentLag:               m.currentLag.Load(),
-		BackpressureStalls:       m.backpressureStalls.Load(),
-		CommittedBatches:         m.committedBatches.Load(),
-		CommittedEntries:         m.committedEntries.Load(),
-		CommitWaitOnGap:          m.commitWaitOnGap.Load(),
-		CommitBatchFailures:      m.commitBatchFailures.Load(),
-		StaleDuplicatesDiscarded: m.staleDuplicatesDiscarded.Load(),
-		StaleCrashRecoveries:     m.staleCrashRecoveries.Load(),
+		DrainCycles:               m.drainCycles.Load(),
+		Processed:                 m.processed.Load(),
+		Failures:                  m.failures.Load(),
+		ManualCount:               m.manualCount.Load(),
+		CurrentLag:                m.currentLag.Load(),
+		BackpressureStalls:        m.backpressureStalls.Load(),
+		CommittedBatches:          m.committedBatches.Load(),
+		CommittedEntries:          m.committedEntries.Load(),
+		CommitWaitOnGap:           m.commitWaitOnGap.Load(),
+		CommitBatchFailures:       m.commitBatchFailures.Load(),
+		StaleDuplicatesDiscarded:  m.staleDuplicatesDiscarded.Load(),
+		StaleInBatchDuplicates:    m.staleInBatchDuplicates.Load(),
+		StaleCrossBatchDuplicates: m.staleCrossBatchDuplicates.Load(),
+		StaleCrashRecoveries:      m.staleCrashRecoveries.Load(),
+	}
+	if m.staleAgeHistogram != nil {
+		snap.StaleAgeHistogram = m.staleAgeHistogram.Snapshot()
+	}
+	if m.commitRaceWindow != nil {
+		snap.CommitRaceWindow = m.commitRaceWindow.Snapshot()
 	}
 	if m.tesseraLatency != nil {
 		snap.TesseraLatency = m.tesseraLatency.Snapshot()
@@ -497,6 +542,8 @@ func NewSequencer(
 		committerHeap: &committerHeap{},
 	}
 	s.metrics.tesseraLatency = latency.New()
+	s.metrics.staleAgeHistogram = latency.New()
+	s.metrics.commitRaceWindow = latency.New()
 	return s
 }
 

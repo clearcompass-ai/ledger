@@ -566,6 +566,14 @@ func TestSequencer_processOne_HappyPath(t *testing.T) {
 	if got := s.metrics.processed.Load(); got != 1 {
 		t.Errorf("metrics.processed = %d, want 1", got)
 	}
+	// commitRaceWindow must have observed the successful commit's
+	// emit-to-commit duration. Without this observation, the stale_pct
+	// run-over-run analysis is blind on the commit side.
+	if snap := s.metrics.commitRaceWindow.Snapshot(); snap.Count != 1 {
+		t.Errorf("commitRaceWindow.Count = %d, want 1 "+
+			"(every successful commit must observe)",
+			snap.Count)
+	}
 }
 
 func TestSequencer_processOne_StateGuard_NotPending_NoOp(t *testing.T) {
@@ -865,6 +873,12 @@ func TestDrainHeapInto_InBatchDuplicate_SilentDiscard(t *testing.T) {
 	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 1 {
 		t.Errorf("staleDuplicatesDiscarded = %d, want 1 (in-batch dup silently discarded)", got)
 	}
+	if got := s.metrics.staleInBatchDuplicates.Load(); got != 1 {
+		t.Errorf("staleInBatchDuplicates = %d, want 1 (split counter for sub-case A)", got)
+	}
+	if got := s.metrics.staleCrossBatchDuplicates.Load(); got != 0 {
+		t.Errorf("staleCrossBatchDuplicates = %d, want 0 (this is the in-batch path)", got)
+	}
 	if got := s.metrics.staleCrashRecoveries.Load(); got != 0 {
 		t.Errorf("staleCrashRecoveries = %d, want 0 (in-batch dup must NOT fire recovery)", got)
 	}
@@ -874,6 +888,47 @@ func TestDrainHeapInto_InBatchDuplicate_SilentDiscard(t *testing.T) {
 	if s.committerHeap.Len() != 0 {
 		t.Errorf("heap remaining = %d, want 0 (both original and dup popped)",
 			s.committerHeap.Len())
+	}
+}
+
+// TestDrainHeapInto_InBatchDuplicate_ObservesStaleAge pins the
+// emittedAt → staleAgeHistogram observation in sub-case A. Without
+// this, the run-over-run stale_pct comparison is blind: we'd see the
+// counter move but not the underlying timing distribution.
+func TestDrainHeapInto_InBatchDuplicate_ObservesStaleAge(t *testing.T) {
+	w := newFakeWAL()
+	ts := newFakeTessera()
+	s := newTestSequencerNoCommitter(t, w, ts, Config{})
+
+	_, hash := buildEntry(t, "stale-age-observation")
+	emittedAt := time.Now().Add(-50 * time.Millisecond) // back-date 50ms
+	original := stagedEntry{
+		Seq: 0, Hash: hash, emittedAt: emittedAt,
+		Row: store.EntryRow{SequenceNumber: 0, CanonicalHash: hash, Status: store.StatusLive},
+	}
+	duplicate := stagedEntry{
+		Seq: 0, Hash: hash, emittedAt: emittedAt,
+		Row: store.EntryRow{SequenceNumber: 0, CanonicalHash: hash, Status: store.StatusLive},
+	}
+	heap.Push(s.committerHeap, original)
+	heap.Push(s.committerHeap, duplicate)
+	w.mu.Lock()
+	w.state[hash] = wal.StatePending
+	w.mu.Unlock()
+
+	pending := s.drainHeapInto(context.Background(), nil)
+	if len(pending) != 1 {
+		t.Fatalf("pending size = %d, want 1", len(pending))
+	}
+
+	snap := s.metrics.staleAgeHistogram.Snapshot()
+	if snap.Count != 1 {
+		t.Fatalf("staleAgeHistogram.Count = %d, want 1 (one dup observed)",
+			snap.Count)
+	}
+	if snap.MinUs < 50_000 {
+		t.Errorf("staleAgeHistogram.MinUs = %d, want >= 50000 "+
+			"(back-dated emittedAt was 50ms ago)", snap.MinUs)
 	}
 }
 
@@ -923,6 +978,12 @@ func TestDrainHeapInto_CrossBatchStale_RoutesToRecover(t *testing.T) {
 	}
 	if got := s.metrics.staleDuplicatesDiscarded.Load(); got != 1 {
 		t.Errorf("staleDuplicatesDiscarded = %d, want 1 (state was Sequenced — silent discard)", got)
+	}
+	if got := s.metrics.staleInBatchDuplicates.Load(); got != 0 {
+		t.Errorf("staleInBatchDuplicates = %d, want 0 (this is cross-batch, not in-batch)", got)
+	}
+	if got := s.metrics.staleCrossBatchDuplicates.Load(); got != 1 {
+		t.Errorf("staleCrossBatchDuplicates = %d, want 1 (split counter for sub-case B)", got)
 	}
 	if got := s.metrics.staleCrashRecoveries.Load(); got != 0 {
 		t.Errorf("staleCrashRecoveries = %d, want 0 (state already advanced)", got)

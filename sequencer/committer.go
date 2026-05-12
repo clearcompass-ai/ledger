@@ -136,6 +136,32 @@ type stagedEntry struct {
 	// and the 0x0A index entry (entry.Signatures[0].Bytes). nil for
 	// tombstones.
 	Entry *envelope.Entry
+
+	// emittedAt is the wall-clock time the stage-1 worker pushed
+	// this tuple into commitCh. Two derived histograms make the
+	// race-window mechanism observable directly:
+	//
+	//   commitRaceWindow = time.Since(emittedAt) at successful
+	//                      commit. The "how long did the original
+	//                      take to commit" measurement, recorded
+	//                      from applyPostCommitForOne.
+	//   staleAge         = time.Since(emittedAt) at stale-discard.
+	//                      The "how long after emit was this
+	//                      duplicate detected" measurement, recorded
+	//                      from drainHeapInto (sub-case A) and
+	//                      committerStaleRecover (sub-case B).
+	//
+	// Hypothesis: if staleAge tracks commitRaceWindow run-over-run,
+	// the in-batch-dup rate is driven by the race window the
+	// committer's flush-latency creates. Run-over-run variance in
+	// stale_pct should correlate with run-over-run variance in
+	// commitRaceWindow distribution.
+	//
+	// Zero value (default time.Time{}) is treated as "unset"; the
+	// observation callsites guard with !IsZero() so test-mode
+	// tuples built outside the emit path don't pollute the
+	// histogram.
+	emittedAt time.Time
 }
 
 // committerHeap is a min-heap on Seq, used by the committer to
@@ -351,6 +377,10 @@ func (s *Sequencer) drainHeapInto(ctx context.Context, pending []stagedEntry) []
 				// Sub-case (A) — in-batch duplicate. The original is
 				// in pending; silently discard.
 				s.metrics.staleDuplicatesDiscarded.Add(1)
+				s.metrics.staleInBatchDuplicates.Add(1)
+				if !stale.emittedAt.IsZero() {
+					s.metrics.staleAgeHistogram.Observe(time.Since(stale.emittedAt))
+				}
 				s.logger.Debug("sequencer: in-batch duplicate discarded",
 					"seq", stale.Seq,
 					"hash", hashPrefix(stale.Hash),
@@ -542,6 +572,10 @@ func (s *Sequencer) committerStaleRecover(ctx context.Context, e stagedEntry, ex
 		// Scenario 1 — normal race. Original commit path already
 		// advanced WAL state. Nothing to do.
 		s.metrics.staleDuplicatesDiscarded.Add(1)
+		s.metrics.staleCrossBatchDuplicates.Add(1)
+		if !e.emittedAt.IsZero() {
+			s.metrics.staleAgeHistogram.Observe(time.Since(e.emittedAt))
+		}
 		s.logger.Debug("sequencer: stale duplicate discarded (WAL state already advanced)",
 			"seq", e.Seq,
 			"hash", hashPrefix(e.Hash),
@@ -593,6 +627,17 @@ func (s *Sequencer) committerStaleRecover(ctx context.Context, e stagedEntry, ex
 // transition WAL state and update metrics, but skip the sidecar
 // writes (which usually depend on the entry_index row being durable).
 func (s *Sequencer) applyPostCommitForOne(ctx context.Context, e stagedEntry, dbCommitted bool) {
+	// commitRaceWindow observation — the time from stage-1 emit to
+	// "the original committed". The structural pair to staleAge:
+	// when the two distributions are read together, the in-batch-dup
+	// mechanism is fully characterised (every successful commit is
+	// observed here; every stale-discard is observed by the
+	// staleAgeHistogram). For tombstones the measurement is equally
+	// meaningful — they go through the same channel and the same
+	// batch-flush cadence.
+	if !e.emittedAt.IsZero() && s.metrics.commitRaceWindow != nil {
+		s.metrics.commitRaceWindow.Observe(time.Since(e.emittedAt))
+	}
 	if e.Tombstone {
 		if err := s.wal.MarkManual(ctx, e.Hash); err != nil {
 			if !isContextErr(err) {

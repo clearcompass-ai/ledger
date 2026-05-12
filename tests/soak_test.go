@@ -1966,6 +1966,43 @@ func logScalingEvidence(t *testing.T, op *soakLedger) {
 		t.Logf("scaling_evidence wal_submit{%s}",
 			op.WAL.SubmitLatencySnapshot().Format())
 	}
+
+	// Stale-duplicate diagnostics — quantify the mechanism driving
+	// the stale_pct number. Three correlated views, read together:
+	//
+	//   stale_split           in-batch vs cross-batch breakdown.
+	//                         In-batch dominates ⇒ drainOnce cycle
+	//                         N+1 caught hashes still mid-flight on
+	//                         cycle N. Cross-batch dominates ⇒ the
+	//                         drainOnce iterator IS re-fetching
+	//                         already-committed hashes (rare in
+	//                         practice; would indicate a slow WAL).
+	//   commit_race_window    Per-committed-entry distribution of
+	//                         (emit → applyPostCommitForOne) time.
+	//                         The "how long does the original take
+	//                         to commit" baseline.
+	//   stale_age             Per-stale-dup distribution of (emit →
+	//                         stale-discard) time. If this tracks
+	//                         commit_race_window, the in-batch race
+	//                         is the cause; if it's much larger,
+	//                         something else (e.g., heap retention)
+	//                         is.
+	//
+	// Cross-run grep target for testing the "stale_pct climbed
+	// between runs" hypothesis: compare commit_race_window mean +
+	// p99 across two runs. If commit_race_window rose, the higher
+	// stale_pct is explained. If it didn't, the cause is upstream
+	// (drainOnce cadence variance, scheduler jitter).
+	t.Logf("scaling_evidence stale_split{in_batch=%d cross_batch=%d sum=%d crash_recoveries=%d}",
+		seqMetrics.StaleInBatchDuplicates,
+		seqMetrics.StaleCrossBatchDuplicates,
+		seqMetrics.StaleDuplicatesDiscarded,
+		seqMetrics.StaleCrashRecoveries,
+	)
+	t.Logf("scaling_evidence commit_race_window{%s}",
+		seqMetrics.CommitRaceWindow.Format())
+	t.Logf("scaling_evidence stale_age{%s}",
+		seqMetrics.StaleAgeHistogram.Format())
 }
 
 // dumpSMTDiagnostics prints unambiguous evidence about which entries
