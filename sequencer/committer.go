@@ -191,37 +191,6 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 	timerActive := false
 	pending := make([]stagedEntry, 0, s.cfg.CommitMaxBatchSize)
 
-	// drainHeapIntoPending pulls every contiguous-prefix tuple from
-	// the heap into pending, until the next heap min isn't seq+1.
-	// Note: nextExpectedSeq is NOT advanced here — flushBatch
-	// advances it only after a successful PG commit, so a flush
-	// failure leaves the cursor untouched and a retry re-pushes the
-	// same prefix.
-	drainHeapIntoPending := func() {
-		for s.committerHeap.Len() > 0 {
-			head := (*s.committerHeap)[0]
-			expected := s.nextExpectedSeq.Load() + uint64(len(pending))
-			// Stale duplicate: the entry's row is already in
-			// entry_index from a prior commit. Route to
-			// committerStaleRecover to handle the two distinct
-			// scenarios — normal-race (silent discard) vs.
-			// crash-recovery (advance lagging WAL state). See the
-			// method docs for the discriminator.
-			if head.Seq < expected {
-				stale := heap.Pop(s.committerHeap).(stagedEntry)
-				s.committerStaleRecover(ctx, stale, expected)
-				continue
-			}
-			if head.Seq != expected {
-				// Gap — wait. metrics.commitWaitOnGap is bumped by
-				// the caller, since we don't know if this is a fresh
-				// arrival or a re-check.
-				return
-			}
-			pending = append(pending, heap.Pop(s.committerHeap).(stagedEntry))
-		}
-	}
-
 	// flushPending attempts a single batched commit. On success,
 	// nextExpectedSeq advances by len(pending) and pending is reset.
 	// On failure, the batch is re-pushed to the heap (preserves the
@@ -279,7 +248,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 			// Graceful shutdown — use a fresh background context
 			// (5s timeout) for the final flush so an in-flight tx
 			// can complete even though the parent ctx is cancelled.
-			drainHeapIntoPending()
+			pending = s.drainHeapInto(ctx, pending)
 			stopTimer()
 			if len(pending) > 0 {
 				flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -297,7 +266,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 			if !ok {
 				// Channel closed (defensive — current wiring never
 				// closes commitCh).
-				drainHeapIntoPending()
+				pending = s.drainHeapInto(ctx, pending)
 				stopTimer()
 				if len(pending) > 0 {
 					flushPending(ctx)
@@ -315,7 +284,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 				s.metrics.commitWaitOnGap.Add(1)
 			}
 
-			drainHeapIntoPending()
+			pending = s.drainHeapInto(ctx, pending)
 			if len(pending) >= s.cfg.CommitMaxBatchSize {
 				stopTimer()
 				flushPending(ctx)
@@ -328,6 +297,81 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 			flushPending(ctx)
 		}
 	}
+}
+
+// drainHeapInto pulls every contiguous-prefix tuple from the heap
+// into pending and returns the updated pending slice. nextExpectedSeq
+// is NOT advanced here — flushBatch advances it only after a
+// successful PG commit, so a flush failure leaves the cursor
+// untouched and a retry re-pushes the same prefix.
+//
+// STALE-DUPLICATE DISCRIMINATION
+//
+// When the heap head's Seq is below the expected next seq it's a
+// duplicate, but there are TWO structurally distinct sub-cases and
+// conflating them produces the WAL.Sequence-after-commit WARN noise.
+//
+//	(A) IN-BATCH DUPLICATE: committed <= head.Seq < expected.
+//	    The original tuple for head.Seq is already in the current
+//	    `pending` slice and will be flushed in the very next
+//	    flushPending call. The WAL state is still Pending — the
+//	    original's WAL.Sequence call hasn't fired yet because
+//	    flushPending hasn't run. If we called committerStaleRecover
+//	    here, its MetaState probe would see Pending and incorrectly
+//	    fire the crash-recovery path, racing the impending
+//	    applyPostCommitForOne call. The recovery's WAL.Sequence wins
+//	    (advances state to Sequenced → shipper picks it up → Shipped)
+//	    and then the original's WAL.Sequence fails with
+//	    "state shipped, want pending". Discard silently — the
+//	    original will do the WAL transition.
+//
+//	(B) TRUE CROSS-BATCH STALE: head.Seq < committed. The original
+//	    was committed in a PRIOR batch and the WAL state has already
+//	    (or will soon) advance. Route to committerStaleRecover —
+//	    its MetaState probe correctly distinguishes
+//	    Sequenced/Shipped (silent discard) from Pending (the rare
+//	    crash-recovery case).
+//
+// The discriminator is head.Seq < committed vs. head.Seq >= committed:
+// precisely the "have we already advanced past this seq" question.
+// committed == nextExpectedSeq.Load() at the start of each iteration;
+// it doesn't shift during drain (flushPending is what advances it).
+//
+// Returns the (possibly grown) pending slice; the caller MUST take the
+// returned value because Go's append-into-existing-slice semantics
+// don't update the caller's slice header when capacity is exhausted.
+func (s *Sequencer) drainHeapInto(ctx context.Context, pending []stagedEntry) []stagedEntry {
+	for s.committerHeap.Len() > 0 {
+		head := (*s.committerHeap)[0]
+		committed := s.nextExpectedSeq.Load()
+		expected := committed + uint64(len(pending))
+		if head.Seq < expected {
+			stale := heap.Pop(s.committerHeap).(stagedEntry)
+			if stale.Seq >= committed {
+				// Sub-case (A) — in-batch duplicate. The original is
+				// in pending; silently discard.
+				s.metrics.staleDuplicatesDiscarded.Add(1)
+				s.logger.Debug("sequencer: in-batch duplicate discarded",
+					"seq", stale.Seq,
+					"hash", hashPrefix(stale.Hash),
+					"committed", committed,
+					"pending_size", len(pending),
+				)
+				continue
+			}
+			// Sub-case (B) — true cross-batch stale.
+			s.committerStaleRecover(ctx, stale, expected)
+			continue
+		}
+		if head.Seq != expected {
+			// Gap — wait. metrics.commitWaitOnGap is bumped by the
+			// caller (committerLoop), since we don't know if this is a
+			// fresh arrival or a re-check.
+			return pending
+		}
+		pending = append(pending, heap.Pop(s.committerHeap).(stagedEntry))
+	}
+	return pending
 }
 
 // flushBatch commits all entries in batch to entry_index in a single
