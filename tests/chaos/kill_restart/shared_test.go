@@ -12,18 +12,41 @@ on the returned cycleResult.
 
 THE CYCLE FLOW
 
-  1. New + Start harness (clean, no chaos)
-  2. Kill (so we can re-launch with chaos config pre-armed)
-  3. Restart with LEDGER_CHAOS_PANIC_AT + AFTER_N
-  4. Submit until the panic fires (or budget exhausted)
-  5. Confirm panic marker in stderr
-  6. Clean Restart (no chaos)
-  7. Submit submitAfterRestart more
-  8. WaitForDrain to (accepted + post-restart)
-  9. AssertInvariants — counts, gaps, leapfrog, SMT root
+ 1. New + Start harness (clean, no chaos)
+ 2. Kill (so we can re-launch with chaos config pre-armed)
+ 3. Restart with LEDGER_CHAOS_PANIC_AT + AFTER_N
+ 4. Seed N entries via HTTP — fills the WAL so the committer
+    has work for ≥ AFTER_N batches
+ 5. ACTIVELY wait for the chaos marker to appear in stderr
+    (chaos.Trigger emits the marker, then os.Exit(2)s)
+ 6. Confirm marker found (this is the load-bearing assertion)
+ 7. Clean Restart (no chaos)
+ 8. Submit submitAfterRestart more
+ 9. WaitForDrain to (accepted + post-restart)
+ 10. AssertInvariants — counts, gaps, leapfrog, SMT root
 
-The variant tests run AFTER step 9 and assert variant-specific
+The variant tests run AFTER step 10 and assert variant-specific
 properties on top of the universal invariants.
+
+WHY WE ACTIVELY WAIT FOR THE MARKER (NOT JUST SUBMIT-AND-BAIL)
+
+The earlier version of this helper submitted a fixed batch of
+entries and then immediately asserted the marker. That was a
+race: chaos.Trigger fires inside the COMMITTER goroutine (not
+the HTTP request goroutine), so an HTTP 202 returns well before
+the committer reaches AFTER_N batches. With AFTER_N=3 and
+batch_size=4 and ~1s per batch commit (cosign + PG-commit
+dominate), the committer needs ~3s of wall-clock to fire — but
+200 Submits complete in ~2s, so the test consistently exited
+before chaos had a chance to fire and reported a spurious
+"marker not found".
+
+The fix is two-phase: SEED the WAL with enough entries to
+guarantee ≥ AFTER_N batches will form, then POLL stderr for the
+marker until it appears OR the wait window expires. This makes
+the helper deterministic on slow committers without artificial
+sleeps, and produces a clear failure message ("marker not seen
+within 60s") when the chaos infrastructure is genuinely broken.
 */
 package kill_restart
 
@@ -52,6 +75,29 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+// chaosWaitWindow caps how long phase 1 will poll for the chaos
+// marker after seeding the WAL. 60s is conservative: with
+// AFTER_N≤5 and batch_size=4 and ~1s per batch, the committer
+// reaches the kill point in <10s typically. The 60s ceiling exists
+// to bound the failure-mode wall-clock when the chaos infra is
+// genuinely broken — without it a regression would manifest as a
+// 5-minute hang instead of a clean diagnostic failure.
+const chaosWaitWindow = 60 * time.Second
+
+// chaosPollInterval is how often the wait loop checks for the
+// marker. Short enough to feel snappy, long enough not to burn
+// CPU. The marker is durable (already written to stderr before
+// os.Exit) so missing one poll cycle has no consequence.
+const chaosPollInterval = 200 * time.Millisecond
+
+// driveLoadDuringWait, when true, has the wait loop send a Submit
+// every poll cycle to keep the committer busy. Defensive against
+// scenarios where the committer drains the seeded entries before
+// the AFTER_N-th batch completes (shouldn't happen with the seed
+// counts the variant tests use, but cheap insurance). Failed
+// submits (connection-refused after the kill) are ignored.
+const driveLoadDuringWait = true
 
 // cycleOpts controls one kill-restart cycle invocation.
 type cycleOpts struct {
@@ -101,44 +147,115 @@ func killRestartCycle(t *testing.T, opts cycleOpts) cycleResult {
 
 	submitter := h.NewSubmitter(t, "kr-tok", "did:example:kr", 1_000_000)
 
-	// Phase 1: submit until the panic fires.
+	// ─── Phase 1a — SEED ───────────────────────────────────────────
+	// Drive load to fill the WAL so the committer has enough
+	// work for ≥ AFTER_N batches. Submit returns 202 as soon as
+	// the entry is admitted to WAL Pending — the commit (where
+	// chaos.Trigger lives) happens asynchronously in the committer
+	// goroutine. The seed phase only puts entries in flight; the
+	// wait phase below proves chaos fires on one of them.
 	result := cycleResult{h: h}
-	deadline := time.Now().Add(90 * time.Second)
-	for i := 0; i < opts.submitBeforeKill && time.Now().Before(deadline); i++ {
+	seedDeadline := time.Now().Add(20 * time.Second)
+	for i := 0; i < opts.submitBeforeKill && time.Now().Before(seedDeadline); i++ {
 		r, err := submitter.Submit(ctx, []byte("pre-kill"), harness.SubmitOpts{})
-		if err == nil && r.StatusCode == http.StatusAccepted {
+		if err != nil {
+			// Submit error during seed usually means the chaos
+			// kill landed faster than expected (connection refused
+			// after os.Exit) — that's the GOOD path. Fall through
+			// to the wait phase, which will observe the marker.
+			break
+		}
+		if r.StatusCode == http.StatusAccepted {
 			result.acceptedBefore++
 			if opts.captureHashes {
 				result.acceptedHashes = append(result.acceptedHashes, r.CanonicalHash)
 			}
 			continue
 		}
-		if result.acceptedBefore >= int64(opts.afterN) {
+		// Non-202 (503 backpressure, 5xx, etc.) — stop seeding;
+		// either chaos is firing or something else is wrong, and
+		// the wait phase will discriminate.
+		break
+	}
+	t.Logf("phase 1a SEED: %d entries 202'd in <=%v (kill point: %s, AFTER_N=%d)",
+		result.acceptedBefore, 20*time.Second, opts.killPoint, opts.afterN)
+	if result.acceptedBefore == 0 {
+		t.Fatalf("zero submissions accepted in seed — harness misconfigured (HTTP server down OR auth broken)")
+	}
+	if int(result.acceptedBefore) < opts.afterN {
+		// We may still see chaos fire if MaxBatchSize<acceptedBefore
+		// produces enough batches, but warn so a future maintainer
+		// can adjust seed sizing.
+		t.Logf("phase 1a WARN: only %d 202s but AFTER_N=%d — committer needs to form ≥ AFTER_N batches from this; if marker doesn't fire, increase submitBeforeKill",
+			result.acceptedBefore, opts.afterN)
+	}
+
+	// ─── Phase 1b — WAIT FOR CHAOS ─────────────────────────────────
+	// Poll for the marker in stderr. chaos.Trigger emits the
+	// marker via fmt.Fprintf(os.Stderr, …) BEFORE calling
+	// os.Exit(2), and the harness multiplexes the subprocess's
+	// stderr into a thread-safe buffer (process.go), so a
+	// markerFound check sees the marker as soon as the chaos
+	// goroutine's write hits the pipe.
+	chaosStart := time.Now()
+	chaosDeadline := chaosStart.Add(chaosWaitWindow)
+	var markerSeenAt time.Duration
+	for time.Now().Before(chaosDeadline) {
+		if markerFound(h, opts.killPoint) {
+			markerSeenAt = time.Since(chaosStart)
 			break
 		}
-	}
-	t.Logf("phase 1: accepted %d entries before panic (kill point: %s, AFTER_N=%d)",
-		result.acceptedBefore, opts.killPoint, opts.afterN)
-	if result.acceptedBefore == 0 {
-		t.Fatalf("zero submissions accepted before panic — harness misconfigured")
+		if driveLoadDuringWait {
+			// Cheap insurance: keep the committer busy. If the
+			// subprocess has already exited, this Submit returns
+			// quickly with connection-refused; the error is
+			// intentionally ignored.
+			r, err := submitter.Submit(ctx, []byte("drive-load"), harness.SubmitOpts{})
+			if err == nil && r.StatusCode == http.StatusAccepted {
+				result.acceptedBefore++
+				if opts.captureHashes {
+					result.acceptedHashes = append(result.acceptedHashes, r.CanonicalHash)
+				}
+			}
+		}
+		time.Sleep(chaosPollInterval)
 	}
 
-	// Formalise the dead state.
+	// ─── Phase 1c — HARVEST + LOAD-BEARING ASSERTION ───────────────
+	// Formalise the dead state. If chaos fired, the subprocess is
+	// already gone (os.Exit terminated it); h.Kill is a cleanup
+	// no-op that reaps the zombie. The Process.Kill flow accepts
+	// a non-signal exit (the os.Exit code 2) as an expected
+	// outcome only when called after chaos; the discarded error
+	// here is fine because the marker assertion below is the real
+	// load-bearing check.
 	_ = h.Kill()
 
-	// Panic marker must be in stderr — proves the process
-	// died from chaos.Trigger at the intended point.
 	if !markerFound(h, opts.killPoint) {
-		t.Errorf("chaos panic marker not found in stderr for %s — kill may have been unrelated\n--- stderr ---\n%s",
-			opts.killPoint, h.Process().StderrSnapshot())
+		t.Fatalf(
+			"chaos marker not found in stderr for %s after %v wait\n"+
+				"  seeded %d entries; AFTER_N=%d\n"+
+				"  this means chaos.Trigger never fired — either the\n"+
+				"  callsite isn't reached (production code changed?),\n"+
+				"  the env var isn't propagating, OR the committer is\n"+
+				"  too slow for the seed to produce AFTER_N batches\n"+
+				"  within the wait window. Diagnose by inspecting the\n"+
+				"  batch-committed log lines (should be ≥ AFTER_N).\n"+
+				"--- stderr ---\n%s",
+			opts.killPoint, chaosWaitWindow,
+			result.acceptedBefore, opts.afterN,
+			h.Process().StderrSnapshot(),
+		)
 	}
+	t.Logf("phase 1b CHAOS FIRED: marker observed after %v (kill point: %s)",
+		markerSeenAt.Round(10*time.Millisecond), opts.killPoint)
 
-	// Phase 2: clean restart.
+	// ─── Phase 2 — CLEAN RESTART ───────────────────────────────────
 	if err := h.Restart(ctx, harness.RestartOpts{}); err != nil {
-		t.Fatalf("clean Restart after panic: %v", err)
+		t.Fatalf("clean Restart after chaos kill: %v", err)
 	}
 
-	// Phase 3: more submissions.
+	// ─── Phase 3 — POST-RESTART SUBMISSIONS ────────────────────────
 	for i := 0; i < opts.submitAfterRestart; i++ {
 		_, err := submitter.Submit(ctx, []byte("post-restart"), harness.SubmitOpts{})
 		if err != nil {
@@ -147,16 +264,23 @@ func killRestartCycle(t *testing.T, opts cycleOpts) cycleResult {
 	}
 	result.postRestartHash = opts.submitAfterRestart
 
+	// ─── Phase 4 — DRAIN + UNIVERSAL INVARIANTS ────────────────────
 	expected := result.acceptedBefore + int64(opts.submitAfterRestart)
 	if err := h.WaitForDrain(ctx, expected, 3*time.Minute); err != nil {
-		t.Fatalf("WaitForDrain post-restart: %v", err)
+		t.Fatalf("WaitForDrain post-restart: %v (expected %d entries to materialize)", err, expected)
 	}
 	h.AssertInvariants(ctx, t, expected)
 	return result
 }
 
-// markerFound scans the subprocess stderr for the chaos panic
-// marker + the matching kill point.
+// markerFound scans the subprocess stderr for the chaos kill
+// marker + the matching kill point. Both must be present —
+// chaos.Marker alone could match an unrelated stderr line that
+// happens to contain "LEDGER_CHAOS_PANIC", and name=<kp> alone
+// could match a log line that mentioned the kill-point string
+// without the chaos kill actually happening. Both together
+// uniquely identify a chaos.Trigger that fired at the intended
+// injection point.
 func markerFound(h *harness.Harness, kp harness.KillPoint) bool {
 	if h.Process() == nil {
 		return false
@@ -203,7 +327,7 @@ func assertNoHashCollisions(ctx context.Context, t *testing.T, h *harness.Harnes
 // gaps AND no leapfrog. AssertInvariants already covers this.
 //
 // This helper supplements with a presence check: the test
-// PASSED only if the panic marker fired (confirmed in shared
+// PASSED only if the chaos marker fired (confirmed in shared
 // flow), the PG state is consistent, AND the count of
 // post-restart Sequenced→Shipped transitions matches the
 // pre-kill accepted count (approximated by entry_index size
