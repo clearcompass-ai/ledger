@@ -86,9 +86,10 @@ func newWitnessFixture(t *testing.T, netID cosign.NetworkID, n int) *witnessFixt
 		wf.servers = append(wf.servers, srv)
 		wf.signers = append(wf.signers, signer)
 		// Public-key bytes: x||y uncompressed. The
-		// gossipnet.WitnessKeysFromDIDs path used by production
-		// resolves did:key into the same form; here we construct
-		// it directly from the test signer's underlying key.
+		// witness.KeysFromDIDs path (attesta v1.2) used by
+		// production resolves did:key into the same form; here we
+		// construct it directly from the test signer's underlying
+		// key.
 		pub := append(priv.X.Bytes(), priv.Y.Bytes()...)
 		wf.pubKeys = append(wf.pubKeys, types.WitnessPublicKey{
 			ID:        signer.PubKeyID(),

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
+	"github.com/clearcompass-ai/attesta/witness"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/deps"
@@ -189,7 +190,7 @@ func wireRotationHandler(
 	currentKeys, schemeTag, err := witnessclient.LoadCurrentSet(ctx, d.PgPool.DB)
 	if err != nil {
 		// First boot — no rows yet. Use genesis config.
-		currentKeys, err = gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+		currentKeys, err = witness.KeysFromDIDs(cfg.GenesisWitnessSet)
 		if err != nil {
 			d.Logger.Error("rotation handler: witness key resolution from genesis",
 				"error", err)
@@ -262,7 +263,7 @@ func startEquivocationMonitor(
 	d *deps.AppDeps,
 	bundle *gossipnet.Bundle,
 ) {
-	witnessKeys, werr := gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+	witnessKeys, werr := witness.KeysFromDIDs(cfg.GenesisWitnessSet)
 	if werr != nil {
 		d.Logger.Error("equivocation monitor: witness key resolution",
 			"error", werr)
