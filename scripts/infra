@@ -209,6 +209,18 @@ case "${SUBCMD}" in
         echo "  go test -tags=integration -count=1 ./integration/ # integration + e2e"
         echo "  go test -count=1 -run TestS3_ ./bytestore/        # S3 adapter against SeaweedFS"
         echo
+        echo "Full sweep with DSN exported — use 'make test' (NOT 'go test ./...'):"
+        echo "  make test                                         # -p 1 serializes packages against shared DB"
+        echo "  make test-chaos                                   # chaos suite (build-tag isolated)"
+        echo "  make test-soak                                    # soak SLO suite (build-tag isolated)"
+        echo
+        echo "Why 'make test' and not 'go test ./...': every integration-style"
+        echo "test (builder/cursor_reader, store/smt_state, etc.) shares this"
+        echo "single Postgres instance. Default 'go test ./...' runs packages in"
+        echo "parallel up to GOMAXPROCS, so concurrent TRUNCATE / INSERT on shared"
+        echo "tables produces 'got [], want [1..5]' / 'duplicate entry seq=0' /"
+        echo "'Count = 18, want 16' interference. 'make test' uses -p 1 to fix this."
+        echo
         echo "Tear down: ./scripts/infra down"
         ;;
 

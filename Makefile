@@ -28,9 +28,26 @@ build: ## Compile every package
 	$(GO) build ./...
 
 test: ## Run all tests (integration tests skip without ATTESTA_TEST_DSN)
-	$(GO) test ./...
+	# -p 1 serializes PACKAGES (not tests within a package). Required because
+	# every integration-style test (builder/cursor_reader, store/smt_state,
+	# cmd/rebuild-projection, tests/p4, etc.) shares the same Postgres
+	# database via ATTESTA_TEST_DSN. Default `go test ./...` runs packages
+	# in parallel up to GOMAXPROCS, so concurrent TRUNCATE / INSERT against
+	# shared tables produce the well-known "got [], want [1..5]" /
+	# "duplicate entry seq=0" / "Count = 18, want 16" interference pattern.
+	#
+	# Walltime impact is negligible — the slow packages (tessera ~70s,
+	# shipper ~9s, wal ~6s) don't parallelize internally; serializing the
+	# packages costs <5% compared to the parallel run that fails
+	# nondeterministically.
+	#
+	# This is the same pattern golang/build, k8s.io/kubernetes, and
+	# transparency-dev/tessera use for their shared-DB test suites.
+	$(GO) test -p 1 ./...
 
-test-short: ## Run only unit tests (skip integration via -short)
+test-short: ## Run only unit tests (skip integration via -short, packages parallel-safe)
+	# -short causes requireDB() in integration tests to t.Skip, so no
+	# shared-DB tests run. Package parallelism is safe.
 	$(GO) test -short ./...
 
 vet: ## go vet across all packages
@@ -346,8 +363,13 @@ test-differential: ## Differential writer-vs-reader test (requires ATTESTA_TEST_
 # + on PRs that touch lifecycle/wal/store/tests/chaos. Slower
 # than unit tests (Badger fsync, repeated panic-recover cycles,
 # inject latency injection); not a per-PR merge gate by default.
+#
+# -p 1: chaos packages under tests/chaos/{breaker,kill_restart,...}
+# share ATTESTA_TEST_DSN via tests/chaos/harness/postgres.go's
+# Pool. Default package parallelism would cause concurrent kill /
+# restart / breaker scenarios to step on each other's PG state.
 test-chaos: ## Chaos suite (lifecycle, WAL durability, shutdown ordering, inject)
-	$(GO) test -tags=chaos -count=1 -timeout=10m ./tests/chaos/...
+	$(GO) test -tags=chaos -count=1 -p 1 -timeout=10m ./tests/chaos/...
 
 # Soak SLO suite. Build-tag-isolated. Runs the production-shape
 # pipeline against a real bytestore + Postgres for a configurable
