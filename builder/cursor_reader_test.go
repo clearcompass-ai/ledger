@@ -35,11 +35,18 @@ import (
 // returns a pool. Skips the test when the DSN is unset — same
 // behavior as store/commitment_fetcher_test.go's requireDB so the
 // suite is uniformly skip-friendly under `go test -short ./...`.
+//
+// LEDGER_TEST_SERIAL: warn-only guard. See the equivalent comment
+// in store/commitment_fetcher_test.go::requireDB.
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
 		t.Skip("ATTESTA_TEST_DSN unset; skipping integration-style cursor reader test")
+	}
+	if os.Getenv("LEDGER_TEST_SERIAL") != "1" {
+		t.Logf("WARNING: LEDGER_TEST_SERIAL != 1; tests are running outside `make test`. " +
+			"Cross-package contamination is possible. Use `make test` for deterministic runs.")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -95,65 +102,131 @@ func seedSeqs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seqs ...uin
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Bootstrap + tailing
-// ─────────────────────────────────────────────────────────────────
-
-func TestCursorReader_BeginBatch_BootstrapsFromDB(t *testing.T) {
-	pool := requireDB(t)
-	defer pool.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// expectBatch is the centralized contract assertion for "given
+// cursor=C and entry_index seeded with S, the next BeginBatch
+// returns want". Tests that exercise a single BeginBatch through
+// the full reset → preset → seed → call → assert pipe use this.
+// Tests with richer flows (commit, rollback, multi-batch) drive
+// the reader directly.
+//
+// presetCursor=-1 means "leave at the resetState default" (also
+// -1, the post-0004 fresh-install sentinel). Any other value
+// triggers an explicit UPDATE so the test exercises a non-zero
+// baseline.
+//
+// want=nil asserts BeginBatch returns nil (the gap-detection
+// early-exit branch at cursor_reader.go:167-178). want=[] asserts
+// an empty non-nil slice (entry_index simply had nothing to
+// return); the distinction is structural and the helper preserves
+// it via equalSlice.
+func expectBatch(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	presetCursor int64,
+	seeds []uint64,
+	batchSize int,
+	want []uint64,
+) {
+	t.Helper()
 	resetState(t, ctx, pool)
-
-	// Pre-set cursor to 4 in the database. First BeginBatch must
-	// honor that — entries 0..4 should NOT come back.
-	//
-	// Seeds + cursor encode the post-migration-0004 contract:
-	// seq=0 is genesis; cursor=-1 is the "no sequences processed
-	// yet" sentinel. Pre-setting cursor=4 means "seqs 0..4 are
-	// processed", so the next batch starts at expectedFirst=5.
-	if _, err := pool.Exec(ctx,
-		`UPDATE builder_cursor SET last_processed_sequence = 4 WHERE id = 1`,
-	); err != nil {
-		t.Fatalf("preset cursor: %v", err)
+	if presetCursor != -1 {
+		if _, err := pool.Exec(ctx,
+			`UPDATE builder_cursor SET last_processed_sequence = $1 WHERE id = 1`,
+			presetCursor,
+		); err != nil {
+			t.Fatalf("preset cursor=%d: %v", presetCursor, err)
+		}
 	}
-	seedSeqs(t, ctx, pool, 0, 1, 2, 3, 4, 5, 6)
+	if len(seeds) > 0 {
+		seedSeqs(t, ctx, pool, seeds...)
+	}
 
 	r := NewCursorReader(store.NewSequenceCursor(pool))
-	got, err := r.BeginBatch(ctx, nil, 100)
+	got, err := r.BeginBatch(ctx, nil, batchSize)
 	if err != nil {
 		t.Fatalf("BeginBatch: %v", err)
 	}
-	want := []uint64{5, 6}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Bootstrap + tailing
+// ─────────────────────────────────────────────────────────────────
+
+// TestCursorReader_BeginBatch_BootstrapsFromDB pins the non-zero
+// baseline path: cursor preset to 5, entry_index seeded with 1..7
+// (the "earlier" seqs simulate rows compacted away — Postgres only
+// reveals seq>cursor to BeginBatch's SELECT). The gap detector
+// confirms entries[0].Seq=6 matches expectedFirst=6 and returns
+// 6..7. This is the production scenario: a long-running ledger has
+// processed millions of seqs; cursor sits at the high-water mark;
+// new seqs append at the tail.
+//
+// Distinct from BeginBatch_GapBetweenCursorAndFirstSeq_ReturnsEmpty
+// (which exercises the same code path with cursor=-1, the fresh-
+// install sentinel) — both branches of the gap detector need a
+// dedicated test, otherwise a regression that breaks one slips by.
+func TestCursorReader_BeginBatch_BootstrapsFromDB(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	expectBatch(t, ctx, pool,
+		5,                                  // preset cursor (non-zero baseline)
+		[]uint64{1, 2, 3, 4, 5, 6, 7},      // seeds — earlier seqs filtered by SQL
+		100,                                // batchSize
+		[]uint64{6, 7},                     // want
+	)
+}
+
+// TestCursorReader_BeginBatch_TailsEntryIndexInOrder pins the
+// ascending-order invariant: out-of-order INSERTs are sorted ASC
+// by the cursor's SELECT. Seeds start at seq=0 because resetState
+// puts the cursor at -1 (post-0004 sentinel), so expectedFirst=0
+// and the gap detector requires seq=0 first.
 func TestCursorReader_BeginBatch_TailsEntryIndexInOrder(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resetState(t, ctx, pool)
-	// Post-0004 contract: cursor=-1 is the fresh-install sentinel,
-	// so the first BeginBatch's expectedFirst is 0. Seeds must
-	// therefore include seq=0 — the gap-detection branch at
-	// cursor_reader.go:167-178 rejects any first-row Seq that
-	// differs from expectedFirst with (nil, nil).
-	seedSeqs(t, ctx, pool, 2, 0, 1, 4, 3) // out-of-order insert
 
-	r := NewCursorReader(store.NewSequenceCursor(pool))
-	got, err := r.BeginBatch(ctx, nil, 100)
-	if err != nil {
-		t.Fatalf("BeginBatch: %v", err)
-	}
-	// Despite out-of-order INSERT, the cursor reader returns ASC.
-	want := []uint64{0, 1, 2, 3, 4}
-	if !equalSlice(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
+	expectBatch(t, ctx, pool,
+		-1,                                 // resetState default cursor
+		[]uint64{2, 0, 1, 4, 3},            // out-of-order seeds
+		100,                                // batchSize
+		[]uint64{0, 1, 2, 3, 4},            // want (ASC)
+	)
+}
+
+// TestCursorReader_BeginBatch_GapBetweenCursorAndFirstSeq_ReturnsEmpty
+// pins the load-bearing gap-detection branch at
+// cursor_reader.go:167-178. With cursor=-1 (post-0004 sentinel)
+// expectedFirst is 0. Seeds [1, 2, 3] — deliberately skipping
+// seq=0 — make entries[0].Seq=1, trip the gap, and BeginBatch
+// returns nil.
+//
+// This is the structural defense against the sequencer's
+// per-entry-tx commit-order race: if the builder ever leapfrogged
+// over a missing seq, the SMT would be permanently missing that
+// leaf (the v0.2.0 leaf_count=99999/100000 bug, fixed by migration
+// 0004). A regression that removes the early-exit would surface
+// here as a non-nil batch on a gapped seed.
+func TestCursorReader_BeginBatch_GapBetweenCursorAndFirstSeq_ReturnsEmpty(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	expectBatch(t, ctx, pool,
+		-1,                                 // resetState default cursor
+		[]uint64{1, 2, 3},                  // gap: seq=0 missing
+		100,                                // batchSize
+		nil,                                // want — gap detected, early-exit
+	)
 }
 
 // ─────────────────────────────────────────────────────────────────

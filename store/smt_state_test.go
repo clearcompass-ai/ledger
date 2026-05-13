@@ -40,7 +40,7 @@ func TestPostgresLeafStore_SatisfiesSDKInterface(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	// Satisfaction via the interface — the assertion compiles iff
 	// every method aligns. The interface variable is exercised via
@@ -140,7 +140,7 @@ func TestPostgresLeafStore_SatisfiesSDKInterface(t *testing.T) {
 func TestPostgresLeafStore_ContextCancelled(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
-	resetFixtures(t, context.Background(), pool)
+	resetFixtures(t, context.Background(), pool, smtFixtureTables...)
 
 	ls := NewPostgresLeafStore(pool)
 
@@ -201,7 +201,7 @@ func TestPostgresLeafStore_SetBatchTx_RoundTrip(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ls := NewPostgresLeafStore(pool)
 
@@ -271,7 +271,7 @@ func TestPostgresLeafStore_SetBatchTx_Idempotent(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ls := NewPostgresLeafStore(pool)
 
@@ -326,7 +326,7 @@ func TestPostgresLeafStore_SetBatchTx_Empty(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ls := NewPostgresLeafStore(pool)
 
@@ -362,7 +362,7 @@ func TestPostgresNodeStore_PutBatchTx_RoundTrip(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ns := NewPostgresNodeStore(ctx, pool, 1024)
 
@@ -447,7 +447,7 @@ func TestPostgresNodeStore_PutBatchTx_CachePromotion(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ns := NewPostgresNodeStore(ctx, pool, 1024)
 	if ns.Len() != 0 {
@@ -494,7 +494,7 @@ func TestPostgresNodeStore_PutBatchTx_NilNode(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
 
 	ns := NewPostgresNodeStore(ctx, pool, 1024)
 

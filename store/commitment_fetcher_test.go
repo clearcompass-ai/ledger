@@ -82,11 +82,22 @@ const testLogDID = "did:web:test-ledger.example"
 // is provided. The integration docker-compose harness sets
 // ATTESTA_TEST_DSN to its Postgres; local developers point it at
 // any disposable database.
+//
+// LEDGER_TEST_SERIAL: warn-only guard for the shared-DB serialization
+// contract. The Makefile's `test` and `test-chaos` targets set it;
+// `go test ./...` directly (or IDE-launched runs) does not. The
+// warning is reversible — strict failure would block IDE debugging
+// — but the log line is visible in CI so accidental parallel runs
+// show up in test output rather than as flaky "Count=18 want 16".
 func requireDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("ATTESTA_TEST_DSN")
 	if dsn == "" {
 		t.Skip("ATTESTA_TEST_DSN unset; skipping integration-style fetcher test")
+	}
+	if os.Getenv("LEDGER_TEST_SERIAL") != "1" {
+		t.Logf("WARNING: LEDGER_TEST_SERIAL != 1; tests are running outside `make test`. " +
+			"Cross-package contamination is possible. Use `make test` for deterministic runs.")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -133,32 +144,45 @@ func seedEntry(
 	}
 }
 
-// resetFixtures truncates every table any test in this package
-// writes to. Called before each test so suites that share a
-// database stay isolated.
+// Named convenience sets — declared at package scope so each test
+// names its working set by intent rather than by literal table
+// list. New tables that join the package's write surface are added
+// here once; the test that introduces them references the right
+// set. Drift between "what a test writes" and "what its
+// resetFixtures clears" surfaces in code review as a mismatched
+// constant name, not as a silent leak three migrations later.
 //
-// Why every store-package table, not just the per-test set:
-// commitment_fetcher_test and smt_state_test share this helper.
-// If resetFixtures clears only the commitment tables, a smt_state
-// test running first leaves smt_leaves / jellyfish_nodes rows
-// behind, and a later commitment test (or another smt_state test)
-// sees Count() = N + previous_residue instead of N. That's the
-// "Count = 18, want 16" / "Count = 19, want 1" failure pattern.
+// smt_root_state is intentionally absent: singleton (id=1) under a
+// CHECK constraint, TRUNCATE would violate it. builder_cursor and
+// schema_migrations are likewise singleton/control tables and must
+// not appear here.
+var (
+	commitmentFixtureTables = []string{
+		"commitment_split_id",
+		"entry_index CASCADE",
+	}
+	smtFixtureTables = []string{
+		"smt_leaves",
+		"jellyfish_nodes",
+	}
+)
+
+// resetFixtures truncates the named tables in order. Tests pass
+// the convenience sets (`commitmentFixtureTables...`,
+// `smtFixtureTables...`) declaring their working set explicitly.
 //
-// smt_root_state is a singleton (id=1) seeded by migration 0002 /
-// reset to Jellyfish empty by 0003 — we leave it alone here; no
-// test in this package writes to it, and TRUNCATE would violate
-// the singleton CHECK constraint.
-func resetFixtures(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+// Calling with no tables is an error — the empty-set bug was the
+// original "Count = 18, want 16" leak, and silent no-op would
+// re-introduce it. Tests must declare their set; the compiler can't
+// help, so the helper does.
+func resetFixtures(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tables ...string) {
 	t.Helper()
-	for _, stmt := range []string{
-		`TRUNCATE TABLE commitment_split_id`,
-		`TRUNCATE TABLE entry_index CASCADE`,
-		`TRUNCATE TABLE smt_leaves`,
-		`TRUNCATE TABLE jellyfish_nodes`,
-	} {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
-			t.Fatalf("reset fixtures: %v", err)
+	if len(tables) == 0 {
+		t.Fatal("resetFixtures: no tables specified; pass commitmentFixtureTables... / smtFixtureTables... explicitly")
+	}
+	for _, table := range tables {
+		if _, err := pool.Exec(ctx, "TRUNCATE TABLE "+table); err != nil {
+			t.Fatalf("reset fixtures (%s): %v", table, err)
 		}
 	}
 }
@@ -175,7 +199,7 @@ func TestFindCommitmentEntries_NoMatch(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, commitmentFixtureTables...)
 
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
 	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
@@ -201,7 +225,7 @@ func TestFindCommitmentEntries_SingleRow(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, commitmentFixtureTables...)
 
 	var splitID [32]byte
 	splitID[0] = 0x01
@@ -237,7 +261,7 @@ func TestFindCommitmentEntries_Equivocation(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, commitmentFixtureTables...)
 
 	var splitID [32]byte
 	splitID[0] = 0xEE
@@ -275,7 +299,7 @@ func TestFindCommitmentEntries_TesseraReadError(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
 	ctx := context.Background()
-	resetFixtures(t, ctx, pool)
+	resetFixtures(t, ctx, pool, commitmentFixtureTables...)
 
 	var splitID [32]byte
 	splitID[0] = 0xCC
@@ -330,7 +354,7 @@ func TestFindCommitmentEntries_EmptySchemaID(t *testing.T) {
 func TestFindCommitmentEntries_ContextCancelled(t *testing.T) {
 	pool := requireDB(t)
 	defer pool.Close()
-	resetFixtures(t, context.Background(), pool)
+	resetFixtures(t, context.Background(), pool, commitmentFixtureTables...)
 
 	reader := &fakeEntryReader{entries: map[uint64][]byte{}}
 	fetcher := NewPostgresCommitmentFetcher(pool, reader, testLogDID)
@@ -391,6 +415,85 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// TestResetFixtures_LeavesNoRows is the regression test for the
+// original "Count = 18, want 16" / "Count = 19, want 1" leak. It
+// seeds every table in this package's write surface with a known
+// row, runs resetFixtures with both convenience sets, and asserts
+// each table is empty afterward.
+//
+// If someone adds a new table to the write surface without listing
+// it in {commitment,smt}FixtureTables, the seed in this test for
+// that table won't get cleaned up — the final assertion fires, the
+// CI build fails, and the omission is caught at the moment it
+// ships rather than three migrations later when a flaky soak run
+// surfaces "Count = N + previous_residue".
+func TestResetFixtures_LeavesNoRows(t *testing.T) {
+	pool := requireDB(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	// Seed entry_index + commitment_split_id via the existing helper.
+	var splitID [32]byte
+	splitID[0] = 0xFF
+	seedEntry(t, ctx, pool, 1, splitID)
+
+	// Seed smt_leaves with a raw INSERT (no test helper for this
+	// table; the production smt_state.go exec path uses identical
+	// SQL, so this is faithful to the real write surface).
+	var leafKey [32]byte
+	leafKey[0] = 0xAA
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO smt_leaves (leaf_key, origin_tip, authority_tip, updated_at)
+		VALUES ($1, $2, $3, NOW())`,
+		leafKey[:], []byte("origin-tip-bytes"), []byte("authority-tip-bytes"),
+	); err != nil {
+		t.Fatalf("seed smt_leaves: %v", err)
+	}
+
+	// Seed jellyfish_nodes with a content-addressed payload.
+	var nodeHash [32]byte
+	nodeHash[0] = 0xBB
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO jellyfish_nodes (node_hash, payload)
+		VALUES ($1, $2)
+		ON CONFLICT (node_hash) DO NOTHING`,
+		nodeHash[:], []byte("payload-bytes"),
+	); err != nil {
+		t.Fatalf("seed jellyfish_nodes: %v", err)
+	}
+
+	// Pre-flight: every seeded table should have a row.
+	preflightTables := []string{"entry_index", "commitment_split_id", "smt_leaves", "jellyfish_nodes"}
+	for _, table := range preflightTables {
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("pre-flight count %s: %v", table, err)
+		}
+		if count == 0 {
+			t.Fatalf("pre-flight %s: count=0, expected > 0 — seed didn't land", table)
+		}
+	}
+
+	// Reset both convenience sets — covers the full write surface.
+	resetFixtures(t, ctx, pool, commitmentFixtureTables...)
+	resetFixtures(t, ctx, pool, smtFixtureTables...)
+
+	// Every table must be empty. If a new table joins the write
+	// surface without joining a fixture set, its row survives this
+	// step and the assertion below fires.
+	for _, table := range preflightTables {
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("post-reset count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Errorf("post-reset %s: %d rows, expected 0 "+
+				"— table is in the write surface but not in any fixture set",
+				table, count)
+		}
+	}
 }
 
 // Compile-time pinning: ensure the test still references the SDK's
