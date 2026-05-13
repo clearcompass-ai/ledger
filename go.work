@@ -1,28 +1,12 @@
-// Go workspace pinning the two modules in this repo:
+// Go workspace pinning the modules in this repo.
 //
-//   - .                          — github.com/clearcompass-ai/ledger
-//                                  (the Ledger sequencer + supporting cmds).
-//   - ./cmd/standalone-witness   — github.com/clearcompass-ai/standalone-witness
-//                                  (the witness daemon — physically separate
-//                                  module so it cannot import Ledger code).
-//
-// The two modules share NOTHING beyond the SDK
-// (github.com/clearcompass-ai/attesta) which both pin to the same
-// version. CI runs `go build ./...` from the repo root, which
-// honours this workspace and builds both modules together.
-//
-// To break the workspace temporarily (e.g., to confirm the witness
-// can be built standalone with no awareness of the Ledger):
-//
-//	GOWORK=off go build ./cmd/standalone-witness/...
-//
-// That run resolves attesta from cmd/standalone-witness/go.mod alone
-// — and would fail loudly if the witness daemon ever introduced a
-// stray import of github.com/clearcompass-ai/ledger/*.
+// Only the root module (github.com/clearcompass-ai/ledger) lives
+// here. The standalone-witness daemon is hosted in its own
+// repository (github.com/clearcompass-ai/standalone-witness); it
+// imports the same Attesta SDK (github.com/clearcompass-ai/attesta)
+// but its module graph is resolved independently — it never imports
+// github.com/clearcompass-ai/ledger.
 
 go 1.25.7
 
-use (
-	.
-	./cmd/standalone-witness
-)
+use .

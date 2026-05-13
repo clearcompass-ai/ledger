@@ -29,8 +29,8 @@ Each Process gets a unique TCP port via net.Listen(":0") — the
 OS picks a free port. The listener is closed immediately;
 there's a small TOCTOU window where another process could grab
 the same port before the ledger binds, but in practice this is
-the standard Go pattern (used by httptest.NewServer and
-identical to what cmd/standalone-witness/tests does).
+the standard Go pattern (used by httptest.NewServer and similar
+test harnesses elsewhere in the ecosystem).
 
 LOG CAPTURE
 
@@ -322,8 +322,7 @@ func LedgerBinaryPath(t *testing.T) string {
 // PickFreePort returns a TCP port that was free at the instant
 // of the call. The standard "ask the kernel for :0, close,
 // reuse" pattern; small TOCTOU window but matches what
-// httptest.NewServer does and what cmd/standalone-witness/tests
-// uses.
+// httptest.NewServer does.
 func PickFreePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")

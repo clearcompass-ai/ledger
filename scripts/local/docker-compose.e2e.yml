@@ -55,10 +55,11 @@ services:
       retries: 30
 
   # ─────────────────────────────────────────────────────────────────
-  # standalone-witness — the network witness daemon. Built from
-  # cmd/standalone-witness/ (its OWN go.mod). Reads its PEM key +
-  # bootstrap doc from a host-bind-mounted volume populated by
-  # scripts/run-e2e.sh.
+  # standalone-witness — the network witness daemon. The Dockerfile
+  # fetches and builds the witness module from
+  # github.com/clearcompass-ai/standalone-witness (its OWN repo +
+  # go.mod). Reads its PEM key + bootstrap doc from a host-bind-
+  # mounted volume populated by scripts/run-e2e.sh.
   # ─────────────────────────────────────────────────────────────────
   witness:
     build:

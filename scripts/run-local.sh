@@ -11,11 +11,12 @@
 #
 # ARCHITECTURAL BOUNDARY:
 #
-#   The Ledger and the Witness are physically separate Go modules
-#   (cmd/standalone-witness/ has its own go.mod). The Ledger never
+#   The Ledger and the Witness are physically separate Go modules,
+#   hosted in different repositories (the witness daemon lives at
+#   github.com/clearcompass-ai/standalone-witness). The Ledger never
 #   imports witness-daemon code; the witness daemon never imports
 #   ledger code. This script orchestrates them as separate
-#   processes — each `go run` resolves through its own module.
+#   processes — `go run` fetches the witness module independently.
 #
 # Prerequisites (one-time setup):
 #
@@ -236,9 +237,16 @@ go run ./cmd/init-network \
     -witnesses="${WITNESS_COUNT}"
 
 # ── Spawn standalone witness daemons ──────────────────────────────
-# Each daemon is a SEPARATE go module (cmd/standalone-witness/go.mod).
-# The `go run` resolves through that module's pinned attesta version,
-# fully isolated from the Ledger module's dependency graph.
+# Each daemon is a SEPARATE go module hosted at
+# github.com/clearcompass-ai/standalone-witness. The `go run`
+# resolves that module's own pinned attesta version, fully
+# isolated from the Ledger module's dependency graph.
+#
+# WITNESS_MODULE_VERSION pins the version fetched by `go run`.
+# Override (e.g., to a tagged release) by exporting it before
+# running this script.
+WITNESS_MODULE="github.com/clearcompass-ai/standalone-witness"
+WITNESS_MODULE_VERSION="${WITNESS_MODULE_VERSION:-latest}"
 : > "${WITNESS_PIDS_FILE}"
 ENDPOINTS=""
 echo "== spawning ${WITNESS_COUNT} witness daemon(s) =="
@@ -251,8 +259,7 @@ for i in $(seq 1 "${WITNESS_COUNT}"); do
         exit 1
     fi
     echo "  starting witness-${i} on :${port}  (log=${wlog})"
-    ( cd "${REPO_ROOT}/cmd/standalone-witness" && \
-      go run . \
+    ( GOWORK=off go run "${WITNESS_MODULE}@${WITNESS_MODULE_VERSION}" \
           -addr=":${port}" \
           -key-file="${wkey}" \
           -bootstrap="${NETWORK_BOOTSTRAP_FILE}" \
