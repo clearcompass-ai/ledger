@@ -253,6 +253,9 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		BatchSize:            4,
 		BatchMaxAge:          50 * time.Millisecond,
 		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
+		// Antispam (CT-pattern hash→seq dedup follower) — load-bearing.
+		// See tests/tessera_antispam_helper_test.go for full rationale.
+		Antispam: newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam")),
 	}, logger)
 	if merr != nil {
 		_ = walc.Close()

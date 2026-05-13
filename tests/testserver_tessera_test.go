@@ -37,6 +37,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -165,6 +166,9 @@ func buildRealTesseraSlots(
 		BatchSize:          batchSize,
 		BatchMaxAge:        batchMaxAge,
 		Signer:             signer,
+		// Antispam (CT-pattern hash→seq dedup follower) — load-bearing.
+		// See tests/tessera_antispam_helper_test.go for full rationale.
+		Antispam: newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam")),
 	}, logger)
 	if err != nil {
 		t.Fatalf("buildRealTesseraSlots: NewEmbeddedAppender: %v", err)

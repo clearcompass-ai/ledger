@@ -173,6 +173,11 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		BatchSize:            4,
 		BatchMaxAge:          50 * time.Millisecond,
 		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
+		// Antispam (CT-pattern hash→seq dedup follower) — load-bearing.
+		// Phase-2 restart re-opens the same on-disk volume so dedup
+		// survives the simulated crash; the path is the shared tileRoot.
+		// See tests/tessera_antispam_helper_test.go for full rationale.
+		Antispam: newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam")),
 	}, logger)
 	if mErr != nil {
 		_ = walc.Close()
