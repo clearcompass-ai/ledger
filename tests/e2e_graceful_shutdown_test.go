@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
@@ -77,6 +78,21 @@ type shutdownHarnessOpts struct {
 	backend    *localPublicURLBackend
 	tileRoot   string // shared Tessera POSIX dir across restarts; empty → t.TempDir
 	cleanFirst bool
+
+	// antispam, when non-nil, is reused by this harness invocation
+	// instead of being freshly allocated. The restart-style test
+	// (TestE2E_RestartCompletesShipping) passes the SAME instance
+	// to phase-1 and phase-2 — in a single-process test we can't
+	// re-acquire the Badger directory lock (AntispamStorage has no
+	// Close; lock persists until process exit), so the in-memory
+	// handle must be shared. This mirrors production semantics: a
+	// crashed-then-restarted process re-opens the same on-disk
+	// Badger and inherits the dedup state.
+	//
+	// nil → allocate a fresh Antispam at filepath.Join(tileRoot,
+	// "antispam"). Tests that only invoke startShutdownLedger once
+	// (no restart) leave this nil.
+	antispam tessera.Antispam
 }
 
 type shutdownHarness struct {
@@ -174,10 +190,17 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 		BatchMaxAge:          50 * time.Millisecond,
 		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
 		// Antispam (CT-pattern hash→seq dedup follower) — load-bearing.
-		// Phase-2 restart re-opens the same on-disk volume so dedup
-		// survives the simulated crash; the path is the shared tileRoot.
+		// Restart-style tests pre-allocate at the test level and pass
+		// via opts.antispam so the same Badger handle threads through
+		// both phase-1 and phase-2; the in-memory lock can't be
+		// re-acquired in a single-process simulated restart.
 		// See tests/tessera_antispam_helper_test.go for full rationale.
-		Antispam: newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam")),
+		Antispam: func() tessera.Antispam {
+			if opts.antispam != nil {
+				return opts.antispam
+			}
+			return newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam"))
+		}(),
 	}, logger)
 	if mErr != nil {
 		_ = walc.Close()
@@ -517,12 +540,27 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	// tile state — exactly the production restart path.
 	sharedTileRoot := t.TempDir()
 
+	// Antispam is allocated ONCE at the test level and threaded
+	// through both phase-1 and phase-2 via opts.antispam. In a
+	// real production restart, the process exits and the stale
+	// Badger lock is re-acquired by the new process. In this
+	// single-process simulation, the lock persists in memory (no
+	// Close on AntispamStorage), so we must share the in-memory
+	// handle. The on-disk dedup state is byte-identical either
+	// way — sharing the handle is the test-shape simulation of
+	// "process restart re-opens the same Badger DB".
+	ctxAntispam, cancelAntispam := context.WithCancel(context.Background())
+	defer cancelAntispam()
+	sharedAntispam := newAntispamForTest(t, ctxAntispam,
+		filepath.Join(sharedTileRoot, "antispam"))
+
 	// ── Step 1: submit n, cancel mid-flight ─────────────────────────
 	h1 := startShutdownLedger(t, shutdownHarnessOpts{
 		walPath:    walDir,
 		backend:    backend,
 		tileRoot:   sharedTileRoot,
 		cleanFirst: true,
+		antispam:   sharedAntispam,
 	})
 	h1.seedSession(t, "tok-restart", "did:example:restart-exchange", 1000)
 
@@ -558,6 +596,7 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 		backend:    backend,
 		tileRoot:   sharedTileRoot,
 		cleanFirst: false, // keep entry_index rows
+		antispam:   sharedAntispam,
 	})
 	defer h2.stop(t)
 
