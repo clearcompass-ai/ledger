@@ -132,9 +132,11 @@ func TestEquivocationMonitor_DetectsAndPublishes(t *testing.T) {
 	peerSigner := cosign.NewECDSAWitnessSigner(peerKP.PrivateKey)
 
 	// Two heads at the SAME tree_size but DIFFERENT root_hash —
-	// the cryptographic equivocation shape.
-	headA := types.TreeHead{TreeSize: 100, RootHash: [32]byte{0xAA}}
-	headB := types.TreeHead{TreeSize: 100, RootHash: [32]byte{0xBB}}
+	// the cryptographic equivocation shape. SMTRoot also differs
+	// to mirror real divergence (state forks alongside log forks);
+	// non-zero values are required by attesta v0.8.0+ Validate.
+	headA := types.TreeHead{TreeSize: 100, RootHash: [32]byte{0xAA}, SMTRoot: [32]byte{0xA5}}
+	headB := types.TreeHead{TreeSize: 100, RootHash: [32]byte{0xBB}, SMTRoot: [32]byte{0xB5}}
 	cosA := cosignHead(t, ws, headA, netID)
 	cosB := cosignHead(t, ws, headB, netID)
 
@@ -206,7 +208,7 @@ func TestEquivocationMonitor_NoFalsePositiveOnIdenticalHeads(t *testing.T) {
 
 	peerKP, _ := did.GenerateDIDKeySecp256k1()
 	peerSigner := cosign.NewECDSAWitnessSigner(peerKP.PrivateKey)
-	head := types.TreeHead{TreeSize: 50, RootHash: [32]byte{0x42}}
+	head := types.TreeHead{TreeSize: 50, RootHash: [32]byte{0x42}, SMTRoot: [32]byte{0x42, 0x57}}
 	cos := cosignHead(t, ws, head, netID)
 
 	store := sdkgossip.NewInMemoryStore()
@@ -249,8 +251,8 @@ func TestEquivocationMonitor_NoFalsePositiveOnDifferentSizes(t *testing.T) {
 
 	peerKP, _ := did.GenerateDIDKeySecp256k1()
 	peerSigner := cosign.NewECDSAWitnessSigner(peerKP.PrivateKey)
-	headA := types.TreeHead{TreeSize: 50, RootHash: [32]byte{0xAA}}
-	headB := types.TreeHead{TreeSize: 60, RootHash: [32]byte{0xBB}}
+	headA := types.TreeHead{TreeSize: 50, RootHash: [32]byte{0xAA}, SMTRoot: [32]byte{0xA5}}
+	headB := types.TreeHead{TreeSize: 60, RootHash: [32]byte{0xBB}, SMTRoot: [32]byte{0xB5}}
 	cosA := cosignHead(t, ws, headA, netID)
 	cosB := cosignHead(t, ws, headB, netID)
 
