@@ -86,6 +86,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
 	"github.com/clearcompass-ai/attesta/exchange/policy"
+	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/admission"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -246,6 +247,13 @@ type SubmissionDeps struct {
 	// Production wires the resolver against the schema registry
 	// + entry store; the wiring lands in a PR-E follow-up.
 	PolicyContext *admission.PolicyContext
+
+	// EvidenceChainFetcher is the types.EntryFetcher wired into
+	// the PR-F evidence-chain gate (admission.VerifyEvidenceChainSurgical).
+	// nil disables the gate even when Gates.EvidenceChain=true —
+	// same capability/intent split as PolicyContext. Production
+	// wires *store.PostgresEntryFetcher here.
+	EvidenceChainFetcher types.EntryFetcher
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,6 +455,23 @@ func prepareSubmission(
 				return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
 					http.StatusInternalServerError, "tree head verification failed")
 			}
+		}
+	}
+
+	// ── Step 4e: Surgical evidence-chain walk (PR-F gate 4) ───────
+	// Surgical predicate (admission.ShouldWalkEvidenceChain): walks
+	// chains ONLY for Path C (scope-authority) entries. Walking
+	// every entry's chain at admission would be the wrong cost
+	// shape at 100-150/sec. Default OFF; flipped via
+	// LEDGER_ADMISSION_EVIDENCE_CHAIN_ENABLE.
+	if deps.Gates.EvidenceChain && deps.EvidenceChainFetcher != nil {
+		if _, err := admission.VerifyEvidenceChainSurgical(ctx, entry, deps.LogDID, deps.EvidenceChainFetcher); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("evidence chain verification failed", "error", err)
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "evidence chain verification failed")
 		}
 	}
 
