@@ -28,22 +28,40 @@ build: ## Compile every package
 	$(GO) build ./...
 
 test: ## Run all tests (integration tests skip without ATTESTA_TEST_DSN)
-	# -p 1 serializes PACKAGES (not tests within a package). Required because
-	# every integration-style test (builder/cursor_reader, store/smt_state,
-	# cmd/rebuild-projection, tests/p4, etc.) shares the same Postgres
-	# database via ATTESTA_TEST_DSN. Default `go test ./...` runs packages
-	# in parallel up to GOMAXPROCS, so concurrent TRUNCATE / INSERT against
-	# shared tables produce the well-known "got [], want [1..5]" /
-	# "duplicate entry seq=0" / "Count = 18, want 16" interference pattern.
+	# -p 1 serializes PACKAGES (not tests within a package). Defense-in-
+	# depth against cross-package contamination: every integration-style
+	# test (builder/cursor_reader, store/smt_state, cmd/rebuild-projection,
+	# tests/p4, etc.) shares the same Postgres database via
+	# ATTESTA_TEST_DSN. Default `go test ./...` runs packages in parallel
+	# up to GOMAXPROCS, so concurrent TRUNCATE / INSERT against shared
+	# tables produces the "got [], want [1..5]" / "duplicate entry seq=0"
+	# / "Count = 18, want 16" interference pattern.
 	#
-	# Walltime impact is negligible — the slow packages (tessera ~70s,
-	# shipper ~9s, wal ~6s) don't parallelize internally; serializing the
-	# packages costs <5% compared to the parallel run that fails
-	# nondeterministically.
+	# WALLTIME COST: -p 1 also serializes packages that DON'T touch the
+	# shared DB (tessera ~70s, shipper ~9s, cmd/ledger/boot/*, gossipnet,
+	# apitypes, latency, integrity, etc.). On a 4-core CI box the actual
+	# cost is ~30-50% over a clean parallel run, not <5%. The honest
+	# tradeoff: deterministic green at the cost of multi-core utilization.
 	#
-	# This is the same pattern golang/build, k8s.io/kubernetes, and
-	# transparency-dev/tessera use for their shared-DB test suites.
-	$(GO) test -p 1 ./...
+	# WHY THIS IS A v0 FIX: the v1 fix is per-test schema isolation —
+	# requireDB(t) creates a unique schema (test_<sanitize(t.Name())>_<rand>),
+	# runs migrations in it, sets search_path on every connection, and
+	# DROP SCHEMA CASCADE on cleanup. Packages then parallelize by
+	# construction because they write to disjoint schemas. `-p 1` becomes
+	# unnecessary once that lands; tracked as a follow-up.
+	#
+	# PRIOR ART (accurate framing): shared-DB Go test suites sometimes
+	# use `-p 1` as defense; k8s.io/kubernetes uses per-suite API server
+	# instances via ginkgo (not -p 1 against a long-lived Postgres),
+	# transparency-dev/tessera uses docker-compose with fresh state per
+	# test. The closest pattern that ACTUALLY uses -p 1 against a shared
+	# Postgres is golang/build's coordinator integration suite.
+	#
+	# LEDGER_TEST_SERIAL=1 is set so requireDB(t) can detect when tests
+	# are run outside this target (e.g., `go test ./...` directly, or
+	# `go test ./pkg/...` from an IDE) and log a warning. Strict failure
+	# would block IDE debugging; the warning is reversible.
+	LEDGER_TEST_SERIAL=1 $(GO) test -p 1 ./...
 
 test-short: ## Run only unit tests (skip integration via -short, packages parallel-safe)
 	# -short causes requireDB() in integration tests to t.Skip, so no
@@ -369,7 +387,7 @@ test-differential: ## Differential writer-vs-reader test (requires ATTESTA_TEST_
 # Pool. Default package parallelism would cause concurrent kill /
 # restart / breaker scenarios to step on each other's PG state.
 test-chaos: ## Chaos suite (lifecycle, WAL durability, shutdown ordering, inject)
-	$(GO) test -tags=chaos -count=1 -p 1 -timeout=10m ./tests/chaos/...
+	LEDGER_TEST_SERIAL=1 $(GO) test -tags=chaos -count=1 -p 1 -timeout=10m ./tests/chaos/...
 
 # Soak SLO suite. Build-tag-isolated. Runs the production-shape
 # pipeline against a real bytestore + Postgres for a configurable
