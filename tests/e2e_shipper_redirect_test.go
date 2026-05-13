@@ -55,6 +55,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/transparency-dev/tessera/storage/posix"
+	tposixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
@@ -240,6 +241,25 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		cancel()
 		t.Fatalf("posix.New: %v", derr)
 	}
+	// ANTISPAM (dedup) — load-bearing for the sequencer's drainOnce
+	// race tolerance. Without it, drainOnce N+1 re-picks-up a hash
+	// whose stage-1 worker from cycle N is still in flight; the
+	// re-spawned worker's AppendLeaf gets a FRESH seq (Tessera with
+	// nil antispam treats every Add as new), entry_index gets a
+	// status=2 ghost row at the fresh seq, and the shipper's
+	// hwmAdvancer contiguity invariant breaks at the first ghost.
+	//
+	// Reproducer: tessera/antispam_off_reproducer_test.go.
+	// Production-shape harness: tests/witnessed_harness_test.go:141.
+	antispamPath := filepath.Join(tileRoot, "antispam")
+	antispam, asErr := tposixantispam.NewAntispam(ctx, antispamPath, tposixantispam.AntispamOpts{})
+	if asErr != nil {
+		_ = walc.Close()
+		_ = walDB.Close()
+		pool.Close()
+		cancel()
+		t.Fatalf("tposixantispam.NewAntispam(%s): %v", antispamPath, asErr)
+	}
 	// CTX LIFETIME: Tessera's background goroutines listen to ctx
 	// for termination. shutdownChain.Run calls merkle.Close BEFORE
 	// cancelling ctx (see tests/shutdownchain_test.go) so Shutdown
@@ -253,6 +273,7 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 		BatchSize:            4,
 		BatchMaxAge:          50 * time.Millisecond,
 		PublicCheckpointPath: filepath.Join(tileRoot, "cosigned-checkpoint"),
+		Antispam:             antispam,
 	}, logger)
 	if merr != nil {
 		_ = walc.Close()
