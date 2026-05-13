@@ -390,13 +390,12 @@ func (s *PostgresNodeStore) Put(node smt.Node) ([32]byte, error) {
 	s.cachePutLocked(hash, node)
 	s.mu.Unlock()
 
-	_, err := s.db.Exec(s.ctx, `
+	if _, err := s.db.Exec(s.ctx, `
 		INSERT INTO jellyfish_nodes (node_hash, payload)
 		VALUES ($1, $2)
 		ON CONFLICT (node_hash) DO NOTHING`,
 		hash[:], node.Serialize(),
-	)
-	if err != nil {
+	); err != nil {
 		return [32]byte{}, fmt.Errorf("store/smt: put node %x: %w", hash[:8], err)
 	}
 	return hash, nil
@@ -423,13 +422,12 @@ func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node)
 	s.cachePutLocked(hash, node)
 	s.mu.Unlock()
 
-	_, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO jellyfish_nodes (node_hash, payload)
 		VALUES ($1, $2)
 		ON CONFLICT (node_hash) DO NOTHING`,
 		hash[:], node.Serialize(),
-	)
-	if err != nil {
+	); err != nil {
 		return [32]byte{}, fmt.Errorf("store/smt: put node tx %x: %w", hash[:8], err)
 	}
 	return hash, nil

@@ -348,3 +348,25 @@ test-differential: ## Differential writer-vs-reader test (requires ATTESTA_TEST_
 # inject latency injection); not a per-PR merge gate by default.
 test-chaos: ## Chaos suite (lifecycle, WAL durability, shutdown ordering, inject)
 	$(GO) test -tags=chaos -count=1 -timeout=10m ./tests/chaos/...
+
+# Soak SLO suite. Build-tag-isolated. Runs the production-shape
+# pipeline against a real bytestore + Postgres for a configurable
+# entry count, asserting the SLO floors:
+#   - admission_tps >= ATTESTA_SOAK_ADMISSION_TPS_FLOOR (default 100)
+#   - drain_tps     >= ATTESTA_SOAK_DRAIN_TPS_FLOOR     (default 50)
+#   - failure_rate  <= ATTESTA_SOAK_MAX_FAILURE_RATE    (default 0.001)
+#   - p99 latency   <= ATTESTA_SOAK_P99_BOUND_MS        (default 100)
+#
+# The `make` target is the CI entrypoint. It defers backend / Postgres
+# provisioning to scripts/run-soak.sh which auto-spins SeaweedFS +
+# Postgres in Docker when no cloud creds are present (CI default).
+# Local developers run `./scripts/run-soak.sh` directly with their
+# preferred backend env (gcs|s3|seaweedfs).
+#
+# CI sizing: a 5k-entry soak completes in ~60-90s on ubuntu-latest
+# with the SeaweedFS backend; SLO floors stay at the world-class
+# defaults so a regression that breaks production-shape throughput
+# fails the merge gate.
+test-soak: ## Soak SLO suite (entry-throughput + drain SLO floors against real bytestore)
+	ATTESTA_SOAK_ENTRIES?=5000
+	ATTESTA_SOAK_BYTESTORE_BACKEND=seaweedfs ./scripts/run-soak.sh

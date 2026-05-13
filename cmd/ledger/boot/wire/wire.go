@@ -62,6 +62,7 @@ import (
 	"github.com/clearcompass-ai/ledger/anchor"
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
+	"github.com/clearcompass-ai/ledger/apitypes"
 	"github.com/clearcompass-ai/ledger/builder"
 	"github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/deps"
@@ -215,6 +216,7 @@ func Wire(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	ship := composeShipper(cfg, d)
 	d.Shipper = ship
 	detector := composeIntegrityDetector(d)
+	smtDetector := composeSMTDetector(d)
 
 	// 10. Late-bound observable gauges (sequencer + shipper).
 	installLateBoundGauges(cfg, d, seq, ship)
@@ -225,7 +227,7 @@ func Wire(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	}
 
 	// 12. Start every long-running goroutine. WG joins.
-	startGoroutines(ctx, d, bl, seq, ship, detector)
+	startGoroutines(ctx, d, bl, seq, ship, detector, smtDetector)
 
 	return nil
 }
@@ -244,6 +246,7 @@ func composeStores(ctx context.Context, cfg Config, d *deps.AppDeps) *tessera.Te
 	}
 	d.NodeStore = store.NewPostgresNodeStore(ctx, pool, cacheSize)
 	d.TreeHeadStore = store.NewTreeHeadStore(pool)
+	d.SMTRootState = store.NewSMTRootStateStore(pool)
 
 	return tessera.NewTesseraAdapter(ctx, d.TesseraEmbedded, d.TileReader, d.Logger)
 }
@@ -643,12 +646,71 @@ func composeShipper(cfg Config, d *deps.AppDeps) *shipper.Shipper {
 }
 
 // composeIntegrityDetector builds the periodic sample-verify detector.
+//
+// The verifier consumes a tessera/client.TileFetcherFunc directly —
+// *tessera.TileReader.Fetch satisfies the upstream signature and
+// implements the .p/N→full fallback per the c2sp.org/tlog-tiles
+// contract. The pre-cleanup path used ReadEntryTile (which always
+// asked for the full-tile path) and FATAL'd at boot whenever Tessera
+// had only flushed a partial tile — that codepath is now deleted.
 func composeIntegrityDetector(d *deps.AppDeps) *integrity.Detector {
 	return integrity.NewDetector(
 		d.WALCommitter,
-		integrity.NewTesseraAdapter(d.TileReader),
+		integrity.NewVerifier(d.TileReader.Fetch),
 		integrity.DetectorConfig{Logger: d.Logger},
 	)
+}
+
+// composeSMTDetector builds the periodic SMT-root divergence
+// detector. Symmetric pair to composeIntegrityDetector: the
+// existing Detector samples WAL hash vs Tessera chronological tile
+// hash; SMTDetector samples smt_root_state.current_root vs the
+// SMTRoot bound into the witness-cosigned tree_head at the same
+// TreeSize. Closes the symmetric gap left by attesta v0.8.0's
+// dual-commitment binding.
+//
+// Both detectors run in parallel goroutines with independent
+// state; a divergence in either fatal-channels the process via
+// the same supervisor pattern.
+func composeSMTDetector(d *deps.AppDeps) *integrity.SMTDetector {
+	return integrity.NewSMTDetector(
+		smtRootStateAdapter{store: d.SMTRootState},
+		treeHeadStoreAdapter{store: d.TreeHeadStore},
+		integrity.SMTDetectorConfig{Logger: d.Logger},
+	)
+}
+
+// smtRootStateAdapter bridges *store.SMTRootStateStore (which
+// returns store.SMTRootState) to integrity.SMTRootStateReader
+// (which returns integrity.SMTRootSnapshot). The two structs have
+// identical shape; the adapter is a one-line lift kept here at the
+// composition root to preserve the integrity package's narrow
+// import surface (no store/ dependency in integrity/).
+type smtRootStateAdapter struct {
+	store *store.SMTRootStateStore
+}
+
+func (a smtRootStateAdapter) Read(ctx context.Context) (integrity.SMTRootSnapshot, error) {
+	st, err := a.store.Read(ctx)
+	if err != nil {
+		return integrity.SMTRootSnapshot{}, err
+	}
+	return integrity.SMTRootSnapshot{
+		CurrentRoot:         st.CurrentRoot,
+		CommittedThroughSeq: st.CommittedThroughSeq,
+	}, nil
+}
+
+// treeHeadStoreAdapter bridges *store.TreeHeadStore.GetBySize to
+// integrity.CosignedHeadAtSizeReader. Same rationale as
+// smtRootStateAdapter — keep store/ out of integrity/'s import
+// graph.
+type treeHeadStoreAdapter struct {
+	store *store.TreeHeadStore
+}
+
+func (a treeHeadStoreAdapter) GetBySize(ctx context.Context, size uint64) (*apitypes.CosignedTreeHead, error) {
+	return a.store.GetBySize(ctx, size)
 }
 
 // composeServers wires the public HTTP server (TLS-aware,
@@ -719,6 +781,7 @@ func startGoroutines(
 	seq *sequencer.Sequencer,
 	ship *shipper.Shipper,
 	detector *integrity.Detector,
+	smtDetector *integrity.SMTDetector,
 ) {
 	// HTTP server (TLS-aware).
 	lifecycle.SafeRunInWG(ctx, &d.WG, "http-server", d.Logger, d.Fatal, func() error {
@@ -791,12 +854,20 @@ func startGoroutines(
 		return nil
 	})
 
-	startAuditTelemetry(ctx, d, detector)
+	lifecycle.SafeRunInWG(ctx, &d.WG, "smt-detector", d.Logger, d.Fatal, func() error {
+		if err := smtDetector.Loop(ctx); err != nil && !ctxCanceledOrDeadline(err) {
+			d.Fatal <- fmt.Errorf("smt detector: %w", err)
+			return err
+		}
+		return nil
+	})
+
+	startAuditTelemetry(ctx, d, detector, smtDetector)
 }
 
 // startAuditTelemetry runs a 5-minute heartbeat: integrity counters,
 // cosign freshness, gossip-store growth.
-func startAuditTelemetry(ctx context.Context, d *deps.AppDeps, detector *integrity.Detector) {
+func startAuditTelemetry(ctx context.Context, d *deps.AppDeps, detector *integrity.Detector, smtDetector *integrity.SMTDetector) {
 	lifecycle.SafeRunInWG(ctx, &d.WG, "audit-telemetry", d.Logger, nil, func() error {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -808,6 +879,9 @@ func startAuditTelemetry(ctx context.Context, d *deps.AppDeps, detector *integri
 				d.Logger.Info("integrity audit",
 					"invariant_failures_total", detector.InvariantFailures(),
 					"samples_verified_total", detector.SamplesVerified(),
+					"smt_invariant_failures_total", smtDetector.InvariantFailures(),
+					"smt_samples_verified_total", smtDetector.SamplesVerified(),
+					"smt_samples_skipped_total", smtDetector.SamplesSkipped(),
 				)
 				if d.GossipPublisher != nil {
 					age := d.GossipPublisher.CosignAgeSeconds()

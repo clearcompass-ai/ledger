@@ -85,6 +85,14 @@ type Detector struct {
 	// with invariantFailures so administrators can compute a failure
 	// rate (failures / (failures + verified)) over a window.
 	samplesVerified atomic.Uint64
+
+	// samplesSkipped counts samples that bailed out because the
+	// tile wasn't yet flushed at the requested partial count
+	// (ErrTileNotYetFlushed) or the WAL had GC'd the entry. Pairs
+	// with samplesVerified + invariantFailures so SREs can compute
+	// three orthogonal rates: skip (Tessera lag), failure
+	// (divergence), and verify (healthy) over any window.
+	samplesSkipped atomic.Uint64
 }
 
 // NewDetector returns a Detector wired to the supplied surfaces.
@@ -148,12 +156,24 @@ func (d *Detector) SampleVerify(ctx context.Context) error {
 			// shipped + GC'd. Skip rather than treating as
 			// divergence; the GC retention buffer is the
 			// invariant that prevents this in production.
+			d.samplesSkipped.Add(1)
 			d.logger.Debug("integrity/detector: sample skipped (WAL miss)",
 				"seq", seq, "err", err)
 			continue
 		}
 		tesseraHash, err := d.verifier.HashAt(ctx, seq)
 		if err != nil {
+			// Tile not flushed at the requested partial count
+			// (transient; Tessera flushes at batch_max_age or
+			// batch_size boundaries). Skip rather than treating
+			// as divergence — the integrator will catch up; the
+			// next sample cycle will re-roll.
+			if errors.Is(err, ErrTileNotYetFlushed) {
+				d.samplesSkipped.Add(1)
+				d.logger.Debug("integrity/detector: sample skipped (tile not flushed)",
+					"seq", seq)
+				continue
+			}
 			d.invariantFailures.Add(1)
 			return fmt.Errorf("integrity/detector: verifier seq=%d: %w", seq, err)
 		}
@@ -185,6 +205,16 @@ func (d *Detector) InvariantFailures() uint64 {
 // with InvariantFailures to compute a failure rate.
 func (d *Detector) SamplesVerified() uint64 {
 	return d.samplesVerified.Load()
+}
+
+// SamplesSkipped returns the cumulative count of sample checks
+// that bailed out before reaching the divergence comparison —
+// WAL miss (GC'd entry) OR tile-not-yet-flushed. Pairs with
+// SamplesVerified + InvariantFailures to give SREs three
+// orthogonal counters: skip rate (Tessera lag / GC tail),
+// failure rate (divergence), verify rate (healthy).
+func (d *Detector) SamplesSkipped() uint64 {
+	return d.samplesSkipped.Load()
 }
 
 // Loop runs SampleVerify on a ticker until ctx is cancelled or the

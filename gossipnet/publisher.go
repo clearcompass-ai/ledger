@@ -241,6 +241,8 @@ func (p *STHPublisher) PublishCosignedHead(ctx context.Context, head types.Cosig
 
 	p.logger.Info("gossip publisher: STH published",
 		"tree_size", head.TreeSize,
+		"root_hash", fmt.Sprintf("%x", head.RootHash[:8]),
+		"smt_root", fmt.Sprintf("%x", head.SMTRoot[:8]),
 		"signatures", len(head.Signatures),
 		"lamport", nextLamport,
 	)

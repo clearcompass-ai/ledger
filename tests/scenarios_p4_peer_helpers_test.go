@@ -344,8 +344,16 @@ func p4MakeFinding(t *testing.T, ledgerEndpoint string, treeSize uint64) *findin
 	if _, err := rand.Read(rh[:]); err != nil {
 		t.Fatalf("p4MakeFinding rand: %v", err)
 	}
+	// SMTRoot derived from the same random source as RootHash so
+	// equal-RootHash heads also share an SMTRoot (the property
+	// peer-helper fixtures rely on for P4 round-trips). Required
+	// non-zero by attesta v0.8.0+ Validate.
+	var sr [32]byte
+	for i := range sr {
+		sr[i] = rh[i] ^ 0x5A
+	}
 	head := types.CosignedTreeHead{
-		TreeHead: types.TreeHead{RootHash: rh, TreeSize: treeSize},
+		TreeHead: types.TreeHead{RootHash: rh, SMTRoot: sr, TreeSize: treeSize},
 		Signatures: []types.WitnessSignature{
 			{
 				PubKeyID:  [32]byte{0x01},

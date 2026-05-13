@@ -58,14 +58,26 @@ func NewTreeHeadStore(db *pgxpool.Pool) *TreeHeadStore {
 	return &TreeHeadStore{db: db}
 }
 
-// InsertHead stores a new tree head fact. Idempotent — ignores conflict
-// if the same (tree_size, hash_algo) already exists.
-func (s *TreeHeadStore) InsertHead(ctx context.Context, treeSize uint64, rootHash [32]byte, hashAlgo uint16) error {
+// InsertHead stores a new tree head fact. Idempotent — ignores
+// conflict if the same (tree_size, hash_algo) already exists.
+//
+// smtRoot is the Sparse Merkle Tree state-projection root bound
+// into the witness-cosigned payload at this TreeSize (see
+// types.TreeHead.SMTRoot godoc, attesta SDK v0.8.0+). Callers
+// pass the zero array when the log publishes no SMT projection;
+// the storage layer makes no semantic interpretation of the bytes.
+func (s *TreeHeadStore) InsertHead(
+	ctx context.Context,
+	treeSize uint64,
+	rootHash [32]byte,
+	smtRoot [32]byte,
+	hashAlgo uint16,
+) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO tree_heads (tree_size, root_hash, hash_algo)
-		VALUES ($1, $2, $3)
+		INSERT INTO tree_heads (tree_size, root_hash, smt_root, hash_algo)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (tree_size, hash_algo) DO NOTHING`,
-		treeSize, rootHash[:], int16(hashAlgo),
+		treeSize, rootHash[:], smtRoot[:], int16(hashAlgo),
 	)
 	if err != nil {
 		return fmt.Errorf("store/tree_heads: insert head size=%d: %w", treeSize, err)
@@ -134,7 +146,7 @@ func (s *TreeHeadStore) Latest(ctx context.Context) (*CosignedTreeHead, error) {
 // distinct signers. Used for quorum-aware queries.
 func (s *TreeHeadStore) LatestCosigned(ctx context.Context, minSigs int) (*CosignedTreeHead, error) {
 	row := s.db.QueryRow(ctx, `
-		SELECT h.tree_size, h.root_hash, h.hash_algo, h.created_at
+		SELECT h.tree_size, h.root_hash, h.smt_root, h.hash_algo, h.created_at
 		FROM tree_heads h
 		WHERE (
 			SELECT COUNT(DISTINCT signer)
@@ -145,8 +157,8 @@ func (s *TreeHeadStore) LatestCosigned(ctx context.Context, minSigs int) (*Cosig
 		LIMIT 1`, minSigs)
 
 	var head CosignedTreeHead
-	var rootHash []byte
-	err := row.Scan(&head.TreeSize, &rootHash, &head.HashAlgo, &head.CreatedAt)
+	var rootHash, smtRoot []byte
+	err := row.Scan(&head.TreeSize, &rootHash, &smtRoot, &head.HashAlgo, &head.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -155,6 +167,9 @@ func (s *TreeHeadStore) LatestCosigned(ctx context.Context, minSigs int) (*Cosig
 	}
 	if len(rootHash) == 32 {
 		copy(head.RootHash[:], rootHash)
+	}
+	if len(smtRoot) == 32 {
+		copy(head.SMTRoot[:], smtRoot)
 	}
 
 	sigs, err := s.fetchSigs(ctx, head.TreeSize, head.HashAlgo)
@@ -169,14 +184,14 @@ func (s *TreeHeadStore) LatestCosigned(ctx context.Context, minSigs int) (*Cosig
 // Used by equivocation monitor to compare roots.
 func (s *TreeHeadStore) GetBySize(ctx context.Context, size uint64) (*CosignedTreeHead, error) {
 	var head CosignedTreeHead
-	var rootHash []byte
+	var rootHash, smtRoot []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT tree_size, root_hash, hash_algo, created_at
+		SELECT tree_size, root_hash, smt_root, hash_algo, created_at
 		FROM tree_heads
 		WHERE tree_size = $1
 		ORDER BY hash_algo ASC
 		LIMIT 1`, size,
-	).Scan(&head.TreeSize, &rootHash, &head.HashAlgo, &head.CreatedAt)
+	).Scan(&head.TreeSize, &rootHash, &smtRoot, &head.HashAlgo, &head.CreatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -186,6 +201,9 @@ func (s *TreeHeadStore) GetBySize(ctx context.Context, size uint64) (*CosignedTr
 	}
 	if len(rootHash) == 32 {
 		copy(head.RootHash[:], rootHash)
+	}
+	if len(smtRoot) == 32 {
+		copy(head.SMTRoot[:], smtRoot)
 	}
 
 	sigs, err := s.fetchSigs(ctx, head.TreeSize, head.HashAlgo)
@@ -202,13 +220,13 @@ func (s *TreeHeadStore) GetBySize(ctx context.Context, size uint64) (*CosignedTr
 
 func (s *TreeHeadStore) fetchLatest(ctx context.Context) (*CosignedTreeHead, error) {
 	var head CosignedTreeHead
-	var rootHash []byte
+	var rootHash, smtRoot []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT tree_size, root_hash, hash_algo, created_at
+		SELECT tree_size, root_hash, smt_root, hash_algo, created_at
 		FROM tree_heads
 		ORDER BY tree_size DESC, hash_algo DESC
 		LIMIT 1`,
-	).Scan(&head.TreeSize, &rootHash, &head.HashAlgo, &head.CreatedAt)
+	).Scan(&head.TreeSize, &rootHash, &smtRoot, &head.HashAlgo, &head.CreatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -218,6 +236,9 @@ func (s *TreeHeadStore) fetchLatest(ctx context.Context) (*CosignedTreeHead, err
 	}
 	if len(rootHash) == 32 {
 		copy(head.RootHash[:], rootHash)
+	}
+	if len(smtRoot) == 32 {
+		copy(head.SMTRoot[:], smtRoot)
 	}
 
 	sigs, err := s.fetchSigs(ctx, head.TreeSize, head.HashAlgo)

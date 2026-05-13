@@ -151,6 +151,109 @@ func startGossipObservers(
 
 	// Equivocation scanner (entry-level).
 	startEquivocationScanner(ctx, cfg, d, bundle)
+
+	// Witness-rotation handler. Built when the genesis witness set
+	// + NetworkID are configured; the SDK emitter is wired when the
+	// gossip Sink is available, falling back to the logging emitter
+	// otherwise. The handler stays nil if prerequisites are missing
+	// — callers grep d.RotationHandler == nil to know they're in
+	// a gossip-disabled deployment.
+	wireRotationHandler(ctx, cfg, d, bundle)
+}
+
+// wireRotationHandler constructs the witnessclient.RotationHandler
+// + SDK emitter and stores them on d.AppDeps. nil when the
+// genesis witness set + NetworkID prerequisites aren't met. The
+// handler is the consumer-facing entrypoint that future admin /
+// inbound-gossip paths call when a rotation message arrives;
+// today it's instantiated but has no caller — that's intentional,
+// the SDK v0.7.0 alignment shipping here exposes the surface for
+// the upcoming inbound-rotation consumer to wire against.
+func wireRotationHandler(
+	ctx context.Context,
+	cfg Config,
+	d *deps.AppDeps,
+	bundle *gossipnet.Bundle,
+) {
+	if len(cfg.GenesisWitnessSet) == 0 || cfg.NetworkID == (cosign.NetworkID{}) {
+		d.Logger.Info("rotation handler: disabled (missing genesis witness set or NetworkID)",
+			"genesis_witness_set", len(cfg.GenesisWitnessSet),
+			"network_id_zero", cfg.NetworkID == (cosign.NetworkID{}),
+		)
+		return
+	}
+
+	// Prefer the latest set persisted in the DB (a prior rotation
+	// has already landed there); fall back to the genesis config
+	// for first-boot deployments.
+	currentKeys, schemeTag, err := witnessclient.LoadCurrentSet(ctx, d.PgPool.DB)
+	if err != nil {
+		// First boot — no rows yet. Use genesis config.
+		currentKeys, err = gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+		if err != nil {
+			d.Logger.Error("rotation handler: witness key resolution from genesis",
+				"error", err)
+			return
+		}
+		// Bootstrap scheme defaults to ECDSA — same assumption the
+		// equivocation monitor's signer wiring makes.
+		schemeTag = 0x01
+	}
+
+	witnessSet, err := cosign.NewWitnessKeySet(
+		currentKeys,
+		cfg.NetworkID,
+		cfg.WitnessQuorumK,
+		cosign.NewProductionBLSVerifier(),
+	)
+	if err != nil {
+		d.Logger.Error("rotation handler: NewWitnessKeySet failed",
+			"error", err,
+			"keys", len(currentKeys),
+			"quorum_k", cfg.WitnessQuorumK)
+		return
+	}
+
+	handler := witnessclient.NewRotationHandler(
+		d.PgPool.DB,
+		witnessSet,
+		schemeTag,
+		cfg.ServerAddr, // mirrors the STHPublisher's LedgerEndpoint convention
+		d.Logger,
+	)
+
+	// SDK gossip emitter when the Sink is available; logging
+	// emitter when gossip is otherwise unwired (single-ledger
+	// dev / integration tests).
+	if bundle != nil && bundle.Sink != nil {
+		emitter, eerr := gossipnet.NewSDKGossipWitnessRotationEmitter(
+			gossipnet.SDKGossipWitnessRotationEmitterConfig{
+				GossipStore: d.GossipStore,
+				Sink:        bundle.Sink,
+				Signer:      cosign.NewECDSAWitnessSigner(d.LedgerSignerPriv),
+				NetworkID:   cfg.NetworkID,
+				Originator:  cfg.LedgerDID,
+				Logger:      d.Logger,
+			})
+		if eerr != nil {
+			d.Logger.Error("rotation handler: SDK emitter construction failed; "+
+				"falling back to logging emitter",
+				"error", eerr)
+			handler.WithEmitter(witnessclient.NewLoggingWitnessRotationEmitter(d.Logger))
+		} else {
+			handler.WithEmitter(emitter)
+		}
+	} else {
+		handler.WithEmitter(witnessclient.NewLoggingWitnessRotationEmitter(d.Logger))
+	}
+
+	d.RotationHandler = handler
+	d.Logger.Info("rotation handler: wired",
+		"current_set_size", witnessSet.Size(),
+		"quorum_k", witnessSet.Quorum(),
+		"scheme_tag", schemeTag,
+		"gossip_emitter", bundle != nil && bundle.Sink != nil,
+	)
 }
 
 func startEquivocationMonitor(

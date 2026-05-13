@@ -90,6 +90,7 @@ import (
 	"github.com/clearcompass-ai/ledger/store"
 	"github.com/clearcompass-ai/ledger/tessera"
 	"github.com/clearcompass-ai/ledger/wal"
+	"github.com/clearcompass-ai/ledger/witnessclient"
 )
 
 // NamedCloser is one entry in the closeStack: a Close function plus
@@ -167,6 +168,7 @@ type AppDeps struct {
 	LeafStore       *store.PostgresLeafStore
 	NodeStore       *store.PostgresNodeStore
 	TreeHeadStore   *store.TreeHeadStore
+	SMTRootState    *store.SMTRootStateStore
 	DiffController  *middleware.DifficultyController
 	BuilderLoop     *builder.BuilderLoop
 	Sequencer       *sequencer.Sequencer
@@ -174,6 +176,15 @@ type AppDeps struct {
 	AnchorPublisher *anchor.Publisher
 	GossipBundle    *gossipnet.Bundle       // nil when gossip disabled
 	GossipPublisher *gossipnet.STHPublisher // nil when gossip disabled
+
+	// RotationHandler processes witness-set rotations: cryptographic
+	// Verify against the current set → DB persistence → broadcast
+	// the KindWitnessRotation gossip event (closes attesta v0.6.0
+	// Asymmetric Witness-Set Rotation gap). nil when the genesis
+	// witness set + NetworkID + GossipStore prerequisites aren't
+	// met; the handler is otherwise instantiated and ready for
+	// callers (rotation-initiating admin paths) to invoke.
+	RotationHandler *witnessclient.RotationHandler
 
 	// SchemaRegistry is the attesta v0.4.0 DI schema admission
 	// registry. Built once at wire time via

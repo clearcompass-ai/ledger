@@ -172,6 +172,12 @@ func TestCrossLedger_STHRoundTrip(t *testing.T) {
 	headBare := types.TreeHead{
 		TreeSize: 4242,
 		RootHash: [32]byte{0xCA, 0xFE, 0xBA, 0xBE},
+		// SMTRoot non-zero: attesta v0.8.0+ rejects zero-SMTRoot
+		// heads at gossip publish time (CosignedTreeHeadFinding.
+		// Validate). Synthetic-but-non-zero satisfies the fixture
+		// without needing a real SMT computation in this transport
+		// test.
+		SMTRoot: [32]byte{0xCA, 0xFE, 0x57, 0x47},
 	}
 	witSig, err := witSigner.Sign(context.Background(), cosign.NewTreeHeadPayload(headBare),
 		netID, cosign.HashAlgoSHA256)
@@ -298,6 +304,8 @@ func TestCrossLedger_LatestSTH(t *testing.T) {
 	bareHead := types.TreeHead{
 		TreeSize: 9999,
 		RootHash: [32]byte{0xDE, 0xAD},
+		// SMTRoot non-zero per attesta v0.8.0+ Validate (see above).
+		SMTRoot: [32]byte{0xDE, 0xAD, 0x57, 0x47},
 	}
 	witSig, err := witSigner.Sign(context.Background(), cosign.NewTreeHeadPayload(bareHead),
 		netID, cosign.HashAlgoSHA256)

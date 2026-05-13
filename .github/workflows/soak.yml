@@ -1,0 +1,89 @@
+# =============================================================================
+# FILE PATH:
+#     .github/workflows/soak.yml
+#
+# DESCRIPTION:
+#     Soak SLO suite. Build-tag-isolated; nightly + manual trigger
+#     because the soak provisions Docker SeaweedFS + Postgres and
+#     runs a 5k-entry production-shape pipeline with hard SLO
+#     assertions.
+#
+#     NOT a per-PR merge gate by default — runtime is 60-90s on
+#     ubuntu-latest before SLO assertion. PRs touching the
+#     admission / sequencer / shipper / builder hot path opt in
+#     via the path-filter below.
+#
+#     SLO floors (configurable per-job via env, defaults in
+#     tests/soak_test.go):
+#       admission_tps >= ATTESTA_SOAK_ADMISSION_TPS_FLOOR  (100)
+#       drain_tps     >= ATTESTA_SOAK_DRAIN_TPS_FLOOR      (50)
+#       failure_rate  <= ATTESTA_SOAK_MAX_FAILURE_RATE     (0.001)
+#       p99 latency   <= ATTESTA_SOAK_P99_BOUND_MS         (100ms)
+#
+#     A regression that drops admission TPS by 10x (e.g.,
+#     introducing a global mutex on the admission hot path)
+#     fails this gate within seconds; the verifyEvidence /
+#     verifyTreeIntegrity / verifySMTConsistency post-drain
+#     steps run regardless so the same job surfaces the full
+#     diagnostic.
+# =============================================================================
+name: soak
+
+on:
+  schedule:
+    - cron: "47 6 * * *"    # daily 06:47 UTC
+  workflow_dispatch:         # manual trigger
+  pull_request:
+    paths:
+      - "admission/**"
+      - "sequencer/**"
+      - "shipper/**"
+      - "builder/**"
+      - "wal/**"
+      - "store/migrations/**"
+      - "tests/soak_test.go"
+      - "scripts/run-soak.sh"
+      - ".github/workflows/soak.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7  # v5.0.1
+        with:
+          go-version-file: go.mod
+
+      - name: Soak SLO suite
+        env:
+          # 5k entries is the CI-sized smoke run — large enough that
+          # the SLO floors are meaningful (sustained throughput, not
+          # cold-start noise), small enough to complete in <90s.
+          # Override via workflow_dispatch input or scheduled cron
+          # variant for a higher-volume nightly.
+          ATTESTA_SOAK_ENTRIES: "5000"
+          ATTESTA_SOAK_CONCURRENCY: "8"
+          ATTESTA_SOAK_BYTESTORE_BACKEND: "seaweedfs"
+          # SLO floors — explicit so CI failure log shows the
+          # exact threshold that triggered. Changing these is a
+          # protocol-level decision and should land via PR review.
+          ATTESTA_SOAK_ADMISSION_TPS_FLOOR: "100"
+          ATTESTA_SOAK_DRAIN_TPS_FLOOR: "50"
+          ATTESTA_SOAK_MAX_FAILURE_RATE: "0.001"
+          ATTESTA_SOAK_P99_BOUND_MS: "100"
+          # Drain budget covers the 5k-entry pipeline plus SLO
+          # measurement window. 5m is generous on CI hardware
+          # (typical drain ~30-60s); a stuck pipeline times out
+          # well within the workflow's 10m ceiling.
+          ATTESTA_SOAK_DRAIN_TIMEOUT: "5m"
+          ATTESTA_SOAK_TEST_TIMEOUT: "8m"
+        run: make test-soak

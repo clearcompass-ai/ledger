@@ -91,9 +91,19 @@ func NewTreeHeadHandler(deps *TreeDeps) http.HandlerFunc {
 			}
 		}
 
+		// smt_root is the witness-cosigned Sparse Merkle Tree
+		// state-projection root at this TreeSize (attesta SDK
+		// v0.8.0+; types.TreeHead.SMTRoot). Light clients should
+		// extract this value here rather than from /v1/smt/root:
+		// the value here is bound INTO the witness signatures (so
+		// a forged value would fail signature verification), while
+		// /v1/smt/root serves the bytes out-of-band with no
+		// cryptographic binding. Zero hex string when the deployment
+		// publishes no SMT projection.
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tree_size":  head.TreeSize,
 			"root_hash":  hex.EncodeToString(head.RootHash[:]),
+			"smt_root":   hex.EncodeToString(head.SMTRoot[:]),
 			"hash_algo":  head.HashAlgo,
 			"signatures": sigs,
 		})

@@ -33,8 +33,11 @@ KEY ARCHITECTURAL DECISIONS:
 package api
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/clearcompass-ai/attesta/core/envelope"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -111,7 +114,94 @@ func hasTraversalShape(s string) bool {
 }
 
 // -------------------------------------------------------------------------------------------------
-// 2) FuzzWriteTypedError_BodyShape — pin error-response surface
+// 2) FuzzAdmissionEnvelope — pin envelope.Deserialize panic-resistance
+// -------------------------------------------------------------------------------------------------
+
+// FuzzAdmissionEnvelope asserts that envelope.Deserialize NEVER
+// panics on any input — the load-bearing property for the admission
+// hot path. POST /v1/entries calls Deserialize on raw bytes from
+// arbitrary HTTP clients (api/submission.go:330); the sequencer
+// replay path makes the same call against WAL-stored bytes
+// (sequencer/loop.go:283, sequencer/replay.go:321). If either input
+// can trigger a panic, an attacker who can either (a) submit a POST
+// body or (b) write to the WAL via boot-time replay corruption can
+// crash the ledger.
+//
+// Defense-in-depth: the SDK's Deserialize is structured to return
+// errors for every malformed shape, but a fuzzer is the only way to
+// prove the property holds across the entire 2^N input space (vs
+// the dozen-or-so hand-written rejection tests in
+// attesta/core/envelope/serialize_test.go).
+//
+// Properties enforced:
+//
+//   (a) Deserialize NEVER panics. (testing.T surfaces panics as
+//       fuzz crashes automatically.)
+//   (b) When Deserialize succeeds, the returned *Entry is non-nil
+//       (nil-entry-with-nil-err is a contract violation that
+//       would cause caller-side nil-pointer dereferences).
+//   (c) When Deserialize succeeds, round-tripping through
+//       Serialize produces canonical bytes that themselves
+//       Deserialize successfully (idempotence). A bug here would
+//       indicate non-determinism in the serializer — corrupting
+//       any downstream hash-of-canonical-bytes invariant.
+//
+// Run nightly via .github/workflows/fuzz.yml; one-off invocation:
+//
+//	go test -run=^$ -fuzz=^FuzzAdmissionEnvelope$ -fuzztime=60s ./api/
+func FuzzAdmissionEnvelope(f *testing.F) {
+	// Realistic-shape seeds — known-malformed preambles that
+	// exercise distinct error paths. Each seed should hit a
+	// distinct branch in Deserialize so the fuzzer's coverage
+	// graph starts dense.
+	f.Add([]byte{})                              // empty
+	f.Add([]byte{0x00})                          // shorter than preamble
+	f.Add([]byte{0x00, 0x01, 0x00, 0x00, 0x00, 0x00}) // 6-byte preamble, hbl=0
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}) // all-0xFF preamble (huge hbl)
+	// HBL pointing past the buffer end — bounds-check oracle.
+	f.Add([]byte{0x00, 0x05, 0x00, 0x00, 0xFF, 0xFF})
+	// Hostile seeds.
+	f.Add(bytes.Repeat([]byte{0x00}, 32))
+	f.Add(bytes.Repeat([]byte{0xFF}, 32))
+	f.Add(bytes.Repeat([]byte{0x41}, 1024))
+	// Boundary: pretends to be a valid v5 entry with hbl just over
+	// the buffer length — exercises the hbl>len bounds check.
+	f.Add([]byte{0x00, 0x05, 0x00, 0x00, 0x00, 0x07, 0xAA})
+
+	f.Fuzz(func(t *testing.T, canonical []byte) {
+		// Property (a): no panic. Implicit — any panic is a crash.
+		entry, err := envelope.Deserialize(canonical)
+
+		if err == nil {
+			// Property (b): nil-entry + nil-err is a contract bug.
+			if entry == nil {
+				t.Errorf("Deserialize accepted input but returned nil entry; input=%x", canonical)
+				return
+			}
+			// Property (c): re-serialize must succeed and the
+			// result must itself Deserialize without error
+			// (idempotence under canonicalization). We do NOT
+			// assert byte-identity between input and round-trip
+			// output: Deserialize tolerates additive trailing
+			// HBL bytes for forward-compat (per the SDK
+			// docblock), so the canonical form may differ.
+			roundTrip, err := envelope.Serialize(entry)
+			if err != nil {
+				t.Errorf("Serialize(Deserialize(input)) failed: %v\ninput=%x", err, canonical)
+				return
+			}
+			if _, err := envelope.Deserialize(roundTrip); err != nil {
+				t.Errorf("Deserialize(Serialize(Deserialize(input))) failed: %v\ninput=%x\nroundTrip=%x",
+					err, canonical, roundTrip)
+			}
+		}
+		// If err != nil, the rejection is correct — Property (a)
+		// is satisfied implicitly by the absence of a panic.
+	})
+}
+
+// -------------------------------------------------------------------------------------------------
+// 3) FuzzWriteTypedError_BodyShape — pin error-response surface
 // -------------------------------------------------------------------------------------------------
 
 // FuzzWriteTypedError_BodyShape asserts: writeTypedError never
