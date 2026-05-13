@@ -1017,6 +1017,87 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 
+	drainDuration := time.Since(drainStart)
+
+	// ── SLO ASSERTIONS ───────────────────────────────────────────────
+	//
+	// Promote test logging into hard CI gates. Without these the soak
+	// can technically PASS while regressing throughput by 10x; the
+	// operator only finds out when on-call gets paged. Each assertion
+	// is configurable via env so a developer can lower bars for a
+	// constrained-environment smoke test, but defaults reflect the
+	// "world-class" floor: a 1k-entry soak on a laptop should sustain
+	// ≥100 admission TPS and ≥50 drain TPS.
+	//
+	// SLOs evaluated:
+	//
+	//   admission_tps_floor   submitted / submission_duration must
+	//                         meet a configurable floor. Default 100
+	//                         (laptop-class). Real production gate
+	//                         the Ledger Principle 5 "1,000+ TPS
+	//                         sustained" claim against once a
+	//                         CI-class environment is sized for it.
+	//
+	//   drain_tps_floor       (submitted) / drain_duration must meet
+	//                         a configurable floor. Default 50.
+	//                         Drain TPS = end-to-end pipeline
+	//                         throughput from admission to durable
+	//                         tile-shipped state; the load-bearing
+	//                         number for capacity planning.
+	//
+	//   max_failure_rate      failed / (submitted + failed) must
+	//                         stay below a configurable ratio.
+	//                         Default 0.001 (0.1%). Catches
+	//                         silent-503-storm regressions where
+	//                         the test "completes" but most
+	//                         submissions were dropped.
+	//
+	//   p99 latency           Already asserted above against
+	//                         ATTESTA_SOAK_P99_BOUND_MS. Re-printed
+	//                         here in the SLO summary for the
+	//                         consolidated view.
+	//
+	// Each individual assertion is a t.Errorf (not Fatal) so the
+	// post-drain verifyEvidence + verifyTreeIntegrity + verify-
+	// SMTConsistency steps still run and surface their own
+	// diagnostics; CI sees the full picture in one run.
+	admissionTPS := float64(submitted.Load()) / submitDuration.Seconds()
+	drainTPS := float64(submitted.Load()) / drainDuration.Seconds()
+	failureRate := float64(failed.Load()) /
+		float64(failed.Load()+submitted.Load())
+
+	admissionTPSFloor := envFloat("ATTESTA_SOAK_ADMISSION_TPS_FLOOR", 100.0)
+	drainTPSFloor := envFloat("ATTESTA_SOAK_DRAIN_TPS_FLOOR", 50.0)
+	maxFailureRate := envFloat("ATTESTA_SOAK_MAX_FAILURE_RATE", 0.001)
+
+	t.Logf("SLO summary: admission_tps=%.1f (floor=%.1f) drain_tps=%.1f (floor=%.1f) "+
+		"failure_rate=%.4f (max=%.4f) p99=%s (bound=%dms) drain_duration=%s",
+		admissionTPS, admissionTPSFloor,
+		drainTPS, drainTPSFloor,
+		failureRate, maxFailureRate,
+		p99, p99BoundMs,
+		drainDuration.Round(time.Second),
+	)
+
+	if admissionTPS < admissionTPSFloor {
+		t.Errorf("SLO_VIOLATION admission_tps=%.1f < floor=%.1f "+
+			"(submission throughput regressed)",
+			admissionTPS, admissionTPSFloor)
+	}
+	if drainTPS < drainTPSFloor {
+		t.Errorf("SLO_VIOLATION drain_tps=%.1f < floor=%.1f "+
+			"(end-to-end pipeline throughput regressed; check sequencer / "+
+			"shipper / builder bottleneck via the drain[cycle=N] log lines)",
+			drainTPS, drainTPSFloor)
+	}
+	if failureRate > maxFailureRate {
+		t.Errorf("SLO_VIOLATION failure_rate=%.4f > max=%.4f "+
+			"(submitted=%d failed=%d; check FAILURE_SAMPLE log lines for the "+
+			"first %d HTTP responses)",
+			failureRate, maxFailureRate,
+			submitted.Load(), failed.Load(), maxFailureSamples)
+	}
+
 	// Post-drain evidence verification — what the operator would
 	// otherwise check by hand:
 	//   1. Postgres COUNT(entry_index) == submitted (HARD)
@@ -1209,6 +1290,24 @@ func envDuration(name string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// envFloat is the env-with-default helper for SLO floors that
+// take a fractional value (TPS, failure ratio). A zero floor
+// disables the assertion (TPS=0 trivially passes; failure_rate
+// max=1.0 means "any failure rate"); use ATTESTA_SOAK_*=0 for
+// constrained-environment smoke runs that just want pipeline
+// correctness without the SLO gate.
+func envFloat(name string, def float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		return def
+	}
+	return f
 }
 
 // parseSCTCanonicalHash extracts the canonical_hash from a 202

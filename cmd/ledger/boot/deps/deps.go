@@ -168,6 +168,7 @@ type AppDeps struct {
 	LeafStore       *store.PostgresLeafStore
 	NodeStore       *store.PostgresNodeStore
 	TreeHeadStore   *store.TreeHeadStore
+	SMTRootState    *store.SMTRootStateStore
 	DiffController  *middleware.DifficultyController
 	BuilderLoop     *builder.BuilderLoop
 	Sequencer       *sequencer.Sequencer
