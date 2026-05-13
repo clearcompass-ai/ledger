@@ -230,6 +230,14 @@ type SubmissionDeps struct {
 	// constructs the registry via schemareg.BuildLedgerSchemaRegistry
 	// and threads it here.
 	SchemaRegistry admission.SchemaRegistry
+
+	// Gates carries the four per-gate feature flags from
+	// admission/feature_flags.go (issue #75 / #76 PR-A). Each
+	// gate added in PR-C through PR-F consults its own boolean
+	// here. The zero value (all false) is the legacy single-sig
+	// admission path — production wires
+	// admission.LoadGatesFromEnv() at boot.
+	Gates admission.Gates
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,16 +376,18 @@ func prepareSubmission(
 			http.StatusUnprocessableEntity, "empty signer DID")
 	}
 	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
-		switch {
-		case errors.Is(err, admission.ErrSignerDIDResolution),
-			errors.Is(err, admission.ErrSignatureInvalid):
-			return nil, submissionFail(apitypes.ErrorClassSignatureInvalid,
-				http.StatusUnauthorized, "%s", err)
-		default:
-			deps.Logger.Error("signature verification path failed", "error", err)
-			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
-				http.StatusInternalServerError, "signature verification failed")
+		// Defer to the single SDK-sentinel mapping table
+		// (admission/error_mapping.go) for status + class. The
+		// fallback branch is the same 500/DBQueryFailed shape this
+		// switch carried before the table was introduced; a miss
+		// here surfaces the unmapped sentinel as a CI/dashboard
+		// alarm rather than a silent legacy default.
+		if matched, status, class := admission.MapSDKError(err); matched {
+			return nil, submissionFail(class, status, "%s", err)
 		}
+		deps.Logger.Error("signature verification path failed", "error", err)
+		return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+			http.StatusInternalServerError, "signature verification failed")
 	}
 
 	// ── Step 4b: Embedded tree head K-of-N verification ───────────

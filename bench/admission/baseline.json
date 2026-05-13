@@ -1,0 +1,18 @@
+{
+  "mix_version": 1,
+  "iterations": 10000,
+  "total_ns": 2307000089,
+  "mean_ns": 230500,
+  "p50_ns": 219349,
+  "p95_ns": 277521,
+  "p99_ns": 356321,
+  "p999_ns": 815989,
+  "max_ns": 6852766,
+  "per_bucket_count": {
+    "large": 3333,
+    "medium": 3333,
+    "small": 3334
+  },
+  "captured_at": "2026-05-13T20:44:21.459409453Z",
+  "description": "PR-A baseline: legacy single-sig admission path (signatures.VerifyEntry). Captured before any gate is enabled."
+}

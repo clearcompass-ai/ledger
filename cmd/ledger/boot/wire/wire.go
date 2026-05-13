@@ -389,6 +389,10 @@ func composeHandlers(
 		FreshnessTolerance: policy.FreshnessInteractive,
 		BLSQuorumVerifier:  blsQuorumVerifier,
 		SchemaRegistry:     d.SchemaRegistry,
+		// PR-A foundations: per-gate feature flags (issue #76).
+		// All four default OFF; production opts in via the
+		// LEDGER_ADMISSION_*_ENABLE env vars on rollout.
+		Gates: admission.LoadGatesFromEnv(),
 	}
 
 	tree := smt.NewTree(d.LeafStore, d.NodeStore)
