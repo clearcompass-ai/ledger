@@ -403,6 +403,25 @@ func prepareSubmission(
 			http.StatusInternalServerError, "signature verification failed")
 	}
 
+	// ── Step 4a: CosignatureOf binding (PR-D gate 2) ──────────────
+	// When entry.Header.CosignatureOf is non-nil AND points at a
+	// position on THIS log, the gate verifies that a real entry
+	// occupies that sequence. Cross-log positions are deferred to
+	// async reconciliation per decision #6 (hard no on cross-log
+	// admission blocking — liveness regression at 100-150 admit/s).
+	// Default OFF; flipped via LEDGER_ADMISSION_COSIG_BINDING_ENABLE
+	// after one canary cycle on the PR-A SLA dashboard.
+	if deps.Gates.CosigBinding {
+		if err := admission.VerifyCosignatureBinding(ctx, entry, deps.LogDID, deps.Storage.EntryStore); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("cosignature binding verification failed", "error", err)
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "cosignature binding verification failed")
+		}
+	}
+
 	// ── Step 4b: Embedded tree head K-of-N verification ───────────
 	// For entries that carry a cosigned tree head in their payload
 	// (peer-anchor entries, witness commentary, cross-log proofs),

@@ -139,6 +139,15 @@ var sdkErrorTable = []Mapping{
 	// behavior shape is unchanged: 401 + ErrorClassSignatureInvalid.
 	{Sentinel: ErrSignerDIDResolution, HTTPStatus: http.StatusUnauthorized, Class: apitypes.ErrorClassSignatureInvalid},
 	{Sentinel: ErrSignatureInvalid, HTTPStatus: http.StatusUnauthorized, Class: apitypes.ErrorClassSignatureInvalid},
+
+	// ── PR-C / PR-D ledger-side sentinels ─────────────────────────
+	// Multi-sig path's "unsupported algorithm" + cosig-binding gate's
+	// "target missing" / "binding mismatch". Routed to the SDK-
+	// equivalent dimensions so dashboards don't have to learn new
+	// classes for ledger-side wrappers.
+	{Sentinel: ErrUnsupportedSignatureAlgo, HTTPStatus: http.StatusUnprocessableEntity, Class: apitypes.ErrorClassEnvelopeRejected},
+	{Sentinel: ErrCosignatureTargetNotFound, HTTPStatus: http.StatusUnprocessableEntity, Class: apitypes.ErrorClassCosignatureBindingMismatch},
+	{Sentinel: ErrCosignatureBindingMismatch, HTTPStatus: http.StatusUnprocessableEntity, Class: apitypes.ErrorClassCosignatureBindingMismatch},
 }
 
 // MapSDKError walks the sdkErrorTable looking for a match against
