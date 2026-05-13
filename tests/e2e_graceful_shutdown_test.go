@@ -607,10 +607,17 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	})
 	defer h2.stop(t)
 
-	// Wait for the shipper's HWM to converge to n. With Memory backend
-	// and small entry count, this should be sub-second; allow 30s for
-	// CI variability + sequencer retry budgets on entries that were
-	// in-flight when h1 cancelled.
+	// Wait for the shipper's HWM to converge. Per migration-0004
+	// contract (cursor=-1 sentinel, seq=0 genesis), N entries
+	// occupy seqs 0..N-1, so the maximum reachable HWM is N-1 —
+	// not N. wal/reader.go:225-228 documents HWM as "the highest
+	// contiguous SEQUENCE NUMBER whose entry has been shipped",
+	// confirming the value is a seq, not a count.
+	//
+	// With Memory backend and small entry count, convergence is
+	// sub-second; allow 30s for CI variability + sequencer retry
+	// budgets on entries that were in-flight when h1 cancelled.
+	wantHWM := uint64(n - 1) // max seq, not entry count
 	deadline = time.Now().Add(30 * time.Second)
 	var finalHWM uint64
 	for time.Now().Before(deadline) {
@@ -619,15 +626,16 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 			t.Fatalf("HWM: %v", err)
 		}
 		finalHWM = hwm
-		if hwm >= uint64(n) {
+		if hwm >= wantHWM {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if finalHWM < uint64(n) {
+	if finalHWM < wantHWM {
 		// Don't Fatalf — surface per-hash state below so we can see
 		// which entry leaked and in what state.
-		t.Errorf("phase 2: HWM=%d did not converge to %d in 30s", finalHWM, n)
+		t.Errorf("phase 2: HWM=%d did not converge to %d (= max seq for n=%d entries) in 30s",
+			finalHWM, wantHWM, n)
 	}
 
 	// Every entry must end StateShipped after the second harness drains.
