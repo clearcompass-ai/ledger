@@ -223,7 +223,10 @@ func startE2ELedger(t *testing.T) *e2eLedger {
 	queryAPI := indexes.NewPostgresQueryAPI(ctx, pool, composite, testLogDID)
 
 	// ── Real Tessera (sequence assignment via on-disk antispam) ────
-	tileRoot := t.TempDir()
+	// tesseraTempDir defers cleanup by DefaultDrainBudget so upstream
+	// goroutines have time to exit before the dir vanishes. See
+	// tests/tessera_lifecycle_helper_test.go.
+	tileRoot := tesseraTempDir(t, optessera.DefaultDrainBudget)
 	tesseraSigner, _, terr := optessera.GenerateEphemeralSigner("test-shipper-redirect")
 	if terr != nil {
 		_ = walc.Close()

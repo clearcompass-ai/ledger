@@ -395,22 +395,34 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	// for the network's Strict-STH-Finality attestation.
 	//
 	// CTX LIFETIME: Tessera's background tasks (integration loop,
-	// follower-stats, updateStats) all listen to THIS ctx for
-	// termination. Tessera.Shutdown (called by embedded.Close in
-	// the closer below) does NOT stop these goroutines — it only
-	// refuses new Add calls and polls the checkpoint until it
-	// commits to the largest already-issued index. The goroutines
-	// stop only when this ctx fires.
+	// follower-stats, updateStats) listen to a PRIVATE bg-ctx that
+	// EmbeddedAppender derives from `ctx` at construction. The
+	// wrapper's Close (called by the closer below) cancels that
+	// bg-ctx and waits DrainBudget for the goroutines to observe
+	// cancellation and exit — see tessera/embedded_appender.go's
+	// EmbeddedAppender docstring + Close documentation.
 	//
 	// The teardown chain (cmd/ledger/boot/teardown/teardown.go)
 	// runs the closer BEFORE the deferred cancel() so the
-	// integration loop is still alive when Shutdown polls — that
-	// ordering is what guarantees pending IndexFutures resolve.
+	// integration loop is still alive when upstream shutdown polls
+	// — that ordering is what guarantees pending IndexFutures
+	// resolve. The wrapper's bg-ctx cancel + drain-budget then
+	// joins (best-effort) before this closer returns. When upstream
+	// tessera.NewAppender adds an explicit Wait function (PR pending
+	// per the structural-fix plan), the wrapper will replace its
+	// budget-sleep with a real join and Timeout below can shrink.
+	//
 	// Antispam wired iff d.Antispam was allocated (allocateAntispam
 	// runs BEFORE allocateTessera in the Allocate orchestrator).
 	// Required to dedup duplicate AppendLeaf calls from the sequencer
 	// + builder; absent that dedup the WAL seqIndex is sparse and
 	// Shipper.hwmAdvancer stalls. See tessera/antispam_off_reproducer_test.go.
+	//
+	// DrainBudget left at zero → tessera.DefaultDrainBudget (200ms)
+	// applies. Tune via env / config flag if production goroutine-
+	// leak telemetry (attesta_tessera_close_drain_residual_goroutines
+	// gauge — see tessera/instruments.go) shows persistent positive
+	// residuals at shutdown.
 	embedded, err := tessera.NewEmbeddedAppender(ctx, driver, tessera.AppenderOptions{
 		Origin:               origin,
 		Signer:               signer,
@@ -422,7 +434,12 @@ func allocateTessera(ctx context.Context, cfg Config, signers SignerLoader, d *d
 	}
 	d.TesseraEmbedded = embedded
 	d.AppendCloser(deps.NamedCloser{
-		Name:    "tessera-embedded",
+		Name: "tessera-embedded",
+		// Timeout covers (a) upstream shutdown's Add-future drain
+		// (typically <1s for normal queues, up to seconds for a
+		// backlogged batcher) plus (b) the wrapper's drain budget
+		// for background goroutine exit. 30s is generous; honest
+		// drains land well below.
 		Timeout: 30 * time.Second,
 		Close:   embedded.Close,
 	})

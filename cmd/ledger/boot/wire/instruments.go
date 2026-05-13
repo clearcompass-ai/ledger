@@ -64,6 +64,14 @@ func installPrebuilderInstruments(d *deps.AppDeps) {
 		d.Logger.Info("metrics: tessera append duration installed",
 			"metric", "attesta_tessera_append_duration_seconds")
 	}
+	if installed := tessera.InstallCloseDrainResidualGauge(tesseraMeter); installed {
+		// Sampled at EmbeddedAppender.Close exit. Persistent positive
+		// values indicate upstream tessera.NewAppender's background
+		// goroutines aren't draining within the configured budget —
+		// see tessera/instruments.go for the operational rationale.
+		d.Logger.Info("metrics: tessera close drain residual installed",
+			"metric", "attesta_tessera_close_drain_residual_goroutines")
+	}
 
 	storeMeter := mp.Meter("github.com/clearcompass-ai/ledger/store")
 	if installed := store.InstallPoolAcquireDurationHistogram(storeMeter); installed {

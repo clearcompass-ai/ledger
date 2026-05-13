@@ -77,6 +77,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,7 +155,47 @@ type AppenderOptions struct {
 	// a no-op. Acceptable for tests and dev runs; production wiring
 	// MUST set a non-empty path.
 	PublicCheckpointPath string
+
+	// DrainBudget is how long Close waits AFTER the upstream
+	// shutdown function returns AND our internal bg-ctx has been
+	// cancelled, before declaring the appender drained.
+	//
+	// WHY THIS EXISTS
+	//
+	// Upstream tessera.NewAppender (tessera@v1.0.2/append_lifecycle.go:
+	// 278-282) spawns three background goroutines (Follower.Follow,
+	// followerStats, integrationStats.updateStats) using bare `go`,
+	// with no sync.WaitGroup and no completion signal. The returned
+	// shutdown function only drains in-flight Add futures — it does
+	// NOT join the background goroutines. After ctx.Cancel they
+	// exit asynchronously and silently.
+	//
+	// Without an upstream Wait function the caller has no way to
+	// observe completion. The drain budget is the observational
+	// quiesce: we cancel our internal bg-ctx (which upstream's
+	// goroutines watch), then sleep up to DrainBudget so the
+	// goroutines have a chance to exit before the test's tile-root
+	// directory vanishes or the process exits.
+	//
+	// When upstream gains a Wait(ctx) function — see the PR sketch
+	// in tier-1 of the structural fix plan — replace the sleep
+	// with an explicit join.
+	//
+	// Default: 200ms. Tuned to cover the 95th-pct goroutine exit
+	// latency observed in single-test reproductions (publish-
+	// Checkpoint follower polls at 100ms cadence; one full poll
+	// plus margin). Set higher for production shutdown chains
+	// that can afford to wait, or zero to disable the drain entirely
+	// (the upstream-leak symptoms then surface unfiltered — useful
+	// for diagnosing whether a downstream issue is masked).
+	DrainBudget time.Duration
 }
+
+// DefaultDrainBudget is the post-Close grace window for upstream
+// Tessera goroutines to observe ctx cancellation and exit. Tuned
+// to cover one full publishCheckpoint poll cycle (100ms) plus
+// margin; see AppenderOptions.DrainBudget docstring for rationale.
+const DefaultDrainBudget = 200 * time.Millisecond
 
 // applyDefaults fills zero-valued fields with safe defaults so
 // callers can pass a partial options struct. Returns the same
@@ -172,6 +213,15 @@ func (o *AppenderOptions) applyDefaults() {
 	if o.BatchMaxAge == 0 {
 		o.BatchMaxAge = 1 * time.Second
 	}
+	// DrainBudget=0 is INTENTIONALLY supported (disables drain).
+	// Only fill the default when the field is its zero value AND
+	// the caller hasn't explicitly opted out via a sentinel — but
+	// time.Duration has no negative sentinel, so we accept the
+	// trade-off: a caller wanting "no drain" sets DrainBudget=-1
+	// (we treat any non-positive value as "skip the sleep").
+	if o.DrainBudget == 0 {
+		o.DrainBudget = DefaultDrainBudget
+	}
 }
 
 // EmbeddedAppender wraps upstream tessera primitives in a
@@ -179,12 +229,58 @@ func (o *AppenderOptions) applyDefaults() {
 // upstream Appender.Add and LogReader methods are.
 //
 // Lifecycle: construct once at boot, Close once at shutdown.
+//
+// # BACKGROUND-GOROUTINE LIFECYCLE
+//
+// The wrapper owns a private context (bgCtx) derived from the
+// caller's parentCtx at construction. We pass bgCtx — NOT
+// parentCtx — to uptessera.NewAppender, so the three background
+// goroutines upstream spawns (Follower.Follow, followerStats,
+// integrationStats.updateStats) watch OUR ctx, not the caller's.
+//
+// On Close we (1) call upstream shutdown to drain Add futures,
+// then (2) cancel bgCtx ourselves — deterministically, regardless
+// of when the caller cancels parentCtx — then (3) wait up to
+// DrainBudget for the upstream goroutines to observe ctx.Done
+// and exit. This decouples lifecycle ordering from the caller's
+// ctx discipline and silences the post-cleanup file-not-found
+// flood that occurs when t.TempDir runs before the goroutines
+// notice ctx.Cancel.
+//
+// goroutineBaseline captures runtime.NumGoroutine() immediately
+// before uptessera.NewAppender. After the drain budget we
+// re-sample and log the delta as a leak diagnostic. The metric
+// is coarse (counts ALL goroutines, not just Tessera's), but a
+// persistent non-zero delta across shutdown is the operational
+// signal that upstream's background tasks aren't draining.
 type EmbeddedAppender struct {
 	// upstream resources from tessera.NewAppender — held to
 	// drive Add and Head, and to call shutdown at Close.
 	appender *uptessera.Appender
 	reader   uptessera.LogReader
 	shutdown func(ctx context.Context) error
+
+	// bgCancel cancels the private context passed to upstream's
+	// NewAppender. Fired in Close after upstream shutdown returns.
+	bgCancel context.CancelFunc
+
+	// bgDoneCh is closed when Close has elapsed its drain budget
+	// (or the caller's ctx fired, whichever came first). Tests
+	// gate t.TempDir-style cleanup on <-Done() so the on-disk
+	// state dir survives until upstream goroutines have had a
+	// chance to exit.
+	bgDoneCh chan struct{}
+
+	// drainBudget is the post-bgCancel grace window. Copied from
+	// AppenderOptions.DrainBudget at construction. Non-positive
+	// values disable the wait entirely (Close cancels bgCtx and
+	// returns immediately).
+	drainBudget time.Duration
+
+	// goroutineBaseline is runtime.NumGoroutine() captured BEFORE
+	// upstream NewAppender ran. Close compares against the count
+	// after drain to flag persistent upstream leaks.
+	goroutineBaseline int
 
 	// publicCheckpointPath is the absolute path
 	// PublishCosignedCheckpoint writes the JSON-serialised
@@ -234,8 +330,23 @@ func NewEmbeddedAppender(
 		appendOpts = appendOpts.WithAntispam(inMem, opts.Antispam)
 	}
 
-	appender, shutdown, reader, err := uptessera.NewAppender(ctx, driver, appendOpts)
+	// Derive a private context for upstream's background goroutines.
+	// They watch bgCtx instead of the caller's ctx, so Close can
+	// signal them deterministically without depending on the caller's
+	// cancel ordering. See type EmbeddedAppender docstring for the
+	// full lifecycle invariant.
+	bgCtx, bgCancel := context.WithCancel(ctx)
+
+	// Sample goroutine count BEFORE upstream NewAppender so the
+	// post-Close delta reflects only upstream's contribution to
+	// extant goroutines. Approximate — other code in the process
+	// can spawn goroutines too — but a persistent non-zero delta
+	// across shutdown is the operational leak signal we want.
+	goroutineBaseline := runtime.NumGoroutine()
+
+	appender, shutdown, reader, err := uptessera.NewAppender(bgCtx, driver, appendOpts)
 	if err != nil {
+		bgCancel() // release the derived ctx on construction failure
 		return nil, fmt.Errorf("tessera/embedded: NewAppender: %w", err)
 	}
 
@@ -245,12 +356,17 @@ func NewEmbeddedAppender(
 		"batch_size", opts.BatchSize,
 		"batch_max_age", opts.BatchMaxAge,
 		"signer", opts.Signer.Name(),
+		"drain_budget", opts.DrainBudget,
 	)
 
 	return &EmbeddedAppender{
 		appender:             appender,
 		reader:               reader,
 		shutdown:             shutdown,
+		bgCancel:             bgCancel,
+		bgDoneCh:             make(chan struct{}),
+		drainBudget:          opts.DrainBudget,
+		goroutineBaseline:    goroutineBaseline,
 		publicCheckpointPath: opts.PublicCheckpointPath,
 		logger:               logger,
 	}, nil
@@ -391,22 +507,98 @@ func atomicWriteFile(path string, data []byte) error {
 	return nil
 }
 
-// Close runs the shutdown function returned by upstream
-// NewAppender. Ensures any IndexFuture this appender has handed
-// out resolves before Close returns. MUST be called at process
-// shutdown — failing to call it risks losing entries that were
-// Add'd but not yet integrated.
+// Close runs the upstream shutdown function, then cancels the
+// private bg-ctx and waits up to DrainBudget for upstream's
+// background goroutines (Follower.Follow, followerStats,
+// integrationStats.updateStats) to observe ctx.Done and exit.
 //
-// Safe to call multiple times; the underlying shutdown runs
-// exactly once.
+// LIFECYCLE — three steps, in order:
+//
+//  1. shutdown(ctx) — upstream's drain function. Resolves any
+//     in-flight IndexFutures so no Add caller is stranded.
+//
+//  2. bgCancel() — signals our private context. Upstream's
+//     background goroutines watch this ctx (set at construction
+//     time, not the caller's ctx). They exit asynchronously.
+//
+//  3. Wait drainBudget OR ctx.Done — observational quiesce. We
+//     can't TRUE-join the upstream goroutines because the upstream
+//     NewAppender API doesn't return a WaitGroup or completion
+//     channel (see tessera@v1.0.2/append_lifecycle.go:278-282 —
+//     bare `go` with no sync primitive). When upstream adds a
+//     Wait function, replace this select with an explicit join.
+//
+// After step 3 we sample runtime.NumGoroutine() and log+metric the
+// delta against the construction-time baseline. Persistent non-
+// zero values indicate upstream goroutines that didn't drain
+// within budget — page the operator, push for the upstream PR.
+//
+// Caller MUST hold the on-disk tile-root + antispam directories
+// stable until <-Done() fires; otherwise upstream goroutines
+// racing the close may hit "no such file" errors during their
+// own exit-path writes. Tests use tesseraTempDir() to gate
+// t.TempDir cleanup on Done; production holds directories for
+// the process lifetime so the race doesn't manifest.
+//
+// Safe to call multiple times; the lifecycle runs exactly once.
 func (e *EmbeddedAppender) Close(ctx context.Context) error {
 	e.closeOnce.Do(func() {
-		if e.shutdown == nil {
-			return
+		// Step 1 — drain in-flight Adds per upstream contract.
+		if e.shutdown != nil {
+			e.closeErr = e.shutdown(ctx)
 		}
-		e.closeErr = e.shutdown(ctx)
+
+		// Step 2 — cancel our private bg-ctx. Upstream's three
+		// background goroutines (which were given bgCtx, not
+		// the caller's ctx) observe this and begin their exit.
+		if e.bgCancel != nil {
+			e.bgCancel()
+		}
+
+		// Step 3 — wait up to drainBudget for goroutines to exit,
+		// OR honor the caller's deadline (whichever comes first).
+		// drainBudget<=0 skips the wait entirely (advanced opt-out).
+		if e.drainBudget > 0 {
+			select {
+			case <-time.After(e.drainBudget):
+				// Budget elapsed. Goroutines MAY still be running;
+				// the leak check below quantifies it.
+			case <-ctx.Done():
+				// Caller's shutdown deadline fired before drain
+				// completed. Honor it.
+			}
+		}
+
+		// Leak diagnostic — coarse but actionable. Persistent
+		// non-zero delta across shutdown is the operator-visible
+		// signal that upstream goroutines aren't draining within
+		// budget. Wire to OTel via recordCloseDrainResidual.
+		residual := runtime.NumGoroutine() - e.goroutineBaseline
+		if residual > 0 {
+			e.logger.Warn("tessera embedded: goroutines did not drain to baseline within budget",
+				"drain_budget", e.drainBudget,
+				"goroutine_baseline", e.goroutineBaseline,
+				"goroutine_current", e.goroutineBaseline+residual,
+				"residual_count", residual,
+				"hint", "upstream tessera.NewAppender spawns Follower/followerStats/updateStats with no WaitGroup; non-zero residual under drain budget means these are still running")
+		}
+		recordCloseDrainResidual(ctx, residual)
+
+		close(e.bgDoneCh)
 	})
 	return e.closeErr
+}
+
+// Done returns a channel closed AFTER Close has completed its
+// drain budget (or the caller's ctx fired). Tests gate t.TempDir
+// cleanup on this so the on-disk state dir survives until
+// upstream goroutines have had a chance to exit.
+//
+// nil if Close has never been called; safe to range/select on
+// a non-nil value any number of times (channel close is
+// permanent + concurrent-safe).
+func (e *EmbeddedAppender) Done() <-chan struct{} {
+	return e.bgDoneCh
 }
 
 // GenerateEphemeralSigner returns a freshly-generated Ed25519

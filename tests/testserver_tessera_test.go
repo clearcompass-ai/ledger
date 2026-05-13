@@ -36,7 +36,6 @@ package tests
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -114,12 +113,12 @@ func buildRealTesseraSlots(
 
 	tileRoot := opts.TileRoot
 	if tileRoot == "" {
-		var err error
-		tileRoot, err = os.MkdirTemp("", "test-real-tessera-")
-		if err != nil {
-			t.Fatalf("buildRealTesseraSlots: tmp dir: %v", err)
-		}
-		t.Cleanup(func() { _ = os.RemoveAll(tileRoot) })
+		// tesseraTempDir defers cleanup by DefaultDrainBudget so
+		// upstream tessera.NewAppender's background goroutines
+		// (Follower / followerStats / updateStats — no upstream
+		// WaitGroup) have time to exit before the on-disk state
+		// vanishes. See tests/tessera_lifecycle_helper_test.go.
+		tileRoot = tesseraTempDir(t, optessera.DefaultDrainBudget)
 	}
 
 	origin := opts.Origin
