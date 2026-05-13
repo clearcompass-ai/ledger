@@ -55,6 +55,7 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
 	sdkdid "github.com/clearcompass-ai/attesta/did"
 	"github.com/clearcompass-ai/attesta/exchange/policy"
+	"github.com/clearcompass-ai/attesta/witness"
 
 	"go.opentelemetry.io/otel"
 
@@ -345,7 +346,7 @@ func composeHandlers(
 	var blsQuorumVerifier *admission.BLSQuorumVerifier
 	var zeroNetID cosign.NetworkID
 	if len(cfg.GenesisWitnessSet) > 0 && cfg.NetworkID != zeroNetID {
-		witKeys, wkErr := gossipnet.WitnessKeysFromDIDs(cfg.GenesisWitnessSet)
+		witKeys, wkErr := witness.KeysFromDIDs(cfg.GenesisWitnessSet)
 		if wkErr != nil {
 			return api.Handlers{}, fmt.Errorf("admission BLS verifier witness keys: %w", wkErr)
 		}

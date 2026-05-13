@@ -35,6 +35,7 @@ import (
 	sdkgossip "github.com/clearcompass-ai/attesta/gossip"
 	"github.com/clearcompass-ai/attesta/gossip/findings"
 	"github.com/clearcompass-ai/attesta/types"
+	"github.com/clearcompass-ai/attesta/witness"
 )
 
 // fixtureWitnesses generates k witnesses with did:key DIDs.
@@ -58,9 +59,9 @@ func newFixtureWitnesses(t *testing.T, k int) fixtureWitnesses {
 		out.dids = append(out.dids, kp.DID)
 		out.signers = append(out.signers, cosign.NewECDSAWitnessSigner(kp.PrivateKey))
 	}
-	keys, err := WitnessKeysFromDIDs(out.dids)
+	keys, err := witness.KeysFromDIDs(out.dids)
 	if err != nil {
-		t.Fatalf("WitnessKeysFromDIDs: %v", err)
+		t.Fatalf("witness.KeysFromDIDs: %v", err)
 	}
 	out.keys = keys
 	return out

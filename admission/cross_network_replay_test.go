@@ -55,9 +55,9 @@ import (
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
 	"github.com/clearcompass-ai/attesta/did"
 	"github.com/clearcompass-ai/attesta/types"
+	"github.com/clearcompass-ai/attesta/witness"
 
 	"github.com/clearcompass-ai/ledger/admission"
-	"github.com/clearcompass-ai/ledger/gossipnet"
 )
 
 // crossNetworkFixture bundles a single witness + the matching
@@ -79,9 +79,9 @@ func newCrossNetworkFixture(t *testing.T) crossNetworkFixture {
 	if err != nil {
 		t.Fatalf("GenerateDIDKeySecp256k1: %v", err)
 	}
-	keys, err := gossipnet.WitnessKeysFromDIDs([]string{kp.DID})
+	keys, err := witness.KeysFromDIDs([]string{kp.DID})
 	if err != nil {
-		t.Fatalf("WitnessKeysFromDIDs: %v", err)
+		t.Fatalf("witness.KeysFromDIDs: %v", err)
 	}
 	return crossNetworkFixture{
 		signer: cosign.NewECDSAWitnessSigner(kp.PrivateKey),
