@@ -4,7 +4,9 @@
 # Canonical runner for the integration/ test suite. Owns the
 # Docker compose lifecycle (Postgres on the testharness compose
 # file) and runs `go test -tags=integration -count=1` against
-# integration/ + the standalone-witness daemon e2e.
+# integration/. The standalone-witness daemon e2e moved to
+# github.com/clearcompass-ai/standalone-witness and runs in that
+# repo's CI.
 #
 # Why this exists:
 #   integration/ tests carry //go:build integration so they are
@@ -19,8 +21,8 @@
 #   ./scripts/run-integration.sh down        # tear down Docker
 #   ./scripts/run-integration.sh --teardown  # boot + run + tear down
 #
-# Verified: every test under integration/ + the standalone-witness
-# daemon-exec test runs once with -count=1 to defeat go-test caching.
+# Verified: every test under integration/ runs once with -count=1
+# to defeat go-test caching.
 
 set -euo pipefail
 
@@ -89,16 +91,13 @@ echo
 
 START_NS=$(date +%s%N)
 
-# Two test targets:
-#   1. integration/ — Ledger's HTTP-driven tests (`integration` tag).
-#   2. cmd/standalone-witness/tests/ — daemon binary e2e (no tag,
-#      gated by testing.Short() instead). Runs because we don't
-#      pass -short.
+# Integration suite — Ledger's HTTP-driven tests (`integration` tag).
+# The witness daemon binary e2e moved to its own repository at
+# github.com/clearcompass-ai/standalone-witness; its tests run there.
+# The cosign e2e against a docker-provisioned witness daemon still
+# runs from this repo via scripts/run-e2e.sh (uses WITNESS_URL).
 RC=0
 go test -tags=integration -count=1 -v ./integration/ || RC=$?
-echo
-echo "== running standalone-witness daemon e2e =="
-( cd cmd/standalone-witness && go test -count=1 -v ./tests/ ) || RC=$?
 
 END_NS=$(date +%s%N)
 ELAPSED_S=$(( (END_NS - START_NS) / 1000000000 ))

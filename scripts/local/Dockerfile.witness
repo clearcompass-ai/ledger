@@ -2,14 +2,14 @@
 #
 # Multi-stage build for the standalone-witness daemon.
 #
-# CONTEXT MUST BE THE REPO ROOT — we build inside the
-# cmd/standalone-witness/ subdirectory which has its OWN go.mod
-# (the boundary the architecture enforces). The build does NOT
-# pull in any github.com/clearcompass-ai/ledger packages; the
-# compile-time isolation is the point.
+# The witness daemon source lives in its own repository at
+# github.com/clearcompass-ai/standalone-witness; this Dockerfile
+# fetches and builds it via `go install`. Override
+# WITNESS_MODULE_VERSION at build time to pin a tagged release:
 #
-# Build:
-#   docker build -f scripts/local/Dockerfile.witness -t standalone-witness:local .
+#   docker build -f scripts/local/Dockerfile.witness \
+#     --build-arg WITNESS_MODULE_VERSION=v0.2.0 \
+#     -t standalone-witness:local .
 #
 # Run:
 #   docker run --rm -v $(pwd)/.run:/keys -p 8081:8081 \
@@ -21,20 +21,15 @@ FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git
 
-WORKDIR /src
+ARG WITNESS_MODULE=github.com/clearcompass-ai/standalone-witness
+ARG WITNESS_MODULE_VERSION=latest
 
-# Copy ONLY the standalone-witness module. The Ledger module is
-# physically excluded by virtue of being a separate go.mod —
-# even if we copied the whole repo, the build would resolve
-# attesta from cmd/standalone-witness/go.mod independently.
-COPY cmd/standalone-witness/go.mod cmd/standalone-witness/go.sum ./
-RUN go mod download
-
-COPY cmd/standalone-witness/ ./
-
-# Static binary. CGO disabled so the alpine runtime image needs
-# no glibc shim.
-RUN CGO_ENABLED=0 GOOS=linux go build -o /witness .
+# `go install` resolves the module, builds it, and drops the
+# binary at $GOPATH/bin/<binary-name>. The standalone-witness
+# module's root package is `main` with the binary name matching
+# the module's last path element.
+RUN CGO_ENABLED=0 GOOS=linux GOBIN=/out \
+    go install "${WITNESS_MODULE}@${WITNESS_MODULE_VERSION}"
 
 # ── Runtime ────────────────────────────────────────────────────
 FROM alpine:latest
@@ -42,7 +37,7 @@ RUN apk --no-cache add ca-certificates wget tzdata
 
 WORKDIR /
 
-COPY --from=builder /witness /witness
+COPY --from=builder /out/standalone-witness /witness
 
 EXPOSE 8081
 

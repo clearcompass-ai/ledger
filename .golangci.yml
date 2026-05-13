@@ -80,13 +80,13 @@ linters:
             process-lifetime ctx at struct construction (see Phase 2
             pattern in store/smt_state.go, store/entries.go, etc.).
         #
-        # cmd/standalone-witness/ has its OWN go.mod. The compile-
-        # time boundary (separate module + internal/) makes a stray
-        # `import "github.com/clearcompass-ai/ledger/..."` from the
-        # witness daemon a hard build error — surfaced earlier and
-        # more loudly than any lint rule could. No additional
-        # forbidigo entry needed; CI runs `GOWORK=off go build
-        # ./cmd/standalone-witness/...` to prove the isolation.
+        # The standalone-witness daemon lives in its own repository
+        # (github.com/clearcompass-ai/standalone-witness). Because it
+        # is a separate Go module in a separate repo, the witness
+        # cannot import github.com/clearcompass-ai/ledger/* by
+        # construction — Go's resolver wouldn't find such an import
+        # in that module's graph. No forbidigo entry needed; the
+        # boundary is enforced at the module layer.
 
   exclusions:
     # Tests can use over-allocations + shadowed err vars freely.
