@@ -375,17 +375,30 @@ func prepareSubmission(
 		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
 			http.StatusUnprocessableEntity, "empty signer DID")
 	}
-	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
+	var sigErr error
+	if deps.Gates.MultiSig {
+		// PR-C gate 1 (issue #75): SDK-uniform multi-signature
+		// verification. Verifies every Signatures[i], not just
+		// Signatures[0]. Default OFF; flipped via
+		// LEDGER_ADMISSION_MULTISIG_ENABLE after canary cycle.
+		_, sigErr = admission.VerifyEntryAllSignatures(ctx, entry, deps.Identity.DIDResolver)
+	} else {
+		// Legacy single-sig path. Verifies only Signatures[0].
+		// Kept for the rollout window; removed once gate 1 is
+		// production-default and a follow-up flips MultiSig ON.
+		sigErr = admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver)
+	}
+	if sigErr != nil {
 		// Defer to the single SDK-sentinel mapping table
 		// (admission/error_mapping.go) for status + class. The
 		// fallback branch is the same 500/DBQueryFailed shape this
 		// switch carried before the table was introduced; a miss
 		// here surfaces the unmapped sentinel as a CI/dashboard
 		// alarm rather than a silent legacy default.
-		if matched, status, class := admission.MapSDKError(err); matched {
-			return nil, submissionFail(class, status, "%s", err)
+		if matched, status, class := admission.MapSDKError(sigErr); matched {
+			return nil, submissionFail(class, status, "%s", sigErr)
 		}
-		deps.Logger.Error("signature verification path failed", "error", err)
+		deps.Logger.Error("signature verification path failed", "error", sigErr)
 		return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
 			http.StatusInternalServerError, "signature verification failed")
 	}
