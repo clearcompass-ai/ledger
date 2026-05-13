@@ -238,6 +238,14 @@ type SubmissionDeps struct {
 	// admission path — production wires
 	// admission.LoadGatesFromEnv() at boot.
 	Gates admission.Gates
+
+	// PolicyContext is the dependency bundle for the PR-E
+	// policy gate (admission.VerifyEntryPolicy). nil disables
+	// the gate entirely even when Gates.Policy=true (fail-open;
+	// the flag is the *intent*, this is the *capability*).
+	// Production wires the resolver against the schema registry
+	// + entry store; the wiring lands in a PR-E follow-up.
+	PolicyContext *admission.PolicyContext
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,6 +447,21 @@ func prepareSubmission(
 				return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
 					http.StatusInternalServerError, "tree head verification failed")
 			}
+		}
+	}
+
+	// ── Step 4d: Schema-declared policy enforcement (PR-E gate 3) ──
+	// Self-gating: no-op unless schema declares AttestationPolicies
+	// AND entry references one via Header.AttestationPolicyName.
+	// Default OFF; flipped via LEDGER_ADMISSION_POLICY_ENABLE.
+	if deps.Gates.Policy {
+		if _, err := admission.VerifyEntryPolicy(ctx, entry, time.Now().UTC(), deps.PolicyContext); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("policy verification failed", "error", err)
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "policy verification failed")
 		}
 	}
 
