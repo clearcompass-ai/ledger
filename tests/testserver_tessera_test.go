@@ -43,7 +43,6 @@ import (
 
 	uptessera "github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/storage/posix"
-	tposixantispam "github.com/transparency-dev/tessera/storage/posix/antispam"
 
 	"github.com/clearcompass-ai/ledger/api"
 	opbuilder "github.com/clearcompass-ai/ledger/builder"
@@ -150,22 +149,6 @@ func buildRealTesseraSlots(
 	}
 	_ = uptessera.Driver(driver) // compile-time conformance.
 
-	// ANTISPAM (dedup) — load-bearing for the sequencer's drainOnce
-	// race tolerance. Without it, drainOnce N+1 re-picks-up a hash
-	// whose stage-1 worker from cycle N is still in flight; the
-	// re-spawned worker's AppendLeaf gets a FRESH seq (Tessera with
-	// nil antispam treats every Add as new), entry_index gets a
-	// status=2 ghost row at the fresh seq, and the shipper's
-	// hwmAdvancer contiguity invariant breaks at the first ghost.
-	//
-	// Reproducer: tessera/antispam_off_reproducer_test.go.
-	// Production-shape harness: tests/witnessed_harness_test.go:141.
-	antispamPath := filepath.Join(tileRoot, "antispam")
-	antispam, asErr := tposixantispam.NewAntispam(ctx, antispamPath, tposixantispam.AntispamOpts{})
-	if asErr != nil {
-		t.Fatalf("buildRealTesseraSlots: tposixantispam.NewAntispam(%s): %v", antispamPath, asErr)
-	}
-
 	// CTX LIFETIME: Tessera's background tasks (integration loop,
 	// follower-stats, updateStats) listen to THIS ctx for termination.
 	// shutdownChain.Run (registered as a single t.Cleanup by the
@@ -183,7 +166,9 @@ func buildRealTesseraSlots(
 		BatchSize:          batchSize,
 		BatchMaxAge:        batchMaxAge,
 		Signer:             signer,
-		Antispam:           antispam,
+		// Antispam (CT-pattern hash→seq dedup follower) — load-bearing.
+		// See tests/tessera_antispam_helper_test.go for full rationale.
+		Antispam: newAntispamForTest(t, ctx, filepath.Join(tileRoot, "antispam")),
 	}, logger)
 	if err != nil {
 		t.Fatalf("buildRealTesseraSlots: NewEmbeddedAppender: %v", err)
