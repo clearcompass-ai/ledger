@@ -133,13 +133,29 @@ func seedEntry(
 	}
 }
 
-// resetFixtures truncates the tables this test writes to. Called
-// before each test so suites that share a database stay isolated.
+// resetFixtures truncates every table any test in this package
+// writes to. Called before each test so suites that share a
+// database stay isolated.
+//
+// Why every store-package table, not just the per-test set:
+// commitment_fetcher_test and smt_state_test share this helper.
+// If resetFixtures clears only the commitment tables, a smt_state
+// test running first leaves smt_leaves / jellyfish_nodes rows
+// behind, and a later commitment test (or another smt_state test)
+// sees Count() = N + previous_residue instead of N. That's the
+// "Count = 18, want 16" / "Count = 19, want 1" failure pattern.
+//
+// smt_root_state is a singleton (id=1) seeded by migration 0002 /
+// reset to Jellyfish empty by 0003 — we leave it alone here; no
+// test in this package writes to it, and TRUNCATE would violate
+// the singleton CHECK constraint.
 func resetFixtures(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, stmt := range []string{
 		`TRUNCATE TABLE commitment_split_id`,
 		`TRUNCATE TABLE entry_index CASCADE`,
+		`TRUNCATE TABLE smt_leaves`,
+		`TRUNCATE TABLE jellyfish_nodes`,
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("reset fixtures: %v", err)
