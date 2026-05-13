@@ -223,10 +223,7 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 	// pre-commit failures don't leak. After each batch's atomic
 	// commit we advance the persistent tree's rootHash via SetRoot
 	// so the next batch builds on the committed state.
-	mainTree, err := smt.NewTree(leafStore, nodeStore)
-	if err != nil {
-		return Stats{}, fmt.Errorf("rebuild-projection: new main tree: %w", err)
-	}
+	mainTree := smt.NewTree(leafStore, nodeStore)
 	currentRoot := smt.EmptyHash
 	mainTree.SetRoot(currentRoot)
 
@@ -254,18 +251,9 @@ func Rebuild(ctx context.Context, deps RebuildDeps) (Stats, error) {
 		// and leave the persistent stores untouched. On commit
 		// success we extract the overlay mutations and persist them
 		// in the same atomic transaction as entry_index + cursor.
-		overlayLeaves, err := smt.NewOverlayLeafStore(leafStore)
-		if err != nil {
-			return Stats{}, fmt.Errorf("rebuild-projection: new overlay leaf store: %w", err)
-		}
-		overlayNodes, err := smt.NewOverlayNodeStore(nodeStore)
-		if err != nil {
-			return Stats{}, fmt.Errorf("rebuild-projection: new overlay node store: %w", err)
-		}
-		overlayTree, err := smt.NewTree(overlayLeaves, overlayNodes)
-		if err != nil {
-			return Stats{}, fmt.Errorf("rebuild-projection: new overlay tree: %w", err)
-		}
+		overlayLeaves := smt.NewOverlayLeafStore(leafStore)
+		overlayNodes := smt.NewOverlayNodeStore(nodeStore)
+		overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
 		overlayTree.SetRoot(currentRoot)
 
 		result, err := sdkbuilder.ProcessBatch(ctx, overlayTree,

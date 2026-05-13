@@ -168,7 +168,7 @@ func TestComputeDirtyRoot_AgreesWithSetLeaves(t *testing.T) {
 	leaves := generateLeaves(t, 50)
 
 	// Path A: SetLeaves(all) on a fresh tree → root_A.
-	treeA := mustNewTreeT(t)
+	treeA := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	allLeaves := make([]types.SMTLeaf, 0, len(leaves))
 	for _, l := range leaves {
 		allLeaves = append(allLeaves, l)
@@ -184,7 +184,7 @@ func TestComputeDirtyRoot_AgreesWithSetLeaves(t *testing.T) {
 	// Path B: ComputeDirtyRoot(empty, allLeaves) on a fresh tree → root_B.
 	// Tree's rootHash is NOT advanced by ComputeDirtyRoot; pass the
 	// empty hash explicitly.
-	treeB := mustNewTreeT(t)
+	treeB := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	writes := make(map[[32]byte]types.SMTLeaf, len(leaves))
 	for k, v := range leaves {
 		writes[k] = v
@@ -227,14 +227,14 @@ func TestSetLeaves_BatchSplit_RootInvariant(t *testing.T) {
 	}
 
 	// Layout 1: single batch of 60.
-	tree1 := mustNewTreeT(t)
+	tree1 := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	if err := tree1.SetLeaves(ctx, all); err != nil {
 		t.Fatalf("tree1.SetLeaves: %v", err)
 	}
 	root1, _ := tree1.Root(ctx)
 
 	// Layout 2: three batches of 20.
-	tree2 := mustNewTreeT(t)
+	tree2 := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	for i := 0; i < 3; i++ {
 		if err := tree2.SetLeaves(ctx, all[i*20:(i+1)*20]); err != nil {
 			t.Fatalf("tree2.SetLeaves batch %d: %v", i, err)
@@ -243,7 +243,7 @@ func TestSetLeaves_BatchSplit_RootInvariant(t *testing.T) {
 	root2, _ := tree2.Root(ctx)
 
 	// Layout 3: six batches of 10.
-	tree3 := mustNewTreeT(t)
+	tree3 := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	for i := 0; i < 6; i++ {
 		if err := tree3.SetLeaves(ctx, all[i*10:(i+1)*10]); err != nil {
 			t.Fatalf("tree3.SetLeaves batch %d: %v", i, err)
@@ -276,14 +276,14 @@ func TestComputeDirtyRoot_ChainsAcrossBatches(t *testing.T) {
 	}
 
 	// Path A: SetLeaves(all 60) on one tree.
-	commitTree := mustNewTreeT(t)
+	commitTree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	if err := commitTree.SetLeaves(ctx, all); err != nil {
 		t.Fatalf("commitTree.SetLeaves: %v", err)
 	}
 	wantRoot, _ := commitTree.Root(ctx)
 
 	// Path B: three sequential ComputeDirtyRoot calls chained.
-	chainTree := mustNewTreeT(t)
+	chainTree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	priorRoot := smt.EmptyHash
 	for i := 0; i < 3; i++ {
 		batch := make(map[[32]byte]types.SMTLeaf, 20)
@@ -312,7 +312,7 @@ func TestComputeDirtyRoot_DoesNotAdvanceTreeRoot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	tree := mustNewTreeT(t)
+	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	rootBefore, _ := tree.Root(ctx)
 	if rootBefore != smt.EmptyHash {
 		t.Fatalf("fresh tree root = %x, want EmptyHash", rootBefore)
@@ -340,19 +340,6 @@ func TestComputeDirtyRoot_DoesNotAdvanceTreeRoot(t *testing.T) {
 
 // generateLeaves returns n random-key SMTLeaves with monotonic
 // sequence numbers. Helper for the table-driven tests above.
-// mustNewTreeT wraps smt.NewTree's v0.7.1 (*Tree, error) return for
-// test sites that just want a fresh in-memory tree. testing.TB.Fatal
-// is the Go idiom; never reachable in this test suite (in-memory
-// stores satisfy the non-nil-store invariant by construction).
-func mustNewTreeT(t *testing.T) *smt.Tree {
-	t.Helper()
-	tree, err := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
-	if err != nil {
-		t.Fatalf("smt.NewTree: %v", err)
-	}
-	return tree
-}
-
 func generateLeaves(t *testing.T, n int) map[[32]byte]types.SMTLeaf {
 	t.Helper()
 	out := make(map[[32]byte]types.SMTLeaf, n)

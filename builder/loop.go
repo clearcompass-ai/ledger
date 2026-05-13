@@ -465,18 +465,9 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// AppendLeaf, witness cosignature, downstream PG error) leave the
 	// persistent leafStore + nodeStore untouched. On commit success the
 	// overlay mutations are extracted and persisted atomically below.
-	overlayLeaves, err := smt.NewOverlayLeafStore(bl.leafStore)
-	if err != nil {
-		return 0, fmt.Errorf("builder/loop: new overlay leaf store: %w", err)
-	}
-	overlayNodes, err := smt.NewOverlayNodeStore(bl.nodeStore)
-	if err != nil {
-		return 0, fmt.Errorf("builder/loop: new overlay node store: %w", err)
-	}
-	overlayTree, err := smt.NewTree(overlayLeaves, overlayNodes)
-	if err != nil {
-		return 0, fmt.Errorf("builder/loop: new overlay tree: %w", err)
-	}
+	overlayLeaves := smt.NewOverlayLeafStore(bl.leafStore)
+	overlayNodes := smt.NewOverlayNodeStore(bl.nodeStore)
+	overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
 	overlayTree.SetRoot(priorRoot)
 
 	processStart := time.Now()

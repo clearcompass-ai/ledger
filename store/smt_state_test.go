@@ -417,10 +417,7 @@ func TestPostgresNodeStore_PutBatchTx_RoundTrip(t *testing.T) {
 	// cold cache, so Get hits Postgres for each lookup.
 	cold := NewPostgresNodeStore(ctx, pool, 1024)
 	for i, node := range nodes {
-		hash, err := smt.HashNode(node)
-		if err != nil {
-			t.Fatalf("HashNode %d: %v", i, err)
-		}
+		hash := smt.HashNode(node)
 		got, err := cold.Get(hash)
 		if err != nil {
 			t.Fatalf("Get node %d (hash=%x): %v", i, hash[:8], err)
@@ -428,10 +425,7 @@ func TestPostgresNodeStore_PutBatchTx_RoundTrip(t *testing.T) {
 		if got == nil {
 			t.Fatalf("Get node %d (hash=%x): nil (not persisted)", i, hash[:8])
 		}
-		gotHash, err := smt.HashNode(got)
-		if err != nil {
-			t.Fatalf("HashNode got %d: %v", i, err)
-		}
+		gotHash := smt.HashNode(got)
 		if gotHash != hash {
 			t.Errorf("node %d: round-trip hash mismatch — wrote %x, got %x", i, hash, gotHash)
 		}

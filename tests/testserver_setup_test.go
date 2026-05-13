@@ -157,11 +157,7 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	treeHeadStore := store.NewTreeHeadStore(pool)
 	leafStore := store.NewPostgresLeafStore(pool)
 	nodeCache := store.NewPostgresNodeStore(ctx, pool, 10000)
-	tree, err := smt.NewTree(leafStore, nodeCache)
-	if err != nil {
-		pool.Close()
-		t.Fatalf("smt.NewTree: %v", err)
-	}
+	tree := smt.NewTree(leafStore, nodeCache)
 	commitmentStore := store.NewCommitmentStore(pool)
 
 	walDB, err := wal.OpenInMemory(nil)

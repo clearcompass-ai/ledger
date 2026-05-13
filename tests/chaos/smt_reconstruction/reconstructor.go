@@ -145,13 +145,10 @@ func Reconstruct(ctx context.Context, pool *pgxpool.Pool) (Result, error) {
 		// push every leaf through SetLeaves. The SDK's tree
 		// computes the new root incrementally; after the call
 		// completes, tree.Root() returns the rebuilt root.
-		tree, err := smt.NewTree(
+		tree := smt.NewTree(
 			smt.NewInMemoryLeafStore(),
 			smt.NewInMemoryNodeStore(),
 		)
-		if err != nil {
-			return fmt.Errorf("smt-reconstruction: new tree: %w", err)
-		}
 		if err := tree.SetLeaves(ctx, leaves); err != nil {
 			return fmt.Errorf("SDK SetLeaves (n=%d): %w", len(leaves), err)
 		}

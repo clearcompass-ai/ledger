@@ -150,10 +150,7 @@ func run(logger *slog.Logger) error {
 	// the first batch lands.
 	leafStore := store.NewPostgresLeafStore(pool.DB)
 	nodeStore := store.NewPostgresNodeStore(ctx, pool.DB, cfg.SMTCacheSize)
-	tree, err := smt.NewTree(leafStore, nodeStore)
-	if err != nil {
-		return fmt.Errorf("ledger-reader: new SMT tree: %w", err)
-	}
+	tree := smt.NewTree(leafStore, nodeStore)
 	rootStateStore := store.NewSMTRootStateStore(pool.DB)
 	if rs, rsErr := rootStateStore.Read(ctx); rsErr == nil {
 		tree.SetRoot(rs.CurrentRoot)

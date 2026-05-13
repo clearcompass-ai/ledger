@@ -351,7 +351,7 @@ func TestDeterminism_AllPaths(t *testing.T) {
 }
 
 func TestDeterminism_PathCompression(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:alice")
 	h.addRootEntity(t, pos(2), "did:example:alice")
 	action := makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice", TargetRoot: ptrTo(pos(1)), TargetIntermediate: ptrTo(pos(2)), AuthorityPath: sameSigner()}, nil)
@@ -387,10 +387,7 @@ func TestDeterminism_CommutativeSchemas(t *testing.T) {
 
 func TestDeterminism_EmptyBatch(t *testing.T) {
 	ctx := context.Background()
-	tree, err := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
-	if err != nil {
-		t.Fatalf("smt.NewTree: %v", err)
-	}
+	tree := smt.NewTree(smt.NewInMemoryLeafStore(), smt.NewInMemoryNodeStore())
 	rootBefore, _ := tree.Root(ctx)
 	result, _ := builder.ProcessBatch(ctx, tree, nil, nil, newMockFetcher(), nil, testLogDID, builder.NewDeltaWindowBuffer(10))
 	if result.NewRoot != rootBefore {
@@ -406,7 +403,7 @@ func TestDeterminism_EmptyBatch(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestSMT_LeafCreation(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice", AuthorityPath: sameSigner()}, nil), pos(1))
 	if r.NewLeafCounts != 1 {
 		t.Fatal("expected 1 leaf")
@@ -421,7 +418,7 @@ func TestSMT_LeafCreation(t *testing.T) {
 }
 
 func TestSMT_OriginTipUpdate_PathA(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:alice")
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice", TargetRoot: ptrTo(pos(1)), AuthorityPath: sameSigner()}, []byte("amended")), pos(2))
 	if !h.leafOriginTip(t, pos(1)).Equal(pos(2)) {
@@ -433,7 +430,7 @@ func TestSMT_OriginTipUpdate_PathA(t *testing.T) {
 }
 
 func TestSMT_AuthorityTipUpdate_PathC(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:entity")
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, []byte("sealing")), pos(3))
@@ -449,7 +446,7 @@ func TestSMT_AuthorityTipUpdate_PathC(t *testing.T) {
 }
 
 func TestSMT_LaneSelection_AmendmentExecution(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addScopeEntity(t, pos(1), "did:example:a", map[string]struct{}{"did:example:a": {}, "did:example:b": {}})
 	newSet := map[string]struct{}{"did:example:a": {}, "did:example:b": {}, "did:example:c": {}}
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(1)), AuthoritySet: newSet}, nil), pos(2))
@@ -462,7 +459,7 @@ func TestSMT_LaneSelection_AmendmentExecution(t *testing.T) {
 }
 
 func TestSMT_LaneSelection_Enforcement(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:entity")
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, nil), pos(3))
@@ -475,7 +472,7 @@ func TestSMT_LaneSelection_Enforcement(t *testing.T) {
 }
 
 func TestSMT_CommentaryZeroImpact(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:witness"}, nil), pos(1))
 	if r.NewRoot != rootBefore {
@@ -490,7 +487,7 @@ func TestSMT_CommentaryZeroImpact(t *testing.T) {
 }
 
 func TestSMT_PathD_ForeignTarget(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:alice", AuthorityPath: sameSigner(), TargetRoot: ptrTo(foreignPos(1))}, nil), pos(1))
 	if r.NewRoot != rootBefore {
@@ -502,7 +499,7 @@ func TestSMT_PathD_ForeignTarget(t *testing.T) {
 }
 
 func TestSMT_DelegationLiveness(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:owner")
 	h.addDelegation(t, pos(2), "did:example:owner", "did:example:delegate")
 	// Live: should succeed.
@@ -847,7 +844,7 @@ func TestDeltaBuffer_Reconstructible(t *testing.T) {
 }
 
 func TestDeltaBuffer_CommutativeWithinWindow(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.schema = &mockSchemaResolver{commutative: true}
 	h.addRootEntity(t, pos(1), "did:example:entity")
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
@@ -859,7 +856,7 @@ func TestDeltaBuffer_CommutativeWithinWindow(t *testing.T) {
 }
 
 func TestDeltaBuffer_NonCommutativeStrict(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:entity")
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, nil), pos(3))
@@ -905,7 +902,7 @@ func TestAnchor_Frequency(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestCommitment_MatchesMutations(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:c", AuthorityPath: sameSigner()}, nil), pos(1))
 	c := builder.GenerateBatchCommitment(pos(1), pos(1), rootBefore, r)
@@ -953,7 +950,7 @@ func TestCrash_AdvisoryLockExclusivity(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestGov_ScopeCreation(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a", AuthorityPath: sameSigner(), AuthoritySet: map[string]struct{}{"did:example:a": {}, "did:example:b": {}, "did:example:c": {}}}, []byte("scope")), pos(1))
 	if r.NewLeafCounts != 1 {
 		t.Fatal("scope should create leaf")
@@ -964,7 +961,7 @@ func TestGov_ScopeCreation(t *testing.T) {
 }
 
 func TestGov_ThreePhaseAmendment(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addScopeEntity(t, pos(1), "did:example:a", map[string]struct{}{"did:example:a": {}, "did:example:b": {}})
 	r1 := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a"}, []byte("proposal")), pos(2))
 	if r1.CommentaryCounts != 1 {
@@ -985,7 +982,7 @@ func TestGov_ThreePhaseAmendment(t *testing.T) {
 }
 
 func TestGov_ScopeRemovalTimeLock(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addScopeEntity(t, pos(1), "did:example:a", map[string]struct{}{"did:example:a": {}, "did:example:b": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:a", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(1))}, nil), pos(2))
 	if !h.leafAuthorityTip(t, pos(1)).Equal(pos(2)) {
@@ -1013,7 +1010,7 @@ func TestGov_KeyRotationMaturation(t *testing.T) {
 }
 
 func TestGov_RecoveryEscrowChain(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:holder")
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:new-exchange"}, []byte("recovery")), pos(2))
 	if r.CommentaryCounts != 1 {
@@ -1028,7 +1025,7 @@ func TestGov_RecoveryEscrowChain(t *testing.T) {
 }
 
 func TestGov_DelegationRevocationCascade(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:division")
 	h.addDelegation(t, pos(2), "did:example:division", "did:example:judge")
 	h.addDelegation(t, pos(3), "did:example:judge", "did:example:clerk")
@@ -1049,7 +1046,7 @@ func TestGov_DelegationRevocationCascade(t *testing.T) {
 }
 
 func TestGov_EnforcementCosignatures(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:case")
 	h.addScopeEntity(t, pos(2), "did:example:judge", map[string]struct{}{"did:example:judge": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:judge", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, []byte("seal")), pos(3))
@@ -1077,7 +1074,7 @@ func TestGov_EnforcementCosignatures(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 func TestEndToEnd_DelegatedRecordFiling(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:division")
 	h.addDelegation(t, pos(2), "did:example:division", "did:example:agent")
 	h.addDelegation(t, pos(3), "did:example:agent", "did:example:assistant")
@@ -1092,7 +1089,7 @@ func TestEndToEnd_DelegatedRecordFiling(t *testing.T) {
 }
 
 func TestEndToEnd_SealUnsealLifecycle(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	h.addRootEntity(t, pos(1), "did:example:record")
 	h.addScopeEntity(t, pos(2), "did:example:agent", map[string]struct{}{"did:example:agent": {}})
 	h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:agent", TargetRoot: ptrTo(pos(1)), AuthorityPath: scopeAuth(), ScopePointer: ptrTo(pos(2))}, []byte("seal")), pos(3))
@@ -1109,7 +1106,7 @@ func TestEndToEnd_SealUnsealLifecycle(t *testing.T) {
 }
 
 func TestEndToEnd_EvidenceGrantCommentary(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assistant"}, mustJSON(map[string]string{"grant": "evidence", "cid": "sha256:abc"})), pos(1))
 	if r.CommentaryCounts != 1 {
@@ -1121,7 +1118,7 @@ func TestEndToEnd_EvidenceGrantCommentary(t *testing.T) {
 }
 
 func TestEndToEnd_CrossLogRelayCommentary(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:relay"}, mustJSON(map[string]any{"relay": "cross_log", "source": "did:example:node-a", "seq": 42})), pos(1))
 	if r.CommentaryCounts != 1 {
@@ -1146,7 +1143,7 @@ func TestEndToEnd_BulkImport(t *testing.T) {
 }
 
 func TestEndToEnd_DailyAssignmentCommentary(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness()
 	rootBefore := h.root(t)
 	r := h.process(t, makeEntry(t, envelope.ControlHeader{SignerDID: "did:example:assigner"}, mustJSON(map[string]any{"type": "daily_assignment", "date": "2024-01-15", "slot": "3A"})), pos(1))
 	if r.CommentaryCounts != 1 {

@@ -383,10 +383,7 @@ func (s *PostgresNodeStore) Put(node smt.Node) ([32]byte, error) {
 	if node == nil {
 		return [32]byte{}, errors.New("store/smt: cannot store nil node")
 	}
-	hash, err := smt.HashNode(node)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("store/smt: hash node: %w", err)
-	}
+	hash := smt.HashNode(node)
 
 	// Promote to LRU regardless of whether PG already had it.
 	s.mu.Lock()
@@ -419,10 +416,7 @@ func (s *PostgresNodeStore) PutTx(ctx context.Context, tx pgx.Tx, node smt.Node)
 	if node == nil {
 		return [32]byte{}, errors.New("store/smt: cannot store nil node")
 	}
-	hash, err := smt.HashNode(node)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("store/smt: hash node: %w", err)
-	}
+	hash := smt.HashNode(node)
 
 	s.mu.Lock()
 	s.cachePutLocked(hash, node)
@@ -487,11 +481,7 @@ func (s *PostgresNodeStore) PutBatchTx(ctx context.Context, tx pgx.Tx, nodes []s
 		if node == nil {
 			return 0, fmt.Errorf("store/smt: put batch tx: nil node at index %d", i)
 		}
-		h, err := smt.HashNode(node)
-		if err != nil {
-			return 0, fmt.Errorf("store/smt: put batch tx: hash node at index %d: %w", i, err)
-		}
-		hashArrays[i] = h
+		hashArrays[i] = smt.HashNode(node)
 		hashSlices[i] = hashArrays[i][:]
 		payloads[i] = node.Serialize()
 	}

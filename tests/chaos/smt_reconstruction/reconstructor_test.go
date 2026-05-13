@@ -250,13 +250,10 @@ func buildSyntheticLeaves(t *testing.T, n int, logDID string) []types.SMTLeaf {
 // produce when walking the same leaves out of smt_leaves.
 func computeExpectedRoot(t *testing.T, leaves []types.SMTLeaf) [32]byte {
 	t.Helper()
-	tree, err := smt.NewTree(
+	tree := smt.NewTree(
 		smt.NewInMemoryLeafStore(),
 		smt.NewInMemoryNodeStore(),
 	)
-	if err != nil {
-		t.Fatalf("smt.NewTree: %v", err)
-	}
 	if err := tree.SetLeaves(context.Background(), leaves); err != nil {
 		t.Fatalf("SDK SetLeaves: %v", err)
 	}

@@ -184,10 +184,7 @@ func Wire(ctx context.Context, cfg Config, d *deps.AppDeps) error {
 	escrowOverrideHandler := wireEscrowOverride(cfg, cosigner, d)
 
 	// 7. Builder loop + commitment publisher + anchor publisher.
-	bl, anchorPub, err := composeBuilderLoop(ctx, cfg, d, tesseraAdapter, cosigner)
-	if err != nil {
-		return fmt.Errorf("wire: composeBuilderLoop: %w", err)
-	}
+	bl, anchorPub := composeBuilderLoop(ctx, cfg, d, tesseraAdapter, cosigner)
 	d.BuilderLoop = bl
 	d.AnchorPublisher = anchorPub
 
@@ -260,7 +257,7 @@ func composeBuilderLoop(
 	d *deps.AppDeps,
 	tesseraAdapter *tessera.TesseraAdapter,
 	cosigner builder.WitnessCosigner,
-) (*builder.BuilderLoop, *anchor.Publisher, error) {
+) (*builder.BuilderLoop, *anchor.Publisher) {
 	pool := d.PgPool.DB
 
 	// Composite byte reader: WAL fast-path → bytestore fallback.
@@ -270,10 +267,7 @@ func composeBuilderLoop(
 	bufferStore := builder.NewDeltaBufferStore(pool, cfg.DeltaWindow, d.Logger)
 	sequenceCursor := store.NewSequenceCursor(pool)
 	reader := builder.NewCursorReader(sequenceCursor)
-	tree, err := smt.NewTree(d.LeafStore, d.NodeStore)
-	if err != nil {
-		return nil, nil, fmt.Errorf("composeBuilderLoop: new SMT tree: %w", err)
-	}
+	tree := smt.NewTree(d.LeafStore, d.NodeStore)
 
 	buffer, loadErr := bufferStore.Load(ctx)
 	if loadErr != nil {
@@ -327,7 +321,7 @@ func composeBuilderLoop(
 		d.Logger,
 	)
 
-	return bl, anchorPub, nil
+	return bl, anchorPub
 }
 
 // composeHandlers builds the api.Handlers struct passed to api.NewServer.
@@ -393,10 +387,7 @@ func composeHandlers(
 		SchemaRegistry:     d.SchemaRegistry,
 	}
 
-	tree, err := smt.NewTree(d.LeafStore, d.NodeStore)
-	if err != nil {
-		return api.Handlers{}, fmt.Errorf("composeHandlers: new SMT tree: %w", err)
-	}
+	tree := smt.NewTree(d.LeafStore, d.NodeStore)
 	queryDeps := &api.QueryDeps{
 		EntryStore:     d.EntryStore,
 		QueryAPI:       queryAPI,
