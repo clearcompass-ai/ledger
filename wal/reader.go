@@ -222,9 +222,20 @@ func (c *Committer) HashAt(ctx context.Context, seq uint64) ([32]byte, error) {
 	return hash, nil
 }
 
-// HWM returns the high-water mark — the highest contiguous sequence
-// number whose entry has been shipped. Returns 0 when no entries
-// have been shipped yet.
+// HWM returns the high-water mark — the highest contiguous SEQUENCE
+// NUMBER whose entry has been shipped. HWM is a seq value, not a
+// count: under the migration-0004 contract seqs are 0-indexed, so
+// N entries occupy seqs 0..N-1 and HWM caps at N-1, not N.
+//
+// HWM=0 is ambiguous on its face — it can mean either "no entry has
+// been shipped yet" OR "seq=0 has been shipped." The system does NOT
+// distinguish: shipper/shipper.go:538 absorbs the seq=0 completion
+// as a no-op against HWM=0, so HWM advances 0→1→2→…→N-1 rather than
+// 0→0→1→…→N-1. Callers needing to distinguish must consult per-hash
+// state via MetaState; the WAL has no Bootstrapped bit.
+//
+// If future work wants HWM-as-count semantics, BOTH this convention
+// AND the seq <= hwm no-op at shipper.go:538 have to move together.
 func (c *Committer) HWM(ctx context.Context) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
