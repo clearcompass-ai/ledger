@@ -536,7 +536,15 @@ func (s *Shipper) processCompletion(ctx context.Context, seq uint64, above map[u
 		return
 	}
 	if seq <= hwm {
-		// Already covered by HWM (e.g., re-ship via test). No-op.
+		// Idempotency guard AND the load-bearing rule that makes HWM
+		// a seq value (not a count). Under the migration-0004 contract
+		// seqs are 0-indexed, so the very first completion (seq=0)
+		// hits this branch with hwm=0 and is silently absorbed — HWM
+		// stays at 0 until seq=1 arrives, then advances 1→2→…→N-1 for
+		// N entries. Result: HWM caps at N-1, NOT N. wal/reader.go's
+		// HWM() docstring documents the consequence; any switch to
+		// HWM-as-count semantics has to change both sites in lockstep.
+		// Also covers the genuine re-ship case (e.g., test replays).
 		return
 	}
 	if seq > hwm+1 {
