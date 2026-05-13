@@ -158,7 +158,10 @@ func startShutdownLedger(t *testing.T, opts shutdownHarnessOpts) *shutdownHarnes
 	// the new EmbeddedAppender re-opens them on boot.
 	tileRoot := opts.tileRoot
 	if tileRoot == "" {
-		tileRoot = t.TempDir()
+		// tesseraTempDir defers cleanup by DefaultDrainBudget so
+		// upstream goroutines have time to exit before the dir
+		// vanishes. See tests/tessera_lifecycle_helper_test.go.
+		tileRoot = tesseraTempDir(t, optessera.DefaultDrainBudget)
 	}
 	signer, _, sErr := optessera.GenerateEphemeralSigner("test-shutdown")
 	if sErr != nil {
@@ -538,7 +541,11 @@ func TestE2E_RestartCompletesShipping(t *testing.T) {
 	// Shared Tessera POSIX dir across both invocations so the
 	// second harness re-opens the same on-disk antispam volume +
 	// tile state — exactly the production restart path.
-	sharedTileRoot := t.TempDir()
+	//
+	// tesseraTempDir defers cleanup by DefaultDrainBudget so
+	// upstream goroutines from BOTH phase-1 and phase-2 have
+	// time to exit before the dir vanishes.
+	sharedTileRoot := tesseraTempDir(t, optessera.DefaultDrainBudget)
 
 	// Antispam is allocated ONCE at the test level and threaded
 	// through both phase-1 and phase-2 via opts.antispam. In a

@@ -307,7 +307,10 @@ func TestEmbeddedAppender_Close_IsIdempotent(t *testing.T) {
 		t.Fatalf("posix.New: %v", err)
 	}
 	signer, _, _ := GenerateEphemeralSigner("idempotent-test")
-	app, err := NewEmbeddedAppender(ctx, driver, AppenderOptions{Signer: signer}, nil)
+	app, err := NewEmbeddedAppender(ctx, driver, AppenderOptions{
+		Signer:      signer,
+		DrainBudget: -1, // disable drain wait — keeps the test fast
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewEmbeddedAppender: %v", err)
 	}
@@ -320,6 +323,104 @@ func TestEmbeddedAppender_Close_IsIdempotent(t *testing.T) {
 	// Second Close: must NOT panic and must NOT fail.
 	if err := app.Close(ctx); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestEmbeddedAppender_Close_DoneChannelClosesAfterDrainBudget pins
+// the Done() channel contract: closed exactly once, after Close
+// completes its drain budget. Tests rely on this to gate t.TempDir
+// cleanup until upstream goroutines have observed ctx.Done.
+func TestEmbeddedAppender_Close_DoneChannelClosesAfterDrainBudget(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	driver, err := posix.New(ctx, posix.Config{Path: dir})
+	if err != nil {
+		t.Fatalf("posix.New: %v", err)
+	}
+	signer, _, _ := GenerateEphemeralSigner("done-channel-test")
+	const drain = 50 * time.Millisecond
+	app, err := NewEmbeddedAppender(ctx, driver, AppenderOptions{
+		Signer:      signer,
+		DrainBudget: drain,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEmbeddedAppender: %v", err)
+	}
+
+	// Before Close, Done() returns an open channel — select with
+	// default branch should hit default, not the channel.
+	select {
+	case <-app.Done():
+		t.Fatal("Done() was closed before Close() ran")
+	default:
+		// expected
+	}
+
+	closeStart := time.Now()
+	if err := app.Close(ctx); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	closeElapsed := time.Since(closeStart)
+
+	// Close must have waited at least the drain budget.
+	if closeElapsed < drain {
+		t.Errorf("Close returned in %s, expected >= drainBudget=%s "+
+			"(drain-budget wait skipped?)", closeElapsed, drain)
+	}
+
+	// After Close returns, Done() must be closed (immediate receive).
+	select {
+	case <-app.Done():
+		// expected
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Done() was not closed after Close returned")
+	}
+
+	// Idempotent close + Done stays closed.
+	if err := app.Close(ctx); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	select {
+	case <-app.Done():
+		// still closed — expected (channel close is permanent)
+	default:
+		t.Fatal("Done() is no longer closed after second Close")
+	}
+}
+
+// TestEmbeddedAppender_Close_HonorsCallerCtxDeadline pins that
+// Close returns when the caller's ctx fires, even if the drain
+// budget hasn't elapsed. Production shutdown chains rely on this
+// to bound shutdown time under a SIGTERM grace window.
+func TestEmbeddedAppender_Close_HonorsCallerCtxDeadline(t *testing.T) {
+	dir := t.TempDir()
+	driver, err := posix.New(context.Background(), posix.Config{Path: dir})
+	if err != nil {
+		t.Fatalf("posix.New: %v", err)
+	}
+	signer, _, _ := GenerateEphemeralSigner("ctx-deadline-test")
+	// Big drain budget; small caller deadline. Caller deadline wins.
+	app, err := NewEmbeddedAppender(context.Background(), driver, AppenderOptions{
+		Signer:      signer,
+		DrainBudget: 5 * time.Second,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEmbeddedAppender: %v", err)
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	closeStart := time.Now()
+	_ = app.Close(closeCtx)
+	closeElapsed := time.Since(closeStart)
+
+	// Caller's 30ms deadline must dominate the 5s drain budget.
+	// Slack: 5s drain → 200ms ceiling means caller-deadline was honored.
+	if closeElapsed >= 200*time.Millisecond {
+		t.Errorf("Close took %s, expected < 200ms (caller ctx deadline "+
+			"should have dominated the 5s drain budget)", closeElapsed)
 	}
 }
 
