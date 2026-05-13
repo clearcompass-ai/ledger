@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.0
 	github.com/aws/smithy-go v1.25.0
-	github.com/clearcompass-ai/attesta v0.7.0
+	github.com/clearcompass-ai/attesta v0.8.0-dev
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/google/uuid v1.6.0
@@ -112,3 +112,8 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 )
+
+// LOCAL OVERRIDE: pin to local attesta working tree for v0.8.0 development.
+// REMOVE THIS BLOCK once attesta v0.8.0 is tagged + published. The require above
+// (v0.8.0-dev) is a placeholder version that go mod will resolve via this replace.
+replace github.com/clearcompass-ai/attesta => /home/user/attesta

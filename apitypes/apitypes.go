@@ -63,8 +63,19 @@ import (
 // validate signatures use the SDK's cosign verifier on the
 // Signatures slice.
 type CosignedTreeHead struct {
-	TreeSize   uint64
-	RootHash   [32]byte
+	TreeSize uint64
+	RootHash [32]byte
+
+	// SMTRoot is the Sparse Merkle Tree state-projection root at
+	// the same TreeSize, bound into the witness-cosigned payload
+	// alongside RootHash (SDK v0.8.0+; see types.TreeHead.SMTRoot
+	// godoc). Zero array when the log publishes no SMT projection.
+	// Light clients consume this from the cosigned head as the
+	// definitive trust anchor for state-membership proofs; reading
+	// the SMT root out-of-band from /v1/smt/root is a forgery
+	// vector closed by the in-head binding.
+	SMTRoot [32]byte
+
 	HashAlgo   uint16
 	Signatures []TreeHeadSignature
 	CreatedAt  time.Time

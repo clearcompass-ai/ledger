@@ -535,6 +535,30 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 	headWaitDur := time.Since(headWaitStart)
 
+	// ── Step 6b (PRE-COMMIT): Bind the SMT projection root INTO the
+	//                          head before the witness cosignature ──
+	//
+	// Tessera populates head.RootHash + head.TreeSize from its own
+	// RFC 6962 checkpoint; Tessera knows nothing about the ledger's
+	// SMT state projection. The cryptographic binding that lets a
+	// light client trust the SMT root must be added HERE, before
+	// the witnesses sign — otherwise the witness K-of-N quorum
+	// signs a head that says nothing about state, and an adversary
+	// who can MITM the SMT endpoint can swap a forged root with a
+	// membership proof that passes every check we wrote.
+	//
+	// result.NewRoot is the authoritative SMT root for this batch's
+	// committed state, computed by sdkbuilder.ProcessBatch in
+	// Step 4 above. The same value is persisted to smt_root_state
+	// in Step 8b's atomic commit; the binding here ties the witness-
+	// cosigned head to exactly that bytes.
+	//
+	// SDK contract: types.TreeHead.SMTRoot is a [32]byte field added
+	// in attesta v0.8.0. cosign.NewTreeHeadPayload includes the
+	// SMT root in the canonical signing bytes (72-byte layout
+	// RootHash || SMTRoot || TreeSize_BE).
+	head.SMTRoot = result.NewRoot
+
 	// ── Step 7 (PRE-COMMIT): Request witness cosignatures ────────────
 	//
 	// HARD STALL: a quorum failure here aborts the batch — the SMT
@@ -723,7 +747,10 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		if pubErr := bl.merkle.PublishCosignedCheckpoint(ctx, cosigned); pubErr != nil {
 			if !isContextError(pubErr) {
 				bl.logger.Warn("publish cosigned checkpoint failed",
-					"tree_size", cosigned.TreeSize, "error", pubErr)
+					"tree_size", cosigned.TreeSize,
+					"root_hash", fmt.Sprintf("%x", cosigned.RootHash[:8]),
+					"smt_root", fmt.Sprintf("%x", cosigned.SMTRoot[:8]),
+					"error", pubErr)
 			}
 		}
 	}

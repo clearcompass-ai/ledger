@@ -212,8 +212,12 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 
 	// Persist the head fact (idempotent) before any per-witness
 	// signature so the FK on tree_head_sigs.tree_size is satisfied.
+	// head.SMTRoot is bound into the witness-cosigned payload by
+	// the SDK (attesta v0.8.0+ types.TreeHead.SMTRoot); persist it
+	// alongside RootHash so audit / equivocation comparison can
+	// recompute the canonical bytes the witnesses signed.
 	const hashAlgo = uint16(1) // SHA-256 — the deployment-lifetime default.
-	if perr := hs.store.InsertHead(ctx, head.TreeSize, head.RootHash, hashAlgo); perr != nil {
+	if perr := hs.store.InsertHead(ctx, head.TreeSize, head.RootHash, head.SMTRoot, hashAlgo); perr != nil {
 		return types.CosignedTreeHead{}, fmt.Errorf("witness/head_sync: persist head: %w", perr)
 	}
 
@@ -230,6 +234,8 @@ func (hs *HeadSync) RequestCosignatures(ctx context.Context, head types.TreeHead
 	hs.store.Invalidate()
 	hs.logger.Info("cosigned tree head",
 		"tree_size", head.TreeSize,
+		"root_hash", fmt.Sprintf("%x", head.RootHash[:8]),
+		"smt_root", fmt.Sprintf("%x", head.SMTRoot[:8]),
 		"signatures", len(result.Signatures),
 		"quorum_k", hs.cfg.QuorumK,
 		"quorum_n", len(hs.endpoints),

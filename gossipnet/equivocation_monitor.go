@@ -332,12 +332,23 @@ func (m *EquivocationMonitor) checkPeer(ctx context.Context, p equivocationPeerI
 		return
 	}
 
+	// Surface SMTRoot in the equivocation alarm too: a divergence
+	// between local + peer SMTRoot at the same TreeSize is an
+	// equivocation in its own right — two parties cannot have
+	// consistent ledger projections diverge at the same chronological
+	// position. The witness K-of-N cosignature binds both roots
+	// (SDK v0.8.0+), so the underlying cosign.Verify path already
+	// rejects a forged pair; logging both fields helps SREs
+	// distinguish RootHash drift (Tessera/log-side) from SMTRoot
+	// drift (state-projection-side) during forensics.
 	m.logger.Error("EQUIVOCATION DETECTED",
 		"peer", p.url,
 		"originator", p.did,
 		"tree_size", proof.TreeSize,
 		"local_root", fmt.Sprintf("%x", localHead.RootHash[:8]),
 		"peer_root", fmt.Sprintf("%x", peerHead.RootHash[:8]),
+		"local_smt_root", fmt.Sprintf("%x", localHead.SMTRoot[:8]),
+		"peer_smt_root", fmt.Sprintf("%x", peerHead.SMTRoot[:8]),
 		"valid_sigs_a", proof.ValidSigsA,
 		"valid_sigs_b", proof.ValidSigsB,
 	)

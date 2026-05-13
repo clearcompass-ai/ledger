@@ -180,6 +180,21 @@ func NewSMTBatchProofHandler(deps *SMTDeps) http.HandlerFunc {
 // fixtures), falls back to deps.Tree.Root which returns the tree's
 // cached rootHash — still O(1) and consistent with the builder's
 // in-memory state.
+//
+// # LIGHT-CLIENT WARNING (SDK v0.8.0+)
+//
+// The bytes served here carry NO cryptographic binding to the
+// witness-cosigned tree head. An adversary on the read path
+// could swap a forged root and produce membership proofs against
+// it that pass every check OTHER than the witness signature.
+//
+// For trust-rooted SMT-root consumption, prefer /v1/tree/head's
+// smt_root field — that value is bound into the witness K-of-N
+// cosignature (attesta SDK v0.8.0+; types.TreeHead.SMTRoot is in
+// the cosign canonical payload). This handler remains for
+// callers that already know the root they want (e.g. mid-batch
+// proofs where the builder has advanced the SMT but witnesses
+// haven't cosigned the new TreeSize yet).
 func NewSMTRootHandler(deps *SMTDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

@@ -26,6 +26,7 @@ func TestCosignedTreeHead_FieldsRoundTrip(t *testing.T) {
 	h := apitypes.CosignedTreeHead{
 		TreeSize: 42,
 		RootHash: [32]byte{0x01, 0x02},
+		SMTRoot:  [32]byte{0xAA, 0xBB},
 		HashAlgo: 1,
 		Signatures: []apitypes.TreeHeadSignature{{
 			Signer:    "did:test:witness",
@@ -37,6 +38,9 @@ func TestCosignedTreeHead_FieldsRoundTrip(t *testing.T) {
 	}
 	if h.TreeSize != 42 {
 		t.Errorf("TreeSize lost")
+	}
+	if h.SMTRoot != ([32]byte{0xAA, 0xBB}) {
+		t.Errorf("SMTRoot lost")
 	}
 	if len(h.Signatures) != 1 {
 		t.Errorf("Signatures lost")
