@@ -359,7 +359,7 @@ func NewEmbeddedAppender(
 		"drain_budget", opts.DrainBudget,
 	)
 
-	return &EmbeddedAppender{
+	ea := &EmbeddedAppender{
 		appender:             appender,
 		reader:               reader,
 		shutdown:             shutdown,
@@ -369,7 +369,9 @@ func NewEmbeddedAppender(
 		goroutineBaseline:    goroutineBaseline,
 		publicCheckpointPath: opts.PublicCheckpointPath,
 		logger:               logger,
-	}, nil
+	}
+	debugTraceAppenderConstructed(logger)
+	return ea, nil
 }
 
 // AppendLeaf submits a 32-byte entry-identity hash to Tessera and
@@ -397,6 +399,7 @@ func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64,
 	t0 := time.Now() // D3
 	idx, err := e.appender.Add(ctx, uptessera.NewEntry(data))()
 	if err != nil {
+		debugTraceAddFailure(e.logger, data, err)
 		span.RecordError(err)
 		return 0, fmt.Errorf("tessera/embedded: Add: %w", err)
 	}
@@ -542,6 +545,7 @@ func atomicWriteFile(path string, data []byte) error {
 //
 // Safe to call multiple times; the lifecycle runs exactly once.
 func (e *EmbeddedAppender) Close(ctx context.Context) error {
+	debugTraceClose(e.logger)
 	e.closeOnce.Do(func() {
 		// Step 1 — drain in-flight Adds per upstream contract.
 		if e.shutdown != nil {
