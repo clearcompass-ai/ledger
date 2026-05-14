@@ -404,6 +404,39 @@ func NewQuerySignerDIDHandler(deps *QueryDeps) http.HandlerFunc {
 	}
 }
 
+// NewQueryDelegateDIDHandler — GET /v1/query/delegate_did/{did}.
+// Returns the live entries whose Header.DelegateDID matches the
+// supplied DID, ordered by sequence_number DESC (newest first).
+//
+// Consumed by:
+//   - judicial-network for read-time policy verification (the
+//     constraint walker fetches the latest delegation for each
+//     attestor and applies DelegationOriginDID / RequiredScopes).
+//   - Multi-network shims for cross-recognition projections.
+//
+// Each consumer applies its own cache strategy per the matrix-of-
+// consumers design (#75 follow-up); the ledger is the
+// authoritative source. {did} is the URL-encoded delegate DID.
+func NewQueryDelegateDIDHandler(deps *QueryDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		did := r.PathValue("did")
+		if did == "" {
+			writeTypedError(ctx, w, apitypes.ErrorClassMissingPathParam,
+				http.StatusBadRequest, "delegate DID required")
+			return
+		}
+		entries, err := deps.QueryAPI.QueryByDelegateDID(did)
+		if err != nil {
+			deps.Logger.Error("query delegate_did", "error", err)
+			writeTypedError(ctx, w, apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "query failed")
+			return
+		}
+		writeEntriesJSON(w, entries)
+	}
+}
+
 // NewQuerySchemaRefHandler — GET /v1/query/schema_ref/{pos}.
 func NewQuerySchemaRefHandler(deps *QueryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

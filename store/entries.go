@@ -121,9 +121,9 @@ const GhostSignerDID = "system:ghost"
 // EntryRow is the index record for insertion. No canonical_bytes, no sig_bytes.
 //
 // For tombstones, set Status = StatusTombstone, leave TargetRoot /
-// CosignatureOf / SchemaRef as nil, and set SignerDID =
-// TombstoneSignerDID. LogTime should be the wall-clock at tombstone
-// time. CanonicalHash is the real (Tessera-bound) hash.
+// CosignatureOf / SchemaRef / DelegateDID as nil-or-empty, and set
+// SignerDID = TombstoneSignerDID. LogTime should be the wall-clock
+// at tombstone time. CanonicalHash is the real (Tessera-bound) hash.
 type EntryRow struct {
 	SequenceNumber uint64
 	CanonicalHash  [32]byte
@@ -132,7 +132,15 @@ type EntryRow struct {
 	TargetRoot     []byte // nil if null
 	CosignatureOf  []byte // nil if null
 	SchemaRef      []byte // nil if null
-	Status         EntryStatus
+	// DelegateDID is the on-log delegate DID this entry
+	// establishes a delegation for. Empty when the entry is not
+	// a delegation. Projected by the sequencer from
+	// envelope.ControlHeader.DelegateDID. Indexed via
+	// idx_delegate_did_latest (migration 0008) so the
+	// attestation policy verifier's delegation-chain walk can
+	// resolve the latest delegation for a DID in one index seek.
+	DelegateDID string
+	Status      EntryStatus
 }
 
 // Insert persists an entry's index columns. Called within the admission transaction.
@@ -145,14 +153,23 @@ type EntryRow struct {
 // jellyfish_nodes. Insert remains for the rebuild tool and unit
 // tests that legitimately write a single row.
 func (s *EntryStore) Insert(ctx context.Context, tx pgx.Tx, row EntryRow) error {
+	// delegate_did is stored as nullable TEXT (NULL when empty);
+	// the partial index idx_delegate_did_latest is only populated
+	// for non-NULL values.
+	var delegateDID any
+	if row.DelegateDID != "" {
+		delegateDID = row.DelegateDID
+	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO entry_index (
 			sequence_number, canonical_hash, log_time,
-			signer_did, target_root, cosignature_of, schema_ref, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			signer_did, target_root, cosignature_of, schema_ref,
+			delegate_did, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		row.SequenceNumber, row.CanonicalHash[:],
 		row.LogTime, row.SignerDID,
 		row.TargetRoot, row.CosignatureOf, row.SchemaRef,
+		delegateDID,
 		int16(row.Status),
 	)
 	if err != nil {
@@ -272,6 +289,13 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 	targets := make([][]byte, len(rows))
 	cosigs := make([][]byte, len(rows))
 	schemas := make([][]byte, len(rows))
+	// delegate_did is parallel-arrayed as TEXT[] using "" for
+	// "this entry is not a delegation" — NOT a NULL marker.
+	// unnest()'s text[] preserves the empty-string distinction;
+	// the INSERT NULLIFs the empty string back to SQL NULL so the
+	// partial idx_delegate_did_latest index excludes non-delegation
+	// rows.
+	delegateDIDs := make([]string, len(rows))
 	statuses := make([]int16, len(rows))
 	for i := range rows {
 		seqs[i] = int64(rows[i].SequenceNumber)
@@ -282,28 +306,32 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 		targets[i] = rows[i].TargetRoot
 		cosigs[i] = rows[i].CosignatureOf
 		schemas[i] = rows[i].SchemaRef
+		delegateDIDs[i] = rows[i].DelegateDID
 		statuses[i] = int16(rows[i].Status)
 	}
 	insertRows, err := tx.Query(ctx, `
 		INSERT INTO entry_index (
 			sequence_number, canonical_hash, log_time,
-			signer_did, target_root, cosignature_of, schema_ref, status
+			signer_did, target_root, cosignature_of, schema_ref,
+			delegate_did, status
 		)
 		SELECT
 			sequence_number, canonical_hash, log_time,
-			signer_did, target_root, cosignature_of, schema_ref, status
+			signer_did, target_root, cosignature_of, schema_ref,
+			NULLIF(delegate_did, ''), status
 		FROM unnest(
 			$1::bigint[], $2::bytea[], $3::timestamptz[],
 			$4::text[], $5::bytea[], $6::bytea[], $7::bytea[],
-			$8::smallint[]
+			$8::text[], $9::smallint[]
 		) AS t(
 			sequence_number, canonical_hash, log_time,
-			signer_did, target_root, cosignature_of, schema_ref, status
+			signer_did, target_root, cosignature_of, schema_ref,
+			delegate_did, status
 		)
 		ON CONFLICT (canonical_hash) WHERE status <> 2 DO NOTHING
 		RETURNING sequence_number, canonical_hash`,
 		seqs, hashes, logTimes, signers,
-		targets, cosigs, schemas, statuses,
+		targets, cosigs, schemas, delegateDIDs, statuses,
 	)
 	if err != nil {
 		return InsertBatchResult{}, fmt.Errorf("store/entries: insert batch (n=%d): %w", len(rows), err)
@@ -421,11 +449,12 @@ func (s *EntryStore) InsertBatch(ctx context.Context, tx pgx.Tx, rows []EntryRow
 		_, err := tx.Exec(ctx, `
 			INSERT INTO entry_index (
 				sequence_number, canonical_hash, log_time,
-				signer_did, target_root, cosignature_of, schema_ref, status
+				signer_did, target_root, cosignature_of, schema_ref,
+				delegate_did, status
 			)
 			SELECT
 				sequence_number, canonical_hash, log_time,
-				signer_did, NULL, NULL, NULL, status
+				signer_did, NULL, NULL, NULL, NULL, status
 			FROM unnest(
 				$1::bigint[], $2::bytea[], $3::timestamptz[],
 				$4::text[], $5::smallint[]
@@ -595,4 +624,197 @@ func (f *PostgresEntryFetcher) Fetch(ctx context.Context, pos types.LogPosition)
 		LogTime:        logTime,
 		Position:       pos,
 	}, nil
+}
+
+// FetchLatestDelegationByDID returns the MOST RECENT live entry
+// on this log whose Header.DelegateDID equals delegateDID. Used
+// by the delegation.EntrySource adapter (delegationresolver/) so
+// the SDK's attestation policy verifier's constraint walk
+// (DelegationOriginDID / RequiredScopes) can resolve delegations
+// from the on-log projection.
+//
+// CONTRACTS:
+//
+//   - Returns (nil, nil) when no live delegation exists for the
+//     DID. The delegation.EntrySource adapter converts this to
+//     attestation.ErrUnknownDelegate per the SDK's interface
+//     contract.
+//   - Filters to StatusLive: revoked / tombstoned delegations
+//     are NOT returned as the current delegation. A successor
+//     delegation entry (rotation, revocation) supersedes earlier
+//     ones by virtue of having a higher sequence_number — the
+//     ORDER BY sequence_number DESC LIMIT 1 query returns the
+//     newest live row.
+//   - Empty delegateDID → (nil, nil). The SDK interface guards
+//     against empty DIDs upstream; we belt-and-braces here.
+//
+// COST PROFILE:
+//
+// The partial compound index idx_delegate_did_latest
+// (delegate_did, sequence_number DESC) WHERE delegate_did IS NOT
+// NULL turns this into a single-row index seek in O(log N).
+func (f *PostgresEntryFetcher) FetchLatestDelegationByDID(
+	ctx context.Context,
+	delegateDID string,
+) (*types.EntryWithMetadata, error) {
+	if delegateDID == "" {
+		return nil, nil
+	}
+
+	var (
+		seq     int64
+		hashCol []byte
+		logTime time.Time
+	)
+	err := f.db.QueryRow(ctx, `
+		SELECT sequence_number, canonical_hash, log_time
+		  FROM entry_index
+		 WHERE delegate_did = $1
+		   AND status = $2
+		 ORDER BY sequence_number DESC
+		 LIMIT 1`,
+		delegateDID, int16(StatusLive),
+	).Scan(&seq, &hashCol, &logTime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf(
+			"store/entries: FetchLatestDelegationByDID query: %w", err)
+	}
+	if len(hashCol) != 32 {
+		return nil, fmt.Errorf(
+			"store/entries: FetchLatestDelegationByDID corrupt canonical_hash seq=%d (len=%d, want 32)",
+			seq, len(hashCol))
+	}
+	var hash [32]byte
+	copy(hash[:], hashCol)
+
+	wire, err := f.reader.ReadEntry(ctx, uint64(seq), hash)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"store/entries: FetchLatestDelegationByDID read seq=%d: %w", seq, err)
+	}
+	return &types.EntryWithMetadata{
+		CanonicalBytes: wire,
+		LogTime:        logTime,
+		Position:       types.LogPosition{LogDID: f.logDID, Sequence: uint64(seq)},
+	}, nil
+}
+
+// FetchByCosignatureOf returns every live entry on THIS log whose
+// Header.CosignatureOf points at the given primary position.
+// Materialises the candidate set the SDK's
+// attestation.VerifyCollection / VerifyEntryAttestationPolicy /
+// VerifyComplete Stage 6 consume.
+//
+// CONTRACTS:
+//
+//   - Returns [] (not nil) and nil error when no candidates exist.
+//   - Returns nil and nil when primaryPos points at a foreign log
+//     (this fetcher only knows about its own log's entries).
+//   - Filters to StatusLive: tombstones and ghost leaves are NEVER
+//     returned as candidates. An attestation entry that got
+//     tombstoned has the same meaning as never having been admitted.
+//   - Ordered by sequence_number ascending — deterministic for
+//     downstream verifiers that may want a stable iteration order
+//     for window-evaluation traceability.
+//   - Each candidate's bytes come from the EntryReader (same path
+//     Fetch uses). Metadata is from entry_index.
+//
+// COST PROFILE:
+//
+//   - One indexed query (idx_cosignature_of, partial WHERE
+//     cosignature_of IS NOT NULL since 0001_initial.sql) returning
+//     N rows.
+//   - N follow-up byte reads from EntryReader (parallelisable, but
+//     this implementation is sequential — typical N is small for
+//     atomic-submission policies; if a primary accumulates
+//     thousands of candidates, callers SHOULD paginate via a
+//     ranged seq filter in a follow-up).
+//
+// CONSUMERS:
+//
+//   - PR-I LedgerPolicyResolver (admission gate 3 for
+//     AdmissionEnforced policies — the narrow exception path).
+//   - PR-K HTTP /v1/attestations-of (read-time, served to JN and
+//     multi-network shims).
+//
+// Per the matrix-of-consumers design, this function is the
+// authoritative SHARED PRIMITIVE; each consumer layers its own
+// cache strategy on top.
+func (f *PostgresEntryFetcher) FetchByCosignatureOf(
+	ctx context.Context,
+	primaryPos types.LogPosition,
+) ([]types.EntryWithMetadata, error) {
+	if primaryPos.LogDID != f.logDID {
+		// Foreign log: we cannot resolve. Surface as "no
+		// candidates found" rather than an error — callers
+		// (admission, read API) treat zero as "policy unmet
+		// from THIS log's perspective" and decide how to
+		// surface that.
+		return nil, nil
+	}
+	cosigBytes := SerializeLogPosition(primaryPos)
+
+	rows, err := f.db.Query(ctx, `
+		SELECT sequence_number, canonical_hash, log_time
+		  FROM entry_index
+		 WHERE cosignature_of = $1
+		   AND status = $2
+		 ORDER BY sequence_number ASC`,
+		cosigBytes, int16(StatusLive),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store/entries: FetchByCosignatureOf query: %w", err)
+	}
+	defer rows.Close()
+
+	type pending struct {
+		seq     uint64
+		hash    [32]byte
+		logTime time.Time
+	}
+	var queue []pending
+	for rows.Next() {
+		var (
+			seq     int64
+			hashCol []byte
+			logTime time.Time
+		)
+		if err := rows.Scan(&seq, &hashCol, &logTime); err != nil {
+			return nil, fmt.Errorf("store/entries: FetchByCosignatureOf scan: %w", err)
+		}
+		if len(hashCol) != 32 {
+			return nil, fmt.Errorf(
+				"store/entries: FetchByCosignatureOf corrupt canonical_hash seq=%d (len=%d, want 32)",
+				seq, len(hashCol))
+		}
+		var hash [32]byte
+		copy(hash[:], hashCol)
+		queue = append(queue, pending{seq: uint64(seq), hash: hash, logTime: logTime})
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("store/entries: FetchByCosignatureOf rows: %w", rows.Err())
+	}
+	rows.Close()
+
+	// Materialise bytes per candidate. Sequential is fine for
+	// the expected size of an admission-time candidate set
+	// (~K-of-N where K is small). Pagination concerns belong on
+	// the HTTP read API (PR-K), not here.
+	out := make([]types.EntryWithMetadata, 0, len(queue))
+	for _, p := range queue {
+		wire, err := f.reader.ReadEntry(ctx, p.seq, p.hash)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"store/entries: FetchByCosignatureOf read seq=%d: %w", p.seq, err)
+		}
+		out = append(out, types.EntryWithMetadata{
+			CanonicalBytes: wire,
+			LogTime:        p.logTime,
+			Position:       types.LogPosition{LogDID: f.logDID, Sequence: p.seq},
+		})
+	}
+	return out, nil
 }

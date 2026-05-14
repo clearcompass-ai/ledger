@@ -177,7 +177,12 @@ type Handlers struct {
 	TargetRoot    http.HandlerFunc
 	SignerDID     http.HandlerFunc
 	SchemaRef     http.HandlerFunc
-	Scan          http.HandlerFunc
+	// DelegateDID — GET /v1/query/delegate_did/{did}. Returns
+	// live entries whose Header.DelegateDID matches; consumers
+	// (judicial-network, multi-network shims) build their own
+	// projections off this read primitive.
+	DelegateDID http.HandlerFunc
+	Scan        http.HandlerFunc
 
 	// ── Admission info ──────────────────────────────────────────────
 	Difficulty http.HandlerFunc // GET /v1/admission/difficulty
@@ -337,6 +342,9 @@ func NewServer(
 	}
 	if handlers.SchemaRef != nil {
 		mux.HandleFunc("GET /v1/query/schema_ref/{pos}", handlers.SchemaRef)
+	}
+	if handlers.DelegateDID != nil {
+		mux.HandleFunc("GET /v1/query/delegate_did/{did}", handlers.DelegateDID)
 	}
 	if handlers.Scan != nil {
 		mux.HandleFunc("GET /v1/query/scan", handlers.Scan)

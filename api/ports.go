@@ -157,6 +157,14 @@ type QueryAPI interface {
 	QueryByTargetRoot(pos types.LogPosition) ([]types.EntryWithMetadata, error)
 	QueryBySignerDID(did string) ([]types.EntryWithMetadata, error)
 	QueryBySchemaRef(pos types.LogPosition) ([]types.EntryWithMetadata, error)
+	// QueryByDelegateDID returns live entries whose
+	// Header.DelegateDID matches the given DID, ordered by
+	// sequence_number DESC. Backs the L2 read API endpoint
+	// /v1/query/delegate_did/{did} used by judicial-network +
+	// multi-network shims to build their own delegation
+	// projections per the matrix-of-consumers design (each
+	// consumer caches independently).
+	QueryByDelegateDID(did string) ([]types.EntryWithMetadata, error)
 }
 
 // EscrowOverrideProcessor is the api/ → escrow-override flow
