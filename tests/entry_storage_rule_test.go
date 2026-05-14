@@ -94,9 +94,20 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	op.seedSession(t, "tok-rule", "did:example:exchange-rule", 100)
 
 	// Submit an entry via HTTP.
+	//
+	// NOTE: helpers_test.go::makeAdmissibleEntry treats Header.SignerDID
+	// as a LABEL — it resolves the label to a per-test secp256k1
+	// keypair via resolveSyntheticSigner() and overwrites
+	// Header.SignerDID with the keypair's did:key form before signing.
+	// The wire entry is signed under (and entry_index stores) the
+	// did:key, NOT the label. The assertion below compares against the
+	// post-transformation DID so the test agrees with what the helper
+	// actually wrote.
+	const signerLabel = "did:example:rule-signer"
 	wire := buildWireEntry(t, envelope.ControlHeader{
-		SignerDID: "did:example:rule-signer",
+		SignerDID: signerLabel,
 	}, []byte("rule-test-payload"))
+	expectedSignerDID := resolveSyntheticSigner(signerLabel).did
 
 	result := submitEntry(t, op.BaseURL, "tok-rule", wire)
 	seq := uint64(result["sequence_number"].(float64))
@@ -112,8 +123,9 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("entry_index query failed: %v", err)
 	}
-	if signerDID != "did:example:rule-signer" {
-		t.Fatalf("signer_did mismatch: %s", signerDID)
+	if signerDID != expectedSignerDID {
+		t.Fatalf("signer_did mismatch: got %q, want %q (post-helper-transformation)",
+			signerDID, expectedSignerDID)
 	}
 	var hashArr [32]byte
 	copy(hashArr[:], hash)
