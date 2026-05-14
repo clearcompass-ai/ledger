@@ -63,7 +63,9 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -192,6 +194,44 @@ func (s shutdownChain) Run() {
 
 	// Step 4. drain in-flight goroutines, bounded.
 	if len(s.GoroutineDone) > 0 {
+		// Pre-budget warning watchdog: ~5s before shutdownCtx
+		// expires, dump all goroutine stacks. The deadline is when
+		// EVERY goroutine that didn't close its done channel is
+		// blocked on something — exactly the moment a stack trace
+		// is most informative. Atomic-gated so it runs at most once.
+		var dumped atomic.Bool
+		dumpDeadline := time.Until(shutdownCtxDeadline(shutdownCtx, budget)) - 5*time.Second
+		if dumpDeadline > 0 {
+			go func() {
+				select {
+				case <-time.After(dumpDeadline):
+				case <-shutdownCtx.Done():
+				}
+				// If all goroutines have already drained by now,
+				// there's no reason to dump — gate on at least one
+				// outstanding done channel.
+				stuck := 0
+				for _, d := range s.GoroutineDone {
+					select {
+					case <-d:
+					default:
+						stuck++
+					}
+				}
+				if stuck == 0 {
+					return
+				}
+				if dumped.CompareAndSwap(false, true) {
+					buf := make([]byte, 1<<20)
+					n := runtime.Stack(buf, true /* all goroutines */)
+					logger.Warn("shutdownchain: pre-expiry goroutine dump (stuck channels)",
+						"stuck_channels", stuck,
+						"total_channels", len(s.GoroutineDone),
+						"stack", string(buf[:n]))
+				}
+			}()
+		}
+
 		var wg sync.WaitGroup
 		wg.Add(len(s.GoroutineDone))
 		for i, done := range s.GoroutineDone {
@@ -226,4 +266,16 @@ func (s shutdownChain) Run() {
 	if s.Pool != nil {
 		s.Pool.Close()
 	}
+}
+
+// shutdownCtxDeadline returns the absolute deadline of the
+// shutdownCtx. The Deadline() method on context.WithTimeout-derived
+// ctxs always returns ok=true; we fall back to "now + budget" if
+// somehow the ctx doesn't carry a deadline (defensive, should not
+// happen in this file).
+func shutdownCtxDeadline(ctx context.Context, fallbackBudget time.Duration) time.Time {
+	if d, ok := ctx.Deadline(); ok {
+		return d
+	}
+	return time.Now().Add(fallbackBudget)
 }

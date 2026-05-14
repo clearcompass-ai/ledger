@@ -197,6 +197,34 @@ type BuilderLoop struct {
 	totalEntries   atomic.Int64
 	totalErrors    atomic.Int64
 	consecutiveErr atomic.Int32
+
+	// Shutdown-evidence instrumentation. currentPhase records the
+	// step the loop is currently executing along with the timestamp
+	// it entered the phase. The shutdown watchdog (spawned in Run on
+	// ctx.Done) reads this atomic every 2s and re-emits a WARN log
+	// so post-hoc analysis can point at the exact step that didn't
+	// honor ctx cancellation within budget.
+	//
+	// WHY this exists: the prior 30s hang on
+	// TestE2E_V1_HappyPath_ReturnsValidSCT manifested as
+	//   "shutdownchain: goroutine did not drain in budget index=0
+	//    budget=30s"
+	// — index 0 is this loop. The error message had no evidence about
+	// WHICH step inside processBatch was the blocker. Phase tracking
+	// closes that observability gap so the next regression can be
+	// triaged from a single test invocation.
+	currentPhase atomic.Pointer[builderPhase]
+}
+
+// builderPhase captures what the builder loop was doing at a given
+// instant. Stored under BuilderLoop.currentPhase as an
+// atomic.Pointer[builderPhase] so the watchdog can read it without
+// locks. Allocations are cheap (one pointer per phase transition);
+// the GC pressure under load is dominated by per-batch allocations
+// in processBatch itself.
+type builderPhase struct {
+	name      string
+	enteredAt time.Time
 }
 
 // NewBuilderLoop creates a builder loop with all dependencies.
@@ -234,6 +262,22 @@ func NewBuilderLoop(
 	}
 }
 
+// setPhase records the builder loop's current activity along with
+// the timestamp it entered the phase. Called at every step transition
+// in Run + processBatch; cost is a single pointer store under no
+// contention (each loop iteration touches it ~10 times). The matching
+// reader is the shutdown watchdog in Run.
+func (bl *BuilderLoop) setPhase(name string) {
+	bl.currentPhase.Store(&builderPhase{name: name, enteredAt: time.Now()})
+}
+
+// loadPhase returns the most recently recorded phase, or nil if no
+// phase has been set yet (loop has not entered Run). The watchdog
+// uses this to surface "stuck in phase X" evidence at shutdown.
+func (bl *BuilderLoop) loadPhase() *builderPhase {
+	return bl.currentPhase.Load()
+}
+
 // WithRootStore wires the SMTRootStateStore that holds the
 // authoritative current SMT root + committed-through-seq. When set,
 // processBatch reads priorRoot from it, computes newRoot
@@ -267,15 +311,107 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 		}
 	}()
 
+	// Shutdown-evidence defer: when Run returns AFTER ctx was
+	// cancelled, log the LAST phase the loop was in along with how
+	// long it stayed there. Combined with the watchdog below, this
+	// pinpoints the step that didn't honor ctx.Done() in budget.
+	defer func() {
+		if ctx.Err() != nil {
+			if ps := bl.loadPhase(); ps != nil {
+				bl.logger.Info("builder loop exit: final phase",
+					"phase", ps.name,
+					"phase_age", time.Since(ps.enteredAt),
+					"ctx_err", ctx.Err(),
+				)
+			}
+		}
+	}()
+
 	bl.logger.Info("builder loop started",
 		"log_did", bl.cfg.LogDID,
 		"batch_size", bl.cfg.BatchSize,
 		"poll_interval", bl.cfg.PollInterval,
 	)
+	bl.setPhase("loop_start")
+
+	// Shutdown watchdog: spawned ONCE on Run entry. Waits for ctx.Done
+	// and then re-emits a WARN every 2s reporting which phase the
+	// builder loop is currently stuck in. Exits when watchdogDone is
+	// closed (deferred below, runs after the loop returns).
+	//
+	// Designed for evidence collection at shutdown — under normal
+	// operation the watchdog sleeps on <-ctx.Done() and consumes no
+	// resources. After ctx.Done fires, it logs the stuck phase at
+	// 2s intervals; the FIRST stuck report (after 5s) also dumps the
+	// full goroutine stack so the operator can pinpoint the blocking
+	// call without re-running with a debugger.
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go func() {
+		select {
+		case <-watchdogDone:
+			return
+		case <-ctx.Done():
+		}
+		// Initial snapshot — what was the loop doing the instant ctx
+		// cancelled? This is the most actionable single piece of
+		// evidence.
+		if ps := bl.loadPhase(); ps != nil {
+			bl.logger.Warn("builder loop: ctx cancelled — current phase",
+				"phase", ps.name,
+				"phase_age", time.Since(ps.enteredAt),
+			)
+		}
+		// Periodic re-snapshots in case the loop stays stuck. 2s is
+		// short enough to produce ~15 samples within a 30s shutdown
+		// budget, long enough to not spam the log under normal
+		// (fast-drain) shutdowns.
+		//
+		// At the 5s mark (3rd tick), dump ALL goroutine stacks via
+		// runtime.Stack. This is the smoking-gun evidence: if the
+		// loop is blocked on, say, an upstream tessera future.Get()
+		// or a non-ctx-aware channel receive, the stack trace shows
+		// exactly the line. Done ONCE to avoid log spam — subsequent
+		// ticks just re-log the phase name.
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		dumped := false
+		stuckSince := time.Now()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-t.C:
+				ps := bl.loadPhase()
+				if ps == nil {
+					continue
+				}
+				bl.logger.Warn("builder loop: still in phase after ctx cancel",
+					"phase", ps.name,
+					"phase_age", time.Since(ps.enteredAt),
+					"stuck_for", time.Since(stuckSince),
+				)
+				if !dumped && time.Since(stuckSince) >= 5*time.Second {
+					// Full goroutine dump — 1MB cap is enough for
+					// ~200 goroutines × 5KB each. Emit at WARN so
+					// it surfaces alongside the phase warning, not
+					// buried in DEBUG.
+					buf := make([]byte, 1<<20)
+					n := runtime.Stack(buf, true /* all goroutines */)
+					bl.logger.Warn("builder loop: stuck >5s after cancel — full goroutine dump",
+						"phase", ps.name,
+						"stack", string(buf[:n]),
+					)
+					dumped = true
+				}
+			}
+		}
+	}()
 
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
+	bl.setPhase("recover_on_startup")
 	recovered, err := bl.reader.RecoverOnStartup(ctx)
 	if err != nil {
 		if isContextError(err) {
@@ -298,6 +434,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 			return nil
 		}
 
+		bl.setPhase("processBatch")
 		processed, err := bl.processBatch(ctx)
 
 		if err != nil {
@@ -334,6 +471,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 			)
 
 			backoff := bl.cfg.PollInterval * time.Duration(min(int(consecutive), 10))
+			bl.setPhase("error_backoff")
 			select {
 			case <-ctx.Done():
 				return nil
@@ -350,6 +488,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 			continue
 		}
 
+		bl.setPhase("idle_wait")
 		select {
 		case <-ctx.Done():
 			bl.logger.Info("builder loop stopped",
@@ -367,6 +506,7 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 // -------------------------------------------------------------------------------------------------
 
 func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
+	bl.setPhase("processBatch:read_root")
 	var priorRoot [32]byte
 	if bl.rootStore != nil {
 		// Authoritative path: read priorRoot from smt_root_state.
@@ -391,6 +531,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	bl.setPhase("processBatch:dequeue")
 	beginStart := time.Now()
 	var seqs []uint64
 	dqErr := store.WithReadCommittedTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
@@ -452,6 +593,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	bl.setPhase("processBatch:fetch_entries")
 	fetchStart := time.Now()
 	metas := make([]*types.EntryWithMetadata, 0, len(seqs))
 	for _, seq := range seqs {
@@ -487,6 +629,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	overlayTree := smt.NewTree(overlayLeaves, overlayNodes)
 	overlayTree.SetRoot(priorRoot)
 
+	bl.setPhase("processBatch:sdk_process_batch")
 	processStart := time.Now()
 	result, err := sdkbuilder.ProcessBatch(
 		ctx,
@@ -512,6 +655,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// Moved BEFORE the Postgres atomic commit so the cosignature step
 	// (Step 7) can see the new head and a witness-quorum failure aborts
 	// the batch BEFORE non-idempotent Postgres state advances.
+	bl.setPhase("processBatch:tessera_append_leaf")
 	appendStart := time.Now()
 	var lastAppendedIdx uint64
 	appendedAtLeastOne := false
@@ -541,6 +685,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// CheckpointInterval). Cosigning a head that pre-dates this batch
 	// would defeat the entire pre-commit gate. Bounded poll bridges
 	// the gap between integration and checkpoint publication.
+	bl.setPhase("processBatch:wait_for_head")
 	headWaitStart := time.Now()
 	var head types.TreeHead
 	if appendedAtLeastOne && bl.merkle != nil {
@@ -620,6 +765,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// cursor, the sequencer's MaxBuilderLag gate fires, the WAL
 	// saturates, and HTTP admission returns 503 Retry-After. Public
 	// API behaviour reflects the network's actual readiness.
+	bl.setPhase("processBatch:witness_cosignature")
 	cosignStart := time.Now()
 	var cosigned types.CosignedTreeHead
 	cosignSucceeded := false
@@ -686,6 +832,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 		return 0, cErr
 	}
 
+	bl.setPhase("processBatch:atomic_commit")
 	var leavesAffected, nodesAffected int64
 	commitStart := time.Now()
 	commitErr := store.WithSerializableTx(ctx, bl.db, func(ctx context.Context, tx pgx.Tx) error {
@@ -790,6 +937,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	// reads from CDNs is updated ONLY here, AFTER K-of-N witnesses
 	// have signed the head. Before this point, the CDN's cosigned
 	// checkpoint reflects the previous quorum-finalized head.
+	bl.setPhase("processBatch:publish_checkpoint")
 	if cosignSucceeded && bl.merkle != nil {
 		if pubErr := bl.merkle.PublishCosignedCheckpoint(ctx, cosigned); pubErr != nil {
 			if !isContextError(pubErr) {
@@ -803,6 +951,7 @@ func (bl *BuilderLoop) processBatch(ctx context.Context) (int, error) {
 	}
 
 	// ── Step 10: Publish derivation commitment ────────────────────────
+	bl.setPhase("processBatch:publish_commitment")
 	if bl.commitPub != nil && len(positions) > 0 {
 		bl.commitPub.MaybePublish(ctx, len(seqs),
 			positions[0], positions[len(positions)-1],
