@@ -506,3 +506,95 @@ func TestEmbeddedAppender_AppendLeaf_TypedShutdownError(t *testing.T) {
 			"embedded_appender.go. Got: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Ctx-cancellable AppendLeaf: caller is unblocked even when
+// upstream future.Get is parked on a sync.WaitGroup.Wait with no
+// ctx parameter
+// ─────────────────────────────────────────────────────────────────
+
+// TestEmbeddedAppender_AppendLeaf_CtxCancelUnblocks pins the
+// ctx-cancel path in AppendLeaf. Upstream tessera's IndexFuture.Get
+// (tessera@v1.0.2/internal/future/future.go:52) blocks on a bare
+// sync.WaitGroup.Wait with no ctx, by design. The ledger's
+// shutdownChain has a real race where Tessera.Close polls
+// terminator.largestIssued BEFORE an in-flight sequencer
+// AppendLeaf has invoked its future, so the integration goroutine
+// is killed before resolving the future and the caller is pinned
+// for the rest of the process. AppendLeaf wraps the future call in
+// a goroutine + select so the caller's ctx unblocks the call even
+// when the future never resolves.
+//
+// This test forces that race deterministically: a very long
+// CheckpointInterval guarantees the future cannot resolve in the
+// test window; cancelling ctx must still return AppendLeaf within
+// a small bound. Without the wrapper, this test hangs forever.
+//
+// Returned error MUST satisfy errors.Is(err, context.Canceled).
+func TestEmbeddedAppender_AppendLeaf_CtxCancelUnblocks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	driver, err := posix.New(context.Background(), posix.Config{Path: dir})
+	if err != nil {
+		t.Fatalf("posix.New: %v", err)
+	}
+	signer, _, _ := GenerateEphemeralSigner("ctx-cancel-test")
+
+	// Disable batching pressure and stretch checkpoint interval so
+	// the future cannot resolve before we cancel ctx. The batch
+	// itself still flushes (BatchSize=1) but the checkpoint that
+	// covers the assigned index never publishes within the test
+	// window.
+	app, err := NewEmbeddedAppender(context.Background(), driver, AppenderOptions{
+		Origin: "ctx-cancel-test",
+		Signer: signer,
+		// Force the integration future to stall: BatchSize=2 means a
+		// single AppendLeaf won't fill the batch, and BatchMaxAge=5m
+		// means the timer-driven flush won't fire within the test
+		// window. The single entry sits in the batcher; its future
+		// never resolves until the appender Closes. Without the
+		// ctx-cancel wrapper this test would hang forever.
+		CheckpointInterval: 5 * time.Minute,
+		BatchSize:          2,
+		BatchMaxAge:        5 * time.Minute,
+		DrainBudget:        -1, // skip drain wait in cleanup
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEmbeddedAppender: %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = app.Close(shutdownCtx)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	type result struct {
+		seq uint64
+		err error
+	}
+	resCh := make(chan result, 1)
+	hash := sha256.Sum256([]byte("ctx-cancel-test"))
+	go func() {
+		seq, err := app.AppendLeaf(ctx, hash[:])
+		resCh <- result{seq: seq, err: err}
+	}()
+
+	// Give AppendLeaf time to submit + enter the future-wait.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case r := <-resCh:
+		if r.err == nil {
+			t.Fatalf("AppendLeaf returned nil error after ctx cancel; seq=%d", r.seq)
+		}
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("AppendLeaf error does not satisfy errors.Is(err, context.Canceled): got %v", r.err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("AppendLeaf did not return within 1s of ctx cancel — the goroutine wrapper in AppendLeaf is broken; caller is pinned on upstream future.Get exactly as before this fix")
+	}
+}

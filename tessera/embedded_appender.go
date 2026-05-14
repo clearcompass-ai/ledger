@@ -375,18 +375,45 @@ func NewEmbeddedAppender(
 
 // AppendLeaf submits a 32-byte entry-identity hash to Tessera and
 // blocks until the IndexFuture resolves with the assigned
-// sequence number.
+// sequence number OR the caller's ctx fires.
 //
 // STRICT: data MUST be exactly 32 bytes. Anything else is a
 // programming error in the caller (the builder's Step 6 always
 // passes envelope.EntryIdentity output, which is [32]byte).
 //
 // Returns the assigned sequence number on success. Errors
-// surface verbatim from upstream Tessera.
+// surface verbatim from upstream Tessera; ctx cancellation
+// returns wrapped ctx.Err().
 //
 // L4 — caller-supplied ctx threads through to Tessera's Add()
 // so a sequencer drain that hits SIGTERM mid-batch cancels the
 // in-flight integration future cleanly.
+//
+// CTX-CANCELLABLE FUTURE WAIT:
+//
+// Upstream tessera's IndexFuture.Get blocks on a bare
+// sync.WaitGroup.Wait (tessera@v1.0.2/internal/future/future.go:52)
+// with no ctx parameter, intentionally for memory efficiency. That
+// design assumes callers wait for the future to resolve under all
+// circumstances. The ledger's shutdown sequence violates that
+// assumption in a real race: shutdownChain calls Tessera.Close
+// (which polls terminator.largestIssued) BEFORE the sequencer's
+// in-flight AppendLeaf has invoked its returned future — so the
+// poll captures a stale largestIssued, Shutdown returns success
+// without waiting for our entry's checkpoint, bgCancel kills the
+// integration goroutine, and the future is stranded forever. The
+// sequencer goroutine then pins on future.Get for the rest of the
+// process lifetime, burning the shutdownChain budget.
+//
+// We can't fix upstream future.Get. Instead we race the future
+// resolution against ctx.Done in a goroutine wrapper. On ctx
+// cancellation the caller returns immediately; the wrapper
+// goroutine remains pinned on future.Get until upstream's
+// integration loop resolves it (success or shutdown error) and
+// then exits. Worst-case leak: one goroutine per in-flight
+// AppendLeaf at shutdown time, bounded by sequencer MaxInFlight
+// (default 4). The WAL entry stays Pending and antispam dedupes
+// the re-AppendLeaf on next process start — no data loss.
 func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64, error) {
 	if len(data) != 32 {
 		return 0, fmt.Errorf("tessera/embedded: AppendLeaf requires exactly 32 bytes, got %d", len(data))
@@ -396,20 +423,45 @@ func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64,
 	ctx, span := otel.Tracer("github.com/clearcompass-ai/ledger/tessera").Start(ctx, "tessera.AppendLeaf")
 	defer span.End()
 	t0 := time.Now() // D3
-	idx, err := e.appender.Add(ctx, uptessera.NewEntry(data))()
-	if err != nil {
-		span.RecordError(err)
-		// Boundary translation: convert upstream tessera's stringly-typed
-		// terminal shutdown error into our typed ErrAppenderShutdown
-		// sentinel. See the ErrAppenderShutdown docstring for rationale
-		// and the pinning test that catches upstream drift.
-		if strings.Contains(err.Error(), upstreamShutdownSignature) {
-			return 0, fmt.Errorf("tessera/embedded: Add: %w", ErrAppenderShutdown)
-		}
-		return 0, fmt.Errorf("tessera/embedded: Add: %w", err)
+
+	// Submit to the batcher before starting the race so the entry
+	// is durably queued even if ctx fires immediately after submit
+	// — antispam will dedupe the re-AppendLeaf on next process
+	// start and the in-flight integration future will resolve on
+	// its own schedule.
+	indexFuture := e.appender.Add(ctx, uptessera.NewEntry(data))
+
+	type addResult struct {
+		idx uptessera.Index
+		err error
 	}
-	recordAppendDuration(ctx, time.Since(t0))
-	return idx.Index, nil
+	// Buffered so the wrapper goroutine never blocks on send even
+	// when the caller has already returned via ctx.Done.
+	resCh := make(chan addResult, 1)
+	go func() {
+		idx, err := indexFuture()
+		resCh <- addResult{idx: idx, err: err}
+	}()
+
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			span.RecordError(r.err)
+			// Boundary translation: convert upstream tessera's stringly-typed
+			// terminal shutdown error into our typed ErrAppenderShutdown
+			// sentinel. See the ErrAppenderShutdown docstring for rationale
+			// and the pinning test that catches upstream drift.
+			if strings.Contains(r.err.Error(), upstreamShutdownSignature) {
+				return 0, fmt.Errorf("tessera/embedded: Add: %w", ErrAppenderShutdown)
+			}
+			return 0, fmt.Errorf("tessera/embedded: Add: %w", r.err)
+		}
+		recordAppendDuration(ctx, time.Since(t0))
+		return r.idx.Index, nil
+	case <-ctx.Done():
+		span.RecordError(ctx.Err())
+		return 0, fmt.Errorf("tessera/embedded: AppendLeaf cancelled: %w", ctx.Err())
+	}
 }
 
 // Head reads the latest checkpoint and returns the parsed
