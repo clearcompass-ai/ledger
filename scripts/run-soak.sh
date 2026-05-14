@@ -41,10 +41,21 @@
 #                                                (SHA-256 round-trip vs canonical_hash).
 #                                                Accepts a count ("100") OR a percent
 #                                                of submitted ("5%", "0.5%").
-#   ATTESTA_SOAK_TREE_PROOF_SAMPLES     100      sample of inclusion proofs to verify
+#                                                CASCADES: when TREE_PROOF_SAMPLES /
+#                                                SMT_PROOF_SAMPLES below are unset,
+#                                                they fall back to this value. Set
+#                                                VERIFY_SAMPLES once → every sampled
+#                                                verifier scales together.
+#   ATTESTA_SOAK_TREE_PROOF_SAMPLES     (cascade) sample of inclusion proofs to verify
 #                                                against /v1/tree/head root via
 #                                                merkle/proof. Same shape as
-#                                                VERIFY_SAMPLES.
+#                                                VERIFY_SAMPLES. UNSET = inherit
+#                                                from VERIFY_SAMPLES; final fallback 100.
+#   ATTESTA_SOAK_SMT_PROOF_SAMPLES      (cascade) sample of SMT membership proofs to
+#                                                verify against /v1/smt/root via the
+#                                                SDK proof verifier. Same shape as
+#                                                VERIFY_SAMPLES. UNSET = inherit
+#                                                from VERIFY_SAMPLES; final fallback 100.
 #   ATTESTA_SOAK_P99_BOUND_MS           100      admission p99 ceiling (ms)
 #   ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT    16     parallel uploads — bump for
 #                                                higher-volume soaks
