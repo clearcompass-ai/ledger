@@ -86,6 +86,7 @@ import (
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	sdkadmission "github.com/clearcompass-ai/attesta/crypto/admission"
 	"github.com/clearcompass-ai/attesta/exchange/policy"
+	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/admission"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -230,6 +231,29 @@ type SubmissionDeps struct {
 	// constructs the registry via schemareg.BuildLedgerSchemaRegistry
 	// and threads it here.
 	SchemaRegistry admission.SchemaRegistry
+
+	// Gates carries the four per-gate feature flags from
+	// admission/feature_flags.go (issue #75 / #76 PR-A). Each
+	// gate added in PR-C through PR-F consults its own boolean
+	// here. The zero value (all false) is the legacy single-sig
+	// admission path — production wires
+	// admission.LoadGatesFromEnv() at boot.
+	Gates admission.Gates
+
+	// PolicyContext is the dependency bundle for the PR-E
+	// policy gate (admission.VerifyEntryPolicy). nil disables
+	// the gate entirely even when Gates.Policy=true (fail-open;
+	// the flag is the *intent*, this is the *capability*).
+	// Production wires the resolver against the schema registry
+	// + entry store; the wiring lands in a PR-E follow-up.
+	PolicyContext *admission.PolicyContext
+
+	// EvidenceChainFetcher is the types.EntryFetcher wired into
+	// the PR-F evidence-chain gate (admission.VerifyEvidenceChainSurgical).
+	// nil disables the gate even when Gates.EvidenceChain=true —
+	// same capability/intent split as PolicyContext. Production
+	// wires *store.PostgresEntryFetcher here.
+	EvidenceChainFetcher types.EntryFetcher
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -367,16 +391,50 @@ func prepareSubmission(
 		return nil, submissionFail(apitypes.ErrorClassEnvelopeRejected,
 			http.StatusUnprocessableEntity, "empty signer DID")
 	}
-	if err := admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver); err != nil {
-		switch {
-		case errors.Is(err, admission.ErrSignerDIDResolution),
-			errors.Is(err, admission.ErrSignatureInvalid):
-			return nil, submissionFail(apitypes.ErrorClassSignatureInvalid,
-				http.StatusUnauthorized, "%s", err)
-		default:
-			deps.Logger.Error("signature verification path failed", "error", err)
+	var sigErr error
+	if deps.Gates.MultiSig {
+		// PR-C gate 1 (issue #75): SDK-uniform multi-signature
+		// verification. Verifies every Signatures[i], not just
+		// Signatures[0]. Default OFF; flipped via
+		// LEDGER_ADMISSION_MULTISIG_ENABLE after canary cycle.
+		_, sigErr = admission.VerifyEntryAllSignatures(ctx, entry, deps.Identity.DIDResolver)
+	} else {
+		// Legacy single-sig path. Verifies only Signatures[0].
+		// Kept for the rollout window; removed once gate 1 is
+		// production-default and a follow-up flips MultiSig ON.
+		sigErr = admission.VerifyEntrySignature(ctx, entry, sigBytes, deps.Identity.DIDResolver)
+	}
+	if sigErr != nil {
+		// Defer to the single SDK-sentinel mapping table
+		// (admission/error_mapping.go) for status + class. The
+		// fallback branch is the same 500/DBQueryFailed shape this
+		// switch carried before the table was introduced; a miss
+		// here surfaces the unmapped sentinel as a CI/dashboard
+		// alarm rather than a silent legacy default.
+		if matched, status, class := admission.MapSDKError(sigErr); matched {
+			return nil, submissionFail(class, status, "%s", sigErr)
+		}
+		deps.Logger.Error("signature verification path failed", "error", sigErr)
+		return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+			http.StatusInternalServerError, "signature verification failed")
+	}
+
+	// ── Step 4a: CosignatureOf binding (PR-D gate 2) ──────────────
+	// When entry.Header.CosignatureOf is non-nil AND points at a
+	// position on THIS log, the gate verifies that a real entry
+	// occupies that sequence. Cross-log positions are deferred to
+	// async reconciliation per decision #6 (hard no on cross-log
+	// admission blocking — liveness regression at 100-150 admit/s).
+	// Default OFF; flipped via LEDGER_ADMISSION_COSIG_BINDING_ENABLE
+	// after one canary cycle on the PR-A SLA dashboard.
+	if deps.Gates.CosigBinding {
+		if err := admission.VerifyCosignatureBinding(ctx, entry, deps.LogDID, deps.Storage.EntryStore); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("cosignature binding verification failed", "error", err)
 			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
-				http.StatusInternalServerError, "signature verification failed")
+				http.StatusInternalServerError, "cosignature binding verification failed")
 		}
 	}
 
@@ -397,6 +455,38 @@ func prepareSubmission(
 				return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
 					http.StatusInternalServerError, "tree head verification failed")
 			}
+		}
+	}
+
+	// ── Step 4e: Surgical evidence-chain walk (PR-F gate 4) ───────
+	// Surgical predicate (admission.ShouldWalkEvidenceChain): walks
+	// chains ONLY for Path C (scope-authority) entries. Walking
+	// every entry's chain at admission would be the wrong cost
+	// shape at 100-150/sec. Default OFF; flipped via
+	// LEDGER_ADMISSION_EVIDENCE_CHAIN_ENABLE.
+	if deps.Gates.EvidenceChain && deps.EvidenceChainFetcher != nil {
+		if _, err := admission.VerifyEvidenceChainSurgical(ctx, entry, deps.LogDID, deps.EvidenceChainFetcher); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("evidence chain verification failed", "error", err)
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "evidence chain verification failed")
+		}
+	}
+
+	// ── Step 4d: Schema-declared policy enforcement (PR-E gate 3) ──
+	// Self-gating: no-op unless schema declares AttestationPolicies
+	// AND entry references one via Header.AttestationPolicyName.
+	// Default OFF; flipped via LEDGER_ADMISSION_POLICY_ENABLE.
+	if deps.Gates.Policy {
+		if _, err := admission.VerifyEntryPolicy(ctx, entry, time.Now().UTC(), deps.PolicyContext); err != nil {
+			if matched, status, class := admission.MapSDKError(err); matched {
+				return nil, submissionFail(class, status, "%s", err)
+			}
+			deps.Logger.Error("policy verification failed", "error", err)
+			return nil, submissionFail(apitypes.ErrorClassDBQueryFailed,
+				http.StatusInternalServerError, "policy verification failed")
 		}
 	}
 

@@ -75,7 +75,7 @@ var (
 	Version    = "dev"
 	Commit     = ""
 	BuildTime  = ""
-	SDKVersion = "v1.2.0"
+	SDKVersion = "v1.3.0"
 )
 
 // signerLoader adapts the package-private loadOrGenerate* helpers in

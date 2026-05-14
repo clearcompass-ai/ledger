@@ -250,6 +250,16 @@ func (c ErrorClass) String() string {
 		return "escrow_override_failed"
 	case ErrorClassDBUnavailable:
 		return "db_unavailable"
+
+	// SDK uniform-verify gates
+	case ErrorClassCosignatureBindingMismatch:
+		return "cosignature_binding_mismatch"
+	case ErrorClassAttestationPolicyNotMet:
+		return "attestation_policy_not_met"
+	case ErrorClassEvidenceChainBroken:
+		return "evidence_chain_broken"
+	case ErrorClassEvidenceChainUnavailable:
+		return "evidence_chain_unavailable"
 	}
 	return "unknown"
 }
@@ -310,4 +320,18 @@ const (
 	// for the cooldown window so we don't pile up requests waiting
 	// on a wedged connection.
 	ErrorClassDBUnavailable
+
+	// 4xx — SDK uniform-verify gates (issue #75 follow-ups).
+	// Distinct from ErrorClassSignatureInvalid: those are dimensions
+	// over which an alert should fire (cosig binding mismatches and
+	// policy-not-met events have different operational meanings than
+	// "the primary signature didn't verify"). Keeping each as its
+	// own dimension lets dashboards attribute regressions to the
+	// gate that surfaced them.
+	ErrorClassCosignatureBindingMismatch // 422 — PR-D
+	ErrorClassAttestationPolicyNotMet    // 422 — PR-E
+	ErrorClassEvidenceChainBroken        // 422 — PR-F (structural)
+
+	// 5xx — SDK uniform-verify gate fetch / IO failure
+	ErrorClassEvidenceChainUnavailable // 500 — PR-F (fetcher fault)
 )
