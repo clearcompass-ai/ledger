@@ -61,7 +61,6 @@ single-request happy path.
 package tests
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -313,8 +312,3 @@ func safeHashPrefix(h string) string {
 	}
 	return h
 }
-
-// (unused context import retained for symmetry with scale_test.go
-// helpers; if the determinism test later grows a Postgres consistency
-// check it'll need ctx)
-var _ = context.Background
