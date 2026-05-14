@@ -392,9 +392,12 @@ func TestScale_BuilderThroughput(t *testing.T) {
 	t.Logf("  Batch size: %d", loopCfg.BatchSize)
 	t.Logf("═══════════════════════════════════════════════════════════")
 
-	// Verify cursor reached N.
+	// Verify cursor reached N. SequenceCursor.Read returns int64
+	// (signed because cursor=-1 sentinel means "no entries
+	// sequenced yet"; see migration 0004 docstring); compare in
+	// the same domain.
 	cursorAt, _ := sequenceCursor.Read(context.Background())
-	if cursorAt != uint64(N) {
+	if cursorAt != int64(N) {
 		t.Fatalf("expected cursor at %d, got %d", N, cursorAt)
 	}
 

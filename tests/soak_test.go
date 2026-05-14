@@ -160,43 +160,12 @@ func (s *soakTreeHeadFetcher) GetBySize(ctx context.Context, size uint64) (*apit
 	return nil, nil
 }
 
-// newTunedHTTPClient returns an *http.Client whose Transport is
-// keep-alive-friendly under the soak's connection density.
-//
-// EVIDENCE-BASED RATIONALE:
-//
-//	Default http.Transport caps MaxIdleConnsPerHost at 2. Under 8
-//	admission workers × ~590 req/sec to a single host, the pool
-//	churns: every request opens, returns, and the 3rd+ idle conn
-//	closes — the kernel parks the closed socket in TIME_WAIT
-//	(~15-30s on macOS/Linux) and burns one ephemeral port.
-//
-//	macOS ephemeral range is 49152-65535 (~16,384 ports). At
-//	~5,360 closing conns/sec the pool drains in ~3s and the soak
-//	starts failing with "dial tcp: bind: address already in use"
-//	or "connect: cannot assign requested address".
-//
-//	MaxIdleConnsPerHost=256 lets the worker pool fully reuse
-//	connections; MaxIdleConns=512 caps the global idle set;
-//	IdleConnTimeout stays at the default 90s so idle conns are
-//	eventually reaped without thrashing.
-func newTunedHTTPClient(timeout time.Duration) *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 512
-	t.MaxIdleConnsPerHost = 256
-	return &http.Client{Transport: t, Timeout: timeout}
-}
-
-// newTunedNoRedirectClient mirrors newTunedHTTPClient but disables
-// auto-follow on redirects, so the verify pass can inspect Location
-// headers directly without burning the redirect target connection.
-func newTunedNoRedirectClient(timeout time.Duration) *http.Client {
-	c := newTunedHTTPClient(timeout)
-	c.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	return c
-}
+// newTunedHTTPClient and newTunedNoRedirectClient previously lived
+// here behind //go:build soak. They moved to
+// tests/http_client_helpers_test.go (no build tag) so the scale-
+// determinism test and any future heavy-HTTP test can share the
+// same connection-pool tuning instead of duplicating it. The soak
+// build links the helpers directly from the same `tests` package.
 
 // soakSubmission records one accepted entry for the post-soak verify
 // pass. We hold ONLY the canonical hash because POST /v1/entries
