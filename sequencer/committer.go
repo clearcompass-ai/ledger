@@ -92,6 +92,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -168,17 +169,38 @@ type stagedEntry struct {
 // committerHeap is a min-heap on Seq, used by the committer to
 // reorder out-of-order stage-1 emissions into a strict ascending
 // stream. Implements container/heap.Interface.
-type committerHeap []stagedEntry
+//
+// The `length` field mirrors `len(entries)` as an atomic counter so
+// cross-goroutine length reads (the drainOnce backpressure check at
+// loop.go::s.committerHeap.Len()) are race-free. Without it, the
+// committer's Push/Pop (writer side) data-races with drainOnce's
+// Len() (reader side) — the race detector correctly flags it because
+// the slice header (data pointer + length + capacity) is a
+// non-atomic word and is mutated under append/slice operations.
+//
+// Push/Pop are called only by the committer goroutine (single
+// writer). Len() is called by both the committer (single reader)
+// and drainOnce (cross-goroutine reader). The atomic load on
+// length serialises the cross-goroutine read without locking the
+// committer's hot path.
+type committerHeap struct {
+	entries []stagedEntry
+	length  atomic.Int64 // mirrors len(entries); written by Push/Pop
+}
 
-func (h committerHeap) Len() int            { return len(h) }
-func (h committerHeap) Less(i, j int) bool  { return h[i].Seq < h[j].Seq }
-func (h committerHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *committerHeap) Push(x interface{}) { *h = append(*h, x.(stagedEntry)) }
+func (h *committerHeap) Len() int           { return int(h.length.Load()) }
+func (h *committerHeap) Less(i, j int) bool { return h.entries[i].Seq < h.entries[j].Seq }
+func (h *committerHeap) Swap(i, j int)      { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
+func (h *committerHeap) Push(x interface{}) {
+	h.entries = append(h.entries, x.(stagedEntry))
+	h.length.Store(int64(len(h.entries)))
+}
 func (h *committerHeap) Pop() interface{} {
-	old := *h
+	old := h.entries
 	n := len(old)
 	x := old[n-1]
-	*h = old[:n-1]
+	h.entries = old[:n-1]
+	h.length.Store(int64(len(h.entries)))
 	return x
 }
 
@@ -326,7 +348,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 			// Track wait-on-gap: if the tuple's seq isn't at the
 			// head OR the head isn't at the next expected, the
 			// committer is waiting for a gap to fill.
-			heapHeadSeq := (*s.committerHeap)[0].Seq
+			heapHeadSeq := s.committerHeap.entries[0].Seq
 			expected := s.nextExpectedSeq.Load() + uint64(len(pending))
 			if heapHeadSeq != expected {
 				s.metrics.commitWaitOnGap.Add(1)
@@ -390,7 +412,7 @@ func (s *Sequencer) committerLoop(ctx context.Context) {
 // don't update the caller's slice header when capacity is exhausted.
 func (s *Sequencer) drainHeapInto(ctx context.Context, pending []stagedEntry) []stagedEntry {
 	for s.committerHeap.Len() > 0 {
-		head := (*s.committerHeap)[0]
+		head := s.committerHeap.entries[0]
 		committed := s.nextExpectedSeq.Load()
 		expected := committed + uint64(len(pending))
 		if head.Seq < expected {
