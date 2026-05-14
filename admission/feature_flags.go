@@ -43,7 +43,7 @@ disables; unset means "use the default"):
 
   - LEDGER_ADMISSION_MULTISIG_ENABLE       — PR-C gate 1 (default ON)
   - LEDGER_ADMISSION_COSIG_BINDING_ENABLE  — PR-D gate 2 (default ON)
-  - LEDGER_ADMISSION_POLICY_ENABLE         — PR-E gate 3 (default OFF)
+  - LEDGER_ADMISSION_POLICY_ENABLE         — PR-E+I gate 3 (default ON)
   - LEDGER_ADMISSION_EVIDENCE_CHAIN_ENABLE — PR-F gate 4 (default OFF)
 
 USAGE:
@@ -84,12 +84,17 @@ type Gates struct {
 	// random position" gap at the ledger trust boundary.
 	CosigBinding bool
 
-	// Policy enables PR-E: when the entry's schema declares
-	// AttestationPolicies AND the entry references one by name,
-	// call attestation.VerifyEntryAttestationPolicy. Self-gating
-	// — schemas without policies are unaffected. Default OFF
-	// (depends on PolicyContext wiring that lands as a follow-up;
-	// fail-open until wired).
+	// Policy enables PR-E + PR-I: when the entry's schema
+	// declares AttestationPolicies AND the entry references one
+	// by name AND the policy is AdmissionEnforced=true (v1.5
+	// schema-declared evaluation point), call
+	// attestation.VerifyEntryAttestationPolicy. Triple self-
+	// gating — schemas without policies, entries without policy
+	// names, and policies declared read-time-only all defer
+	// without firing the gate. Default ON now that PR-I wires
+	// the LedgerPolicyResolver in cmd/ledger/boot/wire — every
+	// production deployment can flip OFF via
+	// LEDGER_ADMISSION_POLICY_ENABLE=false for canary disable.
 	Policy bool
 
 	// EvidenceChain enables PR-F: surgical
@@ -127,7 +132,7 @@ func LoadGatesFromEnv() Gates {
 	return Gates{
 		MultiSig:      envFlagWithDefault("LEDGER_ADMISSION_MULTISIG_ENABLE", true),
 		CosigBinding:  envFlagWithDefault("LEDGER_ADMISSION_COSIG_BINDING_ENABLE", true),
-		Policy:        envFlagWithDefault("LEDGER_ADMISSION_POLICY_ENABLE", false),
+		Policy:        envFlagWithDefault("LEDGER_ADMISSION_POLICY_ENABLE", true),
 		EvidenceChain: envFlagWithDefault("LEDGER_ADMISSION_EVIDENCE_CHAIN_ENABLE", false),
 	}
 }

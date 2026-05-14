@@ -34,8 +34,8 @@ func TestGates_DefaultsMatchTrustBoundaryPosture(t *testing.T) {
 	if !g.CosigBinding {
 		t.Error("CosigBinding defaulted OFF; want ON (trust-boundary gate)")
 	}
-	if g.Policy {
-		t.Error("Policy defaulted ON; want OFF (depends on wiring)")
+	if !g.Policy {
+		t.Error("Policy defaulted OFF; want ON (PR-I wired the LedgerPolicyResolver; gate is self-gating)")
 	}
 	if g.EvidenceChain {
 		t.Error("EvidenceChain defaulted ON; want OFF (depends on wiring)")
@@ -95,10 +95,10 @@ func TestGates_UnrecognisedValuesPreserveDefault(t *testing.T) {
 			t.Setenv("LEDGER_ADMISSION_EVIDENCE_CHAIN_ENABLE", val)
 
 			g := LoadGatesFromEnv()
-			if !g.MultiSig || !g.CosigBinding {
+			if !g.MultiSig || !g.CosigBinding || !g.Policy {
 				t.Errorf("value %q dropped trust-boundary default: %+v", val, g)
 			}
-			if g.Policy || g.EvidenceChain {
+			if g.EvidenceChain {
 				t.Errorf("value %q flipped wiring-dependent default: %+v", val, g)
 			}
 		})

@@ -44,6 +44,7 @@ import (
 // stubResolver implements PolicyResolver with a configured outcome.
 type stubPolicyResolver struct {
 	policy     attestation.Policy
+	primary    types.EntryWithMetadata
 	candidates []types.EntryWithMetadata
 	found      bool
 	err        error
@@ -51,10 +52,10 @@ type stubPolicyResolver struct {
 }
 
 func (s *stubPolicyResolver) ResolvePolicy(_ context.Context, _ *envelope.Entry) (
-	attestation.Policy, []types.EntryWithMetadata, bool, error,
+	attestation.Policy, types.EntryWithMetadata, []types.EntryWithMetadata, bool, error,
 ) {
 	s.calls++
-	return s.policy, s.candidates, s.found, s.err
+	return s.policy, s.primary, s.candidates, s.found, s.err
 }
 
 func policyEntry(name string) *envelope.Entry {

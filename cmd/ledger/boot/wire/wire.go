@@ -70,6 +70,7 @@ import (
 	"github.com/clearcompass-ai/ledger/cmd/ledger/boot/schemareg"
 	"github.com/clearcompass-ai/ledger/gossipnet"
 	"github.com/clearcompass-ai/ledger/gossipstore"
+	"github.com/clearcompass-ai/ledger/delegationresolver"
 	"github.com/clearcompass-ai/ledger/integrity"
 	"github.com/clearcompass-ai/ledger/lifecycle"
 	"github.com/clearcompass-ai/ledger/sequencer"
@@ -390,9 +391,20 @@ func composeHandlers(
 		BLSQuorumVerifier:  blsQuorumVerifier,
 		SchemaRegistry:     d.SchemaRegistry,
 		// PR-A foundations: per-gate feature flags (issue #76).
-		// All four default OFF; production opts in via the
-		// LEDGER_ADMISSION_*_ENABLE env vars on rollout.
+		// Gates 1 + 2 default ON (trust-boundary). Gates 3 + 4
+		// default OFF unless their dependencies (PolicyContext,
+		// EvidenceChainFetcher) are wired — see below.
 		Gates: admission.LoadGatesFromEnv(),
+		// PR-I (issue #75): admission Stage 6 wiring. The
+		// LedgerPolicyResolver consumes the v1.5 AdmissionEnforced
+		// schema field to gate enforcement; the SigVerifier
+		// reuses the multi-sig adapter (PR-C); the
+		// DelegationResolver is the delegationresolver/ stack
+		// (PR-B cache + PR-J ledger-backed EntrySource).
+		PolicyContext: buildPolicyContext(d, fetcher, cfg.LogDID),
+		// PR-F (issue #76 PR-F): surgical evidence-chain walks
+		// against the same on-log fetcher.
+		EvidenceChainFetcher: fetcher,
 	}
 
 	tree := smt.NewTree(d.LeafStore, d.NodeStore)
@@ -470,6 +482,7 @@ func composeHandlers(
 		TargetRoot:       api.NewQueryTargetRootHandler(queryDeps),
 		SignerDID:        api.NewQuerySignerDIDHandler(queryDeps),
 		SchemaRef:        api.NewQuerySchemaRefHandler(queryDeps),
+		DelegateDID:      api.NewQueryDelegateDIDHandler(queryDeps),
 		Scan:             api.NewQueryScanHandler(queryDeps),
 		Difficulty:       api.NewDifficultyHandler(queryDeps),
 		MMD:              mmdHandler,
@@ -495,6 +508,62 @@ func composeHandlers(
 			SDKVersion: cfg.SDKVersion,
 		}),
 	}, nil
+}
+
+// buildPolicyContext assembles the admission Stage 6 dependencies
+// from the ledger's existing wiring:
+//
+//   - DIDResolver (via sdkdid.NewECDSAKeyResolver — already used by
+//     the legacy single-sig path) → admission.NewSignatureVerifier
+//   - PostgresEntryFetcher → delegationresolver.NewLedgerEntrySource
+//     wrapped by NewCached (LRU) wrapped by NewSDKResolver to
+//     satisfy attestation.DelegationResolver
+//   - SchemaRegistry + same fetcher → admission.NewLedgerPolicyResolver
+//
+// The PolicyContext is non-nil regardless of whether
+// d.SchemaRegistry is set: when the registry is nil (test fixtures)
+// the resolver naturally returns found=false on every entry, and
+// the policy gate becomes a no-op without wiring code surfacing
+// nil checks.
+//
+// Returns nil only when ALL of d.SchemaRegistry, d.PgPool, and the
+// fetcher are unavailable — a degraded mode (boot path that doesn't
+// run admission). The caller is expected to wire PolicyContext nil
+// in that case.
+func buildPolicyContext(d *deps.AppDeps, fetcher *store.PostgresEntryFetcher, logDID string) *admission.PolicyContext {
+	if d == nil || d.SchemaRegistry == nil || fetcher == nil || logDID == "" {
+		return nil
+	}
+	delegationSource := delegationresolver.NewLedgerEntrySource(
+		fetcher,
+		delegationresolver.NoOpScopeExtractor{},
+	)
+	cachedSource, err := delegationresolver.NewCached(
+		delegationSource,
+		delegationresolver.DefaultCacheCapacity,
+		delegationresolver.CurrentMetrics(),
+	)
+	if err != nil {
+		// NewCached only errors on nil source; we just supplied
+		// a non-nil one. Treat as programmer error.
+		panic("wire: delegationresolver.NewCached: " + err.Error())
+	}
+	delegationResolver := delegationresolver.NewSDKResolver(cachedSource)
+
+	policyResolver := admission.NewLedgerPolicyResolver(admission.LedgerPolicyResolverConfig{
+		Fetcher:    fetcher,
+		Candidates: fetcher,
+		Schemas:    d.SchemaRegistry,
+		LogDID:     logDID,
+	})
+
+	sigVerifier := admission.NewSignatureVerifier(sdkdid.NewECDSAKeyResolver())
+
+	return &admission.PolicyContext{
+		Resolver:           policyResolver,
+		SigVerifier:        sigVerifier,
+		DelegationResolver: delegationResolver,
+	}
 }
 
 // composeTileHandlers wires /checkpoint + /tile/{level}/{rest...} unless

@@ -68,18 +68,36 @@ import (
 
 // PolicyResolver answers, for an entry being admitted: does this
 // entry's schema declare an attestation policy this entry adopts,
-// and if so, what are the candidates already on the log?
+// is that policy marked AdmissionEnforced=true, and if so, what
+// primary + candidates does the SDK's policy verifier need?
 //
-// Returns (policy, candidates, true, nil) when both halves of the
-// self-gate are met. Returns (Policy{}, nil, false, nil) when the
-// gate is a no-op (no policy declared, or entry doesn't adopt
-// one). Returns (..., err) on transport / parse failure (route to
-// 500).
+// Returns (policy, primary, candidates, true, nil) when ALL of:
+//
+//   - entry references a policy via Header.AttestationPolicyName
+//   - the schema (resolved via Header.SchemaRef) declares that
+//     policy by name
+//   - policy.AdmissionEnforced == true (the v1.5 self-gate)
+//   - the resolver can materialise the primary entry the
+//     candidates cosign (typically the entry at
+//     Header.TargetRoot) and its candidate set
+//
+// Returns (Policy{}, EntryWithMetadata{}, nil, false, nil) when
+// the gate is a no-op for any of these reasons. Returns
+// (..., err) on transport / parse failure (route to 500).
+//
+// PRIMARY MODEL: at admission, the entry being admitted does NOT
+// have a Position yet. The SDK verifier matches candidates'
+// CosignatureOf against primary.Position, so the "primary" the
+// resolver returns is the entry at Header.TargetRoot — the
+// pre-existing position the candidates bind to. The entry being
+// admitted is the CLOSURE on the target (e.g., the Dean's
+// delegation that ratifies a Board-cosigned proposal); admission
+// gate 3 asks "is the target's policy now met?"
 type PolicyResolver interface {
 	ResolvePolicy(
 		ctx context.Context,
 		entry *envelope.Entry,
-	) (policy attestation.Policy, candidates []types.EntryWithMetadata, found bool, err error)
+	) (policy attestation.Policy, primary types.EntryWithMetadata, candidates []types.EntryWithMetadata, found bool, err error)
 }
 
 // PolicyContext bundles the four dependencies the policy gate
@@ -128,32 +146,24 @@ func VerifyEntryPolicy(
 		return nil, nil
 	}
 
-	policy, candidates, found, err := policyCtx.Resolver.ResolvePolicy(ctx, entry)
+	policy, primary, candidates, found, err := policyCtx.Resolver.ResolvePolicy(ctx, entry)
 	if err != nil {
 		return nil, fmt.Errorf("admission: policy resolution failed: %w", err)
 	}
 	if !found {
-		// Schema either doesn't declare AttestationPolicies, or
-		// declares them but not this name. The latter is a
-		// well-formedness question; for now we treat both as
-		// no-op (consistent with the "self-gating" rollout
-		// property — schemas evolve independently of admission).
-		// A future PR may flip the unknown-name case to a hard
-		// reject (ErrAttestationPolicyNotMet) once the consumer
-		// surface stabilises.
+		// Self-gate misses: the entry doesn't adopt a policy,
+		// the schema doesn't declare the named policy, the
+		// policy is read-time only (AdmissionEnforced=false),
+		// or the resolver couldn't materialise the primary.
+		// Defer enforcement to read-time consumers.
 		return nil, nil
 	}
 
-	// Admission's primary metadata: the entry being admitted IS
-	// the primary. Position is unknown (not yet sequenced) so
-	// we use NullLogPosition; the SDK verifier doesn't read
-	// Position when matching candidates against the primary —
-	// candidates' CosignatureOf has been resolved by the
-	// PolicyResolver against the entry's SignerDID + content.
-	primary := types.EntryWithMetadata{
-		Position: types.NullLogPosition,
-		LogTime:  logTime,
-	}
+	_ = logTime // primary.LogTime is the load-bearing time field;
+	// `logTime` (the entry-being-admitted's wall-clock) is no
+	// longer used in the primary's metadata. Kept in the function
+	// signature for forward-compat (future PR may surface entry-
+	// being-admitted's timestamp through the report).
 
 	// Required guards: the SDK verifier needs a non-nil
 	// SigVerifier. DelegationResolver is needed only when the

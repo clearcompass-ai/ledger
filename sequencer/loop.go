@@ -407,6 +407,14 @@ func (s *Sequencer) buildLiveStagedEntry(
 	if entry.Header.SchemaRef != nil {
 		schemaRef = store.SerializeLogPosition(*entry.Header.SchemaRef)
 	}
+	// PR-J: project DelegateDID into the entry_index column so the
+	// idx_delegate_did_latest partial index can resolve "latest
+	// delegation for this DID" in one seek. Empty when the entry is
+	// not a delegation event.
+	var delegateDID string
+	if entry.Header.DelegateDID != nil {
+		delegateDID = *entry.Header.DelegateDID
+	}
 	// EventTime is microseconds since epoch (matches the SDK's
 	// freshness check unit). Zero means a pre-EventTime entry or
 	// a corrupted header; fall back to the zero time.Time which
@@ -429,6 +437,7 @@ func (s *Sequencer) buildLiveStagedEntry(
 			TargetRoot:     targetRoot,
 			CosignatureOf:  cosigOf,
 			SchemaRef:      schemaRef,
+			DelegateDID:    delegateDID,
 			Status:         store.StatusLive,
 		},
 	}

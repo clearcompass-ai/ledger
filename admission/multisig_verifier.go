@@ -126,6 +126,23 @@ func (a *sigVerifierAdapter) Verify(
 	return nil
 }
 
+// NewSignatureVerifier wraps a DIDResolver as an
+// attestation.SignatureVerifier suitable for the SDK's
+// policy verifier (attestation.VerifyEntryAttestationPolicy /
+// verifier.VerifyComplete Stage 6) and for any future Stage 6
+// caller. Internally reuses the same sigVerifierAdapter that
+// PR-C's VerifyEntryAllSignatures uses, so signature-verification
+// semantics are uniform across the multi-sig gate and the policy
+// gate.
+//
+// nil resolver: the returned verifier short-circuits to "every
+// signature is nominally valid" — wire-format-integrity-only
+// trust model, matching the legacy single-sig path. Production
+// always wires a real resolver.
+func NewSignatureVerifier(resolver DIDResolver) attestation.SignatureVerifier {
+	return &sigVerifierAdapter{resolver: resolver}
+}
+
 // VerifyEntryAllSignatures verifies EVERY signature on entry via
 // the SDK's attestation.VerifyEntrySignatures. Returns nil on full
 // success (all signatures valid); returns one of the existing
