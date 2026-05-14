@@ -64,25 +64,17 @@ import (
 const testRebuildLogDID = "did:example:rebuild-projection-test"
 
 func TestRebuild_DeterministicProjectionFromTiles(t *testing.T) {
-	dsn := os.Getenv("ATTESTA_TEST_DSN")
-	if dsn == "" {
-		t.Skip("ATTESTA_TEST_DSN not set — skipping PG-backed rebuild test")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	// ── PG: open + migrate + reset projection tables.
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
-	}
-	defer pool.Close()
-	if err := store.RunMigrations(ctx, pool); err != nil {
-		t.Fatalf("migrations: %v", err)
-	}
-	resetProjectionTables(t, ctx, pool)
+	// ── PG: per-test isolated schema. Migrations are applied
+	// inside the schema by IsolatedDB; entry_index is empty by
+	// construction (no resetProjectionTables needed).
+	// Eliminates the parallel-package "duplicate entry" failure
+	// class without requiring `-p 1`.
+	pool := store.IsolatedDB(t)
 
 	// ── Tile store: real upstream Tessera POSIX writer.
 	tileDir := t.TempDir()
