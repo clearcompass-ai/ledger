@@ -41,9 +41,18 @@ CONFIG VIA ENV (with defaults):
 	ATTESTA_SOAK_VERIFY_SAMPLES        sample of entries to /raw-check at the end.
 	                                   Accepts an absolute count ("100") OR a percentage
 	                                   of submitted entries ("5%", "0.5%"). Default 100.
+	                                   ALSO acts as the cascade default for
+	                                   TREE_PROOF_SAMPLES and SMT_PROOF_SAMPLES below
+	                                   when those are unset — set this once and every
+	                                   sampled verifier scales together.
 	ATTESTA_SOAK_TREE_PROOF_SAMPLES    sample of inclusion proofs to verify against
 	                                   /v1/tree/head root via merkle/proof. Same shape
-	                                   as VERIFY_SAMPLES. Default 100.
+	                                   as VERIFY_SAMPLES. When unset, cascades from
+	                                   ATTESTA_SOAK_VERIFY_SAMPLES (then default 100).
+	ATTESTA_SOAK_SMT_PROOF_SAMPLES     sample of SMT membership proofs to verify against
+	                                   /v1/smt/root via SDK proof verifier. Same shape
+	                                   as VERIFY_SAMPLES. When unset, cascades from
+	                                   ATTESTA_SOAK_VERIFY_SAMPLES (then default 100).
 	ATTESTA_SOAK_P99_BOUND_MS          HTTP admission p99 ceiling, ms (default 100)
 	ATTESTA_SOAK_SHIPPER_MAX_IN_FLIGHT shipper worker pool size (default 16)
 	                                   Drain rate ≈ MaxInFlight / per-upload-latency.
@@ -671,7 +680,21 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 		total, concurrency, verifySamples, p99BoundMs,
 		maxInFlightLog, seqMaxInFlightLog, drainTimeoutLog)
 
-	resultCh := make(chan soakSubmission, 4096)
+	// resultCh capacity: sized to total + 1 so every successful
+	// submission's hash is captured for the post-soak verify pass.
+	// PRIOR DEFECT: this was hardcoded to 4096 and the producer
+	// used a non-blocking send with `default:` — under N>4096 the
+	// channel filled and subsequent sends were silently dropped.
+	// Verify reported `<=4096 sampled entries verified` regardless
+	// of what ATTESTA_SOAK_VERIFY_SAMPLES asked for, with no
+	// warning. The post-drain guard at the verify call site asserts
+	// len(results) >= verifySamples — surfaces any future regression
+	// the moment it happens.
+	//
+	// Memory cost: each soakSubmission is ~32 bytes (one [32]byte
+	// hash). 1M entries → ~32 MB peak. Trivial vs the rest of the
+	// soak's working set.
+	resultCh := make(chan soakSubmission, total+1)
 	sampler := newLatencySampler(50_000)
 
 	var submitted atomic.Uint64
@@ -751,10 +774,14 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 					continue
 				}
 				submitted.Add(1)
-				select {
-				case resultCh <- soakSubmission{hash: hash}:
-				default:
-				}
+				// Blocking send — the channel is sized to total+1
+				// at construction so this never actually blocks in
+				// practice. See the construction site for rationale.
+				// We refuse to silently drop diagnostic-grade data;
+				// if the channel ever DOES block, that's a bug we
+				// want to surface as a deadlock not as a silent
+				// undercount.
+				resultCh <- soakSubmission{hash: hash}
 			}
 		}(w)
 	}
@@ -1082,6 +1109,27 @@ func TestSoak_LedgerBytestore(t *testing.T) {
 	verifySMTConsistency(t, op, submitted.Load())
 
 	results := drainSubmissions(resultCh)
+	// COVERAGE GUARD: assert we actually have enough captured
+	// submissions to honour the requested verify-sample count. The
+	// previous defect — non-blocking send into an undersized channel
+	// — silently capped this at 4096 regardless of what
+	// ATTESTA_SOAK_VERIFY_SAMPLES asked for, and the test reported
+	// the cap as if it were the request. This guard surfaces any
+	// future regression of that shape immediately. submitted.Load()
+	// is the floor: if you submitted 100K, you should be able to
+	// sample any number up to 100K.
+	if uint64(len(results)) < submitted.Load() {
+		t.Fatalf("verify-pool COVERAGE-LOSS: drained %d submissions but %d were submitted "+
+			"(silent drop somewhere on the producer→channel→drain path; "+
+			"resultCh size or send semantics regressed)",
+			len(results), submitted.Load())
+	}
+	if len(results) < verifySamples {
+		t.Fatalf("verify-pool UNDERFILL: ATTESTA_SOAK_VERIFY_SAMPLES requested %d but only "+
+			"%d submissions are available to sample (submitted=%d). "+
+			"Either bump VERIFY_SAMPLES down or investigate why submissions are missing.",
+			verifySamples, len(results), submitted.Load())
+	}
 	if len(results) > verifySamples {
 		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 		rng.Shuffle(len(results), func(i, j int) { results[i], results[j] = results[j], results[i] })
@@ -1201,6 +1249,38 @@ func envInt(name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envSampleCountCascade resolves a sample-size env var, falling back
+// to a SECOND env var before the absolute default. Used by the soak's
+// per-verifier sample knobs so a single ATTESTA_SOAK_VERIFY_SAMPLES
+// setting cascades to TREE_PROOF and SMT_PROOF samples unless those
+// are explicitly overridden. This collapses the operator surface from
+// "remember three env vars" to "set one, override individuals only
+// when you care."
+//
+// Resolution order:
+//
+//  1. name (e.g., ATTESTA_SOAK_TREE_PROOF_SAMPLES) — explicit
+//     per-verifier override, intuitive shape.
+//  2. cascade (e.g., ATTESTA_SOAK_VERIFY_SAMPLES) — global default
+//     when the explicit override is unset.
+//  3. def (compile-time default, typically 100).
+//
+// Each level uses envSampleCount so absolute counts and percentages
+// behave identically.
+func envSampleCountCascade(name, cascade string, def int, total uint64) int {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		// Explicit per-verifier value provided — honour it verbatim,
+		// using the same parser. Fallback when malformed = def, NOT
+		// cascade (otherwise a typo here would silently inherit the
+		// wrong scale).
+		return envSampleCount(name, def, total)
+	}
+	if v := strings.TrimSpace(os.Getenv(cascade)); v != "" {
+		return envSampleCount(cascade, def, total)
+	}
+	return def
 }
 
 // envSampleCount resolves a sample-size env var. Accepts either an
@@ -1650,7 +1730,15 @@ func verifyTreeIntegrity(t *testing.T, op *soakLedger, submitted uint64) {
 		head.TreeSize, root[:8], submitted)
 
 	// 2) N random inclusion proofs against head.RootHash.
-	n := envSampleCount("ATTESTA_SOAK_TREE_PROOF_SAMPLES", 100, submitted)
+	// Cascades from ATTESTA_SOAK_VERIFY_SAMPLES so a single global
+	// setting (e.g., VERIFY_SAMPLES=10%) raises every verifier's
+	// coverage in lockstep. Override via TREE_PROOF_SAMPLES to dial
+	// inclusion-proof coverage independently of bytestore-fetch
+	// coverage.
+	n := envSampleCountCascade(
+		"ATTESTA_SOAK_TREE_PROOF_SAMPLES",
+		"ATTESTA_SOAK_VERIFY_SAMPLES",
+		100, submitted)
 	if n <= 0 {
 		t.Logf("verifyTreeIntegrity: ATTESTA_SOAK_TREE_PROOF_SAMPLES=%d → skipping proof verification", n)
 		return
@@ -1796,7 +1884,15 @@ func verifySMTConsistency(t *testing.T, op *soakLedger, submitted uint64) {
 		smtRoot[:8], rootResp.LeafCount, submitted)
 
 	// 2) Sample N entries; verify each proof against smtRoot.
-	n := envSampleCount("ATTESTA_SOAK_SMT_PROOF_SAMPLES", 100, submitted)
+	// Cascades from ATTESTA_SOAK_VERIFY_SAMPLES so a single global
+	// setting (e.g., VERIFY_SAMPLES=10%) raises every verifier's
+	// coverage in lockstep. Operators who want SMT-specific tuning
+	// (e.g., SMT proofs are expensive — cap them lower than tree
+	// proofs) override via ATTESTA_SOAK_SMT_PROOF_SAMPLES.
+	n := envSampleCountCascade(
+		"ATTESTA_SOAK_SMT_PROOF_SAMPLES",
+		"ATTESTA_SOAK_VERIFY_SAMPLES",
+		100, submitted)
 	if n <= 0 {
 		t.Logf("verifySMTConsistency: ATTESTA_SOAK_SMT_PROOF_SAMPLES=%d → skipping", n)
 		return
