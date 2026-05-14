@@ -359,7 +359,7 @@ func NewEmbeddedAppender(
 		"drain_budget", opts.DrainBudget,
 	)
 
-	return &EmbeddedAppender{
+	ea := &EmbeddedAppender{
 		appender:             appender,
 		reader:               reader,
 		shutdown:             shutdown,
@@ -369,7 +369,8 @@ func NewEmbeddedAppender(
 		goroutineBaseline:    goroutineBaseline,
 		publicCheckpointPath: opts.PublicCheckpointPath,
 		logger:               logger,
-	}, nil
+	}
+	return ea, nil
 }
 
 // AppendLeaf submits a 32-byte entry-identity hash to Tessera and
@@ -398,6 +399,13 @@ func (e *EmbeddedAppender) AppendLeaf(ctx context.Context, data []byte) (uint64,
 	idx, err := e.appender.Add(ctx, uptessera.NewEntry(data))()
 	if err != nil {
 		span.RecordError(err)
+		// Boundary translation: convert upstream tessera's stringly-typed
+		// terminal shutdown error into our typed ErrAppenderShutdown
+		// sentinel. See the ErrAppenderShutdown docstring for rationale
+		// and the pinning test that catches upstream drift.
+		if strings.Contains(err.Error(), upstreamShutdownSignature) {
+			return 0, fmt.Errorf("tessera/embedded: Add: %w", ErrAppenderShutdown)
+		}
 		return 0, fmt.Errorf("tessera/embedded: Add: %w", err)
 	}
 	recordAppendDuration(ctx, time.Since(t0))
@@ -647,6 +655,33 @@ var _ AppenderBackend = (*EmbeddedAppender)(nil)
 // AppendLeaf, that's a programming error and surfaces as a
 // loud rejection rather than silently dropping the entry.
 var ErrReadOnly = errors.New("tessera: read-only appender — writes not permitted")
+
+// ErrAppenderShutdown is the typed surface for upstream tessera's
+// terminal "appender has been shut down" state. Upstream tessera
+// (transparency-dev/tessera@v1.0.2/append_lifecycle.go:491) emits
+// this as a bare errors.New string — we can't change it there, so
+// we translate it once, at the AppendLeaf boundary we own, and
+// expose this sentinel for callers to match via errors.Is.
+//
+// Consumers (sequencer + builder retry handlers) treat this as
+// non-retriable: terminator.stopped is a one-way flag, retrying
+// is pure waste. Entry stays in WAL Pending; the next process
+// start re-fetches via drainOnce, AppendLeaf is antispam-
+// idempotent, and the entry flows through normally.
+//
+// TestEmbeddedAppender_AppendLeaf_TypedShutdownError pins this
+// boundary translation. If upstream tessera renames their error
+// string (e.g., to "appender stopped"), that test fails loudly
+// — without it, an upstream rename silently re-enables the
+// retry-storm pattern documented in the shutdown trace we used
+// to identify this defect.
+var ErrAppenderShutdown = errors.New("tessera/embedded: appender shut down")
+
+// upstreamShutdownSignature is the substring upstream tessera
+// emits in terminator.Add when terminator.stopped is true. Single
+// source of truth — referenced by both the boundary translator in
+// AppendLeaf and the pinning test.
+const upstreamShutdownSignature = "appender has been shut down"
 
 // ReadOnlyAppender satisfies AppenderBackend by reading the
 // checkpoint from a POSIX directory shared with the writer

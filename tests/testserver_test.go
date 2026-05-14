@@ -44,6 +44,12 @@ import (
 	optessera "github.com/clearcompass-ai/ledger/tessera"
 )
 
+// Compile-time guarantee: *store.CompositeByteReader satisfies
+// bytestore.Reader. testLedger.EntryReader holds the composite so
+// tests assert against the same abstraction production read paths
+// use (PostgresEntryFetcher, builder, /v1/entries handlers).
+var _ opbytestore.Reader = (*store.CompositeByteReader)(nil)
+
 // -------------------------------------------------------------------------------------------------
 // Test ledger instance
 // -------------------------------------------------------------------------------------------------
@@ -52,6 +58,22 @@ import (
 // Real-Tessera fields (RealTesseraDir / RealEmbedded / RealTileReader)
 // are nil under the legacy stub path; scenarios / persona tests
 // gate via HasRealTessera() before dereferencing them.
+//
+// EntryReader vs EntryBytes — read the rule before choosing:
+//
+//   - EntryReader is the production read abstraction (composite of
+//     WAL + bytestore). It returns bytes from whichever surface holds
+//     them at the moment of the read, transparently bridging the
+//     StateSequenced → StateShipped transition window. This is what
+//     PostgresEntryFetcher and the /v1/entries handler read through.
+//     Tests that assert "EntryReader is the source of truth" (see
+//     entry_storage_rule_test.go) MUST use this field — anything else
+//     races the shipper.
+//
+//   - EntryBytes is the bare in-memory bytestore. Use only when the
+//     test specifically asserts post-ship bytestore content (e.g.,
+//     verifying durability after WAL eviction). Such tests must
+//     explicitly wait for StateShipped before reading.
 type testLedger struct {
 	BaseURL     string
 	Pool        *pgxpool.Pool
@@ -59,6 +81,7 @@ type testLedger struct {
 	CreditStore *store.CreditStore
 	EntryStore  *store.EntryStore
 	EntryBytes  *opbytestore.Memory
+	EntryReader opbytestore.Reader
 	cancel      context.CancelFunc
 
 	// Real-Tessera handles. Populated only when

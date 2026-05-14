@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -438,4 +439,70 @@ func TestEmbeddedAppender_Reader_ReturnsLogReader(t *testing.T) {
 
 	// Compile-time pin: r implements LogReader's full surface.
 	var _ uptessera.LogReader = r
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Boundary translation: upstream "appender has been shut down" →
+// typed ErrAppenderShutdown sentinel
+// ─────────────────────────────────────────────────────────────────
+
+// TestEmbeddedAppender_AppendLeaf_TypedShutdownError pins the
+// boundary translation in AppendLeaf. Upstream tessera
+// (transparency-dev/tessera@v1.0.2/append_lifecycle.go:491) emits
+// a stringly-typed error "appender has been shut down" when
+// terminator.stopped is true. Our wrapper translates that single
+// signature into ErrAppenderShutdown so sequencer + builder
+// consumers can match it via errors.Is and classify as non-retriable.
+//
+// This test is the canary: if upstream renames their error string
+// (e.g., to "appender stopped"), the wrapper's strings.Contains check
+// no longer fires, AppendLeaf falls through to the generic
+// fmt.Errorf wrap, and the typed sentinel is lost — silently
+// re-enabling the retry-storm shutdown pattern. This test fails
+// loudly the moment that happens, forcing the operator to update
+// the upstreamShutdownSignature constant.
+//
+// The test path: build an appender, close it (which flips upstream
+// terminator.stopped via our e.shutdown call), then attempt
+// AppendLeaf. The returned error MUST satisfy
+// errors.Is(err, ErrAppenderShutdown).
+func TestEmbeddedAppender_AppendLeaf_TypedShutdownError(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	driver, err := posix.New(ctx, posix.Config{Path: dir})
+	if err != nil {
+		t.Fatalf("posix.New: %v", err)
+	}
+	signer, _, _ := GenerateEphemeralSigner("shutdown-sentinel-test")
+	app, err := NewEmbeddedAppender(ctx, driver, AppenderOptions{
+		Signer:      signer,
+		DrainBudget: -1, // disable drain wait — keeps the test fast
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEmbeddedAppender: %v", err)
+	}
+
+	// Flip upstream terminator.stopped via Close. This is the only
+	// path that sets the flag; once set, every subsequent Add returns
+	// the stringly-typed shutdown error from upstream.
+	if err := app.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// AppendLeaf must surface the typed sentinel. errors.Is unwraps
+	// the fmt.Errorf("…: %w", ErrAppenderShutdown) chain we emit at
+	// the boundary.
+	hash := sha256.Sum256([]byte("shutdown-sentinel-test"))
+	_, err = app.AppendLeaf(ctx, hash[:])
+	if err == nil {
+		t.Fatal("AppendLeaf after Close: expected error, got nil")
+	}
+	if !errors.Is(err, ErrAppenderShutdown) {
+		t.Fatalf("AppendLeaf after Close: error does not satisfy "+
+			"errors.Is(err, ErrAppenderShutdown). "+
+			"Upstream tessera may have renamed its shutdown error "+
+			"signature; update upstreamShutdownSignature in "+
+			"embedded_appender.go. Got: %v", err)
+	}
 }

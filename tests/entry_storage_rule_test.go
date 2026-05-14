@@ -94,9 +94,20 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	op.seedSession(t, "tok-rule", "did:example:exchange-rule", 100)
 
 	// Submit an entry via HTTP.
+	//
+	// NOTE: helpers_test.go::makeAdmissibleEntry treats Header.SignerDID
+	// as a LABEL — it resolves the label to a per-test secp256k1
+	// keypair via resolveSyntheticSigner() and overwrites
+	// Header.SignerDID with the keypair's did:key form before signing.
+	// The wire entry is signed under (and entry_index stores) the
+	// did:key, NOT the label. The assertion below compares against the
+	// post-transformation DID so the test agrees with what the helper
+	// actually wrote.
+	const signerLabel = "did:example:rule-signer"
 	wire := buildWireEntry(t, envelope.ControlHeader{
-		SignerDID: "did:example:rule-signer",
+		SignerDID: signerLabel,
 	}, []byte("rule-test-payload"))
+	expectedSignerDID := resolveSyntheticSigner(signerLabel).did
 
 	result := submitEntry(t, op.BaseURL, "tok-rule", wire)
 	seq := uint64(result["sequence_number"].(float64))
@@ -112,14 +123,22 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("entry_index query failed: %v", err)
 	}
-	if signerDID != "did:example:rule-signer" {
-		t.Fatalf("signer_did mismatch: %s", signerDID)
+	if signerDID != expectedSignerDID {
+		t.Fatalf("signer_did mismatch: got %q, want %q (post-helper-transformation)",
+			signerDID, expectedSignerDID)
 	}
 	var hashArr [32]byte
 	copy(hashArr[:], hash)
 
-	// Verify: wire bytes are in the byte store at the (seq, hash) key.
-	storedWire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hashArr)
+	// Verify: wire bytes are readable via the EntryReader abstraction
+	// (the composite of WAL + bytestore that PostgresEntryFetcher and
+	// the /v1/entries handlers read through). MUST go through
+	// op.EntryReader, not op.EntryBytes — the bare bytestore is
+	// populated only after the shipper transitions the entry from
+	// StateSequenced to StateShipped, which is asynchronous to the
+	// submission acknowledgement. The composite serves bytes from
+	// WAL during the in-flight window, eliminating the race.
+	storedWire, err := op.EntryReader.ReadEntry(context.Background(), seq, hashArr)
 	if err != nil {
 		t.Fatalf("EntryReader has no bytes for seq %d: %v", seq, err)
 	}
@@ -346,7 +365,11 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 		}
 		var hash [32]byte
 		copy(hash[:], hashBytes)
-		wire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hash)
+		// Use op.EntryReader (composite) — the production read abstraction.
+		// pollQueryResults waits for StateSequenced (queryability), but
+		// the shipper's StateSequenced→StateShipped transition is
+		// asynchronous; bare bytestore reads race that transition.
+		wire, err := op.EntryReader.ReadEntry(context.Background(), seq, hash)
 		if err != nil {
 			t.Fatalf("seq %d: EntryReader has no bytes: %v", seq, err)
 		}
@@ -371,10 +394,17 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 		t.Fatalf("RULE VIOLATION: entry_index has %d byte columns", colCount)
 	}
 
-	// Verify EntryReader holds exactly the entries we submitted.
+	// Post-ship durability sanity check — counts entries in the
+	// BARE bytestore (op.EntryBytes), not the EntryReader composite.
+	// This is intentionally bytestore-direct: the per-entry assertions
+	// above already verified readability via op.EntryReader; this
+	// additional check confirms the shipper actually migrated bytes
+	// out of WAL into durable storage. Best-effort because the
+	// shipper's StateSequenced→StateShipped transition is asynchronous
+	// to pollQueryResults' StateSequenced wait.
 	storedCount := op.EntryBytes.Len()
 	if storedCount < 3 {
-		t.Fatalf("EntryReader has %d entries, expected at least 3", storedCount)
+		t.Fatalf("bytestore has %d entries, expected at least 3 (shipper may not have caught up)", storedCount)
 	}
 
 	t.Logf("rule verified: 3 entries submitted, queried back, bytes from EntryReader, zero bytes in Postgres")

@@ -318,8 +318,13 @@ func TestHTTP_Submission_ModeA_HappyPath(t *testing.T) {
 	result := submitEntry(t, op.BaseURL, "tok-a", wire)
 
 	seq := result["sequence_number"].(float64)
-	if seq < 1 {
-		t.Fatalf("sequence_number should be >= 1, got %v", seq)
+	// Per migration 0004 ("cursor=-1 = no sequences yet; seq=0 =
+	// genesis"), the FIRST user entry on a fresh log is sequenced
+	// at 0 — not 1. The old `seq < 1` check incorrectly rejected
+	// the legitimate first-entry case. The contract is
+	// "sequence_number is a real non-negative integer".
+	if seq < 0 {
+		t.Fatalf("sequence_number should be >= 0, got %v", seq)
 	}
 	hash := result["canonical_hash"].(string)
 	if len(hash) != 64 {
@@ -659,7 +664,22 @@ func TestHTTP_EndToEnd_SubmitAndQueryBack(t *testing.T) {
 // 6. 409 Duplicate Detection
 // ═════════════════════════════════════════════════════════════════════════════
 
-func TestHTTP_Duplicate_409(t *testing.T) {
+// TestHTTP_IdempotentReplay_ByteIdenticalSCT pins the P5 idempotent-
+// replay contract in api/submission.go:
+//
+//	A byte-identical resubmission MUST return 202 with the SAME SCT
+//	bytes (NOT 409 Conflict). The handler short-circuits credit
+//	deduction and wal.Submit, re-signs the SCT against the persisted
+//	log_time, and returns it. The two calls are observationally
+//	identical at the HTTP wire level.
+//
+// This replaces the pre-P5 expectation (409 Conflict on byte-identical
+// resubmission) — that semantic is gone. The duplicate-rejection path
+// remains for entries that COLLIDE on canonical_hash from DIFFERENT
+// wire bytes (impossible by construction — the hash is derived from
+// the wire bytes — so the only way to hit it is bit-flip corruption
+// during deserialisation, exercised separately in store-level tests).
+func TestHTTP_IdempotentReplay_ByteIdenticalSCT(t *testing.T) {
 	op := startTestLedger(t)
 	op.seedSession(t, "tok-dup", "did:example:exchange-dup", 100)
 
@@ -667,26 +687,34 @@ func TestHTTP_Duplicate_409(t *testing.T) {
 		SignerDID: "did:example:duplicate-test",
 	}, []byte("unique-payload-for-dup-test"))
 
-	// First → 202.
-	submitEntry(t, op.BaseURL, "tok-dup", wire)
+	// First → 202. submitEntry asserts 202 internally, so no extra
+	// check needed; capture the SCT for the byte-identity comparison.
+	first := submitEntry(t, op.BaseURL, "tok-dup", wire)
 
-	// Second with same bytes → 409.
-	req, _ := http.NewRequest("POST", op.BaseURL+"/v1/entries", bytes.NewReader(wire))
-	req.Header.Set("Authorization", "Bearer tok-dup")
-	resp := doRequest(t, req)
-	defer resp.Body.Close()
+	// Second with byte-identical wire bytes → also 202, with byte-
+	// identical SCT.
+	second := submitEntry(t, op.BaseURL, "tok-dup", wire)
 
-	if resp.StatusCode != http.StatusConflict {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("duplicate: expected 409, got %d: %s", resp.StatusCode, body)
+	// SCT byte-identity: the three load-bearing fields of the SCT
+	// (canonical_hash, log_time_micros, signature) MUST match. If
+	// log_time_micros drifts, the SCT's canonical-packing produces
+	// different bytes and the byte-identity guarantee is broken.
+	if first["canonical_hash"] != second["canonical_hash"] {
+		t.Fatalf("idempotent replay: canonical_hash drift: first=%v second=%v",
+			first["canonical_hash"], second["canonical_hash"])
 	}
-
-	var errResp map[string]string
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	if errResp["error"] == "" {
-		t.Fatal("409 should have error message")
+	if first["log_time_micros"] != second["log_time_micros"] {
+		t.Fatalf("idempotent replay: log_time_micros drift: first=%v second=%v "+
+			"(P5 requires persisted log_time on replay)",
+			first["log_time_micros"], second["log_time_micros"])
 	}
-	t.Logf("duplicate rejected: %s", errResp["error"])
+	if first["signature"] != second["signature"] {
+		t.Fatalf("idempotent replay: signature drift: first=%v second=%v "+
+			"(byte-identical inputs MUST produce byte-identical SCT)",
+			first["signature"], second["signature"])
+	}
+	t.Logf("idempotent replay OK: canonical_hash=%v log_time_micros=%v",
+		first["canonical_hash"], first["log_time_micros"])
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
