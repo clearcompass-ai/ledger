@@ -130,8 +130,15 @@ func TestRule_SubmissionStoresBytesInEntryReader(t *testing.T) {
 	var hashArr [32]byte
 	copy(hashArr[:], hash)
 
-	// Verify: wire bytes are in the byte store at the (seq, hash) key.
-	storedWire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hashArr)
+	// Verify: wire bytes are readable via the EntryReader abstraction
+	// (the composite of WAL + bytestore that PostgresEntryFetcher and
+	// the /v1/entries handlers read through). MUST go through
+	// op.EntryReader, not op.EntryBytes — the bare bytestore is
+	// populated only after the shipper transitions the entry from
+	// StateSequenced to StateShipped, which is asynchronous to the
+	// submission acknowledgement. The composite serves bytes from
+	// WAL during the in-flight window, eliminating the race.
+	storedWire, err := op.EntryReader.ReadEntry(context.Background(), seq, hashArr)
 	if err != nil {
 		t.Fatalf("EntryReader has no bytes for seq %d: %v", seq, err)
 	}
@@ -358,7 +365,11 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 		}
 		var hash [32]byte
 		copy(hash[:], hashBytes)
-		wire, err := op.EntryBytes.ReadEntry(context.Background(), seq, hash)
+		// Use op.EntryReader (composite) — the production read abstraction.
+		// pollQueryResults waits for StateSequenced (queryability), but
+		// the shipper's StateSequenced→StateShipped transition is
+		// asynchronous; bare bytestore reads race that transition.
+		wire, err := op.EntryReader.ReadEntry(context.Background(), seq, hash)
 		if err != nil {
 			t.Fatalf("seq %d: EntryReader has no bytes: %v", seq, err)
 		}
@@ -383,10 +394,17 @@ func TestRule_EndToEnd_BytesNeverTouchPostgres(t *testing.T) {
 		t.Fatalf("RULE VIOLATION: entry_index has %d byte columns", colCount)
 	}
 
-	// Verify EntryReader holds exactly the entries we submitted.
+	// Post-ship durability sanity check — counts entries in the
+	// BARE bytestore (op.EntryBytes), not the EntryReader composite.
+	// This is intentionally bytestore-direct: the per-entry assertions
+	// above already verified readability via op.EntryReader; this
+	// additional check confirms the shipper actually migrated bytes
+	// out of WAL into durable storage. Best-effort because the
+	// shipper's StateSequenced→StateShipped transition is asynchronous
+	// to pollQueryResults' StateSequenced wait.
 	storedCount := op.EntryBytes.Len()
 	if storedCount < 3 {
-		t.Fatalf("EntryReader has %d entries, expected at least 3", storedCount)
+		t.Fatalf("bytestore has %d entries, expected at least 3 (shipper may not have caught up)", storedCount)
 	}
 
 	t.Logf("rule verified: 3 entries submitted, queried back, bytes from EntryReader, zero bytes in Postgres")
