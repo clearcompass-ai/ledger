@@ -48,11 +48,18 @@ Profiles:
                 Default 1M entries. Wall time depends on N.
                 Tests TestSoak_LedgerBytestore (-tags=soak).
 
+  audit         Trustless-auditor walk: bootstrap doc → NetworkID →
+                witness keys → K-of-N cosignatures → inclusion proofs
+                across tile boundaries → equivocation detection →
+                consistency proof between snapshots → tamper rejection.
+                Default 250K entries (meaningful multi-tile coverage).
+                Tests TestScale_AuditLookup (-tags=audit).
+
 Required env (all profiles):
   ATTESTA_TEST_DSN          Postgres connection string. Asserted before
                             any work. Soak profile auto-provisions
                             Postgres in Docker if unset; determinism
-                            profile fails fast.
+                            and audit profiles fail fast.
 
 Profile-specific env (knobs documented in each profile body):
   determinism:  ATTESTA_SCALE_DETERMINISM_{N,CONCURRENCY,
@@ -64,6 +71,8 @@ Profile-specific env (knobs documented in each profile body):
                   TEST_TIMEOUT,BYTESTORE_BACKEND,KEEP_DATA}
                 Plus ATTESTA_TEST_S3_*  (s3 / seaweedfs backends)
                   or ATTESTA_TEST_GCS_BUCKET (gcs backend).
+  audit:        ATTESTA_AUDIT_{N,M,CONCURRENCY,INCL_RANDOM,
+                  DRAIN_TIMEOUT,TEST_TIMEOUT}
 
   Soak's VERIFY_SAMPLES cascades to TREE_PROOF_SAMPLES + SMT_PROOF_SAMPLES
   when those are unset. Set VERIFY_SAMPLES once and every sampled
@@ -76,11 +85,15 @@ Examples:
   ATTESTA_SOAK_ENTRIES=10000 ATTESTA_SOAK_VERIFY_SAMPLES=10% \
     ./scripts/run-validation.sh soak
 
+  ATTESTA_AUDIT_N=1024 ./scripts/run-validation.sh audit   # smoke
+  ./scripts/run-validation.sh audit                        # full 250K
+
   ./scripts/run-validation.sh soak down       # tear down docker (soak only)
 
 Backward-compatible entry points:
   ./scripts/run-soak.sh                → run-validation.sh soak
   ./scripts/run-scale-determinism.sh   → run-validation.sh determinism
+  ./scripts/run-audit.sh               → run-validation.sh audit
 EOF
 }
 

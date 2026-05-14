@@ -33,7 +33,7 @@ import (
 	"testing"
 
 	"github.com/clearcompass-ai/attesta/crypto/cosign"
-	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
 	"github.com/clearcompass-ai/attesta/types"
 )
 
@@ -48,36 +48,84 @@ type witnessFixture struct {
 	servers []*httptest.Server
 	signers []cosign.WitnessSigner
 	pubKeys []types.WitnessPublicKey
+	dids    []string
+}
+
+// DIDs returns the did:key string for each witness in
+// construction order. Used by audit-mode setup to populate
+// network.BootstrapDocument.GenesisWitnessSet so the auditor
+// can resolve them back to ECDSA public keys.
+func (wf *witnessFixture) DIDs() []string {
+	out := make([]string, len(wf.dids))
+	copy(out, wf.dids)
+	return out
 }
 
 // newWitnessFixture spins up n httptest cosign servers under the
 // supplied NetworkID. Cleanup is registered via t.Cleanup; the
 // caller doesn't need to defer Close.
+//
+// Each witness's signing keypair is generated INSIDE the fixture.
+// For audit-mode tests that need to know witness DIDs BEFORE the
+// fixture exists (so they can build a bootstrap doc whose
+// derived NetworkID is then passed back here), use
+// newWitnessFixtureFromKeypairs instead.
 func newWitnessFixture(t *testing.T, netID cosign.NetworkID, n int) *witnessFixture {
 	t.Helper()
 	if n < 1 {
 		t.Fatalf("newWitnessFixture: n must be >= 1, got %d", n)
 	}
+	keypairs := make([]*did.DIDKeyPairSecp256k1, n)
+	for i := 0; i < n; i++ {
+		kp, err := did.GenerateDIDKeySecp256k1()
+		if err != nil {
+			t.Fatalf("newWitnessFixture: GenerateDIDKeySecp256k1 %d: %v", i, err)
+		}
+		keypairs[i] = kp
+	}
+	return newWitnessFixtureFromKeypairs(t, netID, keypairs)
+}
+
+// newWitnessFixtureFromKeypairs is the audit-mode constructor: it
+// takes PRE-GENERATED did:key keypairs so the caller can build a
+// bootstrap document with the witness DIDs BEFORE the fixture
+// exists. The flow for audit tests is:
+//
+//  1. Generate n keypairs via did.GenerateDIDKeySecp256k1.
+//  2. Build a network.BootstrapDocument whose GenesisWitnessSet
+//     contains those keypairs' DIDs.
+//  3. Compute NetworkID = SHA-256(JCS(BootstrapDocument)).
+//  4. Call this constructor with the derived NetworkID + the
+//     same keypairs.
+//
+// Result: the witness fixture signs with NetworkID-X, the bootstrap
+// document derives NetworkID-X, and an auditor walking the chain
+// from the bootstrap doc → did:key resolution → witness
+// VerifyTreeHeadCosignatures path passes by construction. No
+// back-channel between the test and the auditor's verification
+// surface.
+func newWitnessFixtureFromKeypairs(t *testing.T, netID cosign.NetworkID, keypairs []*did.DIDKeyPairSecp256k1) *witnessFixture {
+	t.Helper()
+	if len(keypairs) < 1 {
+		t.Fatalf("newWitnessFixtureFromKeypairs: keypairs must be non-empty")
+	}
 	wf := &witnessFixture{
 		t:       t,
 		netID:   netID,
-		servers: make([]*httptest.Server, 0, n),
-		signers: make([]cosign.WitnessSigner, 0, n),
-		pubKeys: make([]types.WitnessPublicKey, 0, n),
+		servers: make([]*httptest.Server, 0, len(keypairs)),
+		signers: make([]cosign.WitnessSigner, 0, len(keypairs)),
+		pubKeys: make([]types.WitnessPublicKey, 0, len(keypairs)),
+		dids:    make([]string, 0, len(keypairs)),
 	}
-	for i := 0; i < n; i++ {
-		priv, err := signatures.GenerateKey()
-		if err != nil {
-			t.Fatalf("witnessFixture: generate key %d: %v", i, err)
-		}
-		signer := cosign.NewECDSAWitnessSigner(priv)
+	for i, kp := range keypairs {
+		signer := cosign.NewECDSAWitnessSigner(kp.PrivateKey)
 
 		handler, err := cosign.NewWitnessHandler(cosign.WitnessHandlerConfig{
 			Signer:          signer,
 			AllowedNetworks: map[cosign.NetworkID]struct{}{netID: {}},
 		})
 		if err != nil {
-			t.Fatalf("witnessFixture: NewWitnessHandler %d: %v", i, err)
+			t.Fatalf("newWitnessFixtureFromKeypairs: NewWitnessHandler %d: %v", i, err)
 		}
 		mux := http.NewServeMux()
 		mux.Handle(cosign.DefaultCosignPath, handler)
@@ -85,16 +133,17 @@ func newWitnessFixture(t *testing.T, netID cosign.NetworkID, n int) *witnessFixt
 
 		wf.servers = append(wf.servers, srv)
 		wf.signers = append(wf.signers, signer)
-		// Public-key bytes: x||y uncompressed. The
-		// witness.KeysFromDIDs path (attesta v1.2) used by
-		// production resolves did:key into the same form; here we
-		// construct it directly from the test signer's underlying
-		// key.
-		pub := append(priv.X.Bytes(), priv.Y.Bytes()...)
+		// Public-key bytes: x||y uncompressed. Mirrors the
+		// production witness.KeysFromDIDs path so the
+		// fixture's public-key form is byte-identical to
+		// what an auditor would derive by resolving
+		// the same did:key.
+		pub := append(kp.PrivateKey.X.Bytes(), kp.PrivateKey.Y.Bytes()...)
 		wf.pubKeys = append(wf.pubKeys, types.WitnessPublicKey{
 			ID:        signer.PubKeyID(),
 			PublicKey: pub,
 		})
+		wf.dids = append(wf.dids, kp.DID)
 	}
 	t.Cleanup(wf.close)
 	return wf

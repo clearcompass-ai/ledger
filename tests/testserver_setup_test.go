@@ -40,11 +40,13 @@ package tests
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -53,7 +55,10 @@ import (
 	sdkbuilder "github.com/clearcompass-ai/attesta/builder"
 	"github.com/clearcompass-ai/attesta/core/envelope"
 	"github.com/clearcompass-ai/attesta/core/smt"
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
 	"github.com/clearcompass-ai/attesta/crypto/signatures"
+	"github.com/clearcompass-ai/attesta/did"
+	"github.com/clearcompass-ai/attesta/network"
 
 	"github.com/clearcompass-ai/ledger/api"
 	"github.com/clearcompass-ai/ledger/api/middleware"
@@ -107,6 +112,47 @@ type testLedgerOpts struct {
 	// Crypto / tile / byte tests opt in; persona tests keep
 	// the production-shape default.
 	LowDifficulty bool
+
+	// AuditMode flips the witness setup into auditor-grade
+	// chain-walk shape:
+	//
+	//   1. WitnessCount keypairs are generated FIRST via
+	//      did.GenerateDIDKeySecp256k1 so their DIDs are known
+	//      before any other config exists.
+	//   2. A network.BootstrapDocument is built listing those
+	//      DIDs in GenesisWitnessSet.
+	//   3. The doc is written to t.TempDir()/network-bootstrap.json
+	//      and its path exposed via testLedger.BootstrapPath.
+	//   4. NetworkID = SHA-256(JCS(bootstrap doc))[:32] is derived
+	//      and threaded through the witness fixture +
+	//      witnessclient.HeadSync.
+	//   5. /v1/log-info is wired with the derived NetworkID so the
+	//      auditor can verify the ledger is serving the network
+	//      whose bootstrap doc they hold.
+	//
+	// An audit-grade test (e.g., TestScale_AuditLookup) then walks:
+	//   bootstrap doc (out-of-band trust root) →
+	//   derived NetworkID →
+	//   resolve did:key witness DIDs to ECDSA pubkeys →
+	//   construct WitnessKeySet →
+	//   verify /v1/tree/head cosignatures
+	// without any back-channel from the test harness — every step
+	// is cryptographic.
+	AuditMode bool
+
+	// WitnessCount is the number of witness signers the fixture
+	// constructs. Default 1. Audit-mode tests typically pass 3+
+	// to exercise K-of-N quorum (paired with WitnessQuorumK).
+	// Ignored when AuditMode is false (legacy tests use the
+	// witness-fixture default of 1).
+	WitnessCount int
+
+	// WitnessQuorumK is the K in the K-of-N quorum. Must satisfy
+	// 1 <= K <= WitnessCount. Default 1 (single-witness ack).
+	// Threaded into both witnessclient.HeadSync (signs path) and
+	// (audit mode) the auditor's cosign.NewWitnessKeySet (verify
+	// path).
+	WitnessQuorumK int
 
 	// PublicURLer wires the /v1/entries/{seq}/raw 302 redirect
 	// path. Default nil → handler returns 500 on shipped
@@ -189,17 +235,117 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 
 	ts := buildTesseraForTests(t, ctx, opts, logger)
 
-	// Real witness fixture — K=1 by default. Replaces the deleted
-	// stubWitnessCosigner. The Ledger's HeadSync POSTs to the
-	// fixture's httptest cosign server over real HTTP and persists
-	// signatures in treeHeadStore. Tests asserting on the cosigned-
-	// checkpoint file inspect ts.tileRoot/cosigned-checkpoint after
-	// the builder loop has completed at least one cycle.
-	witnessNetID := nonZeroTestNetworkID()
-	witnessFx := newWitnessFixture(t, witnessNetID, 1)
+	// Witness setup splits on opts.AuditMode:
+	//
+	//   default path: legacy witness fixture with a deterministic
+	//     test NetworkID (nonZeroTestNetworkID). Single witness,
+	//     K=1. Used by 600+ existing tests; do not change this
+	//     without auditing every caller.
+	//
+	//   audit path: pre-generate WitnessCount keypairs (so their
+	//     DIDs are known), build a network.BootstrapDocument
+	//     listing those DIDs, derive NetworkID from JCS(doc), and
+	//     thread the derived NetworkID through both the witness
+	//     fixture (which signs with it) and the head-sync client
+	//     (which submits with it). Bootstrap doc is written to
+	//     t.TempDir()/network-bootstrap.json; the path goes onto
+	//     testLedger.BootstrapPath so the audit test can read it
+	//     as the out-of-band trust root.
+	witnessQuorumK := 1
+	var (
+		witnessNetID     cosign.NetworkID
+		witnessFx        *witnessFixture
+		bootstrapPath    string
+		auditWitnessDIDs []string
+	)
+	if opts.AuditMode {
+		wc := opts.WitnessCount
+		if wc < 1 {
+			wc = 1
+		}
+		wk := opts.WitnessQuorumK
+		if wk < 1 {
+			wk = 1
+		}
+		if wk > wc {
+			cancel()
+			pool.Close()
+			t.Fatalf("AuditMode: WitnessQuorumK (%d) cannot exceed WitnessCount (%d)", wk, wc)
+		}
+		witnessQuorumK = wk
+
+		// 1. Pre-generate keypairs so their DIDs are known before
+		//    the bootstrap doc is built.
+		keypairs := make([]*did.DIDKeyPairSecp256k1, wc)
+		auditWitnessDIDs = make([]string, wc)
+		for i := 0; i < wc; i++ {
+			kp, kpErr := did.GenerateDIDKeySecp256k1()
+			if kpErr != nil {
+				cancel()
+				pool.Close()
+				t.Fatalf("AuditMode: GenerateDIDKeySecp256k1 %d: %v", i, kpErr)
+			}
+			keypairs[i] = kp
+			auditWitnessDIDs[i] = kp.DID
+		}
+
+		// 2. Build the bootstrap doc with those DIDs. The
+		//    ExchangeDID + NetworkName combine into the JCS
+		//    canonical form whose SHA-256 IS the NetworkID; we
+		//    pick t-prefixed values so collision with any
+		//    production NetworkID is impossible.
+		doc := network.BootstrapDocument{
+			ProtocolVersion:   "v1",
+			ExchangeDID:       "did:test:audit-exchange",
+			NetworkName:       "audit-test",
+			GenesisWitnessSet: append([]string(nil), auditWitnessDIDs...),
+			GenesisTreeHead: network.GenesisTreeHead{
+				RootHash: "0000000000000000000000000000000000000000000000000000000000000000",
+				TreeSize: 0,
+			},
+		}
+		canonical, jcsErr := doc.CanonicalBytes()
+		if jcsErr != nil {
+			cancel()
+			pool.Close()
+			t.Fatalf("AuditMode: bootstrap doc CanonicalBytes: %v", jcsErr)
+		}
+
+		// 3. Derive NetworkID = SHA-256(JCS(doc))[:32]. Identical
+		//    to what an auditor computes locally from the same
+		//    bytes; cosign.NetworkID is a [32]byte alias.
+		hash := sha256.Sum256(canonical)
+		copy(witnessNetID[:], hash[:])
+
+		// 4. Persist the bootstrap doc to disk under t.TempDir()
+		//    so the audit test can read it as the out-of-band
+		//    trust root. The file format is the canonical JCS
+		//    form (not pretty-printed JSON) — the auditor MUST
+		//    re-canonicalize before computing the NetworkID, but
+		//    pinning the on-disk form to the canonical bytes
+		//    guarantees byte-for-byte agreement.
+		bootstrapDir := t.TempDir()
+		bootstrapPath = filepath.Join(bootstrapDir, "network-bootstrap.json")
+		if writeErr := os.WriteFile(bootstrapPath, canonical, 0o600); writeErr != nil {
+			cancel()
+			pool.Close()
+			t.Fatalf("AuditMode: write bootstrap doc: %v", writeErr)
+		}
+
+		// 5. Construct the witness fixture from the pre-generated
+		//    keypairs + the derived NetworkID. The fixture's
+		//    witnesses sign with this NetworkID; the auditor
+		//    derives the same NetworkID from the bootstrap doc
+		//    and verifies signatures against it.
+		witnessFx = newWitnessFixtureFromKeypairs(t, witnessNetID, keypairs)
+	} else {
+		// Legacy path. Unchanged from pre-AuditMode behavior.
+		witnessNetID = nonZeroTestNetworkID()
+		witnessFx = newWitnessFixture(t, witnessNetID, 1)
+	}
 	witnessCosigner, err := witnessclient.NewHeadSync(witnessclient.HeadSyncConfig{
 		WitnessEndpoints:  witnessFx.URLs(),
-		QuorumK:           1,
+		QuorumK:           witnessQuorumK,
 		PerWitnessTimeout: 2 * time.Second,
 		NetworkID:         witnessNetID,
 	}, treeHeadStore, logger)
@@ -325,6 +471,23 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 	handlers := buildTestHandlers(submissionDeps, treeDeps, smtDeps, queryDeps, entryReadDeps, commitDeps)
 	handlers.CommitmentLookup = api.NewCommitmentLookupHandler(cryptoCommitDeps)
 
+	// AuditMode: wire /v1/log-info with the derived NetworkID so
+	// the auditor can verify the ledger is serving the network
+	// whose bootstrap doc they hold (STEP 4 of the chain-walk).
+	// log_did + ledger_did + witness_quorum_k + network_id are the
+	// minimum fields the audit chain checks; other LogInfo fields
+	// (gossip topology, sequencer cadence) are not part of the
+	// trustless verification path so we omit them here.
+	if opts.AuditMode {
+		handlers.LogInfo = api.NewLogInfoHandler(api.LogInfo{
+			"log_did":                testLogDID,
+			"ledger_did":             testLedgerDID,
+			"network_id":             fmt.Sprintf("%x", witnessNetID[:]),
+			"witness_quorum_k":       witnessQuorumK,
+			"witness_endpoint_count": len(witnessFx.URLs()),
+		})
+	}
+
 	serverCfg := api.DefaultServerConfig()
 	serverCfg.Addr = "127.0.0.1:0"
 	server := api.NewServer(serverCfg, store.NewPostgresSessionLookup(pool), handlers, logger)
@@ -352,6 +515,14 @@ func startTestLedgerWithOpts(t *testing.T, opts testLedgerOpts) *testLedger {
 		RealTesseraDir: ts.tileRoot,
 		RealEmbedded:   ts.embedded,
 		RealTileReader: ts.tileReader,
+		// Audit-mode handles. Zero-valued unless opts.AuditMode was
+		// set; the audit branch above writes the bootstrap doc and
+		// derives the NetworkID, both of which we surface here so
+		// the test can walk the chain just like a real auditor.
+		BootstrapPath:    bootstrapPath,
+		DerivedNetworkID: witnessNetID,
+		WitnessQuorumK:   witnessQuorumK,
+		WitnessDIDs:      auditWitnessDIDs,
 	}
 
 	// Single ordered teardown — see tests/shutdownchain_test.go for

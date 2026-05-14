@@ -38,6 +38,9 @@ case "${PROFILE}" in
     soak)
         exec "${REPO_ROOT}/scripts/_validation_soak.sh" "$@"
         ;;
+    audit)
+        exec "${REPO_ROOT}/scripts/_validation_audit.sh" "$@"
+        ;;
     -h|--help|help)
         validation_print_usage
         exit 0

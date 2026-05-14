@@ -39,6 +39,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/clearcompass-ai/attesta/crypto/cosign"
+
 	opbytestore "github.com/clearcompass-ai/ledger/bytestore"
 	"github.com/clearcompass-ai/ledger/store"
 	optessera "github.com/clearcompass-ai/ledger/tessera"
@@ -90,6 +92,21 @@ type testLedger struct {
 	RealTesseraDir string
 	RealEmbedded   *optessera.EmbeddedAppender
 	RealTileReader *optessera.TileReader
+
+	// Audit-mode handles. Populated only when
+	// startTestLedgerWithOpts was called with AuditMode=true;
+	// zero-valued otherwise. An audit test reads BootstrapPath as
+	// the out-of-band trust root, derives NetworkID locally, and
+	// verifies that the derived value matches what /v1/log-info
+	// reports. WitnessQuorumK is exposed for the auditor's
+	// cosign.NewWitnessKeySet call. WitnessDIDs is convenience —
+	// the auditor SHOULD re-extract these from the bootstrap doc
+	// rather than reading them here, but having them on the
+	// struct makes assertion debugging straightforward.
+	BootstrapPath    string
+	DerivedNetworkID cosign.NetworkID
+	WitnessQuorumK   int
+	WitnessDIDs      []string
 }
 
 // HasRealTessera reports whether this ledger was constructed with
