@@ -252,44 +252,82 @@ func pollQueryResults(t *testing.T, baseURL, signerDID string, expectedCount int
 // complete inside the polling budget.
 func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]any {
 	t.Helper()
-	req, _ := http.NewRequest("POST", baseURL+"/v1/entries", bytes.NewReader(wire))
+	rec, err := trySubmitEntry(baseURL, token, wire)
+	if err != nil {
+		t.Fatalf("submitEntry: %v", err)
+	}
+	return rec
+}
+
+// trySubmitEntry is the non-fatal sibling of submitEntry. Identical
+// HTTP shape (POST /v1/entries → poll /v1/entries-hash/{hash}), but
+// returns (map, error) instead of calling t.Fatalf. Designed for
+// callers running in worker goroutines, where t.Fatalf's
+// runtime.Goexit silently kills the worker without incrementing the
+// caller's diagnostic counters — see tests/scale_determinism_test.go
+// for the canonical use case (continuous end-to-end per-iteration
+// determinism replay).
+//
+// Why this exists at all: testing.T.Fatalf is documented as "must
+// be called from the goroutine running the test or benchmark
+// function, not from other goroutines created during the test"
+// (Go testing.T docs). submitEntry's existing t.Fatalf works fine
+// for sequential test bodies but is a footgun in worker pools.
+// trySubmitEntry preserves the same HTTP contract while returning
+// errors as values so worker goroutines can count, log, and
+// optionally stop on first failure.
+//
+// Errors returned wrap enough context (HTTP status, body, hash)
+// for log-level diagnostics without dumping the full response body
+// into every error.
+func trySubmitEntry(baseURL, token string, wire []byte) (map[string]any, error) {
+	req, err := http.NewRequest("POST", baseURL+"/v1/entries", bytes.NewReader(wire))
+	if err != nil {
+		return nil, fmt.Errorf("trySubmitEntry: build request: %w", err)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp := doRequest(t, req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("trySubmitEntry: POST: %w", err)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d: %s", resp.StatusCode, body)
+		// Truncate body for readability — full body is rarely
+		// useful past the first ~256 bytes in a worker-pool log.
+		trim := body
+		if len(trim) > 256 {
+			trim = trim[:256]
+		}
+		return nil, fmt.Errorf("trySubmitEntry: expected 202, got %d: %s", resp.StatusCode, trim)
 	}
 	var sct map[string]any
 	if err := json.Unmarshal(body, &sct); err != nil {
-		t.Fatalf("decode SCT: %v\nbody: %s", err, body)
+		return nil, fmt.Errorf("trySubmitEntry: decode SCT: %w (body=%q)", err, body)
 	}
 	hashHex, _ := sct["canonical_hash"].(string)
 	if hashHex == "" {
-		t.Fatalf("SCT missing canonical_hash: %s", body)
+		return nil, fmt.Errorf("trySubmitEntry: SCT missing canonical_hash (body=%q)", body)
 	}
 
-	// Poll the hash-lookup endpoint until Sequencer drains.
+	// Poll the hash-lookup endpoint until Sequencer drains. Same
+	// 10s budget as submitEntry's polling loop.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		lookup, err := http.Get(baseURL + "/v1/entries-hash/" + hashHex)
-		if err == nil && lookup.StatusCode == http.StatusOK {
+		lookup, lerr := http.Get(baseURL + "/v1/entries-hash/" + hashHex)
+		if lerr == nil && lookup.StatusCode == http.StatusOK {
 			var rec map[string]any
 			if decErr := json.NewDecoder(lookup.Body).Decode(&rec); decErr == nil {
 				lookup.Body.Close()
 				if _, hasSeq := rec["sequence_number"]; hasSeq {
-					// Merge SCT fields with the indexed record so
-					// callers see the union — sequence_number,
-					// signer_did, etc. from the index plus the
-					// SCT fields callers may also need.
 					for k, v := range sct {
 						if _, exists := rec[k]; !exists {
 							rec[k] = v
 						}
 					}
-					return rec
+					return rec, nil
 				}
 				continue
 			}
@@ -299,8 +337,7 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("hash-lookup did not return sequence_number within budget for hash %s", hashHex)
-	return nil
+	return nil, fmt.Errorf("trySubmitEntry: hash-lookup timed out (10s) waiting for sequence_number on hash %s", hashHex)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
