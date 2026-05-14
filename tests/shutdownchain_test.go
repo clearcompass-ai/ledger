@@ -62,6 +62,7 @@ package tests
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -151,6 +152,19 @@ func (s shutdownChain) Run() {
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), budget)
 	defer shutdownCancel()
+
+	// Step 0 — sever the test-client side of any idle keep-alive
+	// connections so http.Server.Shutdown in Step 1 doesn't hang
+	// waiting for them. doRequest (http_integration_test.go:188-198)
+	// uses http.DefaultClient whose underlying Transport keeps idle
+	// TCP connections in a pool by design. Without this preemptive
+	// CloseIdleConnections, server.Shutdown(ctx) waits for every
+	// idle conn to either drain or for the 30s timeout to expire —
+	// directly responsible for the 30+s hang previously observed in
+	// TestE2E_V1_SCTTamperResistance. Calling CloseIdleConnections
+	// is the standard Go idiom for terminating Server.Shutdown
+	// promptly in tests.
+	http.DefaultClient.CloseIdleConnections()
 
 	// Step 1.
 	if s.Server != nil {

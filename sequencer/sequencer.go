@@ -658,7 +658,23 @@ type Sequencer struct {
 	// here so the supervisor terminates the process rather than
 	// looping the failed batch forever. nil-safe — see
 	// raiseFatal for the guard.
+	//
+	// Also used by handleEntryError when it detects a tessera
+	// lifecycle inversion (optessera.ErrAppenderShutdown while
+	// sequencer ctx is still live — see loop.go::handleEntryError
+	// for the production-data-loss rationale).
 	fatalCh chan<- error
+
+	// lifecycleInversionLogOnce gates the ERROR log emitted by
+	// handleEntryError when it detects optessera.ErrAppenderShutdown
+	// while ctx is still live. Without the once-gate, the ~200ms
+	// spin window between Tessera.Close and the supervisor reacting
+	// to fatalCh produces ~50 identical ERROR lines per occurrence
+	// (drainOnce re-picks the same Pending entry on each poll tick).
+	// One ERROR line per Sequencer lifetime is the right signal-to-
+	// noise ratio: loud enough to catch in any log aggregator,
+	// quiet enough not to drown out the root cause.
+	lifecycleInversionLogOnce sync.Once
 
 	// identicalBatchTracker holds the (first_seq, error-fingerprint)
 	// of the most recent failed flush, plus a streak count. Three
