@@ -64,6 +64,7 @@ import (
 
 	"github.com/clearcompass-ai/ledger/chaos"
 	"github.com/clearcompass-ai/ledger/store"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 	"github.com/clearcompass-ai/ledger/wal"
 )
 
@@ -603,7 +604,36 @@ func (s *Sequencer) dispatchCommitmentSchema(entry *envelope.Entry) (*[32]byte, 
 // handleEntryError centralizes the retry-vs-manual decision for a
 // per-entry failure. Increments attempt counter, marks WAL state,
 // updates metrics.
+//
+// LIVENESS GUARD — non-retriable lifecycle errors short-circuit
+// before the attempt counter is touched. Without this guard, a
+// graceful shutdown (Kubernetes rolling restart, SIGTERM drain)
+// that fires Tessera.Close OR cancels the root ctx while entries
+// are still in WAL StatePending would burn one MaxAttempts (default
+// 10) slot per restart per stranded entry. A node that restarts
+// a few times during a normal rollout would silently transition
+// valid entries to StateManual — permanent removal from the
+// active processing pipeline. The two classifications:
+//
+//  1. errors.Is(cause, optessera.ErrAppenderShutdown) — upstream
+//     tessera's terminator.stopped flag has fired. The flag is
+//     one-way; retrying is pure waste. Entry stays Pending; the
+//     next process start's drainOnce re-picks it up and Tessera's
+//     antispam dedupes the AppendLeaf so no double-sequencing.
+//
+//  2. isContextErr(cause) — the root ctx fired (cancel or deadline).
+//     Same restart-recovery story: the entry is durable in WAL,
+//     antispam is idempotent.
+//
+// Both paths log at DEBUG so a healthy shutdown produces zero
+// WARN-level noise; only genuine per-entry faults (deserialize,
+// dispatch, non-shutdown tessera errors) take the retry path.
 func (s *Sequencer) handleEntryError(ctx context.Context, hash [32]byte, op string, cause error) {
+	if errors.Is(cause, optessera.ErrAppenderShutdown) || isContextErr(cause) {
+		s.logger.Debug("sequencer: in-flight entry aborted by shutdown — deferring to next process",
+			"op", op, "hash", hashPrefix(hash), "reason", cause)
+		return
+	}
 	attempt := s.recordAttempt(hash)
 	s.metrics.failures.Add(1)
 	s.logger.Warn("sequencer: per-entry failure",

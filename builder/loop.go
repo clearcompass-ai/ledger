@@ -81,6 +81,7 @@ import (
 	"github.com/clearcompass-ai/attesta/types"
 
 	"github.com/clearcompass-ai/ledger/store"
+	optessera "github.com/clearcompass-ai/ledger/tessera"
 )
 
 // -------------------------------------------------------------------------------------------------
@@ -302,6 +303,22 @@ func (bl *BuilderLoop) Run(ctx context.Context) (retErr error) {
 		if err != nil {
 			if isContextError(err) {
 				bl.logger.Info("builder loop stopped",
+					"batches", bl.totalBatches.Load(),
+					"entries", bl.totalEntries.Load(),
+				)
+				return nil
+			}
+			// LIVENESS GUARD — Tessera shutdown is a one-way state
+			// transition. Treat the same as ctx-cancel: clean exit,
+			// no error log, no consecutive_errors bump. Same restart-
+			// recovery story as the sequencer (see
+			// sequencer/loop.go::handleEntryError): entries stay in
+			// WAL StatePending, antispam dedupes on next-process
+			// AppendLeaf. The matching boundary translation lives in
+			// tessera/embedded_appender.go::AppendLeaf; the pinning
+			// test is TestEmbeddedAppender_AppendLeaf_TypedShutdownError.
+			if errors.Is(err, optessera.ErrAppenderShutdown) {
+				bl.logger.Info("builder loop stopped — tessera appender shut down",
 					"batches", bl.totalBatches.Load(),
 					"entries", bl.totalEntries.Load(),
 				)
