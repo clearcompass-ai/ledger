@@ -259,6 +259,25 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 	return rec
 }
 
+// bulkLoadHTTPClient is a process-wide tuned *http.Client for
+// worker-pool callers that drive sustained HTTP load against a
+// local listener. Connection pool sized for 8–128 worker fan-out
+// at ~hundreds of req/sec; sized once at package init so the
+// pool persists across iterations and TIME_WAIT churn doesn't
+// drain the ephemeral port range.
+//
+// Evidence-driven sizing — see
+// tests/http_client_helpers_test.go::newTunedHTTPClient for the
+// MaxIdleConnsPerHost rationale. The macOS 16K-port pool exhausted
+// in ~20s under the previous (default-client) shape of
+// TestScale_DeterministicReplay at 8 workers × 36 pairs/sec; the
+// tuned client keeps the pool stable.
+//
+// 30s per-request timeout matches submitEntry's intuitive
+// "submission shouldn't take a billion years" ceiling; the inner
+// poll-loop has its own 10s deadline independent of this.
+var bulkLoadHTTPClient = newTunedHTTPClient(30 * time.Second)
+
 // trySubmitEntry is the non-fatal sibling of submitEntry. Identical
 // HTTP shape (POST /v1/entries → poll /v1/entries-hash/{hash}), but
 // returns (map, error) instead of calling t.Fatalf. Designed for
@@ -277,6 +296,12 @@ func submitEntry(t *testing.T, baseURL, token string, wire []byte) map[string]an
 // errors as values so worker goroutines can count, log, and
 // optionally stop on first failure.
 //
+// Uses bulkLoadHTTPClient — the package-wide tuned client — for
+// both the POST and the polling GETs. Without that tuning, sustained
+// concurrent callers exhaust the macOS ephemeral port range within
+// ~20s (the previous default-client shape produced 635
+// EADDRNOTAVAIL failures on a 1000-pair scale run).
+//
 // Errors returned wrap enough context (HTTP status, body, hash)
 // for log-level diagnostics without dumping the full response body
 // into every error.
@@ -288,7 +313,7 @@ func trySubmitEntry(baseURL, token string, wire []byte) (map[string]any, error) 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := bulkLoadHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("trySubmitEntry: POST: %w", err)
 	}
@@ -313,10 +338,12 @@ func trySubmitEntry(baseURL, token string, wire []byte) (map[string]any, error) 
 	}
 
 	// Poll the hash-lookup endpoint until Sequencer drains. Same
-	// 10s budget as submitEntry's polling loop.
+	// 10s budget as submitEntry's polling loop. Uses the tuned
+	// client so the high-frequency polling GETs reuse the
+	// connection pool instead of draining the ephemeral port range.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		lookup, lerr := http.Get(baseURL + "/v1/entries-hash/" + hashHex)
+		lookup, lerr := bulkLoadHTTPClient.Get(baseURL + "/v1/entries-hash/" + hashHex)
 		if lerr == nil && lookup.StatusCode == http.StatusOK {
 			var rec map[string]any
 			if decErr := json.NewDecoder(lookup.Body).Decode(&rec); decErr == nil {
